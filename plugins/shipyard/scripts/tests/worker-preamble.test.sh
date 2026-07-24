@@ -52,6 +52,9 @@ commit_hygiene_path="$wp_dir/commit-hygiene.md"
 classifier_denial_path="$wp_dir/classifier-denial.md"
 native_background_subagent_path="$wp_dir/native-background-subagent.md"
 gh_json_discipline_path="$wp_dir/gh-json-discipline.md"
+# Issue #895 — a new fragment documenting the Edit/Write bg-isolation write
+# guard (a probe distinct from the step-0 cwd fail-fast).
+write_probe_path="$wp_dir/write-probe.md"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 # The dispatch prompts live in the steady-state phase after the issue #154
 # split, and the divert/fix-checks/issue-work prompt templates moved again into
@@ -159,6 +162,7 @@ if [[ -f "$skill_path" ]]; then
   assert_file_exists "$classifier_denial_path" "worker-preamble fragment classifier-denial.md exists (issue #808)"
   assert_file_exists "$native_background_subagent_path" "worker-preamble fragment native-background-subagent.md exists (issue #808)"
   assert_file_exists "$gh_json_discipline_path" "worker-preamble fragment gh-json-discipline.md exists (issue #808)"
+assert_file_exists "$write_probe_path" "worker-preamble fragment write-probe.md exists (issue #895)"
   assert_contains "$skill_path" "## On-demand fragments" \
     "SKILL.md has an On-demand fragments index section (issue #617)"
   assert_contains "$skill_path" "(./auto-merge.md)" \
@@ -177,6 +181,8 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md fragment-index links native-background-subagent.md (issue #808)"
   assert_contains "$skill_path" "(./gh-json-discipline.md)" \
     "SKILL.md fragment-index links gh-json-discipline.md (issue #808)"
+assert_contains "$skill_path" "(./write-probe.md)" \
+    "SKILL.md fragment-index links write-probe.md (issue #895)"
   # The thin core must stay thin: SKILL.md is the always-loaded file, so its
   # line count is the per-dispatch context tax #617 set out to cut. Assert it
   # stays well under half the pre-split ~593 lines.
@@ -201,6 +207,22 @@ if [[ -f "$skill_path" ]]; then
     "SKILL.md covers the no-git-switch-to-default rule"
   assert_contains "$skill_path" "--label shipyard" \
     "SKILL.md covers the shipyard label requirement"
+
+  # Issue #895 — the step-0 cwd fail-fast section must point at the new
+  # write-probe fragment, and the fragment itself must carry the blocked:
+  # return string and both observed harness error signatures, or a worker
+  # loses the fast-fail path and burns a full dispatch discovering the
+  # write-block at its final commit.
+  assert_contains "$skill_path" "does NOT confirm \`Edit\`/\`Write\` will actually succeed" \
+    "SKILL.md's step-0 section warns a passing cwd check doesn't guarantee Edit/Write works (issue #895)"
+  assert_contains "$write_probe_path" "## Write-capability probe" \
+    "write-probe.md covers the Write-capability probe section (issue #895)"
+  assert_contains "$write_probe_path" "parent bg session hasn't isolated yet" \
+    "write-probe.md names the parent-not-isolated harness error signature (issue #895)"
+  assert_contains "$write_probe_path" "This session is now isolated in" \
+    "write-probe.md names the parent-isolated redirect-to-orchestrator-worktree harness error signature (issue #895)"
+  assert_contains "$write_probe_path" "blocked: workflow-substrate dispatch cannot write files" \
+    "write-probe.md names the blocked: return string for a confirmed write-block (issue #895)"
 
   # Issue #158 — `gh` JSON discipline convention section. The one-sentence
   # rule stays in SKILL.md (issue #808 split); the field-scoping cookbook
