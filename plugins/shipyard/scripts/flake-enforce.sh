@@ -405,14 +405,26 @@ do_apply_blocked_ci() {
     return 0
   fi
 
-  "$GH" pr edit "$pr" --repo "$repo" --add-label "$BLOCKED_CI_LABEL" >/dev/null 2>&1 || true
+  # Capture each gh call's own exit status (rather than swallowing both with
+  # `|| true`) so the trailing log line can't claim "labeled" when either the
+  # label or the comment silently failed (rate limit, permission, network
+  # blip) — see issue #872. `set -e` isn't in effect for this script, but we
+  # avoid relying on that: each status is captured explicitly.
+  local edit_status=0
+  "$GH" pr edit "$pr" --repo "$repo" --add-label "$BLOCKED_CI_LABEL" >/dev/null 2>&1 || edit_status=$?
 
   local ref="${tracking_url:-the chronic-flake tracking issue}"
+  local comment_status=0
   "$GH" pr comment "$pr" --repo "$repo" --body \
 "This PR is labeled \`blocked:ci\` because its failing check (\`${human_label}\`) crossed the shipyard chronic-flake escalation threshold — **this isn't your PR's fault, it's a known chronic flake**. See ${ref} for the root-cause tracking. The flake is on the local flake-suspects list, so shipyard will not auto-rerun it until a human signs off." \
-    >/dev/null 2>&1 || true
+    >/dev/null 2>&1 || comment_status=$?
 
-  printf 'apply-blocked-ci labeled repo=%s pr=%s\n' "$repo" "$pr" >&2
+  if [[ "$edit_status" -eq 0 && "$comment_status" -eq 0 ]]; then
+    printf 'apply-blocked-ci labeled repo=%s pr=%s\n' "$repo" "$pr" >&2
+  else
+    printf 'apply-blocked-ci partial-failure repo=%s pr=%s (label=%s comment=%s)\n' \
+      "$repo" "$pr" "$edit_status" "$comment_status" >&2
+  fi
 }
 
 # --------------------------------------------------------------------------

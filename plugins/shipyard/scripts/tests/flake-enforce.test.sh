@@ -175,6 +175,46 @@ assert_equals "$count" "1" "dedupe: suspect key present exactly once after two r
 
 # --------------------------------------------------------------------------
 echo
+echo "apply-blocked-ci — a failing gh call must not log false success (#872)"
+# --------------------------------------------------------------------------
+T="${WORK}/blocked-ci-fail"; mkdir -p "$T/repo"
+# Mock gh where `pr edit` fails (nonzero exit) but `pr comment` would succeed.
+cat > "$T/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "GH-CALL: $*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view") printf 'OPEN\nshipyard\n' ;;
+  "pr edit") exit 1 ;;
+  *) : ;;
+esac
+MOCK
+chmod +x "$T/gh"
+export GH_LOG="$T/gh.log"; : > "$GH_LOG"
+crossed='[{"repo":"o/r","workflow":"CI","job":"E2E","test":"Y","events":3,"distinct_prs":1,"prs":[7],"actions":["apply-blocked-ci"]}]'
+out="$(printf '%s' "$crossed" | SHIPYARD_HOME="$T/home" GH="$T/gh" "$enforce" enforce --repo o/r --repo-root "$T/repo" --from-stdin 2>&1)"
+assert_not_contains "$out" "apply-blocked-ci labeled repo=o/r pr=7" "gh pr edit failure: log does NOT claim success"
+assert_contains "$out" "apply-blocked-ci partial-failure repo=o/r pr=7 (label=1 comment=0)" "gh pr edit failure: distinguishable partial-failure line with both exit statuses"
+
+# Mock gh where `pr edit` succeeds but `pr comment` fails.
+T="${WORK}/blocked-ci-fail-comment"; mkdir -p "$T/repo"
+cat > "$T/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "GH-CALL: $*" >> "$GH_LOG"
+case "$1 $2" in
+  "pr view")    printf 'OPEN\nshipyard\n' ;;
+  "pr comment") exit 1 ;;
+  *) : ;;
+esac
+MOCK
+chmod +x "$T/gh"
+export GH_LOG="$T/gh.log"; : > "$GH_LOG"
+crossed='[{"repo":"o/r","workflow":"CI","job":"E2E","test":"Y","events":3,"distinct_prs":1,"prs":[8],"actions":["apply-blocked-ci"]}]'
+out="$(printf '%s' "$crossed" | SHIPYARD_HOME="$T/home" GH="$T/gh" "$enforce" enforce --repo o/r --repo-root "$T/repo" --from-stdin 2>&1)"
+assert_not_contains "$out" "apply-blocked-ci labeled repo=o/r pr=8" "gh pr comment failure: log does NOT claim success"
+assert_contains "$out" "apply-blocked-ci partial-failure repo=o/r pr=8 (label=0 comment=1)" "gh pr comment failure: distinguishable partial-failure line with both exit statuses"
+
+# --------------------------------------------------------------------------
+echo
 echo "per-row actions — a row omitting an action skips it"
 # --------------------------------------------------------------------------
 T="${WORK}/perrow"; mkdir -p "$T/repo"
