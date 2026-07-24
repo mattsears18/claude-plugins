@@ -31,6 +31,19 @@
 # This test is the regression guard: if the §5.85 guard is removed or its
 # load-bearing semantics regress, the test fails.
 #
+# Extended for issue #893: a live dispatch found the single
+# rewrite-and-reverify loop above did NOT reliably clear a leaked
+# closingIssuesReferences entry — it survived a PR-body rewrite, a
+# commit-message rewrite + force-push, and a full close+reopen. The only
+# thing that cleared it was abandoning the branch/PR entirely and reopening
+# from a neutrally-named branch (not the `do-work/issue-<N>`-shaped one),
+# consistent with a branch-name-based auto-link independent of body/commit
+# text. §5.85 now documents a three-tier escalation (body rewrite → commit
+# message rewrite → abandon-and-reopen-from-neutral-branch) instead of a
+# single-shot rewrite, plus a prevention callout: never name a
+# deliberately-non-closing PR's branch `do-work/issue-<E>`-shaped in the
+# first place.
+#
 # Pure bash, no external dependencies. Run with:
 #
 #   bash plugins/shipyard/scripts/tests/parent-epic-leak-guard.test.sh
@@ -173,6 +186,34 @@ if [[ -f "$issue_work_path" ]]; then
     "### 5.85 Post-PR-create non-close parent/epic leak verification" \
     "### 6. Enable auto-merge" \
     "§5.85 lands before §6 Enable auto-merge"
+
+  # (6.5) Issue #893: a single rewrite-and-reverify was not reliable in a live
+  # dispatch. §5.85 must now document a three-tier escalation and must not
+  # imply a single body rewrite is the complete remediation.
+  assert_contains "$issue_work_path" "https://github.com/mattsears18/shipyard/issues/893" \
+    "issue-work.md links to the non-reliable-remediation follow-up #893"
+  assert_contains "$issue_work_path" "Tier 1: rewrite the PR body to bare-URL form" \
+    "issue-work.md names tier 1 of the escalation (body rewrite)"
+  assert_contains "$issue_work_path" "Tier 2: also rewrite the HEAD commit message" \
+    "issue-work.md names tier 2 of the escalation (commit-message rewrite)"
+  assert_contains "$issue_work_path" "Tier 3: escape hatch" \
+    "issue-work.md names tier 3 of the escalation (escape hatch)"
+  assert_contains "$issue_work_path" "don't stop early" \
+    "issue-work.md instructs running the tiers in order without stopping early"
+  assert_contains "$issue_work_path" "NEUTRAL_BRANCH=" \
+    "issue-work.md's tier-3 escape hatch reopens from a neutrally-named branch"
+  assert_not_contains "$issue_work_path" \
+    "if it leaked, rewrite the PR body to reference the epic by bare URL (replacing any \`#<E>\` token), re-verify, and — if the PR has *already merged*" \
+    "issue-work.md no longer documents ONLY a single rewrite-and-reverify pass (issue #893)"
+
+  # (6.6) Issue #893: prevention guidance — never name a deliberately
+  # non-closing PR's branch `do-work/issue-<E>`-shaped, since GitHub's
+  # branch-to-issue auto-linking can register a closing reference
+  # independent of the PR body or commit-message text.
+  assert_contains "$issue_work_path" "Prevention — never name a protected-issue-referencing PR's branch" \
+    "issue-work.md documents the branch-naming prevention (issue #893)"
+  assert_contains "$issue_work_path" "independent of the PR body or commit-message text" \
+    "issue-work.md names the branch-name vector as independent of body/commit text (issue #893)"
 fi
 
 # (7) Scope guard — the other modes' specs MUST NOT contain the §5.85 guard.
