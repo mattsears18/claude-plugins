@@ -544,6 +544,23 @@ function unitLabel(unit) {
 // (phase 3). An unrecognized mode falls through to a defensive placeholder —
 // that branch should be unreachable via dispatch-rules.md's routing and only
 // matters for a manual dry run of the script against a malformed unit.
+//
+// Each builder below is the workflow-substrate twin of dispatch-rules.md's
+// reviewable prose template for the same mode — NOT byte-identical by design
+// (this shape additionally needs the worktree-anchor preamble and a
+// structured-return-contract closing dispatch-rules.md's Agent-tool prose
+// doesn't), but the mode inventory, `agents/issue-worker/<mode>.md` spec-file
+// references, and conditional augmentation paragraphs (verify-gate /
+// user-feedback / phase-1-slice / next-available-version) must stay in sync.
+// "Review both files together" used to be the only enforcement of that, and
+// it silently failed (issue #880: the user-feedback preamble below was
+// missing dispatch-rules.md's trailing "misread the user" clause). A drift
+// on any of those facets is now caught mechanically by
+// scripts/check-dispatch-prompt-parity.mjs (run via scripts/tests/
+// dispatch-prompt-parity-880.test.sh in CI) — the same "hand-copied content
+// drifts silently, add a mechanical parity checker" remedy #856 applied to
+// the worker-RETURN schema just below, applied here to the worker-DISPATCH
+// prompt half of the same problem.
 // ===========================================================================
 function buildWorkerPrompt(unit, repoSlug) {
   switch (unit.mode) {
@@ -580,12 +597,14 @@ function buildWorkerPrompt(unit, repoSlug) {
 // ===========================================================================
 // Shared helper — the worktree-anchor CHECK block itself (the `cd` plus the
 // git-dir-vs-git-common-dir verification). Extracted to its own function so
-// BOTH `worktreeAnchorLines` (below) and `buildIssueWorkPrompt` emit the
-// SAME text instead of each hand-maintaining its own copy — the exact
-// "prose/generated-text duplicated in two places drifts" problem issue #826
-// closed for `shipyard:worker-preamble`'s two markdown sections, applied here
-// to this script's two JS call sites (buildIssueWorkPrompt used to carry its
-// own separate copy predating this extraction).
+// EVERY per-mode builder emits the SAME text via `worktreeAnchorLines` below
+// instead of each hand-maintaining its own copy — the exact "prose/generated-
+// text duplicated in two places drifts" problem issue #826 closed for
+// `shipyard:worker-preamble`'s two markdown sections, applied here to this
+// script's builder functions (`buildIssueWorkPrompt` used to carry its own
+// separate copy of both this check block AND the CALLER-BUG guard below it;
+// issue #880 folded it onto `worktreeAnchorLines` like the other six
+// builders, so this function now has exactly one caller).
 //
 // Runs the SAME script-based predicate `shipyard:worker-preamble`'s step-0
 // fail-fast now uses (scripts/assert-worktree-cwd.sh) rather than inlining
@@ -635,22 +654,31 @@ function worktreeAnchorCheckLines(worktreePath) {
 }
 
 // ===========================================================================
-// Shared helper — the worktree-anchor preamble every per-mode builder below
-// (including buildIssueWorkPrompt — both now delegate the check itself to
-// `worktreeAnchorCheckLines`) opens with: a CALLER BUG guard when
+// Shared helper — the worktree-anchor preamble EVERY per-mode builder below,
+// including buildIssueWorkPrompt, delegates to: a CALLER BUG guard when
 // `worktreePath` is missing, otherwise the anchor-check block above.
-// Centralized here (rather than copy-pasted six more times) purely to keep
-// this file's size down — the six modes below did not exist as separate
-// builders in phase 2, so there was nothing yet to extract from.
+// Centralized here (rather than copy-pasted seven times) purely to keep this
+// file's size down. `buildIssueWorkPrompt` used to inline its own separate
+// copy of the CALLER-BUG guard (to fold `unit.number` into the diagnostic
+// text) instead of calling this helper — issue #880 folded it in here
+// instead, generalizing the guard to include the issue number whenever
+// `unit.number` is set (issue-work, investigate, spike all carry it; the
+// synthetic diverts fix-main-ci/fix-failing-prs-batch and the existing-PR
+// modes fix-checks-only/fix-rebase don't, so they keep the generic
+// "this <mode> dispatch" phrasing) rather than leaving a second hand-
+// maintained copy for `check-dispatch-prompt-parity.mjs` to catch drifting
+// back apart.
 // ===========================================================================
 function worktreeAnchorLines(unit, mode) {
   if (!unit.worktreePath) {
+    const label = unit.number != null ? `issue #${unit.number}` : `this ${mode} dispatch`
+    const issueField = unit.number != null ? `"issue": ${unit.number}, ` : ''
     return [
-      `CALLER BUG: no worktreePath was supplied for this ${mode} dispatch. A Dynamic-` +
+      `CALLER BUG: no worktreePath was supplied for ${label}. A Dynamic-` +
         `Workflows-dispatched agent's cwd is NOT pre-pinned to an isolated worktree the ` +
         `way an Agent-tool "isolation: worktree" dispatch's is (see do-work-dispatch.` +
         `workflow.js's header comment). Return a STRUCTURED result immediately: ` +
-        `{ "mode": "${mode}", "outcome": "blocked", ` +
+        `{ "mode": "${mode}", "outcome": "blocked", ${issueField}` +
         `"blocked_stage": "worktree-anchor", "blocked_reason": "workflow dispatch supplied ` +
         `no worktreePath — refusing to operate from an unpinned cwd" }. Do not proceed ` +
         `past this line.`,
@@ -873,35 +901,19 @@ function buildSpikePrompt(unit, repoSlug) {
 // skill + per-mode spec load instructions. The one structural delta from the
 // Agent-tool prompt is the leading worktree-anchor instruction (see the file-header
 // "Worktree isolation" note) and the closing return-contract line (structured
-// object, not a free-text terminal string).
+// object, not a free-text terminal string). Delegates the worktree-anchor
+// preamble (including the "no worktreePath" CALLER-BUG guard) to the shared
+// `worktreeAnchorLines` helper like the other six builders below — it used to
+// inline its own separate copy of that guard; issue #880 folded it onto the
+// shared helper (generalized to include `unit.number` in the diagnostic when
+// present) so there's only one CALLER-BUG copy for check-dispatch-prompt-
+// parity.mjs to keep honest.
 // ===========================================================================
 function buildIssueWorkPrompt(unit, repoSlug) {
-  const lines = [
-    `mode: issue-work`,
-    ``,
-  ]
-
-  if (!unit.worktreePath) {
-    // Fail loudly inside the prompt rather than silently letting the worker
-    // start from an unpinned cwd (see the file-header "Worktree isolation" note —
-    // an Agent-tool dispatch gets its cwd pre-pinned by the harness; a
-    // Workflow-dispatched agent does NOT, so a missing worktreePath here is a
-    // caller bug, not a recoverable worker-side condition).
-    lines.push(
-      `CALLER BUG: no worktreePath was supplied for issue #${unit.number}. A Dynamic-` +
-        `Workflows-dispatched agent's cwd is NOT pre-pinned to an isolated worktree the ` +
-        `way an Agent-tool "isolation: worktree" dispatch's is (see do-work-dispatch.` +
-        `workflow.js's header comment). Return a STRUCTURED result immediately: ` +
-        `{ "mode": "issue-work", "outcome": "blocked", "issue": ${unit.number}, ` +
-        `"blocked_stage": "worktree-anchor", "blocked_reason": "workflow dispatch supplied ` +
-        `no worktreePath — refusing to operate from an unpinned cwd" }. Do not proceed ` +
-        `past this line.`,
-    )
-    return lines.join('\n')
-  }
+  const lines = [`mode: issue-work`, ``, ...worktreeAnchorLines(unit, 'issue-work')]
+  if (!unit.worktreePath) return lines.join('\n')
 
   lines.push(
-    ...worktreeAnchorCheckLines(unit.worktreePath),
     ``,
     `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
     `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,
@@ -941,7 +953,8 @@ function buildIssueWorkPrompt(unit, repoSlug) {
       `return a blocked result rather than opening a speculative PR.`,
       ``,
       `If the original raw user text (in the preserved comment) contradicts what's in the`,
-      `refined body, trust the **raw text** and flag the discrepancy in the issue.`,
+      `refined body, trust the **raw text** and flag the discrepancy in the issue — the`,
+      `refinement step may have misread the user.`,
     )
   }
 
