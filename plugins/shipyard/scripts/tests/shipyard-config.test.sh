@@ -921,6 +921,41 @@ rm -rf "$repo/.shipyard"
 echo '{"version":1}' > "$repo/shipyard.config.json"
 
 # --------------------------------------------------------------------------
+echo "== set --repo propagates atomic_write failure instead of a false success (issue #871)"
+# Point --repo at a directory with no write/execute permission so
+# atomic_write's tempfile write fails (exit 66) inside cmd_set. Before the
+# fix, cmd_set printed "wrote ..." and exited 0 unconditionally regardless
+# of atomic_write's outcome — this asserts the failure now propagates: no
+# false-success line, non-zero exit carrying atomic_write's own status, and
+# no file left behind.
+fail_repo=$(mktmprepo)
+export SHIPYARD_REPO_ROOT="$fail_repo"
+chmod 000 "$fail_repo"
+out=$("$helper" set auto_merge.policy always --repo 2>&1)
+code=$?
+chmod 755 "$fail_repo"
+assert_exit_code "$code" 66 "set --repo exits with atomic_write's failure code (66), not 0"
+assert_contains "$out" "failed to write" "set --repo prints a failure diagnostic on a write failure"
+if [[ "$out" == *"wrote auto_merge.policy"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "set --repo does NOT print the false-success 'wrote' line on a write failure"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "set --repo does NOT print the false-success 'wrote' line on a write failure"
+  pass=$((pass+1))
+fi
+if [[ -f "$fail_repo/shipyard.config.json" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "shipyard.config.json is NOT created when the write fails"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "shipyard.config.json is NOT created when the write fails"
+  pass=$((pass+1))
+fi
+
+# Restore the shared fixtures for anything appended after this section.
+export SHIPYARD_REPO_ROOT="$repo"
+export SHIPYARD_HOME="$home"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then

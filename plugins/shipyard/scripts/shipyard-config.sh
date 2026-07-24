@@ -896,7 +896,18 @@ cmd_set() {
   rm -f "$tmp_for_validation"
   trap - EXIT
 
+  # Check atomic_write's own exit status (66 tmpfile-write failure, 67
+  # rename failure — see atomic_write above) rather than assuming success.
+  # `set -o pipefail` isn't in effect for this script, so `$?` right after
+  # a pipeline reflects the last command's status already — but we read
+  # PIPESTATUS explicitly so this check keeps working even if a command
+  # gets inserted into the pipeline later (issue #871).
   printf '%s\n' "$updated" | atomic_write "$target_path"
+  local write_status="${PIPESTATUS[1]}"
+  if [[ "$write_status" -ne 0 ]]; then
+    echo "set: failed to write $path = $value to $target_path (atomic_write exited $write_status)" >&2
+    exit "$write_status"
+  fi
   printf 'wrote %s = %s to %s\n' "$path" "$value" "$target_path"
 }
 
