@@ -74,12 +74,14 @@ done
 
 tmp="$(mktemp -d)"
 # `cleanup` IS invoked, indirectly via `trap cleanup EXIT` on the next line —
-# the unused-function linter below loses track of that on a file this size
-# with this many heredocs (worker-return-schema-parity-856.test.sh uses the
-# identical trap-cleanup pattern and does NOT trigger this at its shorter
-# length, so this is a false positive tied to this file's size, not a real
-# dead-code finding).
-# shellcheck disable=SC2329
+# the unused-function/unreachable-code linter below loses track of that on a
+# file this size with this many heredocs (worker-return-schema-parity-856
+# .test.sh uses the identical trap-cleanup pattern and does NOT trigger this
+# at its shorter length, so this is a false positive tied to this file's
+# size, not a real dead-code finding). Different shellcheck versions flag it
+# under different codes — SC2329 ("never invoked") locally (0.11.0), SC2317
+# ("unreachable") on CI's apt-installed version — so both are disabled.
+# shellcheck disable=SC2317,SC2329
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 
