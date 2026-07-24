@@ -406,13 +406,15 @@ This check runs **before** the [§5.7 phantom-merge guard's](#57-post-pr-create-
 
 ### 5.85 Post-PR-create non-close parent/epic leak verification
 
-Closes [#624](https://github.com/mattsears18/shipyard/issues/624) — the **silent-epic-close** failure mode, the inverse of §5.8's stuck-open. This guard is the *enforcement* of the bare-URL-phrasing guidance in [§5](#5-commit--push--pr); §5.8 asserts the dispatched issue `#<N>` *is* a closing reference, this step asserts a "do NOT close" parent/epic `#<E>` is *not*.
+Closes [#624](https://github.com/mattsears18/shipyard/issues/624) — the **silent-epic-close** failure mode, the inverse of §5.8's stuck-open. This guard is the *enforcement* of the bare-URL-phrasing guidance in [§5](#5-commit--push--pr); §5.8 asserts the dispatched issue `#<N>` *is* a closing reference, this step asserts a "do NOT close" issue `#<E>` is *not*.
 
-**When this step applies.** Only when the dispatch prompt or the issue body names a **non-close parent/epic relationship** — phrasing like *"do NOT close #<E>"*, *"reference but don't close #<E>"*, *"Part of #<E>"* / *"Parent epic #<E>"* where `#<E>` is a tracking umbrella the PR must reference without resolving. Collect every such `#<E>` into a set of *protected epics*. If no non-close parent/epic relationship is in scope (the common case — most issues have no parent epic), **skip this step entirely**; it's a no-op.
+**When this step applies.** Whenever this PR must reference — but NOT close — some issue `#<E>` on merge. Two shapes trigger it: (1) a **parent/epic relationship** named in the dispatch prompt or issue body — phrasing like *"do NOT close #<E>"*, *"reference but don't close #<E>"*, *"Part of #<E>"* / *"Parent epic #<E>"*; (2) **`#<E>` is the dispatched issue itself**, when you're opening a *secondary/auxiliary* PR that ships partial or adjacent value without resolving the dispatch — e.g. a `blocked`-shaped investigation outcome where you additionally shipped a valuable but non-resolving docs/runbook change (the [#893](https://github.com/mattsears18/shipyard/issues/893) repro). Collect every such `#<E>` into a set of *protected issues*. If no non-close relationship is in scope (the common case — most PRs are the single resolving PR for their dispatched issue), **skip this step entirely**; it's a no-op. This step never applies to the dispatched issue's own *resolving* PR — that one is supposed to close `#<N>` via `Closes #<N>` per §5.
 
-**The mechanism this guards.** GitHub can promote a bare `#<E>` token (in the PR body, a squashed-commit message, or a CHANGELOG entry that rides the merge) into `closingIssuesReferences` even with no closing keyword — so the merge auto-closes the epic. The §5 prevention is to phrase the reference as a bare URL; this step verifies the prevention took and remediates if it leaked.
+**Prevention — never name a protected-issue-referencing PR's branch `do-work/issue-<E>` (or any `issue-<E>`-shaped variant).** [#893](https://github.com/mattsears18/shipyard/issues/893) isolated a *branch-naming* hazard distinct from the body/commit-text hazard below: GitHub's own "Create a branch" UI auto-links a branch literally named `do-work/issue-<E>` to issue `#<E>`, and in the repro that link registered in `closingIssuesReferences` **independent of the PR body or commit-message text** — it survived a full body rewrite, a commit-message rewrite + force-push, and even a close+reopen, and only cleared once the PR was abandoned for a fresh, neutrally-named branch. If you already know before opening the PR that it must not close `#<E>`, don't give its branch an `issue-<E>`-shaped name even when `<E>` happens to be the number you were dispatched against — pick a neutral name instead (e.g. `docs/<short-topic>`), off the default branch. This sidesteps the remediation loop below entirely; it's cheaper than recovering from the leak.
 
-**After `gh pr create` and before arming auto-merge in [§6](#6-enable-auto-merge-gated-on-originating_author_trust)**, for each protected epic `#<E>` assert it is absent from the PR's `closingIssuesReferences`. If it leaked, rewrite the PR body to reference the epic by **bare URL** (replacing any `#<E>` token), re-verify, and — if the PR has *already merged* and closed the epic — reopen `#<E>`:
+**The mechanism the remediation loop guards.** GitHub can promote a bare `#<E>` token (in the PR body, a squashed-commit message, or a CHANGELOG entry that rides the merge) into `closingIssuesReferences` even with no closing keyword — so the merge auto-closes the protected issue. The §5 prevention is to phrase the reference as a bare URL; this step verifies the prevention took and, if it leaked, escalates through three remediation tiers.
+
+**After `gh pr create` and before arming auto-merge in [§6](#6-enable-auto-merge-gated-on-originating_author_trust)**, for each protected issue `#<E>` assert it is absent from the PR's `closingIssuesReferences`. If it leaked, run the tiers below **in order and don't stop early** — the [#893](https://github.com/mattsears18/shipyard/issues/893) repro showed a leak surviving a single body-rewrite-and-reverify (what an earlier version of this step stopped at) as well as a follow-up commit-message rewrite, so a worker that re-verifies once and declares victory, or that gives up after one rewrite and jumps straight to `needs-human-review`, is not exercising the full documented recovery path:
 
 ```bash
 # Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch".
@@ -423,44 +425,84 @@ if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)"
   exit 0
 fi
 
-# <E> is each protected epic number collected above. Run this block per epic.
-LEAKED=$(gh pr view <pr-num> --repo <owner/repo> --json closingIssuesReferences \
+# <E> is each protected issue number collected above. Run this block per issue.
+CURRENT_PR=<pr-num>
+LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
   --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
 
+# --- Tier 1: rewrite the PR body to bare-URL form. ---
 if [ "$LEAKED" = "true" ]; then
-  # The epic leaked into closingIssuesReferences. Rewrite the body to reference
-  # it by bare URL (no #<E> token) so GitHub stops registering the closing link.
-  CURRENT_BODY=$(gh pr view <pr-num> --repo <owner/repo> --json body --jq '.body')
+  CURRENT_BODY=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json body --jq '.body')
   # Replace bare #<E> tokens with the full-URL form (which does NOT auto-close).
   PATCHED_BODY=$(printf '%s' "$CURRENT_BODY" \
     | sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g")
-  gh pr edit <pr-num> --repo <owner/repo> --body "$PATCHED_BODY"
+  gh pr edit "$CURRENT_PR" --repo <owner/repo> --body "$PATCHED_BODY"
 
-  # Re-verify GitHub dropped the closing link after the body edit.
-  LEAKED=$(gh pr view <pr-num> --repo <owner/repo> --json closingIssuesReferences \
+  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
     --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
+fi
 
-  # If the PR ALREADY merged (e.g. an admin ungated direct-merge fired before
-  # this check ran) and the epic is now CLOSED, reopen it — the merge closed it.
-  EPIC_STATE=$(gh issue view <E> --repo <owner/repo> --json state --jq '.state')
-  if [ "$EPIC_STATE" = "CLOSED" ]; then
-    gh issue reopen <E> --repo <owner/repo> \
-      --comment "Reopened: PR #<pr-num> auto-closed this epic via a leaked closing reference (#624). The PR was meant to *reference* this epic, not close it."
+# --- Tier 2: also rewrite the HEAD commit message. A bare #<E> token riding
+# in a squashed-commit message is a SEPARATE vector from the body — a
+# body-only rewrite can leave this one untouched. ---
+if [ "$LEAKED" = "true" ]; then
+  CURRENT_MSG=$(git log -1 --format='%B')
+  if printf '%s' "$CURRENT_MSG" | grep -qE "#<E>([^0-9]|\$)"; then
+    PATCHED_MSG=$(printf '%s' "$CURRENT_MSG" \
+      | sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g")
+    git commit --amend -m "$PATCHED_MSG"
+    git push --force-with-lease origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"
   fi
 
-  if [ "$LEAKED" = "true" ]; then
-    echo "blocked #<N> at parent-epic-leak-verify: PR body rewritten to bare-URL form but GitHub still registers #<E> as a closing reference — manual triage required (PR: <url>)"
-    gh pr edit <pr-num> --repo <owner/repo> --add-label needs-human-review || true
-    exit 0
-  fi
+  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
+    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
+fi
+
+# --- Tier 3: escape hatch — abandon this branch/PR and reopen from a NEUTRAL
+# branch name. If the leak survives tiers 1+2 with a CONFIRMED-clean body and
+# commit message, the branch name itself is the likely persistent trigger
+# (#893) — no further body/commit edit on THIS branch will clear it, so don't
+# loop tiers 1/2 again; move straight to a fresh branch. ---
+if [ "$LEAKED" = "true" ]; then
+  gh pr close "$CURRENT_PR" --repo <owner/repo> \
+    --comment "Closing — closingIssuesReferences kept registering #<E> even with a confirmed-clean body and commit message (#893). Reopening from a neutrally-named branch to clear the leaked link."
+
+  NEUTRAL_BRANCH="docs/issue-<N>-followup-$(date +%s)"
+  git checkout -B "$NEUTRAL_BRANCH" "origin/$DEFAULT_BRANCH"
+  git cherry-pick <original-commit-sha>   # or recreate the same file changes directly
+  git push -u origin "$NEUTRAL_BRANCH"
+
+  gh pr create --repo <owner/repo> --head "$NEUTRAL_BRANCH" --label shipyard \
+    --title "<same title>" --body "$PATCHED_BODY"
+
+  CURRENT_PR=$(gh pr list --repo <owner/repo> --head "$NEUTRAL_BRANCH" --json number --jq '.[0].number')
+  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
+    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
+fi
+
+# If the protected issue is already CLOSED (e.g. an admin ungated direct-merge
+# fired before this check ran, or an earlier tier's PR merged before you
+# closed it), reopen it — regardless of which tier finally cleared LEAKED.
+EPIC_STATE=$(gh issue view <E> --repo <owner/repo> --json state --jq '.state')
+if [ "$EPIC_STATE" = "CLOSED" ]; then
+  gh issue reopen <E> --repo <owner/repo> \
+    --comment "Reopened: a PR auto-closed this issue via a leaked closing reference (#624 / #893). It was meant to *reference* this issue, not close it."
+fi
+
+if [ "$LEAKED" = "true" ]; then
+  echo "blocked #<N> at parent-epic-leak-verify: even a fresh, neutrally-named branch still registers #<E> as a closing reference — manual triage required (PR: <url>)"
+  gh pr edit "$CURRENT_PR" --repo <owner/repo> --add-label needs-human-review || true
+  exit 0
 fi
 ```
 
-**Why bare URL rather than deleting the mention.** The epic reference is *wanted* — the PR legitimately should link its parent for traceability; it just must not *close* it. The bare-URL form (`https://github.com/<owner>/<repo>/issues/<E>`) renders a clickable link that GitHub does NOT promote into `closingIssuesReferences`, so it keeps the traceability while dropping the closing semantics. Don't strip the reference entirely.
+**Why bare URL rather than deleting the mention.** The reference is *wanted* — the PR legitimately should link the protected issue for traceability; it just must not *close* it. The bare-URL form (`https://github.com/<owner>/<repo>/issues/<E>`) renders a clickable link that GitHub does NOT promote into `closingIssuesReferences`, so it keeps the traceability while dropping the closing semantics. Don't strip the reference entirely.
 
-**Why reopen on already-merged.** On a repo where an admin direct-merge can fire before this check runs (the `merged-direct-ungated` path), the merge may have already closed the epic by the time you verify. Reopening `#<E>` restores the umbrella so its children aren't orphaned and `/my-turn` keeps surfacing it. The body rewrite still matters even post-merge — it stops a *future* re-merge or backport from re-closing it.
+**Why tier 3 (a fresh branch) can succeed when tiers 1–2 (rewriting the existing branch) don't.** Tiers 1 and 2 fix every *text*-based vector — the body and the commit message — but the [#893](https://github.com/mattsears18/shipyard/issues/893) repro's confirmed-clean body (`gh pr view --json body --jq '.body | test("#<E>")'` → `false`) and confirmed-clean commit message still left `closingIssuesReferences` populated, which points at the **branch name itself** as a third, independent vector not covered by rewriting either text field. Abandoning the branch — not just editing its content — is the only thing that cleared the link in the repro; a fourth or fifth rewrite attempt on the same branch is not expected to do better than the first two.
 
-This step runs **after** §5.8 (the dispatched-issue closing-link verification) and **before** §6 arms auto-merge, so a protected epic can never ride an armed auto-merge to a silent close. It runs unconditionally regardless of `originating_author_trust` whenever a protected epic is in scope.
+**Why reopen on already-merged.** On a repo where an admin direct-merge can fire before this check runs (the `merged-direct-ungated` path), the merge may have already closed the protected issue by the time you verify — regardless of which tier you're in when that happens. Reopening `#<E>` restores it so it isn't orphaned and `/my-turn` keeps surfacing it if further review is needed. The body/branch remediation still matters even post-merge — it stops a *future* re-merge or backport from re-closing it.
+
+This step runs **after** §5.8 (the dispatched-issue closing-link verification) and **before** §6 arms auto-merge, so a protected issue can never ride an armed auto-merge to a silent close. It runs unconditionally regardless of `originating_author_trust` whenever a protected issue is in scope.
 
 ### 5.9 Independent adversarial verification (opt-in gate)
 
@@ -691,6 +733,7 @@ When blocked → return:
 - **Don't switch modes mid-dispatch.** If your PR opens and CI immediately goes red, return per this mode's contract (`shipped #<N> via PR #<M> (... checks: failing)`) — the orchestrator's reconcile + dispatch loop will spawn a fresh fix-checks-only worker against the PR. Switching modes inside one dispatch breaks the per-mode-file load model the entry router relies on.
 - **Don't open an empty PR.** The phantom-merge guard in [§4.5](#45-pre-pr-create-diff-sanity-check) bails when the local diff is empty; [§5.7](#57-post-pr-create-diff-sanity-check-defense-in-depth) catches the race-window edge case. If either fires, return `blocked:` rather than letting an empty PR's `Closes #N` keyword close the linked issue (see issue [#356](https://github.com/mattsears18/shipyard/issues/356) for the failure mode).
 - **Don't use a bare reference (`Refs #N` / `Related to #N` / plain `#N`) for the dispatched issue.** The resolving PR MUST use a closing keyword (`Closes`/`Fixes`/`Resolves #N`), or GitHub leaves the issue OPEN forever after merge — the work ships, the issue lingers, and `/do-work` can re-pick it (see [§5](#5-commit--push--pr) and the [§5.8](#58-post-pr-create-closing-link-verification) verification step). Repo-local "don't auto-close" conventions apply only to *incidental* references, never to the dispatched issue's resolving PR — don't over-apply the caution (issue [#481](https://github.com/mattsears18/shipyard/issues/481)).
-- **Don't reference a "do NOT close" parent epic with a bare `#<E>` token.** GitHub can promote a plain `#<E>` token (in the body, a squashed-commit message, or a CHANGELOG entry) into `closingIssuesReferences` even with no closing keyword, silently auto-closing the epic on merge. Use the bare-URL form (`https://github.com/<owner>/<repo>/issues/<E>`) for a reference-without-close, and let the [§5.85](#585-post-pr-create-non-close-parentepic-leak-verification) verification catch + remediate any leak (rewrite to bare URL, reopen the epic if already merged). The inverse of the #481 stuck-open hazard (issue [#624](https://github.com/mattsears18/shipyard/issues/624)).
+- **Don't reference a "do NOT close" parent epic (or the dispatched issue itself, from a secondary/auxiliary PR) with a bare `#<E>` token.** GitHub can promote a plain `#<E>` token (in the body, a squashed-commit message, or a CHANGELOG entry) into `closingIssuesReferences` even with no closing keyword, silently auto-closing `#<E>` on merge. Use the bare-URL form (`https://github.com/<owner>/<repo>/issues/<E>`) for a reference-without-close, and let the [§5.85](#585-post-pr-create-non-close-parentepic-leak-verification) verification catch + remediate any leak. The inverse of the #481 stuck-open hazard (issue [#624](https://github.com/mattsears18/shipyard/issues/624)).
+- **Don't stop at one body-rewrite-and-reverify when §5.85 reports a leak, and don't name a deliberately-non-closing PR's branch `do-work/issue-<E>`.** A single rewrite-and-reverify is NOT the full documented remediation — [§5.85](#585-post-pr-create-non-close-parentepic-leak-verification) escalates through a body rewrite, then a commit-message rewrite, then (if both fail) abandoning the branch entirely for a fresh, neutrally-named one; a leak surviving tier 1 can still be cleared by tier 2 or 3, so don't jump to `needs-human-review` after tier 1 alone. Better still, avoid the loop up front: if you already know a PR must not close `#<E>`, don't give its branch an `issue-<E>`-shaped name in the first place — GitHub's branch-to-issue auto-linking can register a persistent closing reference independent of the PR body or commit text (issue [#893](https://github.com/mattsears18/shipyard/issues/893)).
 - **Don't try to fix a `workflow`-scope-missing token yourself, and don't collapse it into the generic `unavailable` suffix.** When `gh pr merge --auto` errors with the `without \`workflow\` scope` GraphQL signature ([#812](https://github.com/mattsears18/shipyard/issues/812)), the token you're running under genuinely cannot arm auto-merge on this PR — no retry, workaround, or different `gh`/`git` invocation changes that. Report the distinct `auto-merge: unavailable — gh token lacks workflow scope` suffix per [step 8](#8-return) rather than the generic `unavailable — needs manual merge` one; the distinct token is what lets the session hoist the one-time remediation (`gh auth refresh -h github.com -s workflow`) instead of repeating an unexplained-looking failure per PR.
 - **Don't report a §6.a manual gated-merge as `merged-direct`.** If you blocked on `gh pr checks --watch` yourself and then merged by hand because §6.a's detector returned `ungated`, that outcome is `auto-merge: gated-manual` — a correct, gate-preserving merge you performed. `merged-direct` names a *different* event: §6.b's `--auto` call silently falling through to an immediate merge, which is exactly the [#716](https://github.com/mattsears18/shipyard/issues/716) regression shape the detector exists to prevent. `gh pr view`'s post-merge snapshot cannot tell the two apart (`state: MERGED`, `autoMergeRequest: null` either way) — you have to remember which branch you took and report that, not re-derive the outcome from the snapshot. Conflating them erases the signal that would reveal a real regression (issue [#734](https://github.com/mattsears18/shipyard/issues/734)).
