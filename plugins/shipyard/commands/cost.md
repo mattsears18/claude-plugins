@@ -175,6 +175,8 @@ The command is a thin wrapper. The assistant's job is to:
 
 Both `cost-history.jsonl` and `cost-history-issues.jsonl` live entirely on the local filesystem — they are never uploaded anywhere by shipyard. The orchestrator's only outbound writes are to GitHub via `gh`; the ledger is not part of those flows. If you want to opt out a specific repo from cost-tracking even locally, set `cost_tracking.enabled: false` for that repo via `/shipyard:config set cost_tracking.enabled false --repo`. To turn cost-tracking off across every repo from the user-global layer, set the `cost_tracking_enabled` alias in `~/.shipyard/config.json` (it remaps onto `cost_tracking.enabled` on load; a repo-level `cost_tracking.enabled` still wins).
 
+**Two independent opt-outs ([#855](https://github.com/mattsears18/shipyard/issues/855)).** `cost_tracking.enabled: false` stops `cost-history.sh flush` from writing anything to either ledger file — enforced inside the script itself (not just documented here), so the guarantee holds even if a future orchestrator-spec edit forgets to check it. `cost_tracking.comment_on_pr: false` is separate and controls only the per-PR `<!-- do-work-cost-tracking -->` comment `/do-work` posts on a shipped PR — checked before that `gh pr comment` call in [`steady-state.md`'s shipped-return handling](./do-work/steady-state.md#a1-parse-the-return-string). Set them independently: e.g. keep the local ledger (`enabled: true`) but suppress the public-on-the-PR comment (`comment_on_pr: false`) on a repo with external collaborators. Both default to `true`.
+
 The ledger files are safe to `rm` — deleting them only forfeits historical reports. New sessions append fresh data after deletion.
 
 ## Retention

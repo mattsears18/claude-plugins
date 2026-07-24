@@ -789,10 +789,18 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   **Local-only-CI repos: the merge gate fires at drain, not here ([#643](https://github.com/mattsears18/shipyard/issues/643)).** On a repo where the merge-blocking status is posted by a manually-run command (config `merge_gate.command` non-empty — e.g. `npm run ci:report`) rather than by cloud CI that auto-runs on push, a shipped PR's checks stay `pending` until that command runs against the PR's HEAD. Nothing about the `shipped` reconcile changes — `--auto` is armed exactly as on a cloud-CI repo — but the gate command runs **per shipped PR, paced to `merge_gate.max_unmerged_ahead`, in the [end-of-session drain](./drain.md#local-only-ci-merge-gate)**, which is where `--auto` then fires. When `merge_gate.command` is empty (the default), this is moot — cloud-CI behavior is unchanged.
 
-  **Then post a cost-tracking comment on the resulting PR.** The session-state file's `.tokens.per_pr[<M>]` bucket was populated by every `bump-tokens` call made while the worker was in flight (see [Cost-tracking write-through](./session-state-file.md#cost-tracking-write-through)). Read it as a Markdown body via the helper and post on the PR with edit-or-create semantics keyed on the `<!-- do-work-cost-tracking -->` sentinel:
+  **Then post a cost-tracking comment on the resulting PR — gated on `cost_tracking.comment_on_pr` ([#855](https://github.com/mattsears18/shipyard/issues/855)).** The session-state file's `.tokens.per_pr[<M>]` bucket was populated by every `bump-tokens` call made while the worker was in flight (see [Cost-tracking write-through](./session-state-file.md#cost-tracking-write-through)). Before posting, read the effective `cost_tracking.comment_on_pr` value — same shell-out-to-`shipyard-config.sh` pattern [setup's flake-registry gate](./setup/04-backlog-divert.md#58-enforce-the-flake-registry-chronic-flake-escalation) uses for `flake_registry.enabled` — and skip the post entirely when it's `false`. This is independent of the ledger-write gate `cost-history.sh flush` enforces on `cost_tracking.enabled` (issue #855): a user might want the local `~/.shipyard/cost-history.jsonl` record but not a public, on-the-PR token/cost comment on a shared or externally-visible repo, so the two knobs are checked separately rather than one implying the other. When `comment_on_pr` is true (or unset — the schema default), read it as a Markdown body via the helper and post on the PR with edit-or-create semantics keyed on the `<!-- do-work-cost-tracking -->` sentinel:
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+  # cost_tracking.comment_on_pr opt-out (#855) — checked first, cheaply,
+  # before any session-id derivation or gh call. Defaults to true (fail
+  # OPEN on a config-read error) so a read failure never silently swallows
+  # the comment the schema default says should post.
+  COMMENT_ON_PR=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get cost_tracking.comment_on_pr 2>/dev/null)
+  if [ "$COMMENT_ON_PR" = "false" ]; then
+    echo "[cost-tracking] cost_tracking.comment_on_pr=false; skipping PR comment for PR #<M> (#855)"
+  else
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -822,6 +830,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
       -f body="$BODY" >/dev/null
   else
     gh pr comment <M> --repo <owner/repo> --body "$BODY" >/dev/null
+  fi
   fi
   fi
   ```

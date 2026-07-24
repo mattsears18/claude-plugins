@@ -31,6 +31,16 @@ if [[ ! -f "$session_helper" ]]; then
   exit 1
 fi
 
+# As of issue #855, `flush` shells out to shipyard-config.sh to read
+# cost_tracking.enabled before writing the ledger. shipyard-config.sh
+# resolves the repo root from cwd unless SHIPYARD_REPO_ROOT is set — pin
+# it here, suite-wide, to a config-free temp dir so every test below
+# resolves the built-in default (enabled: true) hermetically, regardless
+# of what cwd this script happens to be invoked from or what this
+# checkout's own committed shipyard.config.json currently says.
+_hermetic_repo_root=$(mktemp -d)
+export SHIPYARD_REPO_ROOT="$_hermetic_repo_root"
+
 pass=0
 fail=0
 GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
@@ -840,6 +850,55 @@ assert_file_missing "$issue_ledger" "no issue ledger line written for 0-byte sou
 
 unset SHIPYARD_HOME
 rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== flush — cost_tracking.enabled: false suppresses the ledger write (#855)"
+# --------------------------------------------------------------------------
+# Prior to #855, cost_tracking.enabled validated and landed at the right
+# effective-config path but nothing ever read it — a user who set it to
+# false still got a fresh cost-history.jsonl / cost-history-issues.jsonl
+# line on every session. This asserts the opt-out is now actually honored
+# by the one script that writes those two files.
+
+tmphome=$(mktmphome)
+disabled_repo=$(mktemp -d)
+echo '{"version":1,"cost_tracking":{"enabled":false}}' > "$disabled_repo/shipyard.config.json"
+seed_session "$tmphome" "cost-off"
+
+out=$(SHIPYARD_REPO_ROOT="$disabled_repo" SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "cost-off" 2>&1; echo "rc=$?")
+rc=$(printf '%s\n' "$out" | tail -1)
+assert_equals "$rc" "rc=0" "flush with cost_tracking.enabled=false still exits 0 (cleanup chain unbroken)"
+assert_contains "$out" "cost_tracking.enabled=false" "flush with cost_tracking.enabled=false surfaces a clear log message"
+assert_contains "$out" "cost-off" "flush with cost_tracking.enabled=false names the session id in the log"
+
+assert_file_missing "$tmphome/cost-history.jsonl" \
+  "cost_tracking.enabled=false: no session ledger line written"
+assert_file_missing "$tmphome/cost-history-issues.jsonl" \
+  "cost_tracking.enabled=false: no issue ledger line written"
+
+rm -rf "$tmphome" "$disabled_repo"
+
+# --------------------------------------------------------------------------
+echo "== flush — cost_tracking.enabled: true (explicit) still flushes normally (#855)"
+# --------------------------------------------------------------------------
+# Regression guard for the gate added above: an explicit `true` (not just
+# the unset/default case every earlier test in this suite already covers
+# via the suite-wide SHIPYARD_REPO_ROOT pin) must not accidentally trip
+# the skip branch.
+
+tmphome=$(mktmphome)
+enabled_repo=$(mktemp -d)
+echo '{"version":1,"cost_tracking":{"enabled":true}}' > "$enabled_repo/shipyard.config.json"
+seed_session "$tmphome" "cost-on"
+
+SHIPYARD_REPO_ROOT="$enabled_repo" SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "cost-on" >/dev/null
+
+assert_file_exists "$tmphome/cost-history.jsonl" \
+  "cost_tracking.enabled=true (explicit): session ledger line written"
+assert_file_exists "$tmphome/cost-history-issues.jsonl" \
+  "cost_tracking.enabled=true (explicit): issue ledger line written"
+
+rm -rf "$tmphome" "$enabled_repo"
 
 # --------------------------------------------------------------------------
 echo

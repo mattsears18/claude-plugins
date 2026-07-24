@@ -368,6 +368,33 @@ cmd_flush() {
     exit 64
   fi
 
+  # cost_tracking.enabled opt-out (issue #855). This is the actual write
+  # path for both ~/.shipyard/cost-history.jsonl and
+  # cost-history-issues.jsonl — the two files the opt-out is documented
+  # (CLAUDE.md, commands/cost.md) as controlling. Prior to #855 the config
+  # key validated and landed at the right effective-config path but nothing
+  # ever read it, so `cost_tracking.enabled: false` was a silent no-op. Gate
+  # here, before touching the session file, so the guarantee is enforced at
+  # the one script every flush path (orchestrator cleanup, the orphan-sweep
+  # self-heal, `/shipyard:cost` callers) funnels through — not just
+  # documented as a promise the orchestrator's prose might skip.
+  #
+  # Fail OPEN on a config-read error (missing shipyard-config.sh, cwd isn't
+  # a git repo, jq error): the schema default is enabled:true, so a read
+  # failure must never silently disable a feature the user never opted out
+  # of — that would trade a privacy bug for a data-loss bug.
+  local this_dir
+  this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local cost_tracking_enabled="true"
+  if [[ -f "${this_dir}/shipyard-config.sh" ]]; then
+    cost_tracking_enabled=$("${this_dir}/shipyard-config.sh" get cost_tracking.enabled 2>/dev/null)
+    [[ -z "$cost_tracking_enabled" ]] && cost_tracking_enabled="true"
+  fi
+  if [[ "$cost_tracking_enabled" == "false" ]]; then
+    echo "[cost-tracking] cost_tracking.enabled=false; skipping ledger flush for session $session_id (#855)" >&2
+    return 0
+  fi
+
   local source
   source=$(session_file_path "$session_id")
 
@@ -411,9 +438,8 @@ cmd_flush() {
   # when the sidecar is gone) and writes through `session-state.sh
   # update` — same atomic-write guarantees as the rest of the file's
   # mutations. Fire-and-forget: a flush failure must NOT block the
-  # cost-history flush from running.
-  local this_dir
-  this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # cost-history flush from running. (this_dir was already resolved by the
+  # cost_tracking.enabled gate above.)
   if [[ -f "${this_dir}/setup-timing.sh" ]]; then
     "${this_dir}/setup-timing.sh" flush --session-id "$session_id" 2>/dev/null || true
   fi
