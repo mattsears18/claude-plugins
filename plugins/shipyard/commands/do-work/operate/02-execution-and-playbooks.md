@@ -47,7 +47,7 @@ All perception defaults to **reading the page**. The mutating playbooks (`close-
 **`toggle-setting` / `console-action` (third-party console):**
 1. Navigate to the provider deep link (derived per [third-party deep-links](../operate/03-error-handling-and-safety.md#third-party-console-deep-links)).
 2. Confirm the page loaded and the user is logged in — **screenshot is warranted** here (logged-in state is visual and the deep link targets a real account).
-3. If NOT logged in: print "Navigated to <URL> but the page appears logged out — action requires manual login." Hand back (leave the item on its `needs-operator` label).
+3. If NOT logged in: print "Navigated to <URL> but the page appears logged out — action requires manual login." Hand back (leave the item on its `needs-operator` label) and append an entry to the session-local **`operator_handbacks`** list ([`orchestrator-state-reference.md`](../orchestrator-state-reference.md)) with `reason: "logged-out"` so it surfaces in the [end-of-session `Operator queue — needs you` block](../cleanup-summary.md#end-of-session-summary) rather than only as a routine dispositioned line.
 4. **Classify the action before mutating** (see [Claude-safe vs hand-back classification](#claude-safe-to-auto-drive-vs-hand-back-securityaccess-control) below):
    - **Claude-safe to auto-drive** (mechanical, non-security: a feature flag, a display/timezone/locale preference, a non-security webhook URL, a build/deploy trigger): execute it (flip the switch / fill the form with known values), report.
    - **Hand back (security / access-control)** — the action modifies an **auth / security / access-control setting** (password policy, MFA/2FA enforcement, OAuth redirect URIs, authorized domains, IAM roles/bindings, sharing or member permissions, API-key / token scopes, firewall/allowlist rules, any "security" toggle): **tee up and hand back** — navigate, confirm logged-in, optionally read/verify the current state, then leave the mutation to the human. Print: "Security/access-control setting — opened <URL> and verified current state; flip it yourself (Claude does not modify access controls)." Do NOT perform the toggle even though the operator layer granted standing authorization — see the [Safety boundary note](../operate/03-error-handling-and-safety.md#safety--trust-boundary) for why this boundary outranks the flag.
@@ -62,6 +62,8 @@ All perception defaults to **reading the page**. The mutating playbooks (`close-
      ```
 
      If this issue reached the operator queue via a worker `blocked:`/`deferred:` bail rather than the durable `needs-operator` label (i.e. it's a reactive-feeder item with no label to remove), just apply `needs-human-review`. Post the hand-back detail (the URL, the confirmed current state) as an issue comment so `/my-turn`'s walkthrough has the same context this playbook just gathered.
+
+     **Append to `operator_handbacks`** ([`orchestrator-state-reference.md`](../orchestrator-state-reference.md)) with `reason: "security-class"` and `current_label: "needs-human-review"` in the same step as the relabel above — this is what makes a security-class hand-back read as an explicit "needs you" item in the [end-of-session summary](../cleanup-summary.md#end-of-session-summary) instead of blending into a routine dispositioned line (#849).
 
 #### Claude-safe to auto-drive vs hand back (security/access-control)
 
@@ -80,12 +82,12 @@ When in doubt about which column an action falls in, **hand it back** — the co
 **`paste-secret` (third-party console / repo settings, value held by the user):**
 1. Navigate to the secrets/settings page.
 2. Confirm loaded + logged in.
-3. **Tee up and hand back** — pasting a *real secret value* is not browser-completable from the orchestrator's side (the value lives in the user's password manager, not in any issue/PR — and must never be derived from issue text). Print: "Secrets page is open — paste the value from your password manager." Leave the item handed back.
+3. **Tee up and hand back** — pasting a *real secret value* is not browser-completable from the orchestrator's side (the value lives in the user's password manager, not in any issue/PR — and must never be derived from issue text). Print: "Secrets page is open — paste the value from your password manager." Leave the item handed back and append an entry to **`operator_handbacks`** with `reason: "values-only-user-has"`.
 
 **`reply-comment` (only when unambiguous):**
 1. Navigate to the issue/PR, read the question in context.
 2. If the response is **mechanical/unambiguous** (a factual pointer, a "done in #N" close-out): draft it, post it under standing authorization, report.
-3. If it needs the user's **evaluation** (a nuanced or contestable reply): **do not post** — draft it and hand back ("Draft reply above — post it when ready"). This is a judgment call.
+3. If it needs the user's **evaluation** (a nuanced or contestable reply): **do not post** — draft it and hand back ("Draft reply above — post it when ready"). This is a judgment call. Append an entry to **`operator_handbacks`** with `reason: "judgment-call"`.
 
 **`verify` (read-only console verification — never mutates):**
 
@@ -96,9 +98,11 @@ A first-class outcome on its own, and the read-only complement to every mutating
    - **Make the hand-back concrete.** Replace a vague "tighten the password policy" with the exact toggles/values the human must change ("uncheck these two boxes on prod"). The teed-up hand-back then carries precise instructions rather than a guess.
 2. **Post-action verification** — for a **just-completed human action** (the user flipped a security toggle, pasted a secret, or saved a console change while you waited), the operator MAY re-read the console to confirm the change took and **report pass/fail**. This feeds the reconcile that closes the originating issue: a verified-pass lets the loop confidently clear the `needs-operator` label and close the issue; a verified-fail keeps it handed back with the discrepancy named.
 
+**Every hand-back exit reached through `verify` (facet 1's logged-out step, or a discrepancy in facet 2) is one entry in the session-local `operator_handbacks` list** ([`orchestrator-state-reference.md`](../orchestrator-state-reference.md)) — the same ledger the kind-specific playbooks above append to, so an item that hands back via `verify` reads identically in the [end-of-session `Operator queue — needs you` block](../cleanup-summary.md#end-of-session-summary). Append exactly once per item per hand-back: whichever step actually produces the "leave it handed back" outcome for a given item — a kind-specific playbook's own check, or `verify`'s step 2 below when the item has no more specific playbook step of its own — is the one that appends; don't double-append when a kind-specific playbook's hand-back already recorded the entry before calling into `verify` for enrichment.
+
 Steps:
 1. Navigate to the relevant console/page (reuse an open tab; derive the deep link per [third-party deep-links](../operate/03-error-handling-and-safety.md#third-party-console-deep-links)).
-2. Confirm the page loaded and the user is logged in. If NOT logged in: print "Navigated to <URL> but the page appears logged out — can't verify state." and leave the item handed back.
+2. Confirm the page loaded and the user is logged in. If NOT logged in: print "Navigated to <URL> but the page appears logged out — can't verify state." and leave the item handed back (append to `operator_handbacks` with `reason: "logged-out"` per the note above, unless the calling playbook already appended for this item).
 3. **Read the page** (default perception — `read_page` / `get_page_text` / `take_snapshot`; never reflexively screenshot). Extract the specific setting/value the verification targets.
 4. Report the observed state: for facet 1, a precise hand-back ("prod Auth requires uppercase+numeric — uncheck both to satisfy #N"); for facet 2, an explicit **pass/fail** against the expected post-action state ("prod length-only ✓; test min-length 6→8 ✓ — change verified").
 

@@ -17,6 +17,8 @@ It owns the browser-driving machinery (backend selection, self-onboarding prefli
 
 If the preflight finds **no browser backend reachable**, the operator layer degrades gracefully rather than aborting: the normal code loop runs to completion, and any `operator_queue` items are **surfaced as hand-backs** in the end-of-session summary (and left on their `needs-operator` label) instead of being driven. Print one warning at preflight time and proceed. the operator layer never kills or blocks the autonomous code loop.
 
+This is exactly the case [`cleanup-summary.md`'s `Operator queue — needs you (N):` block](./cleanup-summary.md#end-of-session-summary) exists for ([#849](https://github.com/mattsears18/shipyard/issues/849)): since nothing was ever popped off `operator_queue` this session (the drain loop never ran), there is no per-item `operator_handbacks` append to make — cleanup-summary reads the leftover `operator_queue` entries directly and renders each with `reason: "no-browser-backend"`. The same applies to a `--dry-run` session (items are previewed, not driven, and stay queued — cleanup-summary renders them with `reason: "dry-run"`). Either way the end-of-session summary must name the N items and hand the interactive drain command back to the user rather than let them read as a routine dispositioned line.
+
 ## Browser backend — selection and detection
 
 Backend-agnostic. The preflight detects and selects, in order:

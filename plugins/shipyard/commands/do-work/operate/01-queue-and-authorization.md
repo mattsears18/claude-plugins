@@ -119,6 +119,7 @@ Mirrors [dispatch-rules.md's #718 discipline](../dispatch-rules.md#dispatch-deni
 
 1. Record the second denial in `operator_denials` with `outcome: "handed-back"`.
 2. Remove the item from `operator_queue`, but keep (or apply) its `needs-operator` label so it surfaces to [`/my-turn`](../../my-turn.md) rather than vanishing.
+2.5. Append an entry to the session-local **`operator_handbacks`** list ([`orchestrator-state-reference.md`](../orchestrator-state-reference.md)) with `reason: "denied-by-classifier"` — this is what promotes the hand-back from the local `Operator denied:` transcript line into the [end-of-session `Operator queue — needs you` block](../cleanup-summary.md#end-of-session-summary), so a permission-classifier hand-back reads as an explicit "needs you" item rather than only a routine denial-count line (#849).
 3. **Do not post the classifier's reasoning to any public GitHub artifact.** If a hand-back comment is warranted, state the fact and outcome only — mirrors `shipyard:worker-preamble` § "After a classifier denial" and [#718's same rule for dispatch denials](../dispatch-rules.md#3-on-a-second-denial-stop-hand-back-to-the-human-never-a-third-attempt). The verbatim `denial_text` stays **local** — the end-of-session summary and the on-disk HTML report only.
 4. Do NOT file a follow-up issue arguing the denial was wrong — that's a maintainer decision, made after they see the `Operator denied:` line in the summary.
 
