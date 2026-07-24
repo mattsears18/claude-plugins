@@ -158,8 +158,7 @@ DEFAULTS_JQ='{
   },
   "cost_tracking": {
     "enabled": true,
-    "comment_on_pr": true,
-    "comment_on_issue": false
+    "comment_on_pr": true
   },
   "concurrency": {
     "default": 1,

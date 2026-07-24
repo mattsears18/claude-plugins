@@ -143,7 +143,6 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "comment_on_pr": { "type": "boolean" },
-        "comment_on_issue": { "type": "boolean" },
         "_comment": { "type": "string" }
       }
     },

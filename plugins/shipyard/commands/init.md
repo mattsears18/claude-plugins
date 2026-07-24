@@ -86,7 +86,14 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
    # All other fields are independent — one set call per field.
    plugins/shipyard/scripts/shipyard-config.sh set auto_merge.policy "$AUTO_MERGE" --repo
    plugins/shipyard/scripts/shipyard-config.sh set trust.authors "$TRUST_JSON" --repo
+   # Sets BOTH cost_tracking.enabled and cost_tracking.comment_on_pr from the
+   # same --cost-tracking flag, per the flag's documented contract above —
+   # `off` disables both the persistent ledger write and the per-PR comment
+   # post (issue #855's consumption gap made this distinction load-bearing:
+   # before #855 neither flag was read anywhere, so setting only `enabled`
+   # here was an unnoticed drift from the documented behavior).
    plugins/shipyard/scripts/shipyard-config.sh set cost_tracking.enabled "$COST_BOOL" --repo
+   plugins/shipyard/scripts/shipyard-config.sh set cost_tracking.comment_on_pr "$COST_BOOL" --repo
    # Only emit a concurrency.default write when the user picked a non-default value;
    # the built-in default (1) covers the common case without bloating the committed
    # config with a redundant entry.
