@@ -323,10 +323,18 @@ const models = input.models ?? {}
 // copy (not a `require`/`import` of the JSON file) because the workflow runtime
 // executes this script in an isolated environment with no filesystem access of its
 // own — see the "Worktree isolation" note above for the same constraint applied to
-// worker dispatch. Keep this object's `enum`/`required`/`properties` shape in sync
-// with schemas/worker-return.schema.json by hand. A drift between the two is not
-// caught by any existing CI suite (nothing executes this script) — review both
-// files together on any return-contract change.
+// worker dispatch; this also means full de-duplication (importing the JSON file
+// directly) is not an option here, unlike a normal Node module. Keep this object's
+// `enum`/`required`/`additionalProperties`/`allOf`/`minimum` shape in sync with
+// schemas/worker-return.schema.json by hand on any return-contract change — field
+// `description`s are NOT required to match (this copy omits them entirely; they
+// carry no validation weight). A drift on any of those validation-relevant facets
+// is caught mechanically by scripts/check-worker-return-schema-parity.mjs (run via
+// scripts/tests/worker-return-schema-parity-856.test.sh in CI), which diffs this
+// literal against the canonical JSON schema field-for-field — so "review both files
+// together" is now a backstop, not the only line of defense (issue #856: the
+// `allOf` conditional-required block and `issue`/`pr`'s `minimum: 1` had drifted
+// out of this copy silently, with nothing catching it).
 const workerReturnSchema = {
   type: 'object',
   required: ['mode', 'outcome'],
@@ -348,8 +356,8 @@ const workerReturnSchema = {
       type: 'string',
       enum: ['shipped', 'green', 'rebased', 'noop', 'blocked', 'reaped', 'disposition'],
     },
-    issue: { type: ['integer', 'null'] },
-    pr: { type: ['integer', 'null'] },
+    issue: { type: ['integer', 'null'], minimum: 1 },
+    pr: { type: ['integer', 'null'], minimum: 1 },
     auto_merge: {
       type: ['string', 'null'],
       enum: [
@@ -373,6 +381,18 @@ const workerReturnSchema = {
     last_push: { type: ['string', 'null'] },
     summary: { type: ['string', 'null'] },
   },
+  allOf: [
+    {
+      // A blocked outcome must carry a reason.
+      if: { properties: { outcome: { const: 'blocked' } } },
+      then: { required: ['blocked_reason'] },
+    },
+    {
+      // A disposition outcome must name how it dispositioned.
+      if: { properties: { outcome: { const: 'disposition' } } },
+      then: { required: ['disposition'] },
+    },
+  ],
 }
 
 // ---------------------------------------------------------------------------
