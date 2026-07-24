@@ -331,6 +331,82 @@ rm -rf "$tmphome2"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== flush --reconcile — jq failure during the rewrite must NOT truncate the ledger (#869)"
+# --------------------------------------------------------------------------
+# Regression test for the silent-truncation bug: the reconcile rewrite's
+# `jq -c ... > $tmp 2>/dev/null || true` used to discard both jq's stderr
+# and its exit code, so ANY jq failure while filtering out the old
+# record(s) — e.g. hitting a partial/malformed trailing line left by a
+# concurrent writer's `>>` append still in flight — produced a 0-byte
+# $tmp that the unchecked `mv` then rendered permanent, wiping the ENTIRE
+# cross-session ledger (every session ever recorded, not just this one).
+#
+# Simulate that exact race: seed a real, valid record for the session
+# under test, then hand-append an incomplete/truncated JSON fragment to
+# the ledger — the shape a concurrent `>>` append looks like mid-write,
+# before the writer has flushed its closing brace + newline. jq's default
+# parser fails on that malformed trailing content (verified empirically:
+# exit 5, "Unfinished JSON term at EOF", zero stdout) regardless of the
+# valid record earlier in the file.
+
+tmphome=$(mktmphome)
+seed_session "$tmphome" "trunc-guard"
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "trunc-guard" >/dev/null
+
+ledger="$tmphome/cost-history.jsonl"
+before_content=$(cat "$ledger")
+assert_contains "$before_content" '"session_id":"trunc-guard"' \
+  "truncation-guard setup: first flush writes the trunc-guard session record"
+
+# Hand-append a malformed, unterminated JSON fragment — mimics a
+# concurrent writer's `>>` append caught mid-flight.
+printf '{"session_id":"concurrent-writer","in_flight": ' >> "$ledger"
+before_bytes=$(wc -c < "$ledger" | tr -d ' ')
+
+# Bump more tokens into the same session id so the reconcile branch has a
+# fresh projection to merge in (mirrors the "recon" test above), then
+# flush --reconcile — this is the call whose rewrite must now refuse to
+# clobber the ledger given the malformed trailing content.
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "trunc-guard" \
+  --issue 145 --pr 202 \
+  --input 1000 --output 200 \
+  --mode issue-work --model claude-opus-4-7 >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "trunc-guard" --reconcile 2>&1)
+rc=$?
+
+assert_equals "$rc" "68" \
+  "flush --reconcile against a corrupted ledger exits non-zero instead of silently succeeding"
+assert_contains "$out" "refusing to overwrite" \
+  "failed reconcile-rewrite prints a stderr diagnostic identifying the cause"
+assert_contains "$out" "trunc-guard" \
+  "stderr diagnostic names the session id whose rewrite failed"
+
+# The ledger must be byte-for-byte untouched — NOT replaced with an empty
+# file, and NOT missing the malformed-but-preexisting trailing content
+# (the rewrite must be all-or-nothing, never a partial clobber).
+assert_file_exists "$ledger" "ledger file still exists after a failed reconcile-rewrite"
+after_bytes=$(wc -c < "$ledger" | tr -d ' ')
+assert_equals "$after_bytes" "$before_bytes" \
+  "ledger is byte-for-byte unchanged after a failed reconcile-rewrite (no truncation)"
+after_content=$(cat "$ledger")
+assert_contains "$after_content" '"session_id":"trunc-guard"' \
+  "ledger still carries the original trunc-guard record after a failed reconcile-rewrite"
+
+# No leaked tempfiles from the failed rewrite.
+leftover=""
+shopt -s nullglob
+for f in "$tmphome/"cost-history.jsonl.*; do
+  leftover="$leftover $(basename "$f")"
+done
+shopt -u nullglob
+assert_equals "${leftover# }" "" \
+  "failed reconcile-rewrite does not leak tempfiles"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== flush --reconcile --force-replace — genuine destructive replace, backed up (#745)"
 # --------------------------------------------------------------------------
 # --force-replace is the explicit opt-in for a real destructive replace.
