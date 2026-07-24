@@ -647,9 +647,31 @@ cmd_flush() {
   # Remove the old line(s) for this session id via a temp-file + rename so
   # a concurrent writer's append (a different session id, via `>>`) can
   # never be lost mid-rewrite, then append the reconciled record.
-  local tmp
+  #
+  # Failed-rewrite guard (issue #869), mirroring session-state.sh's
+  # atomic_write empty-tempfile guard (issue #357). The previous
+  # `2>/dev/null || true` discarded BOTH jq's stderr AND its exit code, so
+  # any jq failure here — a compile error, or (per the comment above)
+  # hitting a partial/malformed trailing line left mid-flight by a
+  # concurrent writer's `>>` append — silently produced a 0-byte $tmp that
+  # the unchecked `mv` then rendered permanent, wiping the ENTIRE
+  # cross-session cost ledger with no error, no exit code, no trace.
+  #
+  # Fix: capture jq's real exit status instead of swallowing it. A
+  # filtered result that's legitimately empty (this session_id was the
+  # only content in the ledger) still has jq exit 0 and is safe to write —
+  # only a non-zero jq exit (an actual parse/runtime failure) aborts the
+  # rewrite, leaving $session_target byte-for-byte untouched and surfacing
+  # a clear stderr diagnostic + non-zero exit instead of a silent no-op.
+  local tmp tmp_err
   tmp=$(mktemp "${session_target}.XXXXXX")
-  jq -c --arg sid "$session_id" 'select(.session_id != $sid)' "$session_target" > "$tmp" 2>/dev/null || true
+  tmp_err=$(mktemp "${session_target}.err.XXXXXX")
+  if ! jq -c --arg sid "$session_id" 'select(.session_id != $sid)' "$session_target" > "$tmp" 2>"$tmp_err"; then
+    echo "cost-history.sh: refusing to overwrite $session_target with reconcile output — jq failed while filtering out session ${session_id}'s old record(s); ledger left unchanged. jq stderr: $(cat "$tmp_err")" >&2
+    rm -f "$tmp" "$tmp_err"
+    exit 68
+  fi
+  rm -f "$tmp_err"
   mv "$tmp" "$session_target"
 
   append_jsonl "$session_target" "$final_session_record"
