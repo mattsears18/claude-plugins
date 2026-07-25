@@ -11,6 +11,7 @@ After `gh pr create` returns:
    **Run the detector as a script — don't re-derive the condition ([#716](https://github.com/mattsears18/shipyard/issues/716)).** The rule below is implemented once, executably, in [`scripts/detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh). Call it and branch on the verdict:
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
    VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
    # `ungated` => do NOT arm --auto; --watch the PR's checks, merge only if green.
    # `gated`   => --auto genuinely queues behind CI; arm it (step 1 below).

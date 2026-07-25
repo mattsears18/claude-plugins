@@ -19,6 +19,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
 1. **Pre-flight: re-confirm main is still red.** State drifts between dispatch and you starting. The green-main assertion is a **script, not a rule for you to re-derive** — `noop: main already green` is a claim that CI passed, and it must never be reachable from a check that observed nothing (issue [#717](https://github.com/mattsears18/shipyard/issues/717); see `shipyard:worker-preamble` § "An absence-assertion that observed nothing is not a pass" — fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)):
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
    bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-ci-green.sh" <owner/repo> --branch <default-branch>
    VERDICT=$?
    ```
@@ -82,6 +83,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
    **7.a — Run the ungated-admin-direct-merge pre-check FIRST, before any merge call ([#720](https://github.com/mattsears18/shipyard/issues/720)).** Do not type `gh pr merge` until this has returned. On repo shapes where `gh pr merge --auto` does **not** queue behind CI, it falls through to an *immediate direct merge* — landing your fix while its own checks are still `IN_PROGRESS`. **This mode is the sharpest case in the whole system:** your entire job is restoring a red default branch, so an ungated merge of an unverified fix is how a red-main window *compounds* instead of closing. The condition is a **script, not a rule for you to re-derive** — do not reason about `allow_auto_merge` yourself:
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
    VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
    ```
 
