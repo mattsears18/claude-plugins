@@ -743,11 +743,22 @@ cmd_update() {
       current_setup=$(jq -r '.setup // "null"' "$target" 2>/dev/null)
       if [[ "$current_setup" == "null" ]]; then
         # Locate setup-timing.sh relative to this script. Fire-and-forget:
-        # a flush failure must NOT block the caller's update.
-        local this_dir
+        # a flush failure must NOT block the caller's update. Capture the
+        # exit status explicitly (rather than swallowing it with
+        # `|| true`) so a persistently-failing flush leaves a trace: a
+        # stderr diagnostic visible to a `2>&1`-attached debugging session
+        # but invisible by default (matching the degraded-recovery
+        # precedent a few dozen lines above). Before this, the autoflush
+        # failed silently on every single cmd_update call with nothing
+        # anywhere recording it — issue #876.
+        local this_dir flush_status=0
         this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         if [[ -f "${this_dir}/setup-timing.sh" ]]; then
-          "${this_dir}/setup-timing.sh" flush --session-id "$session_id" 2>/dev/null || true
+          "${this_dir}/setup-timing.sh" flush --session-id "$session_id" 2>/dev/null || flush_status=$?
+          if [[ "$flush_status" -ne 0 ]]; then
+            printf 'update: setup-timing-autoflush-failed session=%s status=%s (visible via 2>&1, suppressed by default)\n' \
+              "$session_id" "$flush_status" >&2
+          fi
         fi
       fi
     fi

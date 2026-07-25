@@ -324,6 +324,54 @@ fi
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== update — setup-timing autoflush failure emits a stderr diagnostic (issue #876)"
+# --------------------------------------------------------------------------
+# cmd_update opportunistically self-heals a missed `setup-timing.sh flush`
+# call whenever a sidecar exists and `.setup` is still null (issue #283).
+# That flush is fire-and-forget by design (must never block the caller's
+# update) — but before #876 a persistently-failing flush left ZERO trace:
+# `2>/dev/null || true` with no diagnostic at all, win or lose. This test
+# forces the flush to fail (a malformed sidecar makes setup-timing.sh's own
+# jq projection fail, exit 68) and asserts:
+#   1. cmd_update still succeeds (fire-and-forget posture preserved).
+#   2. A stderr diagnostic identifies the autoflush failure.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "autoflush-fail" --repo "o/r" >/dev/null
+session_file="$tmphome/sessions/autoflush-fail.json"
+sidecar="$tmphome/sessions/autoflush-fail.timing.json"
+
+# Malformed sidecar — setup-timing.sh's `jq -c ... "$sidecar"` projection
+# fails on this, so `cmd_flush` exits 68 without ever calling back into
+# session-state.sh's own `update`.
+echo 'not valid json' > "$sidecar"
+
+current_setup=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "autoflush-fail" --path '.setup')
+assert_equals "$current_setup" "null" "test setup: .setup starts null so the autoflush path is armed"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "autoflush-fail" \
+  --set '.in_flight.x = 1' 2>&1; echo "rc=$?")
+rc=$(printf '%s\n' "$out" | tail -1)
+assert_equals "$rc" "rc=0" "update succeeds despite a failing setup-timing autoflush (fire-and-forget preserved)"
+assert_contains "$out" "setup-timing-autoflush-failed" "failing autoflush emits a stderr diagnostic identifying the failure"
+assert_contains "$out" "session=autoflush-fail" "diagnostic names the session id"
+assert_contains "$out" "status=68" "diagnostic names the flush's own exit status"
+
+# The caller's own --set expression must still have landed — the diagnostic
+# must not change cmd_update's return value or short-circuit the merge.
+in_flight_x=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "autoflush-fail" --path '.in_flight.x')
+assert_equals "$in_flight_x" "1" "caller's --set expression lands even when the autoflush fails"
+
+# The malformed sidecar is left in place (flush never got far enough to
+# remove it) — a subsequent update should surface the SAME diagnostic
+# rather than going silent after the first occurrence.
+out2=$(SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "autoflush-fail" \
+  --set '.in_flight.y = 2' 2>&1; echo "rc=$?")
+assert_contains "$out2" "setup-timing-autoflush-failed" "a persistently-failing autoflush keeps emitting the diagnostic on every update"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== read-tokens — 0-byte session file guard (issue #357)"
 # --------------------------------------------------------------------------
 # Defense-in-depth: if a legacy 0-byte session file persists on disk (from
