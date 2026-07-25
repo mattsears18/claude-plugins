@@ -374,7 +374,7 @@ const workerReturnSchema = {
     checks: { type: ['string', 'null'], enum: ['green', 'pending', 'failing', null] },
     disposition: {
       type: ['string', 'null'],
-      enum: ['fix', 'needs-human-review', 'auto-close-noise', 'duplicate', 'decomposed', 'designed', null],
+      enum: ['fix', 'needs-human-review', 'auto-close-noise', 'duplicate', 'decomposed', 'designed', 'verified', null],
     },
     blocked_reason: { type: ['string', 'null'] },
     blocked_stage: { type: ['string', 'null'] },

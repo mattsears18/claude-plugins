@@ -11,6 +11,7 @@ Full issue → PR lifecycle. Self-assign, implement, open a PR with a `Closes #<
 - `originating_author_trust` — `trusted` or `external`. **Load-bearing for step 6**: it gates auto-merge. The dispatch prompt names it explicitly with the form *"the originating issue's author trust is **`trusted`**"* (or `external`). If you can't find the field in the dispatch prompt, **don't hard-default to `external`** — resolve the issue author's collaborator permission live as a fallback (`repos/{owner}/{repo}/collaborators/{author}/permission`; `admin`/`maintain`/`write` ⇒ trusted, anything else ⇒ external). See [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) for the full fallback and [#599](https://github.com/mattsears18/shipyard/issues/599) for why the old hard-`external` default was wrong on owner-authored issues. See [do-work's author-trust computation](../../commands/do-work/dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) for how the field itself is derived.
 - `verify_gate` — `on`, or absent. **Opt-in** (default off). When the dispatch prompt carries **`verify_gate: on`**, run the independent adversarial-verification gate in [step 5.9](#59-independent-adversarial-verification-opt-in-gate) *before* arming auto-merge in step 6. When the field is absent (the default), skip step 5.9 entirely and go straight to step 6 — behavior is unchanged. The orchestrator only sets `verify_gate: on` when `verify_gate.enabled == true` in the merged config **and** `originating_author_trust == "trusted"` (an `external` PR is already gated to `needs-human-review` in step 6, so verification would be redundant).
 - **"Operator residual" Context paragraph** ([#851](https://github.com/mattsears18/shipyard/issues/851)) — present only when [scope-preflight's operator-slice carve-out](../../commands/do-work/setup/06-scope-preflight.md#operator-slice-carve-out--ship-the-code-slice-hand-back-only-the-operator-remainder-851) fired. Absent in the common case. When present: this PR ships **only** a phase-1 code slice, `#<N>` stays open, and you MUST NOT close it — see [§5's exception](#5-commit--push--pr), [§5.85's trigger shape (3)](#585-post-pr-create-non-close-parentepic-leak-verification), and [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851).
+- **"Verification slice" Context paragraph** ([#852](https://github.com/mattsears18/shipyard/issues/852)) — present only when [scope-preflight's QA-verification carve-out](../../commands/do-work/setup/06-scope-preflight.md#qa-verification-carve-out--run-the-automatable-audit-hand-back-only-the-manual-remainder-852) fired. Absent in the common case. When present: this dispatch's deliverable is **verification, not a code change** — skip straight to [§6.6](#66-verification-disposition-run-the-auditor-file-bugs-disposition-without-a-pr-852) after step 1 (self-assign); there is normally no branch, no diff, and no resolving PR to open for `#<N>` itself.
 
 ## Process
 
@@ -660,6 +661,53 @@ If either the comment or the label call errors (rate limit, permission), log an 
 
 **Do NOT apply `needs-human-review`/`needs-operator` to the PR** — only to the issue. The PR itself already merged or has auto-merge armed; the gate label belongs on the still-open issue that carries the unshipped residual.
 
+### 6.6 Verification disposition: run the auditor, file bugs, disposition — without a PR ([#852](https://github.com/mattsears18/shipyard/issues/852))
+
+**Run this step only when the dispatch prompt's Context block carries a "Verification slice" paragraph** (set by [scope-preflight's QA-verification carve-out](../../commands/do-work/setup/06-scope-preflight.md#qa-verification-carve-out--run-the-automatable-audit-hand-back-only-the-manual-remainder-852)). When absent — the common case — this section does not apply and behavior is unchanged.
+
+**This dispatch is fundamentally different from every other path in this file: the deliverable is verification, not a code change.** After [step 1](#1-self-assign-soft-lock) (self-assign), skip steps 2–6.5 entirely — there is normally no issue body to implement against, no branch, no diff, and no resolving PR to open. Proceed directly:
+
+1. **Dispatch the named auditor.** The dispatch prompt's `verification_slice` names which auditor to run and against what surface (e.g. `functional-qa-auditor against https://test.example.com — sign-in, sign-up, and onboarding flow using the staged audit accounts`). Dispatch it via the `Agent` tool (`subagent_type` matching the named auditor, e.g. `shipyard:functional-qa-auditor`) against exactly that surface and the acceptance criteria it's meant to cover — do not widen the surface beyond what `verification_slice` describes, and do not re-implement the auditor's own filing logic: the auditor autonomously files `bug`-labeled GitHub issues for genuine findings per its own [`filing-github-issues`](../../skills/filing-github-issues/SKILL.md) skill. If the target surface requires authenticated access, follow [`auditing-authenticated-surfaces`](../../skills/auditing-authenticated-surfaces/SKILL.md) conventions (never echo secrets).
+
+2. **Read the auditor's return.** It reports which criteria it exercised, a pass/fail verdict per criterion, and the numbers of any issues it filed. Treat this as the authoritative record — don't re-derive verdicts from your own reading of the surface.
+
+3. **Post a verification-status comment on `#<N>`** summarizing the run:
+
+   ```bash
+   gh issue comment <N> --repo <owner/repo> --body "$(cat <<EOF
+   ## Verification status (shipyard)
+
+   Ran \`<auditor>\` against: <automatable surface, from verification_slice>
+
+   **Checked:**
+   - <criterion 1>: <passed | failed — see #<bug-issue>>
+   - <criterion 2>: <passed | failed — see #<bug-issue>>
+
+   **Not automatable — still needs a human/device:** <verification_residual>
+   EOF
+   )"
+   ```
+
+   Omit the "Not automatable" line entirely when `verification_residual` is absent (the whole surface was automatable).
+
+4. **Disposition:**
+   - **`verification_residual` is present (the common case)** — apply `needs-operator` (a plain device/browser recheck) or `needs-human-review` (a genuine human judgment call — e.g. a subjective design review) per whichever fits the residual's shape, and leave `#<N>` **OPEN**. Apply the label **ensure-then-label-then-verify**, the same idiom §6.5 uses:
+     ```bash
+     GATE_LABEL="needs-operator"   # or "needs-human-review" — pick per the residual's shape
+     gh label create "$GATE_LABEL" --repo <owner/repo> \
+       --description "Operator/human review gate applied by a verification-disposition hand-back" 2>/dev/null || true
+     gh issue edit <N> --repo <owner/repo> --add-label "$GATE_LABEL"
+     ```
+   - **`verification_residual` is absent** (the entire surface named in `verification_slice` was automatable and the auditor completed its sweep) — close `#<N>` as completed, citing the verification comment:
+     ```bash
+     gh issue close <N> --repo <owner/repo> --reason "completed" \
+       --comment "Verification complete — see the status comment above. Closing as verified."
+     ```
+
+If the auditor dispatch itself fails to return (spawn error, tool denial), do not guess at a disposition — return `blocked #<N> at verification: auditor dispatch failed — <reason>` instead of step 5's blocked shape (same free-text vocabulary, just naming this step).
+
+**Never open a PR for the verification-only path itself** — there is no code slice to ship. If the audit surfaces something trivially fixable while you're at it, file it as a normal follow-up `bug` issue (the auditor already does this) rather than fixing it inline — fixing code is out of scope for a verification dispatch, exactly as scope-creep is out of scope on the code-worker path.
+
 ### 7. Snapshot check state + auto-merge state, then return — don't block on CI
 
 **Skip this entire step if §6.a's detector returned `ungated` and you already merged manually.** That branch's outcome is fixed the moment you merge: `auto-merge: gated-manual, checks: green`. Re-running the categorization below against a PR that landed via the manual branch would relabel a correct, gate-preserving merge as `merged-direct` — the exact conflation issue [#734](https://github.com/mattsears18/shipyard/issues/734) reports, since `gh pr view` cannot distinguish "the worker watched checks and merged by hand" from "`--auto` silently fell through." Go straight to [step 8](#8-return)'s `gated-manual` return line. Everything below this paragraph applies only when §6.a returned `gated` and §6.b actually called `gh pr merge --auto`.
@@ -751,6 +799,12 @@ When [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-resid
 
 The `partial` marker is load-bearing — it tells the orchestrator's step-A reconcile that issue `#<N>` stays OPEN by design (the PR's own `closingIssuesReferences` will confirm this) rather than being an unexpected stuck-open case for [§5.8](#58-post-pr-create-closing-link-verification) to chase down.
 
+When [§6.6](#66-verification-disposition-run-the-auditor-file-bugs-disposition-without-a-pr-852) ran (a verification-slice dispatch — no PR was opened for `#<N>` itself) → return:
+
+> `verified #<N> (bugs filed: <count>, residual: <needs-operator|needs-human-review — issue left open|none — closed as verified>)`
+
+`<count>` is the number of `bug` issues the auditor filed this run (0 if none). The `residual:` token tells the orchestrator's step-A reconcile whether `#<N>` is still open (a gate label was applied — no auto-retry, `/my-turn` will surface it) or was closed as verified (no further action). This is a `disposition`-shaped outcome like `investigated+*` — no PR, no `session_prs` append.
+
 When your worktree was reaped mid-run (detected via the pre-write check in `shipyard:worker-preamble` § "Worktree-reaped escape hatch" — fragment [`reaped-escape-hatch.md`](../../skills/worker-preamble/reaped-escape-hatch.md)) → return:
 
 > `reaped: my worktree was reaped while I was running — re-dispatch required (last push: <hash|none>)`
@@ -767,6 +821,7 @@ When blocked → return:
 - **Don't touch another worktree when `git checkout -B do-work/issue-<N>` fails on a name collision.** You cannot tell a dead scaffold from a live sibling worker's worktree without `cd`-ing into it, which worktree discipline forbids — no `git worktree remove`, no `git branch -D` on the other worktree's branch. Use the local-name/remote-name split in [§3](#3-sync--branch) instead (issue [#736](https://github.com/mattsears18/shipyard/issues/736)).
 - Don't merge manually unless auto-merge is unavailable AND all checks are green AND the user has explicitly authorized it for this run. Otherwise leave the PR ready and report.
 - **Don't close the dispatched issue when the dispatch prompt names an operator residual ([#851](https://github.com/mattsears18/shipyard/issues/851)).** An "Operator residual" Context paragraph means this PR ships only a phase-1 slice — the issue stays open for the handed-back operator/security action. Use a bare-URL reference, never `Closes`/`Fixes`/`Resolves #<N>`, and run [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851) rather than treating this as a normal resolving PR.
+- **Don't open a PR, and don't implement code, on a verification-slice dispatch ([#852](https://github.com/mattsears18/shipyard/issues/852)).** A "Verification slice" Context paragraph means the deliverable is verification, not a code change — run [§6.6](#66-verification-disposition-run-the-auditor-file-bugs-disposition-without-a-pr-852) instead of steps 2–6.5. If the audit surfaces a trivially-fixable bug, file it as a follow-up issue (the dispatched auditor already does this) — don't fix it inline.
 - **Don't arm auto-merge when `originating_author_trust == "external"`.** That field is the dispatch-side auto-merge gate — defense in depth against external prompt-injection vectors riding `gh pr merge --auto` to `main` when both principal gates (author allowlist, intake auto-label) have failed simultaneously. The external branch in step 6 explicitly does NOT call `gh pr merge --auto`; it labels the PR `needs-human-review` and comments. If you see `external` and reflexively type `gh pr merge --auto` anyway because that's what you do in trusted mode, you've defeated the gate. When the dispatch prompt's trust field is missing or unparseable, do NOT blanket-default to either value — resolve the author's collaborator permission live per [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) (push-capable role ⇒ trusted, non-collaborator / API failure ⇒ external). A blanket `trusted` default would auto-merge a stranger's PR; a blanket `external` default reintroduces the owner-authored false positive from [#599](https://github.com/mattsears18/shipyard/issues/599).
 - Don't force-push to a shared/main branch. Force-pushing your own feature branch is OK only if necessary (e.g., a rebase).
 - Don't disable a failing test to make checks pass. If the test is genuinely broken (not the code), comment on the PR with the evidence and return `blocked`.
