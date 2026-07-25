@@ -406,6 +406,12 @@
           "default": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"],
           "description": "The escalation actions to take when a flake crosses the threshold. `file-tracking-issue` opens a chronic-flake tracking issue; `stop-auto-rerunning` adds the test to a flake-suspects list so fix-checks-only stops auto-rerunning it until a human signs off; `apply-blocked-ci` labels affected PRs blocked:ci with a reference to the tracking issue. Phase 1 (#378) ships the threshold evaluation that emits these on each crossed row; ENFORCEMENT of the actions is a deferred follow-up phase."
         },
+        "prune_window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 90,
+          "description": "Issue #863: rolling retention window (in days) for `~/.shipyard/flake-registry.jsonl` itself, distinct from `window_days` (the escalation-aggregation window). The orchestrator's setup step 5.8 passes this to `flake-enforce.sh enforce --prune-window-days` once per session whenever `flake_registry.enabled` is true, which rewrites the registry to drop events older than the window (via `flake-registry.sh prune`) — this is what bounds the registry's on-disk growth in steady state. 0 disables pruning (keep everything). Has no effect while `flake_registry.enabled` is false — nothing is ever recorded to prune."
+        },
         "_comment": { "type": "string" }
       }
     }

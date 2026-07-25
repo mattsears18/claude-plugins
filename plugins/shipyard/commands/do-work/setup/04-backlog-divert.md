@@ -282,7 +282,7 @@ Append each number to `session_prs`, **deduped** against entries already there (
 
 ### 5.8 Enforce the flake registry (chronic-flake escalation)
 
-Closes [#385](https://github.com/mattsears18/shipyard/issues/385) — phase 2 of the cross-PR flake registry. [Phase 1](#5-snapshot-failing-prs) (issue #378, `scripts/flake-registry.sh`) shipped the data layer: each `fix-checks-only` worker records a flake event when it concludes a failure was a flake, and `flake-registry.sh crossed` names which (workflow, job, test) flakes have crossed the escalation threshold (≥ `rerun_threshold` events spanning ≥ `distinct_prs_threshold` distinct PRs within `window_days`). Phase 1 deliberately stopped at "name the crossed flakes." This step is the **enforcement consumer** — it reads `crossed` and performs the three configured escalation actions so a chronic flake gets root-caused instead of silently re-run forever.
+Closes [#385](https://github.com/mattsears18/shipyard/issues/385) — phase 2 of the cross-PR flake registry. [Phase 1](#5-snapshot-failing-prs) (issue #378, `scripts/flake-registry.sh`) shipped the data layer: each `fix-checks-only` worker records a flake event when it concludes a failure was a flake, and `flake-registry.sh crossed` names which (workflow, job, test) flakes have crossed the escalation threshold (≥ `rerun_threshold` events spanning ≥ `distinct_prs_threshold` distinct PRs within `window_days`). Phase 1 deliberately stopped at "name the crossed flakes." This step is the **enforcement consumer** — it reads `crossed` and performs the three configured escalation actions so a chronic flake gets root-caused instead of silently re-run forever. Also closes [#863](https://github.com/mattsears18/shipyard/issues/863): the `--prune-window-days` flag on the `flake-enforce.sh enforce` call below is the scheduled prune this step was missing — see that call's comment for the wiring.
 
 **Gate on `flake_registry.enabled`.** Skip this step entirely unless the effective config has `flake_registry.enabled == true` (it defaults to `false`, preserving pre-#378 behavior). The check is one config read against the already-loaded `EFFECTIVE_CONFIG` (step 0.4):
 
@@ -297,15 +297,28 @@ if [ "$FLAKE_ENABLED" = "true" ]; then
   # — each action idempotent so re-running across sessions doesn't duplicate
   # side effects. --repo-root is the orchestrator worktree (where the
   # per-repo flake-suspects file lives, alongside .shipyard/config.local.json).
+  #
+  # --prune-window-days (issue #863): flake-registry.sh has always shipped a
+  # `prune` subcommand, but nothing ever called it — with flake_registry
+  # enabled, ~/.shipyard/flake-registry.jsonl grew unbounded forever. This is
+  # the scheduled call: once per session, gated on the same
+  # `flake_registry.enabled` flag as the rest of this step, opted into
+  # flake-enforce.sh's own --prune-window-days flag so a bare `enforce`
+  # invocation elsewhere (tests, manual runs) still leaves the registry
+  # untouched by default. PRUNE_WINDOW_DAYS reads flake_registry.
+  # prune_window_days (default 90 — generous; the registry is cheap to keep).
+  PRUNE_WINDOW_DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
+  case "$PRUNE_WINDOW_DAYS" in ''|*[!0-9]*) PRUNE_WINDOW_DAYS=90 ;; esac
   "${CLAUDE_PLUGIN_ROOT}/scripts/flake-enforce.sh" enforce \
     --repo "<owner/repo>" \
     --repo-root "$(git rev-parse --show-toplevel)" \
+    --prune-window-days "$PRUNE_WINDOW_DAYS" \
     2>&1 | sed 's/^/[flake-enforce] /' || echo "[flake-enforce] advisory: enforce pass errored; continuing setup"
 fi
 ```
 
 **Read site: setup, once per session.** The issue's open question ("setup once per session vs. per-dispatch") resolves to **setup** — it's the cheapest site and the registry escalation state changes slowly (a flake crosses the threshold over days, not within a single session's dispatch cadence). The one piece of mid-session freshness that matters — a flake escalated by *this* session's own `fix-checks-only` recording — is still honored without a per-dispatch enforce pass, because the `stop-auto-rerunning` consumer (fix-checks-only's [pre-rerun suspects check](../../../agents/issue-worker/fix-checks-only.md#fix-loop)) re-reads `.shipyard/flake-suspects.txt` on every dispatch. So a flake that crosses mid-session is suppressed by the next fix-checks worker even though the issue-filing / PR-labeling actions ran only at setup. Per-dispatch enforcement of the issue-filing and labeling actions is a deliberate non-goal for this slice; see the issue's scope notes.
 
-**Idempotence is load-bearing here.** `/do-work` re-runs setup every session. The enforce helper dedupes all three actions: `file-tracking-issue` skips when an OPEN issue already carries the flake's `flake-key=<...>` marker; `stop-auto-rerunning` skips a key already in the suspects file; `apply-blocked-ci` skips a PR already labeled `blocked:ci`. A session that finds no newly-crossed flakes (or only already-enforced ones) makes zero GitHub writes.
+**Idempotence is load-bearing here.** `/do-work` re-runs setup every session. The enforce helper dedupes all three actions: `file-tracking-issue` skips when an OPEN issue already carries the flake's `flake-key=<...>` marker; `stop-auto-rerunning` skips a key already in the suspects file; `apply-blocked-ci` skips a PR already labeled `blocked:ci`. A session that finds no newly-crossed flakes (or only already-enforced ones) makes zero GitHub writes. The added prune call (#863) is separately idempotent — pruning to the same window twice in a row is a no-op rewrite the second time — and fire-and-forget: `flake-enforce.sh` logs a `prune advisory` line and continues into the rest of enforcement if the prune itself fails, so a housekeeping hiccup never blocks the escalation actions this step exists for.
 
 This step is **independent of the parallelization batch** (it shells out to a local helper that itself calls `gh`, rather than being a single projectable `gh` query the orchestrator can co-fire). Run it after the failing-PR snapshots (steps 5 / 5.7) so the `blocked:ci` labels it applies are visible to any subsequent `-label:blocked:ci`-filtered query in the same session. It's also fine to defer to the first idle turn at C=1 alongside the other lazy-loaded snapshots — the escalation state isn't time-critical within a session.

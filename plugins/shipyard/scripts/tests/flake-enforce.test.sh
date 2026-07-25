@@ -10,6 +10,11 @@
 #   suspects-list        — comments/blanks stripped, keys listed.
 #   is-suspect           — exit 0 present / exit 1 absent / exit 64 no --key.
 #   nothing-crossed      — empty crossed array is a clean no-op.
+#   --prune-window-days  — opt-in registry housekeeping (issue #863): drops
+#                          out-of-window events, is skipped under --dry-run,
+#                          is a no-op when omitted (pre-#863 default
+#                          behavior), and a prune failure is logged as an
+#                          advisory without blocking the rest of enforcement.
 #
 # The two gh-dependent actions (file-tracking-issue, apply-blocked-ci) are
 # exercised against a mock `gh` binary injected via $GH, so the suite needs no
@@ -268,6 +273,57 @@ if [[ ! -e "$T/repo/.shipyard/flake-suspects.txt" ]]; then
 else
   printf '  %sFAIL%s  empty crossed should write nothing\n' "$RED" "$RESET"; fail=$((fail+1))
 fi
+
+# --------------------------------------------------------------------------
+echo
+echo "--prune-window-days — opt-in registry housekeeping (issue #863)"
+# --------------------------------------------------------------------------
+
+# Seed a registry with one old (120d) event and one recent (now) event.
+make_mixed_age_registry() {
+  local home="$1"
+  mkdir -p "$home"
+  local old_at
+  old_at="$(date -u -d '120 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-120d +%Y-%m-%dT%H:%M:%SZ)"
+  cat > "${home}/flake-registry.jsonl" <<EOF
+{"at":"${old_at}","repo":"o/r","pr":1,"workflow":"CI","job":"E2E","test":"OLD","action":"rerun-failed"}
+{"at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","repo":"o/r","pr":2,"workflow":"CI","job":"E2E","test":"NEW","action":"rerun-failed"}
+EOF
+}
+
+# -- omitted --prune-window-days: no behavior change (pre-#863 default) --
+T="${WORK}/prune-omitted"; mkdir -p "$T/repo"
+make_mixed_age_registry "$T/home"
+out="$(printf '[]' | SHIPYARD_HOME="$T/home" "$enforce" enforce --repo o/r --repo-root "$T/repo" --from-stdin 2>&1)"
+remaining="$(cat "$T/home/flake-registry.jsonl")"
+assert_contains "$remaining" '"OLD"' "prune omitted: old event NOT dropped (registry untouched)"
+assert_contains "$remaining" '"NEW"' "prune omitted: new event still present"
+assert_not_contains "$out" "enforce: pruned" "prune omitted: no prune log line emitted"
+
+# -- --prune-window-days N: drops the out-of-window event, keeps the recent one --
+T="${WORK}/prune-real"; mkdir -p "$T/repo"
+make_mixed_age_registry "$T/home"
+out="$(printf '[]' | SHIPYARD_HOME="$T/home" "$enforce" enforce --repo o/r --repo-root "$T/repo" --prune-window-days 7 --from-stdin 2>&1)"
+remaining="$(cat "$T/home/flake-registry.jsonl")"
+assert_not_contains "$remaining" '"OLD"' "prune 7d: drops the 120-day-old event"
+assert_contains "$remaining" '"NEW"' "prune 7d: keeps the in-window event"
+assert_contains "$out" "enforce: pruned registry to last 7d" "prune 7d: logs the prune, not silent"
+
+# -- --dry-run + --prune-window-days: prune is skipped, registry untouched --
+T="${WORK}/prune-dryrun"; mkdir -p "$T/repo"
+make_mixed_age_registry "$T/home"
+out="$(printf '[]' | SHIPYARD_HOME="$T/home" "$enforce" enforce --repo o/r --repo-root "$T/repo" --prune-window-days 7 --dry-run --from-stdin 2>&1)"
+remaining="$(cat "$T/home/flake-registry.jsonl")"
+assert_contains "$remaining" '"OLD"' "prune + dry-run: old event NOT dropped (no side effects under --dry-run)"
+assert_contains "$out" "enforce: prune skipped (--dry-run)" "prune + dry-run: logs the skip"
+
+# -- a prune failure is an advisory, never blocks the rest of enforcement --
+T="${WORK}/prune-fail"; mkdir -p "$T/repo"
+make_mixed_age_registry "$T/home"
+crossed='[{"repo":"o/r","workflow":"CI","job":"E2E","test":"X","events":3,"distinct_prs":2,"prs":[5,6],"actions":["stop-auto-rerunning"]}]'
+out="$(printf '%s' "$crossed" | SHIPYARD_HOME="$T/home" "$enforce" enforce --repo o/r --repo-root "$T/repo" --prune-window-days notanumber --from-stdin 2>&1)"
+assert_contains "$out" "enforce: prune advisory:" "prune failure: logged as an advisory, not silent"
+assert_contains "$(cat "$T/repo/.shipyard/flake-suspects.txt")" "CI|E2E|X" "prune failure: rest of enforcement still ran (stop-auto-rerunning fired)"
 
 # --------------------------------------------------------------------------
 echo

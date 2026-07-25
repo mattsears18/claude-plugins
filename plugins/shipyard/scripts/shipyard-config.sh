@@ -197,7 +197,8 @@ DEFAULTS_JQ='{
     "window_days": 7,
     "rerun_threshold": 3,
     "distinct_prs_threshold": 2,
-    "actions": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"]
+    "actions": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"],
+    "prune_window_days": 90
   },
   "scope": {
     "diagnosis_reuse_hours": 72,

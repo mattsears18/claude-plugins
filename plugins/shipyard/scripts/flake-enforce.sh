@@ -53,15 +53,26 @@
 # Subcommands:
 #
 #   enforce [--repo <owner/repo>] [--window-days N] [--rerun-threshold N]
-#           [--distinct-prs-threshold N] [--dry-run] [--from-stdin]
+#           [--distinct-prs-threshold N] [--prune-window-days N] [--dry-run]
+#           [--from-stdin]
 #     Read crossed rows and enforce each row's actions. By default, computes
 #     crossed rows itself by shelling out to flake-registry.sh with the same
 #     flags (so the caller doesn't have to). Pass --from-stdin to feed a
 #     precomputed `crossed` JSON array on stdin instead (avoids a second
 #     aggregation pass when the orchestrator already ran `crossed`). --dry-run
 #     prints the planned actions to stdout (one per line) and performs NO
-#     side effects — no issue filed, no file written, no PR labeled. --repo
-#     restricts both the crossed computation AND the PR-labeling scope.
+#     side effects — no issue filed, no file written, no PR labeled, no
+#     registry prune. --repo restricts both the crossed computation AND the
+#     PR-labeling scope. --prune-window-days N (issue #863) is OPT-IN
+#     housekeeping: when passed (and not --dry-run), rewrites the registry
+#     to the last N days via `flake-registry.sh prune` BEFORE reading crossed
+#     rows — a prune failure is logged as an advisory and never blocks
+#     enforcement. Omit it to leave the registry untouched (the pre-#863
+#     default). The orchestrator's setup step 5.8 passes
+#     `flake_registry.prune_window_days` (default 90) here on every session
+#     it invokes enforce, which is what bounds `flake-registry.jsonl`'s
+#     growth in steady state — see that step's own doc for the scheduling
+#     rationale.
 #
 #   suspects-list [--repo-root <path>]
 #     Print the current flake-suspects keys (one per line) for the repo whose
@@ -109,7 +120,7 @@ usage() {
 Usage:
   flake-enforce.sh enforce [--repo <owner/repo>] [--window-days N]
                            [--rerun-threshold N] [--distinct-prs-threshold N]
-                           [--dry-run] [--from-stdin]
+                           [--prune-window-days N] [--dry-run] [--from-stdin]
   flake-enforce.sh suspects-list [--repo-root <path>]
   flake-enforce.sh is-suspect --key "<workflow|job|test>" [--repo-root <path>]
 
@@ -177,7 +188,7 @@ HDR
 # --------------------------------------------------------------------------
 cmd_enforce() {
   local repo="" window_days="" rerun_threshold="" distinct_prs_threshold=""
-  local dry_run=0 from_stdin=0 repo_root=""
+  local dry_run=0 from_stdin=0 repo_root="" prune_window_days=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo)                   repo="${2:-}"; shift 2 ;;
@@ -185,6 +196,7 @@ cmd_enforce() {
       --rerun-threshold)        rerun_threshold="${2:-}"; shift 2 ;;
       --distinct-prs-threshold) distinct_prs_threshold="${2:-}"; shift 2 ;;
       --repo-root)              repo_root="${2:-}"; shift 2 ;;
+      --prune-window-days)      prune_window_days="${2:-}"; shift 2 ;;
       --dry-run)                dry_run=1; shift ;;
       --from-stdin)             from_stdin=1; shift ;;
       *) echo "enforce: unknown arg $1" >&2; usage; exit 64 ;;
@@ -192,6 +204,32 @@ cmd_enforce() {
   done
 
   [[ -z "$repo_root" ]] && repo_root="$(pwd)"
+
+  # Housekeeping: prune the registry to a bounded window before reading it
+  # (issue #863 — flake-registry.jsonl had a working `prune` subcommand with
+  # no scheduled caller and no discoverable manual path). Opt-in via
+  # --prune-window-days rather than unconditional: most direct/test
+  # invocations of `enforce` don't pass it and see no behavior change; the
+  # orchestrator's setup step 5.8 (the only site that gates this whole
+  # command on `flake_registry.enabled`) passes
+  # `flake_registry.prune_window_days` (default 90) on every session enforce
+  # runs, so a repo that opts into the registry gets it pruned at least once
+  # per session for free. Skipped entirely under --dry-run — enforce's own
+  # documented contract is "no side effects" under dry-run, and a prune is a
+  # mutating rewrite. Fire-and-forget: a prune failure is logged (never
+  # silent) but never blocks the rest of enforcement, matching this script's
+  # existing best-effort posture for registry housekeeping.
+  if [[ -n "$prune_window_days" ]]; then
+    if [[ "$dry_run" -eq 1 ]]; then
+      echo "enforce: prune skipped (--dry-run)" >&2
+    elif [[ ! -x "$FLAKE_REGISTRY" ]]; then
+      echo "enforce: prune advisory: flake-registry.sh not found/executable at $FLAKE_REGISTRY, skipping" >&2
+    elif "$FLAKE_REGISTRY" prune --window-days "$prune_window_days" >/dev/null 2>&1; then
+      echo "enforce: pruned registry to last ${prune_window_days}d" >&2
+    else
+      echo "enforce: prune advisory: flake-registry.sh prune failed (window=${prune_window_days}d), continuing" >&2
+    fi
+  fi
 
   # Source the crossed rows.
   local crossed_json
