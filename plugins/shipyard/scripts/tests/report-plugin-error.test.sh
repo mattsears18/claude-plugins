@@ -297,6 +297,73 @@ body=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.loads(sys.st
 assert_contains "$body" "truncated" "long error excerpt is truncated"
 
 # --------------------------------------------------------------------------
+echo "== Fallback log on gh failure (#877)"
+# --------------------------------------------------------------------------
+# The dry-run tests above never exercise the real `gh issue create`/`gh
+# issue comment` call sites (SHIPYARD_AUTOREPORT_DRY short-circuits before
+# them). To cover a filing failure we run the helper for real, with a fake
+# `gh` on PATH that always fails, and assert the failure lands in the local
+# fallback log instead of vanishing.
+
+fallback_tmp="$(mktemp -d)"
+trap 'rm -rf "$fallback_tmp"' EXIT
+
+fake_gh_dir="$fallback_tmp/bin"
+mkdir -p "$fake_gh_dir"
+cat > "$fake_gh_dir/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+# Always fails, regardless of subcommand — simulates a rate-limited or
+# auth-expired `gh` for every call this script makes (the dedupe `gh issue
+# list` search included, so the script falls through to the create path).
+echo "gh: fake failure injected by test" >&2
+exit 1
+FAKEGH
+chmod +x "$fake_gh_dir/gh"
+
+shipyard_home="$fallback_tmp/shipyard-home"
+fallback_log="$shipyard_home/autoreport-failures.jsonl"
+
+payload='{"tool_name":"Agent","tool_input":{"subagent_type":"shipyard:issue-worker","prompt":"work issue 1"},"tool_response":{"is_error":true,"error":"Error: gh api rate limited"}}'
+
+stderr_capture="$fallback_tmp/stderr.txt"
+exit_code=0
+printf '%s' "$payload" \
+  | SHIPYARD_AUTOREPORT=1 SHIPYARD_AUTOREPORT_DRY=0 SHIPYARD_HOME="$shipyard_home" \
+    PATH="$fake_gh_dir:$PATH" bash "$helper" >/dev/null 2>"$stderr_capture" \
+  || exit_code=$?
+
+assert_equals "$exit_code" "0" "gh filing failure never propagates a non-zero exit"
+
+if [[ -f "$fallback_log" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "fallback log file created on gh failure"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "fallback log file created on gh failure"
+  fail=$((fail+1))
+fi
+
+fallback_line="$(cat "$fallback_log" 2>/dev/null || true)"
+assert_contains "$fallback_line" '"action": "create"' "fallback record captures the failed action"
+assert_contains "$fallback_line" '"gh_status"' "fallback record captures gh's exit status"
+assert_contains "$fallback_line" "shipyard:issue-worker" "fallback record identifies the failing skill/agent"
+
+stderr_text="$(cat "$stderr_capture" 2>/dev/null || true)"
+assert_contains "$stderr_text" "report-plugin-error:" "gh failure is also surfaced on stderr"
+
+# The fallback handler must never itself shell out to `gh` — that would be
+# exactly the recursion the design note warns about. Assert the fake `gh`
+# was invoked only by the pipeline's own dedupe-search/create calls (both of
+# which are expected here), never by the failure handler filing a follow-up
+# report about its own failure. A second, distinct auto-reported issue body
+# would show up as a second fallback-log line for the SAME failure in one
+# run; there must be exactly one.
+line_count="$(grep -c . "$fallback_log" 2>/dev/null || echo 0)"
+assert_equals "$line_count" "1" "exactly one fallback record — no recursive self-reporting"
+
+rm -rf "$fallback_tmp"
+trap - EXIT
+
+# --------------------------------------------------------------------------
 echo "== Summary"
 # --------------------------------------------------------------------------
 

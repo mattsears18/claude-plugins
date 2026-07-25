@@ -39,6 +39,15 @@
 #       Anything else means we hit an unexpected error in the helper itself.
 #       We never propagate a non-zero exit back to the hook — failing to file
 #       an auto-report must not break the user's session.
+#
+# Failures of THIS pipeline's own `gh issue create`/`gh issue comment` calls
+# (rate limit, auth expiry, a typo'd SHIPYARD_AUTOREPORT_REPO) are recorded to
+# a local fallback log at $SHIPYARD_HOME/autoreport-failures.jsonl (default
+# $SHIPYARD_HOME: ~/.shipyard), mirroring the reap-audit.jsonl / cost-history
+# ledger pattern used elsewhere in this plugin (issue #877). This is
+# deliberately NOT reported through the autoreport mechanism itself — see
+# record_autoreport_failure() below for why that would be a recursion
+# hazard. The exit-0 contract above is unaffected either way.
 
 set -u
 
@@ -277,6 +286,19 @@ print(d[0]["number"] if d else "")
 PY
 )
 
+PY_BUILD_FAILURE_RECORD=$(cat <<'PY'
+import datetime, json, os
+print(json.dumps({
+    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "action": os.environ.get("FAIL_ACTION", ""),
+    "gh_status": os.environ.get("FAIL_STATUS", ""),
+    "target": os.environ.get("FAIL_TARGET", ""),
+    "who": os.environ.get("FAIL_WHO", ""),
+    "signature": os.environ.get("FAIL_SIGNATURE", ""),
+}))
+PY
+)
+
 # Tiny convenience wrappers — each runs a python program with stdin from a
 # bash pipeline. Exported helpers all read from stdin and write to stdout.
 detect_failure() { python3 -c "$PY_DETECT_FAILURE"; }
@@ -285,6 +307,47 @@ scrub() { HOME_FOR_SCRUB="${HOME:-/Users/nobody}" python3 -c "$PY_SCRUB"; }
 truncate_text() { MAX_CHARS="${1:-2000}" python3 -c "$PY_TRUNCATE"; }
 normalize_error() { python3 -c "$PY_NORMALIZE_ERROR"; }
 extract_error_text() { python3 -c "$PY_EXTRACT_ERROR_TEXT"; }
+
+# --------------------------------------------------------------------------
+# record_autoreport_failure — the fallback path for THIS pipeline's own
+# `gh issue create`/`gh issue comment` failures (issue #877).
+#
+# Recursion hazard, and how this avoids it: this function IS the failure
+# handler for the two `gh` write calls below. If it tried to surface that
+# failure by filing or commenting on an issue through the same `gh
+# issue create`/`comment` mechanism, a persistently-failing pipeline (auth
+# expired, rate-limited, wrong SHIPYARD_AUTOREPORT_REPO) would either loop
+# forever re-reporting its own report failure, or — best case — silently
+# swallow the *original* failure behind a second, identical one. So this
+# function calls `gh` NOTHING: it only writes to stderr and appends one
+# JSONL line to a local file. There is no code path from here back into
+# the reporting pipeline.
+#
+# Fail-soft, matching the rest of this script's contract: every step is
+# best-effort. If the local write itself fails (permissions, disk full),
+# that failure is swallowed too — it is not escalated, and it never
+# propagates a non-zero exit (the `|| true` / `set -u`-safe forms below are
+# deliberate; `trap 'exit 0' ERR` would otherwise cut the function short on
+# the first failing sub-command, before the stderr line even prints).
+record_autoreport_failure() {
+  local action="$1"   # "create" | "comment"
+  local status="$2"   # gh's exit code
+  local target="$3"   # "owner/repo" (create) or "owner/repo#N" (comment)
+  local log="${SHIPYARD_HOME:-${HOME}/.shipyard}/autoreport-failures.jsonl"
+  local line
+  line=$(FAIL_ACTION="$action" FAIL_STATUS="$status" FAIL_TARGET="$target" \
+    FAIL_WHO="${who:-unknown}" FAIL_SIGNATURE="${signature:-}" \
+    python3 -c "$PY_BUILD_FAILURE_RECORD" 2>/dev/null) || true
+  if [[ -n "$line" ]]; then
+    # "${log%/*}" instead of `dirname` — avoids a second command
+    # substitution (and thus a second exit-status check the ERR trap could
+    # trip on) for what is just a path-prefix strip.
+    mkdir -p "${log%/*}" 2>/dev/null || true
+    printf '%s\n' "$line" >> "$log" 2>/dev/null || true
+  fi
+  printf 'report-plugin-error: %s failed (gh exit=%s) target=%s — recorded to %s\n' \
+    "$action" "$status" "$target" "$log" >&2 || true
+}
 
 # --------------------------------------------------------------------------
 # Main pipeline.
@@ -461,15 +524,23 @@ $(printf '%s' "$error_excerpt" | head -c 800)
 <!-- ${signature} -->
 EOF
 )
-  gh issue comment "$existing_num" --repo "$target_repo" --body "$comment_body" >/dev/null 2>&1 || true
+  gh_status=0
+  gh issue comment "$existing_num" --repo "$target_repo" --body "$comment_body" >/dev/null 2>&1 || gh_status=$?
+  if [[ "$gh_status" -ne 0 ]]; then
+    record_autoreport_failure "comment" "$gh_status" "${target_repo}#${existing_num}"
+  fi
   exit 0
 fi
 
 # Otherwise: file a fresh issue.
+gh_status=0
 gh issue create --repo "$target_repo" \
   --title "$title" \
   --label "auto-reported" \
   --label "bug" \
-  --body "$body" >/dev/null 2>&1 || true
+  --body "$body" >/dev/null 2>&1 || gh_status=$?
+if [[ "$gh_status" -ne 0 ]]; then
+  record_autoreport_failure "create" "$gh_status" "$target_repo"
+fi
 
 exit 0
