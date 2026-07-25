@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.30 — 2026-07-25
+
+`cmd_update`'s self-healing `setup-timing.sh flush` in `session-state.sh` (issue #283's opportunistic fallback for the orchestrator's own step-6.8 flush call) fired with `2>/dev/null || true` and no stderr line at all, win or lose — unlike the degraded-recovery branch a few dozen lines earlier in the same function, which deliberately logs its self-healing action. A persistently-failing flush (a permanently malformed `.timing.json` sidecar, or a `setup-timing.sh` bug) meant `.setup` stayed `null` forever for that session, the autoflush attempted silently on every single `cmd_update` call, and nothing anywhere recorded that it was failing — an operator debugging "why is setup timing always missing" got nothing to go on even in a verbose run (closes #876). This mirrors the same swallowed-failure shape fixed elsewhere in this session (#872/#873/#874/#875): capture the flush's own exit status explicitly instead of discarding it with `|| true`, and log a distinguishable stderr diagnostic only when the flush fails, leaving the fire-and-forget posture (never blocking `cmd_update`, never changing its return value) unchanged.
+
+- `plugins/shipyard/scripts/session-state.sh` — `cmd_update`'s setup-timing autoflush now captures `flush_status` explicitly and logs `update: setup-timing-autoflush-failed session=<id> status=<rc> (visible via 2>&1, suppressed by default)` to stderr on a nonzero status.
+- `plugins/shipyard/scripts/tests/session-state.test.sh` — new "update — setup-timing autoflush failure emits a stderr diagnostic" case: forces the flush to fail via a malformed sidecar, asserts `cmd_update` still exits 0 and the caller's own `--set` still lands, asserts the new diagnostic names the session id and exit status, and asserts a persistently-failing autoflush keeps emitting the diagnostic on every subsequent update rather than going silent after the first occurrence.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.29` → `4.1.30`.
+
 ### 4.1.29 — 2026-07-25
 
 `run_chunk` in `gh-batch.sh` — the shared GraphQL batch layer behind `pr-status` and `issue-state` — only logged a diagnostic when a response carried `errors` and NO `data` at all; a partial-success response (some aliases resolved, one hit a transient GraphQL error alongside them — common on a large chunk) fell through both branches silently, so the per-alias error vanished with zero stderr trace, indistinguishable from "the PR was deleted" (closes #875). `run_chunk` still keeps the chunk (the correct behavior — partial data is genuinely usable and callers depend on it), but now also traces the dropped error(s) to stderr before falling through to the reducer, so a transient partial GraphQL error is no longer invisible to an operator debugging why the drain phase's PR-mergeability view skipped a specific PR for one poll cycle.
