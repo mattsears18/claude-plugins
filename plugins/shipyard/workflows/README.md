@@ -24,7 +24,7 @@ Committing the **shape first**, behind a flag, let migration proceed against a s
 
 There is no substrate flag. The `dispatch.substrate` knob that selected between substrates during the migration was removed in #791 (see the upgrade box above) and was **not** reintroduced when [#825](https://github.com/mattsears18/shipyard/issues/825) restored the `Agent`-tool shape as the default — the choice is spec-level (documented in dispatch-rules.md), not a config a repo owner tunes. `/shipyard:do-work` dispatches every `mode:`-driven worker through the default `Agent`-tool shape; this directory's script is the documented alternate.
 
-The `Agent` tool is still used elsewhere in shipyard — [`shipyard:verify-worker`](../agents/verify-worker.md) (dispatched by the issue-work worker, with `isolation: "worktree"`), [`shipyard:decompose-worker`](../agents/decompose-worker.md), the read-only scope-preflight and refinement workers — none of which take a `mode:` value. This substrate governs the seven worker modes only.
+The `Agent` tool is *also* used for dispatches that never carry a `mode:` value — [`shipyard:verify-worker`](../agents/verify-worker.md) (dispatched by the issue-work worker, with `isolation: "worktree"`), [`shipyard:decompose-worker`](../agents/decompose-worker.md), and the read-only scope-preflight and refinement workers. It is not exclusive to them: per the file-header note above, `Agent`-tool dispatch (with `isolation: "worktree"`) is now the *default* shape for the seven `mode:`-driven workers too — this directory's script is the alternate for those same seven modes, not their only path.
 
 ## The structured-return contract
 
