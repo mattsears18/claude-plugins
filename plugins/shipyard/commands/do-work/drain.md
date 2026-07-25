@@ -602,7 +602,14 @@ Never infer "release PR" from a version bump *inside a feature PR* — on this r
 if [ "$merge_gating" = "gated" ]; then
   # `--auto` genuinely queues behind CI. Arm it with the repo's release merge
   # method (release-please repos typically squash; a plain release-bump PR merges).
-  gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch
+  # Capture stderr instead of discarding it (#850) — the same missing-
+  # `workflow`-OAuth-scope block a worker's own arm can hit (worker-preamble
+  # auto-merge.md step 1.1, #812) can hit this release-train arm too, and a
+  # release-please PR routinely touches .github/workflows/ version pins.
+  merge_arm_err=$(gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+  if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
+    echo "[release-train] PR #<M> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
+  fi
 else
   # UNGATED: `--auto` would direct-merge this release PR immediately, before its
   # own CI completes — publishing an unverified release. Leave it OPEN and
@@ -614,6 +621,8 @@ fi
 ```
 
 The ungated branch is not a downgrade: on such a repo `--auto` was never a queue, so "arm it" and "merge it when green" are the same statement — the lander just runs the queue on drain's poll instead of GitHub's. A release PR is the *last* thing that should merge unverified: it cuts a version and, on repos with a deploy pipeline, ships it.
+
+When the `[release-train] PR #<M> auto-merge arm blocked` line fires, append `<M>` to the orchestrator's session-local [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) list — the identical list [step A.1's `shipped` handler](./steady-state.md#a1-parse-the-return-string) appends to from a worker's return string ([#812](https://github.com/mattsears18/shipyard/issues/812)). Leave the release PR OPEN and unarmed exactly as the ungated branch does; it still needs a human to run `gh auth refresh -h github.com -s workflow` and re-arm it, and the end-of-session banner ([`cleanup-summary.md`](./cleanup-summary.md#end-of-session-summary)) is where that surfaces ([#850](https://github.com/mattsears18/shipyard/issues/850)).
 
 Add `<M>` to `session_prs` (deduped) so the existing drain termination machinery watches it to merged, exactly like any other session PR — it participates in `P_settled` / `head_unchanged_since` / the `max_drain_hours` ceiling with no special-casing. Log `[release-train] armed auto-merge on release PR #<M> (author <login>, trusted); watching to merged→deploy (#663)`.
 
@@ -653,6 +662,8 @@ fi
 ### Deferred-merge lander (merge unarmed green session PRs — [#720](https://github.com/mattsears18/shipyard/issues/720))
 
 Closes the orchestrator-turn half of [#720](https://github.com/mattsears18/shipyard/issues/720). On an **ungated** repo shape (`gh pr merge --auto` doesn't queue — it direct-merges immediately; see [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh)), the four orchestrator-turn call sites that would otherwise arm `--auto` — [inline-trivial §E](./inline-trivial.md#e-arm-auto-merge), the [A.0.5 crash-recovery re-arm](./steady-state.md#a05-crash-return-detection--pre-reap-recovery), the [setup-3c orphan-recovery re-arm](./setup/00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch), and the [release-train sweep](#release-pr-auto-arming-and-deploy-watch-own-the-tail-phase-c--663) above — deliberately **leave the PR OPEN and unarmed** rather than merging it ungated. They cannot re-create the gate by blocking on `gh pr checks --watch` the way a worker does ([fix-main-ci step 7.a](../../agents/issue-worker/fix-main-ci.md), [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)), because they run on the **orchestrator's own turn** — a multi-minute block there stalls the dispatch loop, every in-flight reconcile, and every other PR's progress.
+
+**The same four call sites also detect the missing-`workflow`-OAuth-scope block, not just the ungated-repo shape ([#850](https://github.com/mattsears18/shipyard/issues/850)).** Before #850, all four discarded the `gh pr merge --auto` call's stderr unconditionally (`2>/dev/null || true`, or — on inline-trivial's `gated` branch — didn't capture it at all), so a workflow-touching PR that failed to arm for this specific, deterministic, session-wide reason ([#812](https://github.com/mattsears18/shipyard/issues/812)) surfaced no signal at all when the *orchestrator itself* (rather than a dispatched worker) attempted the arm — the repro that opened #850: two ready PRs (lightwork #2900, #2863) sat unmerged with nothing but a swallowed error, even though the session's own end-of-session banner exists precisely to report this. Each of the four now captures stderr on its `gated`-branch `--auto` call, matches it against the same GraphQL signature `worker-preamble § "Auto-merge + snapshot-and-return pattern"` step 1.1 uses, and — on a match — logs a distinctly-tagged line (`[inline-trivial] PR #<M> auto-merge arm blocked …`, `[reconcile-A.0.5-recovery] PR #<M> auto-merge arm blocked …`, `[setup-3c] PR #<M> auto-merge arm blocked …`, `[release-train] PR #<M> auto-merge arm blocked …`) instead of silently leaving the PR unarmed with no trace. Append the PR number to [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) whenever one of these lines is observed — the same list [step A.1's `shipped` handler](./steady-state.md#a1-parse-the-return-string) already populates from a worker's return string, so the finding reaches the identical [end-of-session banner](./cleanup-summary.md#end-of-session-summary) regardless of which of the five call sites (four orchestrator-direct, plus every worker mode) hit the block. This closes the *visibility* gap #850 reported; it deliberately does **not** attempt to widen the token's own scope or delegate the arm to a differently-scoped credential — both remain a one-time human action (`gh auth refresh -h github.com -s workflow`), same as the worker-side #812 path.
 
 **This section is where those PRs actually land.** Without it, an unarmed PR would never merge and drain would spin until its ceiling — a hang strictly worse than the ungated merge it replaced. The lander is what makes "don't arm" a safe instruction rather than a leak.
 

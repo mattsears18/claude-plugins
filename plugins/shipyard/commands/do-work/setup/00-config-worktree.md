@@ -573,7 +573,15 @@ EOF
           verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
             <owner/repo> 2>/dev/null || echo ungated)
           if [ "$verdict" = "gated" ]; then
-            gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true
+            # Capture stderr instead of discarding it (#850) — the same
+            # missing-`workflow`-OAuth-scope block a worker's own arm can hit
+            # (worker-preamble auto-merge.md step 1.1, #812) can hit this
+            # setup-3c orphan-recovery arm too; `2>/dev/null || true` was
+            # previously swallowing it with zero visibility.
+            merge_arm_err=$(gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+            if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
+              echo "[setup-3c] PR #${pr_num} auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
+            fi
           else
             # Leave OPEN + unarmed. The PR carries `--label shipyard` (above),
             # which is exactly the label drain's deferred-merge lander keys on —
@@ -587,6 +595,16 @@ EOF
       fi
     fi
   done
+  # The "[setup-3c] PR #<N> auto-merge arm blocked" line above runs inside
+  # this piped `while read` loop (a subshell), so it cannot persist a value
+  # back into the enclosing background group's own shell variables. That's
+  # fine — workflow_scope_blocked_prs is orchestrator state (see do-work.md's
+  # "Orchestrator state" section), not a literal shell variable spanning tool
+  # calls: when this background group's captured stdout is surfaced (at the
+  # `wait $SETUP_BACKGROUND_PID` in end-of-session cleanup, or sooner if
+  # inspected), append <N> to workflow_scope_blocked_prs for every such line,
+  # exactly as steady-state.md step A.1's shipped-handler already does from a
+  # worker's return string (issue #812 / #850).
 
   # 3c (row 5) — Stale @me self-assigns with no worktree, no PR, no branch
   # (issue #303). Catches the state the worktree loop above CAN'T see:
