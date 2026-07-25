@@ -16,8 +16,6 @@ You are a testing audit agent. You sweep a codebase for testing gaps and *tests 
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or cwd) for the codebase
 
@@ -291,10 +289,9 @@ Apply `test` / `testing` label if it exists in the repo (and `bug` for swallowed
 
 ### Return summary
 
-```
-Testing audit:
-<one-line verdict — biggest theme>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Critical-path coverage: <ok | N modules low | no coverage report>
 CI gate: <ok | N gaps>
 Empty/tautological/mock-only: <N findings across M areas>
@@ -304,13 +301,6 @@ Snapshot-only behavioral: <N | none>
 Config drift: <N | none>
 Missing test types: <unit-only | has-e2e | has-integration>
 Flaky tests (CI history): <N tests | N jobs | no CI history | no test reports uploaded>
-
-Filed K issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 
 Out of scope:
 - <area> (reason)

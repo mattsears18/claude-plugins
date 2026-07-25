@@ -97,22 +97,14 @@ Body must include the failing URL + specific tag/file path + expected vs actual.
 
 ### 8. Return summary
 
-```
-SEO audit of <URL>:
-<one-line verdict>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Coverage: <N>/<M> routes have full OG+Twitter+canonical
 Sitemap: <present|missing|broken>
 robots.txt: <ok|missing|invalid>
 llms.txt: <ok|missing>
 Structured data: <present|missing>
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 ```
 
 ## Don't

@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.2.3 — 2026-07-25
+
+Phase 2 of #886: the `Required inputs` and `Return summary` sections in the 18 `agents/*-auditor.md` files still duplicated boilerplate the `shipyard:auditor-preamble` skill already documents — the "The orchestrator's prompt will include:" intro sentence, and the generic header/verdict/`Filed`/`Skipped (duplicates)` Return-summary skeleton. Phase 1 (#886) deliberately left both alone as a higher-risk chunk requiring per-file review of bespoke content (closes #942).
+
+- All 18 `agents/*-auditor.md` files — dropped the generic "The orchestrator's prompt will include:" intro line from `## Required inputs`, keeping each auditor's own bullet list (and any genuinely custom framing paragraphs, like a11y's login-wall note and functional-qa's credential-request note, untouched).
+- 17 of the 18 files — trimmed `## Return summary`'s fenced template to just the auditor's own domain-specific lines (metrics/coverage, and truly unique sections like `docs-audit:skip markers`, `Deferred to sibling auditors`, `Screenshots retained`), replacing the generic header/verdict/`Filed`/`Skipped (duplicates)` skeleton with a one-line pointer to `shipyard:auditor-preamble` § "Return-summary generic shape". Also dropped two sections that turned out to be verbatim copies of the skill's own optional generic brackets rather than real domain content: `privacy-auditor`'s `URGENT (out-of-band action)` block and `lighthouse-auditor`'s `Skipped (no app-side fix)` block (both now covered by the skill's bracketed template).
+- `functional-qa-auditor.md`'s Return summary is the one deliberate exception — its per-item Filed-list format (`<flow>: <observed vs expected>`) and its `Skipped flows` / `Surfaces not reachable` sections are meaningfully different from the generic shape, not a copy of it, so consolidating would have flattened real content; left untouched.
+- `dx-auditor.md`'s Return summary keeps its `Filed`/`Skipped` block verbatim too (its `[needs-triage]` per-item tag and "not applicable to stack" skip reason are domain customizations of those lines) but still drops the generic header/verdict pair.
+- `plugins/shipyard/scripts/tests/auditor-preamble.test.sh` — extended the regression suite (139 → 174 assertions) to guard the phase-2 shape: no auditor file re-introduces the generic Required-inputs intro sentence, and every file except `functional-qa-auditor.md` points its Return summary back at the skill's generic shape.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.2.2` → `4.2.3`.
+
 ### 4.2.2 — 2026-07-25
 
 `worktree-reap.sh` (~111KB) fused two responsibilities: worktree/branch reaping and orchestrator-PID/session-identity forensics (`detect-orchestrator-pid`, `derive-session-id`, `find-orphan-orchestrators`). `derive-session-id` in particular sits on the cwd-leak hot path (`steady-state.md`'s A.0 required preamble) and has nothing to do with reaping. This was the deferred, optional item from #887/#940's `scripts/lib/common.sh` dedup (closes #941).

@@ -113,23 +113,15 @@ Title prefixes:
 
 ### 8. Return summary
 
-```
-Release-readiness audit:
-<one-line verdict>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 CHANGELOG ↔ store sync: <ok | drift>
 Version consistency: <ok | mismatched>
 Icon coverage: <complete | gaps>
 AASA: <ok | missing | mismatched>
 assetlinks: <ok | missing | mismatched>
 Screenshot freshness: <fresh | stale | missing>
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 ```
 
 ## Don't

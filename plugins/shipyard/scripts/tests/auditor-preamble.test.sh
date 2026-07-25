@@ -166,6 +166,35 @@ done
 
 echo
 
+# (2.5) Phase-2 templatization (issue #942): every auditor's Required-inputs
+# section drops the now-skill-documented "orchestrator's prompt will include"
+# intro sentence (the skill's own Required-inputs convention section already
+# documents that shape; each agent file keeps only its own bullet list), and
+# every auditor's Return-summary section that shares the skill's generic
+# header/verdict/Filed/Skipped-(duplicates) shape points back at the skill
+# instead of re-inlining it verbatim.
+#
+# functional-qa-auditor is the one documented exception: its Return-summary
+# item format (flow + observed-vs-expected) and its Skipped-flows /
+# Surfaces-not-reachable sections are NOT the generic shape, so consolidating
+# would flatten meaningful per-domain content — left untouched per the
+# "smaller correct PR beats a lossy complete one" call in issue #942.
+generic_required_inputs_intro="The orchestrator's prompt will include:"
+for f in "${auditor_files[@]}"; do
+  path="$agents_dir/$f"
+
+  assert_not_contains "$path" "$generic_required_inputs_intro" \
+    "$f's Required inputs section drops the now-skill-documented intro sentence"
+
+  if [[ "$f" == "functional-qa-auditor.md" ]]; then
+    continue
+  fi
+  assert_contains "$path" "Return-summary generic shape" \
+    "$f's Return summary section points back at the auditor-preamble skill's generic shape"
+done
+
+echo
+
 # (3) commands/audit.md's dispatch table is untouched by this refactor —
 # sanity check that every auditor is still wired in.
 audit_cmd_path="$repo_root/plugins/shipyard/commands/audit.md"

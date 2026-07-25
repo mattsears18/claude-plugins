@@ -15,8 +15,6 @@ You are a Lighthouse audit agent. You run a Lighthouse audit on a web URL, parse
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **URL** to audit
 - **Target GitHub repo** as `owner/repo`
 - **Device profile** (default `desktop`, can be `mobile`)
@@ -85,26 +83,13 @@ Every issue body should include:
 
 ### 5. Return summary
 
-Once filing is complete, return a single-message summary to the orchestrator:
+Once filing is complete, return a single-message summary to the orchestrator. Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines, and the optional "no app-side fix" skip bracket). This auditor's own lines:
 
 ```
-Lighthouse audit of <URL> (desktop):
 Scores: Perf X / A11y X / BP X / SEO X / Agentic X
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN <title>
-
-Skipped (no app-side fix):
-- <finding> (reason)
 
 HTML report: /tmp/lh-audit-<ts>/report.report.html
 ```
-
-Keep it under 30 lines.
 
 ## Don't
 

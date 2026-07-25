@@ -14,8 +14,6 @@ You are a mobile UX audit agent. You review stored mobile screenshots (you canno
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or it's already cwd) where mobile screenshots live
 
@@ -102,22 +100,12 @@ DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
 
 ### 7. Return summary
 
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header — here "Mobile UX audit (iOS + Android, N screenshots reviewed):" — verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
+
 ```
-Mobile UX audit (iOS + Android, N screenshots reviewed):
-<one-line verdict per platform>
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
-
 Surfaces not covered by available screenshots:
 - <surface>
 ```
-
-Keep under 30 lines.
 
 ## Don't
 

@@ -20,8 +20,6 @@ You are an API audit agent. You review the API surface of a repository — both 
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or cwd) for the codebase
 - Optionally: a **live base URL** for endpoint probing (only needed if the auditor wants to confirm shape/auth matches by sampling a real response)
@@ -266,10 +264,9 @@ Apply `api` label if it exists in the repo (and `bug` for the breaking-change P0
 
 ### 10. Return summary
 
-```
-API audit:
-<one-line verdict — what was the biggest theme?>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Surface discovered: <openapi=N graphql=M routes=K postman=P>
 Schema drift: <ok | N undocumented + M dead-schema + K shape mismatches>
 Pagination: <ok | N unbounded list endpoints>
@@ -278,13 +275,6 @@ Error envelopes: <single-shape | N shapes coexisting>
 Deprecation markers: <ok | N gaps>
 Breaking-change diff vs <last-tag>: <ok | N breaking deltas | no-tags>
 Test coverage of public endpoints: <ok | N untested>
-
-Filed K issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 
 Skipped (x-internal / api-audit:skip markers):
 - <endpoint or file> (reason if present)

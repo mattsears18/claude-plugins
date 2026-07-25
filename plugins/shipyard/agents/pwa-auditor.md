@@ -124,22 +124,14 @@ Title prefixes:
 
 ### 9. Return summary
 
-```
-PWA audit of <URL>:
-<one-line verdict>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Installability: <yes | no — reason>
 Manifest: <complete | gaps>
 Service worker: <active | missing | scoped-wrong>
 Offline: <works | broken | missing>
 iOS metadata: <complete | gaps>
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 ```
 
 ## Don't

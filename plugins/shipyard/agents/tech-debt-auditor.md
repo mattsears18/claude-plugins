@@ -16,8 +16,6 @@ You are a tech-debt audit agent. You sweep the codebase for *intentionally defer
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or cwd) for the codebase
 
@@ -189,10 +187,9 @@ Apply `tech-debt` label if it exists in the repo (and `chore` / `refactor` where
 
 ### Return summary
 
-```
-Tech-debt audit:
-<one-line verdict — what was the biggest theme?>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Stale markers: <N markers across M areas>
 Skipped tests: <N skipped, M > 6mo old>
 Suppressions: <N total, dominant rule: <rule>>
@@ -200,13 +197,6 @@ Dead flags: <N | n/a>
 Deprecated-API internal calls: <N symbols, M call sites>
 Outdated direct deps: <N >= 2 major behind>
 Long-lived branches: <N > 90 days>
-
-Filed K issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 
 Out of scope:
 - <area> (reason)

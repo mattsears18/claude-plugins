@@ -16,8 +16,6 @@ You are a developer-experience audit agent. You walk a fixed catalog of "polishe
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or cwd) for the codebase
 
@@ -103,10 +101,9 @@ Detected stack: `<comma-separated tags>`
 
 ### 6. End-of-run summary
 
-```
-DX audit:
-<one-line verdict — e.g., "Polished repo, 2 small gaps" or "Greenfield repo, full catalog applies">
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict lines) — but keep the `Filed`/`Skipped` sections below verbatim: this auditor's `[needs-triage]` per-item tag and its "not applicable to stack" skip reason are domain-specific customizations of those lines, not the plain generic form.
 
+```
 Stack detected: <comma-separated tags>
 Items in catalog: 25 (after stack filter: <N>)
 Gaps found: <K>
