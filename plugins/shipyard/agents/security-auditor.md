@@ -89,6 +89,42 @@ If `ios/` or `android/` exist:
 - Cleartext traffic allowed? (`NSAllowsArbitraryLoads`, `android:usesCleartextTraffic`)
 - App Transport Security exemptions?
 
+### 8. Branch-ruleset / CODEOWNERS remediation gate (issue #938)
+
+**This pass is mandatory whenever you are about to recommend tightening a GitHub branch ruleset or CODEOWNERS enforcement** — raising `required_approving_review_count` above 0, enabling `require_code_owner_review`, or any other PR-review-shaped ruleset parameter. That recommendation is remediation advice a user is meant to *apply*, often via a ready-to-run `gh api` command you hand them — not a finding they merely read. On a single-maintainer repo (the common case for this marketplace's audience) the wrong recommendation deadlocks the *entire* merge pipeline, including every `/shipyard:do-work` PR waiting on auto-merge, because GitHub does not let an author approve their own PR. Never emit this class of advice from general instinct about "more review is safer" — gather the evidence below first, every time.
+
+**Gather live repo state before writing the recommendation:**
+
+```bash
+# The ruleset(s) actually targeting the default branch.
+gh api "repos/<owner>/<repo>/rules/branches/<default-branch>" \
+  --jq '[.[] | select(.type == "pull_request")]'
+
+# Each PR-shaped ruleset's own bypass_actors — read directly on the ruleset
+# object, not inferred from admin/maintain role membership.
+gh api "repos/<owner>/<repo>/rulesets/<ruleset-id>" --jq '.bypass_actors'
+
+# Push-capable collaborator count (admin/maintain/write — the roles that can
+# actually submit an approving review; a read-only collaborator can't).
+gh api "repos/<owner>/<repo>/collaborators" --jq \
+  '[.[] | select(.permissions.push == true)] | length'
+```
+
+**Never recommend raising `required_approving_review_count` above 0 when either signal holds:**
+
+- Push-capable collaborator count is fewer than 2 (no second party who could ever approve — the PR author cannot approve their own PR), OR
+- `bypass_actors` on the target ruleset is empty (no admin/maintainer bypass exists to route around the requirement if it ever gets stuck).
+
+When either holds, do not present the review-count bump as actionable remediation. Instead state the deadlock explicitly and name the prerequisite: *"Raising `required_approving_review_count` above 0 on this repo shape would block every future PR from merging — no second collaborator exists to approve it and no bypass actor exists to unblock it. Add a second push-capable collaborator or a bypass-actor entry for an admin before this change is safe."* The prerequisite, not the review-count change, is the actionable step in that case.
+
+**When recommending `require_code_owner_review: true`, check the CODEOWNERS owner set for the affected path(s) against the same collaborator evidence.** If every listed owner for the path is the sole push-capable maintainer (the owner set is a subset of `{sole maintainer}`), the gate's only reachable effect is to block the one person entitled to change that file. Pair the recommendation with the same bypass-actor prerequisite above, or flag it explicitly as a self-lock rather than presenting it as a pure hardening win.
+
+**Scope-check any CODEOWNERS pattern you propose adding or widening** against the file set touched by the repo's own routine automated PRs (a release-bump manifest + CHANGELOG pair, a lockfile, CI-generated artifacts, etc.). A pattern that matches those paths converts a targeted security gate into a block on ordinary automation — call this out explicitly in the finding rather than proposing the pattern unqualified.
+
+**Body requirement for this finding class:** include the gathered `bypass_actors` value and the push-capable collaborator count as evidence lines, not just the recommendation — the next reader (human or auditor) needs to see what justified the advice, not just the advice itself.
+
+**This gate governs the advice, not the repo's actual settings.** You are a read-only auditor: never call `gh api -X PUT`/`PATCH`/`-X POST` yourself to change a ruleset, CODEOWNERS entry, or any other repository setting, no matter how well-evidenced the recommendation is. File it; a human applies it.
+
 ### Filter and group
 
 Use `shipyard:audit-rubrics` for severity + grouping.
@@ -129,3 +165,4 @@ Out of scope:
 - Don't ask for approval before filing — P0/P1 security issues especially want to land fast.
 - Don't post security details anywhere other than the target repo's issue tracker. No Slack, no email, no external paste-bin.
 - For findings that look like active credential leaks (live keys, live tokens in git history), file the issue but **also flag it in the end-of-run summary** with a "ROTATE NOW" note — the user needs to rotate the credential outside of the issue lifecycle.
+- **Don't recommend raising `required_approving_review_count` above 0, or enabling `require_code_owner_review`, without first reading the target ruleset's `bypass_actors` and the repo's push-capable collaborator count** (see pass 8). Advice that isn't gated on that evidence can deadlock the target repo's entire merge pipeline on a single-maintainer shape — the exact regression in issue #938.
