@@ -188,15 +188,18 @@ set -u
 set -o pipefail
 
 # --------------------------------------------------------------------------
+# Shared helpers (shipyard_home, require_jq, atomic_write) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+# --------------------------------------------------------------------------
 # Dependency check — jq is required for both read (path selection) and
 # update (atomic merge). The script intentionally has no python3 fallback:
 # jq is already in shipyard's dependency surface (used by every gh query in
 # do-work.md), and a single tool simplifies the atomic-write contract.
 # --------------------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-  echo "session-state.sh: jq is required but not installed" >&2
-  exit 65
-fi
+require_jq
 
 usage() {
   cat <<'EOF' >&2
@@ -319,74 +322,18 @@ resolve_pricing_row() {
 # commands/do-work.md: `$SHIPYARD_HOME/sessions/<session-id>.json`.
 session_path() {
   local session_id="$1"
-  local home="${SHIPYARD_HOME:-${HOME}/.shipyard}"
+  local home
+  home=$(shipyard_home)
   printf '%s/sessions/%s.json\n' "$home" "$session_id"
 }
 
 # Atomic write: take JSON on stdin, write to <target>.tmp.<pid>, then
-# `mv -f` into place. POSIX rename(2) is atomic on the same filesystem,
-# which the tmp-in-same-dir pattern guarantees. A crash mid-write leaves
-# only the .tmp file, which the next successful write replaces.
-#
-# Empty-write guard (issue #357). When called as `jq ... | atomic_write
-# "$target"`, a jq compile error or runtime failure produces NO stdout but
-# exits non-zero. Without `set -o pipefail` on the caller, the pipeline's
-# exit status is `atomic_write`'s own (0 on success of `cat` reading EOF
-# from a closed pipe) — so jq's failure is invisible. `cat > "$tmp"` then
-# creates a 0-byte tempfile, and `mv -f "$tmp" "$target"` atomically
-# replaces the prior session content with the empty file. Atomicity gives
-# you "no half-written file" but does NOT give you "content is valid" —
-# the rename is happy to swap in garbage. This is the root cause of issue
-# #357 (session file 0 bytes after long session): every dispatch's
-# `update` invocation that hit even a transient jq error silently
-# truncated the session JSON, leaving the cross-session ledger flush + the
-# per-PR cost-tracking comment with nothing to read.
-#
-# Defense: refuse to rename a 0-byte tempfile into place. A 0-byte
-# atomic write is never a valid state transition for shipyard's session
-# JSON — the file always carries at minimum a {} object. If the tempfile
-# is empty after the `cat`, treat that as upstream failure: leave the
-# previous target file untouched, remove the tempfile, return non-zero so
-# the caller's `if ! jq ... | atomic_write` branch sees the failure. The
-# caller's existing "jq expression failed — file left unchanged" stderr
-# message is now actually true (it wasn't before this guard).
-atomic_write() {
-  local target="$1"
-  local dir
-  dir=$(dirname "$target")
-  mkdir -p "$dir"
-  local tmp="${target}.tmp.$$"
-  # Trap so we don't leak the tmp file on a mid-write crash.
-  # shellcheck disable=SC2064
-  # rationale: we want the trap to capture the current value of $tmp, not
-  # the value at trap-fire time (the variable is reused for each write).
-  trap "rm -f '$tmp'" EXIT
-  if ! cat > "$tmp"; then
-    rm -f "$tmp"
-    trap - EXIT
-    echo "session-state.sh: failed to write tmp file $tmp" >&2
-    return 66
-  fi
-  # Empty-tempfile guard (issue #357). A 0-byte tempfile means upstream
-  # (jq, etc.) failed to produce any content despite this end of the pipe
-  # closing cleanly. Renaming an empty file over the target would silently
-  # destroy the prior valid state. Refuse the rename, leave the target
-  # alone, and surface a clear non-zero exit so the caller's existing
-  # error branch (`if ! jq ... | atomic_write`) actually fires.
-  if [[ ! -s "$tmp" ]]; then
-    rm -f "$tmp"
-    trap - EXIT
-    echo "session-state.sh: refusing to rename empty tempfile over $target (upstream produced no content — likely jq error)" >&2
-    return 66
-  fi
-  if ! mv -f "$tmp" "$target"; then
-    rm -f "$tmp"
-    trap - EXIT
-    echo "session-state.sh: failed to rename $tmp -> $target" >&2
-    return 67
-  fi
-  trap - EXIT
-}
+# `mv -f` into place. Now shared in lib/common.sh (issue #887) — this was
+# the canonical (most defensive, 0-byte-guarded) implementation of the
+# atomic_write() logic duplicated across this file, shipyard-config.sh,
+# gh-cached.sh, and eas-watch.sh; see that file's own comment for the full
+# empty-write-guard rationale (issue #357) this extraction preserves
+# byte-for-byte.
 
 # Cross-repo write guard (issue #365). When a write-class subcommand
 # (`update`, `bump-tokens`) resolves to a session file whose `.repo` does
@@ -1482,7 +1429,8 @@ cmd_cleanup() {
     # Best-effort: a corrupt JSON gets `null` for each captured field,
     # which is still better than no audit entry at all.
     if [[ "$reap_audit" -eq 1 ]]; then
-      local shipyard_home="${SHIPYARD_HOME:-$HOME/.shipyard}"
+      local shipyard_home
+      shipyard_home=$(shipyard_home)
       mkdir -p "$shipyard_home" 2>/dev/null || true
       local audit_log="$shipyard_home/reap-audit.jsonl"
       local ts

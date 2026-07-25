@@ -51,6 +51,12 @@
 
 set -u
 
+# --------------------------------------------------------------------------
+# Shared helpers (shipyard_home) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
 # Belt-and-braces — never propagate failure to the caller. The hook also
 # discards stderr, but defense in depth is worth one trap.
 trap 'exit 0' ERR
@@ -333,7 +339,8 @@ record_autoreport_failure() {
   local action="$1"   # "create" | "comment"
   local status="$2"   # gh's exit code
   local target="$3"   # "owner/repo" (create) or "owner/repo#N" (comment)
-  local log="${SHIPYARD_HOME:-${HOME}/.shipyard}/autoreport-failures.jsonl"
+  local log
+  log="$(shipyard_home)/autoreport-failures.jsonl"
   local line
   line=$(FAIL_ACTION="$action" FAIL_STATUS="$status" FAIL_TARGET="$target" \
     FAIL_WHO="${who:-unknown}" FAIL_SIGNATURE="${signature:-}" \

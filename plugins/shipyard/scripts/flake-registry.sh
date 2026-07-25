@@ -128,13 +128,16 @@
 set -u
 
 # --------------------------------------------------------------------------
+# Shared helpers (shipyard_home, require_jq, atomic_write) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+# --------------------------------------------------------------------------
 # Dependency check — jq is required for record projection and aggregation.
 # Same posture as session-state.sh / cost-history.sh / shipyard-config.sh.
 # --------------------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-  echo "flake-registry.sh: jq is required but not installed" >&2
-  exit 65
-fi
+require_jq
 
 usage() {
   cat <<'EOF' >&2
@@ -164,12 +167,9 @@ EOF
 }
 
 # --------------------------------------------------------------------------
-# Path resolution — mirrors cost-history.sh.
+# Path resolution. shipyard_home() itself now lives in lib/common.sh
+# (issue #887) — this file just builds registry-specific paths on top of it.
 # --------------------------------------------------------------------------
-shipyard_home() {
-  printf '%s\n' "${SHIPYARD_HOME:-${HOME}/.shipyard}"
-}
-
 registry_path() {
   printf '%s/flake-registry.jsonl\n' "$(shipyard_home)"
 }

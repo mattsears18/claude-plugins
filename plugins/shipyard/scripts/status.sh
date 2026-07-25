@@ -45,10 +45,13 @@
 
 set -u
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "status.sh: jq is required but not installed" >&2
-  exit 65
-fi
+# --------------------------------------------------------------------------
+# Shared helpers (shipyard_home, require_jq) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+require_jq
 
 usage() {
   cat <<'EOF' >&2
@@ -74,7 +77,8 @@ EOF
 
 # Resolve the sessions directory. Mirrors session-state.sh's `session_path()`.
 sessions_dir() {
-  local home="${SHIPYARD_HOME:-${HOME}/.shipyard}"
+  local home
+  home=$(shipyard_home)
   printf '%s/sessions\n' "$home"
 }
 
