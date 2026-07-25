@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.47 — 2026-07-25
+
+`.github/workflows/shellcheck.yml` was the one workflow in the repo still checking out the repo with a floating `actions/checkout@v4` (later `@v7`, after Dependabot's unrelated bump landed mid-session) tag rather than a pinned commit SHA — every sibling workflow (`secret-scan.yml`, `conflict-markers.yml`, `tests.yml`, `label-event-audit.yml`) already pins to a full SHA specifically to close the supply-chain risk of a tag being repointed at malicious code (closes #870). This release also catches up two Dependabot PRs that merged mid-session without their own version bump.
+
+- `.github/workflows/shellcheck.yml` — both jobs' `Checkout` steps now pin `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`, matching the SHA already in use across every other workflow in the repo (that SHA reflects Dependabot's `actions/checkout` v4→v7 bump, PR #891, which merged earlier in this session).
+- Catch-up release note: Dependabot PR #891 bumped `actions/checkout` v4 → v7 across `.github/workflows/*.yml`, and Dependabot PR #892 bumped `gitleaks/gitleaks-action` 2.3.9 → 3.0.0 in `.github/workflows/secret-scan.yml` — both merged without cutting their own release; this entry is their catch-up.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.46` → `4.1.47`.
+
 ### 4.1.46 — 2026-07-25
 
 `CONTRIBUTING.md`'s worker-mode file list and label quick-index had drifted from `CLAUDE.md`/`README.md`, the sources it links out to and defers to as authoritative — a docs audit caught three separate stale claims plus one adjacent stale count in the same paragraph (closes #868).
