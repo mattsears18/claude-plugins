@@ -56,8 +56,8 @@
     },
     "disposition": {
       "type": ["string", "null"],
-      "enum": ["fix", "needs-human-review", "auto-close-noise", "duplicate", "decomposed", "designed", null],
-      "description": "For `disposition` outcomes from investigate / spike mode: how the issue was dispositioned. `fix` — rewrote into a real spec and opened a fixing PR (pr is then set). `needs-human-review` — handed to the human queue. `auto-close-noise` — closed as non-actionable noise. `duplicate` — closed as a duplicate. `decomposed` — (spike) sharded into a sub-issue chain. `designed` — (spike) produced a design doc / decision. Null for code-worker modes."
+      "enum": ["fix", "needs-human-review", "auto-close-noise", "duplicate", "decomposed", "designed", "verified", null],
+      "description": "For `disposition` outcomes from investigate / spike / issue-work mode: how the issue was dispositioned. `fix` — rewrote into a real spec and opened a fixing PR (pr is then set). `needs-human-review` — handed to the human queue. `auto-close-noise` — closed as non-actionable noise. `duplicate` — closed as a duplicate. `decomposed` — (spike) sharded into a sub-issue chain. `designed` — (spike) produced a design doc / decision. `verified` — (issue-work's §6.6 verification disposition, #852) ran the named auditor against a scope-preflight-supplied verification slice, filed any bug issues the auditor found, and dispositioned the issue (labeled and left open for a manual residual, or closed if fully verified) without opening a resolving PR. Null for code-worker modes that shipped a normal PR."
     },
     "blocked_reason": {
       "type": ["string", "null"],
