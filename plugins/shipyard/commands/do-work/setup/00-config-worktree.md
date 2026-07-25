@@ -370,6 +370,24 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
       --phase "setup-1.6" 2>/dev/null || true
   done
 
+  # 1.6 (continued) — orphan atomic-write .tmp sweep (issue #858). The loop
+  # above only discovers stale *.json files; a .tmp.<pid> whose target
+  # .json never landed (crash mid-atomic_write, most commonly during
+  # `session-state.sh init`) matches no session id the loop above could
+  # hand to `cleanup --session-id`, so it would otherwise linger forever.
+  # cost-history.sh's reconcile-rewrite tmp/.err files and
+  # flake-registry.sh's prune-rewrite tmp file have the identical gap, with
+  # no sweep anywhere for either. sweep-orphan-tmp.sh closes all three in
+  # one pass, gated on the same age-floor-plus-liveness shape as above
+  # (pid-embedded liveness for the two *.tmp.$$ writers; a fresh
+  # cost-history.jsonl.lock protects the whole mktemp-suffixed category
+  # instead, since those names carry no pid to check). Every reap is
+  # logged (not silent) — see the script's own header for the full
+  # rationale and 01-repo-recovery.md's step 1.6 section for the
+  # human-readable writeup.
+  "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-tmp.sh" sweep \
+    --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" 2>/dev/null || true
+
   # 1.6.5 — Reap orphan orchestrator worktrees (issue #280). Parallel to step 1.6
   # but for the worktree dirs themselves: a `.claude/worktrees/orchestrator-<dead-id>/`
   # dir whose owning session has already terminated (file missing or PID dead).
