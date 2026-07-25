@@ -439,6 +439,13 @@ assert_literal "$f" "an 'export const meta' EXAMPLE inside a comment does not fo
 echo
 echo "== (F) the checker is wired into this repo's CI discovery"
 # ==========================================================================
+# Issue #878 grepped the repo for "check-workflow-meta-literal" outside
+# `.test.sh` files and, finding none in `.github/workflows/`,
+# `.pre-commit-config.yaml`, or `package.json`, concluded the checker was
+# "never invoked in production." Section (A) above already refutes that —
+# it runs the checker against the REAL `do-work-dispatch.workflow.js` on
+# every CI run — and this section pins the mechanism that makes it so: this
+# suite's own filename, discovered by `tests.yml`'s `find`, IS the wiring.
 
 if [[ -x "$checker" || -f "$checker" ]]; then
   assert_pass "check-workflow-meta-literal.mjs is present at the expected path"
