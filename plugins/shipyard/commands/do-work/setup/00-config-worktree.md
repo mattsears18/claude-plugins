@@ -81,7 +81,53 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 # yet resolves invisibly, so a wrong pick (stale .bak, version-mismatched
 # marketplace checkout) would otherwise be undetectable from the log.
 echo "resolved CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >&2
+
+# Record the resolved plugin root's own commit, when it's a git-tracked
+# checkout (issue #907) — "which version of the spec ran?" is otherwise
+# unanswerable after the fact. A no-op ("unknown") for a non-git install
+# layout; never a hard failure.
+SHIPYARD_PLUGIN_ROOT_SHA=$(git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD 2>/dev/null)
+[ -z "$SHIPYARD_PLUGIN_ROOT_SHA" ] && SHIPYARD_PLUGIN_ROOT_SHA="unknown"
+echo "resolved CLAUDE_PLUGIN_ROOT commit=$SHIPYARD_PLUGIN_ROOT_SHA" >&2
+
 cd "$(git rev-parse --show-toplevel)"
+
+# Dogfooding staleness check (issue #907): when CLAUDE_PLUGIN_ROOT resolved
+# REPO-LOCAL (layer 1 above — this repo IS the plugin source, the
+# do-work-orchestrating-shipyard's-own-repo case), the resolved copy is
+# whatever commit the PRIMARY checkout happens to sit at — which can be
+# arbitrarily far behind origin/<default-branch>, with nothing else in the
+# session surfacing that. The repro this closes: a session read a
+# 49-commit-stale copy of dispatch-rules.md for its entire run (including a
+# filed issue asserting a spec claim) with no warning anywhere. This check
+# does NOT apply to a consumer install (layers 2-4) — there, CLAUDE_PLUGIN_ROOT
+# points at a distinct installed/marketplace checkout with its own update
+# cadence (`/shipyard:update`), not this repo's own history.
+if [ "$CLAUDE_PLUGIN_ROOT" = "$(pwd)/plugins/shipyard" ]; then
+  STALENESS_DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+  if [ -n "$STALENESS_DEFAULT_BRANCH" ]; then
+    git fetch origin "$STALENESS_DEFAULT_BRANCH" --quiet 2>/dev/null || true
+    SHIPYARD_PLUGIN_ROOT_BEHIND=$(git rev-list --count "HEAD..origin/$STALENESS_DEFAULT_BRANCH" 2>/dev/null)
+    if [ -n "$SHIPYARD_PLUGIN_ROOT_BEHIND" ] && [ "$SHIPYARD_PLUGIN_ROOT_BEHIND" -gt 0 ] 2>/dev/null; then
+      SHIPYARD_PLUGIN_ROOT_STALE="$SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) behind origin/$STALENESS_DEFAULT_BRANCH (primary checkout at $SHIPYARD_PLUGIN_ROOT_SHA)"
+      cat <<EOF >&2
+warning: this repo's primary checkout is $SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) behind origin/$STALENESS_DEFAULT_BRANCH.
+
+  CLAUDE_PLUGIN_ROOT resolved repo-local (dogfooding: this repo IS the
+  plugin source) to commit $SHIPYARD_PLUGIN_ROOT_SHA. Every spec file this
+  session reads via \$CLAUDE_PLUGIN_ROOT — including this one — is that
+  stale copy, and nothing else in the session will warn you (issue #907).
+  Run 'git pull --ff-only' in the primary checkout before trusting this
+  session's conclusions about "what the spec says" (including any issue
+  it may file describing a spec claim). Step 0.5's orchestrator-worktree
+  relocation re-resolves CLAUDE_PLUGIN_ROOT fresh against origin's tip,
+  so this warning is specific to steps 0.3/0.4, which still run against
+  the primary checkout.
+EOF
+    fi
+  fi
+fi
+
 "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" exists
 case $? in
   0)
@@ -167,6 +213,8 @@ esac
 
 `SHIPYARD_CONFIG_SCHEMA_FAILURE` is session-local working memory (like `SHIPYARD_UNCONFIGURED`) — not mirrored to the session-state file. It's set only on the schema-failure path; when unset, the end-of-session summary omits the `Config:` line entirely (silence is the right default for a clean config load). Treat the two as mutually-exclusive-ish in practice: `SHIPYARD_UNCONFIGURED=1` means no `shipyard.config.json` at all, while `SHIPYARD_CONFIG_SCHEMA_FAILURE` means one is present but invalid.
 
+**`SHIPYARD_PLUGIN_ROOT_SHA` and `SHIPYARD_PLUGIN_ROOT_STALE` ([#907](https://github.com/mattsears18/shipyard/issues/907)).** Same session-local-working-memory convention as the two variables above — not mirrored to the session-state file. `SHIPYARD_PLUGIN_ROOT_SHA` is set unconditionally (to `unknown` when the resolved plugin root isn't a git checkout) to the short commit sha the resolved `CLAUDE_PLUGIN_ROOT` sits at, so "which version of the spec ran?" is answerable from the transcript after the fact. `SHIPYARD_PLUGIN_ROOT_STALE` is set ONLY in the dogfooding case (`CLAUDE_PLUGIN_ROOT` resolved repo-local — layer 1) when the primary checkout is measurably behind `origin/<default-branch>`; when unset, the end-of-session summary omits the corresponding `Plugin root:` line entirely (silence is the default — a fresh-enough primary checkout, or a consumer install where the check doesn't apply). This step's staleness check runs against the **primary checkout** (before the [step 0.5](#05-move-into-the-orchestrators-worktree) relocation) — that resolution is superseded once the orchestrator relocates into its own worktree, which checks out `origin/<default-branch>`'s tip fresh by construction, so the staleness condition this check is guarding against cannot recur post-relocation. See step 0.5's closing note for how `CLAUDE_PLUGIN_ROOT` (and any spec-file read built from it) should be re-derived from the orchestrator worktree for the remainder of the session, rather than reused from this pre-relocation resolution.
+
 Flags interpreted here:
 
 - `--force` / `--no-config` — skip the warn and continue with built-in defaults. Equivalent for now; once the hard-refusal gate ships, `--force` will be the explicit "I know this repo is unconfigured" opt-out.
@@ -241,10 +289,22 @@ fi
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+# Re-echo the resolved value + commit sha now that cwd has relocated into the
+# orchestrator worktree (issue #907). This re-derivation naturally resolves
+# to the ORCHESTRATOR WORKTREE's own plugins/shipyard (fresh off
+# origin/<default-branch>'s tip, per this step), superseding step 0.4's
+# pre-relocation resolution against the primary checkout — the staleness
+# step 0.4 could warn about cannot recur here, by construction.
+echo "resolved CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT (post-relocation)" >&2
+SHIPYARD_PLUGIN_ROOT_SHA=$(git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD 2>/dev/null)
+[ -z "$SHIPYARD_PLUGIN_ROOT_SHA" ] && SHIPYARD_PLUGIN_ROOT_SHA="unknown"
+echo "resolved CLAUDE_PLUGIN_ROOT commit=$SHIPYARD_PLUGIN_ROOT_SHA (post-relocation)" >&2
 # Close the step_0_5_worktree timing window.
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
 ```
+
+**Prefer the orchestrator worktree for spec reads too, not just bash script invocations ([#907](https://github.com/mattsears18/shipyard/issues/907)).** The `${CLAUDE_PLUGIN_ROOT}` re-export preamble is written for `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` bash invocations, but the orchestrator (the LLM) also reads this spec's own markdown files directly via the `Read` tool — and that consumption doesn't naturally re-run the preamble the way a templated bash call does. Once this step has re-resolved `CLAUDE_PLUGIN_ROOT` against the orchestrator worktree above, treat **that** path — not whatever was echoed at [step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson) before relocation — as the canonical source for any further spec-file read this session, in the dogfooding case. This is what makes the spec the orchestrator executes match the spec that's actually current, by construction: the orchestrator worktree is checked out fresh from `origin/<default-branch>`'s tip in this very step, so a spec file read from there can never be the arbitrarily-stale primary-checkout copy [step 0.4's staleness check](#04-check-the-repo-level-opt-in-shipyardconfigjson) exists to catch.
 
 End-of-session cleanup also runs from the orchestrator worktree, and reaps the orchestrator's own worktree last — see [End-of-session cleanup](../cleanup-summary.md#end-of-session-cleanup) below.
 
