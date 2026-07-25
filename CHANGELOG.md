@@ -4,7 +4,7 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
-### 4.2.7 — 2026-07-25
+### 4.2.8 — 2026-07-25
 
 Issue #883 was originally scoped as "extract a `resolve-plugin-root.sh` helper and replace all 66 inlined `${CLAUDE_PLUGIN_ROOT}` bootstrap copies with a 2-line `source` call" — a prior scoping pass rejected that route as circular (locating the helper requires the identical probe it would replace, and every occurrence runs in a fresh hermetic subshell with nothing persisting between calls) and a maintainer decision comment re-aimed the issue at shrinking the inlined probe in place instead: keep the repo-local dogfooding-override layer (governed separately by #907, which kept it), and collapse the remaining installed-path + marketplace-glob layers into the one layer (`installed_plugins.json`) that's authoritative and resolves identically across every install method (closes #883).
 
@@ -12,6 +12,14 @@ Issue #883 was originally scoped as "extract a `resolve-plugin-root.sh` helper a
 - Applied mechanically across all 80 occurrences of the old form: 9 files under `plugins/shipyard/commands/do-work/` (65 occurrences — the issue's original hot-path scope), plus 3 files under `plugins/shipyard/skills/worker-preamble/` and 5 files under `plugins/shipyard/agents/issue-worker/` (15 occurrences) so the regression test's single `EXPECTED_PREAMBLE` stays consistent across every file it scans rather than tolerating two co-existing forms.
 - `plugins/shipyard/commands/do-work/setup/00-config-worktree.md` §0.3 — rewrote the layer-by-layer semantics prose for the two-layer form, and added a permanent record of why helper-script extraction was rejected (so a future source-review pass doesn't re-propose it).
 - `plugins/shipyard/scripts/tests/claude-plugin-root-preamble.test.sh` — updated `EXPECTED_PREAMBLE` to the shrunk form, rewrote the header-comment rationale, and replaced the two marketplace-glob-specific sandbox checks (`.bak`-shadowing exclusion, authoritative-install-vs-marketplace preference) with two checks matched to the new two-layer shape: `installed_plugins.json`'s `installPath` is used when the repo has no local `plugins/shipyard` (issue #417, re-verified), and a malformed/partial `installed_plugins.json` entry (no `scripts/` dir) still falls through to the repo-local-anyway default rather than being trusted blindly.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.2.7` → `4.2.8`.
+
+### 4.2.7 — 2026-07-25
+
+The `main` ruleset required **zero** status checks, so `gh pr merge --auto` did not queue behind CI — for an admin it fell through to an immediate direct merge, the ungated shape `scripts/detect-ungated-admin-direct-merge.sh` exists to detect (issues #438 / #465 / #598 / #602 / #645 / #716). Observed live while landing 4.2.6: the PR merged the instant auto-merge was armed. Five checks are now required on the ruleset, and the reasoning is written down so the next person extending the list doesn't brick the repo with a check that never reports on a pull request.
+
+- Ruleset `16669759` — added a `required_status_checks` rule for `conflict markers`, `gitleaks`, `bash test suites`, `shell tests`, and `shellcheck`; all five come from workflows triggered on every `pull_request` against `main`. `strict_required_status_checks_policy` deliberately left `false` (a `true` value would force a rebase on nearly every PR at ~97 merges/week). The detector now reports `verdict=gated`.
+- `CLAUDE.md` — new § *Required status checks on `main` — and the two that must never be added* under Permissions, documenting the five required contexts and what each guards, plus an explicit warning that `External-author gate` (triggers on `issues` only) and `Audit label event` (triggers on label events only) must never be required, since neither runs on every PR and a required check that never reports is indistinguishable from one that never passes.
 - `plugins/shipyard/.claude-plugin/plugin.json` — version `4.2.6` → `4.2.7`.
 
 ### 4.2.6 — 2026-07-25
