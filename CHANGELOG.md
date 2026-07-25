@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.46 — 2026-07-25
+
+`CONTRIBUTING.md`'s worker-mode file list and label quick-index had drifted from `CLAUDE.md`/`README.md`, the sources it links out to and defers to as authoritative — a docs audit caught three separate stale claims plus one adjacent stale count in the same paragraph (closes #868).
+
+- `plugins/shipyard/agents/issue-worker/` bullet — the worker-mode list now names all 7 `mode:` values (`issue-work`, `fix-checks-only`, `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike`), matching README.md's "Orchestrator → workers → PR" section; it previously listed only 5, missing `investigate` and `spike`.
+- `worker-preamble/SKILL.md` bullet — "affects all five worker modes" corrected to "all seven worker modes," the same drift as above surfacing a second time two lines later.
+- State-labels quick-index — `blocked:agent` (the retired legacy label) replaced with `blocked:agent-soft` (the current auto-managed label per CLAUDE.md's "State labels" section).
+- Gate-labels quick-index — added `needs-operator`, the third currently-active gate label (per CLAUDE.md's "Gate labels" section, added by #608) that the quick-index omitted entirely.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.45` → `4.1.46`.
+
 ### 4.1.45 — 2026-07-25
 
 The 5-phase native-Workflows migration (#787→#791) was complete history by the time #825 partially reverted it (restoring `Agent`-tool dispatch as the default), but three files still retold the phase-by-phase blow-by-blow at length — two of them hot-path files read on every dispatch (closes #881).
