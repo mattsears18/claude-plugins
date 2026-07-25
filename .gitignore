@@ -7,6 +7,11 @@ docs/superpowers/
 !.claude/hooks/stop-shellcheck.sh
 .shipyard/
 
+# Per-suite test-log output from the CI test-suite runner steps in
+# .github/workflows/{tests,shellcheck}.yml (issue #865) — only produced
+# when running those steps' bash locally; never committed.
+test-results/
+
 # local env files
 .env
 .env*.local

@@ -60,6 +60,7 @@ jobs:
       - name: Run hook test suites
         run: |
           set -euo pipefail
+          mkdir -p test-results
           # Run every *.test.sh under plugins/shipyard/{hooks,scripts}/tests/.
           # Each suite is self-contained (its own tmpdir, its own cleanup) and
           # exits non-zero on any failure.
@@ -71,8 +72,23 @@ jobs:
           rc=0
           for suite in "${suites[@]}"; do
             printf '\n=== %s ===\n' "$suite"
-            if ! bash "$suite"; then
+            # Flatten the suite path into a safe per-suite log filename so
+            # every suite's stdout+stderr survives as a structured artifact
+            # instead of only the raw job log (issue #865).
+            logfile="test-results/${suite//\//__}.log"
+            if ! bash "$suite" 2>&1 | tee "$logfile"; then
               rc=1
             fi
           done
           exit "$rc"
+
+      # Upload every suite's captured stdout+stderr as a structured artifact,
+      # unconditionally (pass or fail), for the same reason as tests.yml's
+      # bash-tests job (issue #865).
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shell-test-results
+          path: test-results/
+          if-no-files-found: warn
