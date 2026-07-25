@@ -175,6 +175,33 @@ assert_equals "$count" "1" "dedupe: suspect key present exactly once after two r
 
 # --------------------------------------------------------------------------
 echo
+echo "file-tracking-issue — a failing dedupe lookup must be logged, not fail open silently (#873)"
+# --------------------------------------------------------------------------
+T="${WORK}/dedupe-lookup-fail"; mkdir -p "$T/repo"
+# Mock gh where `issue list` (the dedupe lookup) fails with a nonzero exit —
+# simulating a transient rate-limit / network / auth blip — while `issue
+# create` still succeeds, so filing proceeds regardless.
+cat > "$T/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "GH-CALL: $*" >> "$GH_LOG"
+case "$1 $2" in
+  "issue list")   exit 1 ;;
+  "issue create") echo "https://github.com/o/r/issues/999" ;;
+  "pr view")      printf 'OPEN\nshipyard\n' ;;
+  *) : ;;
+esac
+MOCK
+chmod +x "$T/gh"
+export GH_LOG="$T/gh.log"; : > "$GH_LOG"
+crossed='[{"repo":"o/r","workflow":"CI","job":"E2E","test":"Z","events":3,"distinct_prs":1,"prs":[9],"actions":["file-tracking-issue"]}]'
+out="$(printf '%s' "$crossed" | SHIPYARD_HOME="$T/home" GH="$T/gh" "$enforce" enforce --repo o/r --repo-root "$T/repo" --from-stdin 2>&1)"
+assert_contains "$out" "file-tracking-issue dedupe-lookup-failed repo=o/r" "dedupe lookup failure IS logged with a distinguishable line"
+assert_not_contains "$out" "file-tracking-issue skip (exists)" "a failed dedupe lookup must not be reported as a genuine skip"
+ghlog="$(cat "$GH_LOG")"
+assert_contains "$ghlog" "issue create --repo o/r" "dedupe lookup failure still proceeds to file the tracking issue"
+
+# --------------------------------------------------------------------------
+echo
 echo "apply-blocked-ci — a failing gh call must not log false success (#872)"
 # --------------------------------------------------------------------------
 T="${WORK}/blocked-ci-fail"; mkdir -p "$T/repo"
