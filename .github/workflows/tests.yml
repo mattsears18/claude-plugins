@@ -58,6 +58,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p test-results
+
           tests=()
           while IFS= read -r -d '' f; do
             tests+=("$f")
@@ -75,7 +77,13 @@ jobs:
           failed=0
           for t in "${tests[@]}"; do
             echo "::group::$t"
-            if bash "$t"; then
+            # Flatten the suite path into a safe per-suite log filename
+            # (e.g. plugins/shipyard/scripts/tests/foo.test.sh ->
+            # test-results/plugins__shipyard__scripts__tests__foo.test.sh.log)
+            # so every suite's stdout+stderr survives as a structured
+            # artifact instead of only the raw job log (issue #865).
+            logfile="test-results/${t//\//__}.log"
+            if bash "$t" 2>&1 | tee "$logfile"; then
               echo "::endgroup::"
             else
               rc=$?
@@ -91,3 +99,17 @@ jobs:
           fi
 
           echo "All test suites passed."
+
+      # Upload every suite's captured stdout+stderr as a structured artifact
+      # so a failed run's per-suite output survives past the raw job log
+      # retention window and can be downloaded/parsed without scrolling the
+      # full log (issue #865). `if: always()` runs this even when the suite
+      # loop above exits non-zero, so failed runs are captured too — that's
+      # the case that matters most for flake/failure analysis.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bash-test-results
+          path: test-results/
+          if-no-files-found: warn

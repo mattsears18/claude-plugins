@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.2.0 — 2026-07-25
+
+Neither of the two workflows that run the repo's `*.test.sh` bash suites (`tests.yml`'s `bash-tests` job and `shellcheck.yml`'s `shell-tests` job) uploaded any test-report artifact — a failed run's per-suite output was only recoverable by scrolling the raw job log, and nothing survived past the log-retention window for later flake analysis (closes #865).
+
+- `.github/workflows/tests.yml` — the `bash-tests` job's suite loop now tees each suite's stdout+stderr to a per-suite log file under `test-results/` (flattened from the suite's path, e.g. `plugins__shipyard__scripts__tests__foo.test.sh.log`), then a new `Upload test results` step uploads the whole `test-results/` directory via `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1`, pinned by SHA per this repo's action-pinning convention. `if: always()` so a failing run's logs are captured too, not just a green run's.
+- `.github/workflows/shellcheck.yml` — the `shell-tests` job's suite loop gets the identical treatment (per-suite log capture + an `Upload test results` step uploading `test-results/`), independent of `tests.yml`'s job since the two workflows discover and iterate their own suite sets separately.
+- `.gitignore` — added `test-results/` so the local-run byproduct of either workflow's bash script is never accidentally committed.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.47` → `4.2.0`.
+
 ### 4.1.47 — 2026-07-25
 
 `.github/workflows/shellcheck.yml` was the one workflow in the repo still checking out the repo with a floating `actions/checkout@v4` (later `@v7`, after Dependabot's unrelated bump landed mid-session) tag rather than a pinned commit SHA — every sibling workflow (`secret-scan.yml`, `conflict-markers.yml`, `tests.yml`, `label-event-audit.yml`) already pins to a full SHA specifically to close the supply-chain risk of a tag being repointed at malicious code (closes #870). This release also catches up two Dependabot PRs that merged mid-session without their own version bump.
