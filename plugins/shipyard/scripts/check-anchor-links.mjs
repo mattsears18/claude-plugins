@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /*
- * check-anchor-links.mjs — assert every relative `[label](path#anchor)` /
- * `[label](#anchor)` link in the plugin's markdown resolves to a REAL
- * heading in its target file, using GitHub's own anchor-slug algorithm.
+ * check-anchor-links.mjs — assert every relative markdown link in the
+ * plugin's docs resolves to something real: a `[label](path#anchor)` /
+ * `[label](#anchor)` link must resolve to a REAL heading in its target
+ * file (GitHub's own anchor-slug algorithm), and a bare `[label](path)`
+ * link with NO `#anchor` must resolve to a REAL file or directory on disk.
  * ==========================================================================
  *
- * WHY THIS EXISTS (issue #866)
- * -----------------------------
+ * WHY THIS EXISTS (issue #866, extended by issue #929)
+ * -----------------------------------------------------
  * The `/do-work` phase docs cross-reference each other constantly —
  * `commands/do-work/*.md`, `agents/issue-worker/*.md`, and the
  * `skills/worker-preamble/*.md` fragments all link to specific subsections
@@ -22,6 +24,21 @@
  * two different workers in the same session that produced #866 (one while
  * investigating PR #911, one for PR #912) — proof this check is needed
  * often enough to be worth committing once instead of reinventing per PR.
+ *
+ * Issue #929 found the sibling drift class: a BARE `[label](path)` link
+ * with no `#anchor` at all — e.g. a stale `../../../../agents/...` that's
+ * one `../` too deep — was explicitly OUT of this checker's declared scope
+ * (step 3 below only ever looked at links carrying a `#anchor`). #929's own
+ * repro is `06-scope-preflight.md:56`'s link to `issue-work.md`, resolving
+ * one directory level too high after the file was moved during the same
+ * doc-restructuring pass that produced #866's anchor rot. Rather than fix
+ * that one link and leave the class unguarded, this checker now ALSO
+ * validates that every bare relative-path link resolves to a real file or
+ * directory on disk (step 3 below, second branch) — the same file-walking
+ * and link-extraction machinery already built for the anchor check, so the
+ * two validations can't drift out of sync the way two independent
+ * implementations would (exactly the duplication hazard #866's own header
+ * comment above warns about).
  *
  * WHAT IT DOES
  * ------------
@@ -39,11 +56,25 @@
  *      calibrated against real headings in this repo — see its own header
  *      comment for the worked example that validated it).
  *   3. Independently, walks every file's `[label](target)` links (again
- *      skipping fenced code and inline code spans on the same line), and
- *      for every link whose target carries a `#anchor`, resolves the
- *      target file (same file when the path portion is empty; otherwise
- *      resolved relative to the SOURCE file's directory) and checks the
- *      anchor against that file's heading-slug set from step 2.
+ *      skipping fenced code and — via `maskCodeSpans()`, a proper
+ *      CommonMark backtick-run matcher, NOT a naive `` `[^`]*` `` regex —
+ *      inline code spans on the same line, including multi-backtick spans
+ *      like `` ```` ```yaml ... ```` `` that wrap literal triple-backticks;
+ *      the naive regex mis-paired those runs and silently swallowed real
+ *      links after them, which is exactly why #929's own repro line went
+ *      undetected until this fix). Every extracted link is then routed by
+ *      whether its target carries a `#anchor`:
+ *        - WITH an anchor: resolve the target file (same file when the
+ *          path portion is empty; otherwise resolved relative to the
+ *          SOURCE file's directory) and check the anchor against that
+ *          file's heading-slug set from step 2.
+ *        - WITHOUT an anchor (issue #929): resolve the target relative to
+ *          the SOURCE file's directory and check it exists on disk as
+ *          either a file or a directory. `https:`/`mailto:`/`tel:` and any
+ *          other URI-scheme target (`^[a-zA-Z][a-zA-Z0-9+.-]*:`) is treated
+ *          as external and skipped — only genuinely repo-relative paths
+ *          are validated, so a legitimate external link never false-
+ *          positives.
  *   4. A bold/italic list-item lead-in ("**4.6. Foo (issue #466).**") is
  *      NOT a heading — GitHub never generates an id for it — so a link
  *      pointing at its would-be slug correctly reports as unresolvable
@@ -51,11 +82,16 @@
  *      deliberate: promoting bold lead-ins to headings is a documentation
  *      fix, not something this checker should paper over.
  *
- * Two distinct failure classes are reported, so a human can tell "the
- * anchor drifted" from "the whole file moved/was renamed":
- *   - `missing-file`   — the target file doesn't exist at all.
- *   - `missing-anchor` — the target file exists but has no heading whose
- *                        slug matches.
+ * Three distinct failure classes are reported, so a human can tell "the
+ * anchor drifted" from "the whole file moved/was renamed" from "the bare
+ * path itself is stale":
+ *   - `missing-file`   — an anchor-carrying link's target file doesn't
+ *                        exist at all.
+ *   - `missing-anchor` — an anchor-carrying link's target file exists but
+ *                        has no heading whose slug matches.
+ *   - `broken-path`    — a bare (no-`#anchor`) relative-path link's target
+ *                        doesn't exist on disk as a file or directory
+ *                        (issue #929).
  *
  * USAGE
  *   node check-anchor-links.mjs <path> [<path> ...]
@@ -64,16 +100,21 @@
  *   recursively for `.md` files. At least one path is required.
  *
  * EXIT CODES
- *   0  every intra-repo `#anchor` link resolved
- *   1  one or more broken anchor links found (diagnostics on stdout)
+ *   0  every intra-repo link resolved (both #anchor links and bare
+ *      relative-path links)
+ *   1  one or more broken links found, of either class (diagnostics on
+ *      stdout)
  *   2  usage error (no paths given, or a given path doesn't exist)
  *
- * Consumed by scripts/tests/anchor-links-866.test.sh, which unit-tests the
- * slug algorithm against known real headings (including the exact #866
- * repro case), proves fenced-code and bold-lead-in false positives are
- * suppressed, proves a genuinely broken anchor is caught, and finally runs
- * this checker against the real `plugins/shipyard/**` + root `CLAUDE.md`
- * tree to guard the whole class of drift going forward.
+ * Consumed by scripts/tests/anchor-links-866.test.sh (the anchor-slug
+ * algorithm suite — unit-tests it against known real headings including
+ * the exact #866 repro case, proves fenced-code and bold-lead-in false
+ * positives are suppressed, proves a genuinely broken anchor is caught,
+ * and runs this checker against the real `plugins/shipyard/**` + root
+ * `CLAUDE.md` tree) and scripts/tests/relative-links-929.test.sh (the bare
+ * relative-path suite — unit-tests the `broken-path` class, the
+ * multi-backtick masking-fix regression, and re-runs the same real-tree
+ * check to guard both classes of drift together).
  */
 
 import fs from 'node:fs';
@@ -264,6 +305,72 @@ function extractHeadingSlugs(content) {
 }
 
 // --------------------------------------------------------------------------
+// Inline code-span masking (CommonMark backtick-run matching)
+// --------------------------------------------------------------------------
+
+// A naive `/`[^`]*`/g` mask (single-backtick pairing) mis-handles a line
+// that contains a MULTI-backtick code span — CommonMark's actual rule is
+// that a run of N backticks opens a code span, which stays open until the
+// NEXT run of exactly N backticks. This repo's own docs deliberately use
+// that (e.g. a 4-backtick span wrapping a literal 3-backtick fence example:
+// `` ```` ```yaml .github/workflows/ci.yml ```` ``, from
+// `06-scope-preflight.md`'s Detector 1 prose — the exact #929 repro line).
+// The naive regex pairs backticks left-to-right without regard to run
+// length, so on a line with an odd/mixed backtick count it can span clean
+// across real markdown that follows — silently swallowing (and hence never
+// checking) any real `[label](target)` link in that stretch. Found while
+// building the #929 bare-path check: the checker's OWN masking was hiding
+// the very link #929 reported, so `broken-path` would never have fired for
+// it without this fix. Returns a same-length string with every matched
+// code span (delimiters included) replaced by `x`, so character offsets
+// used by callers to slice the ORIGINAL line stay valid; unmatched
+// backticks (no closing run of the same length found) are left as literal
+// characters, matching CommonMark's own fallback.
+function maskCodeSpans(line) {
+  let result = '';
+  let i = 0;
+  const n = line.length;
+  while (i < n) {
+    if (line[i] !== '`') {
+      result += line[i];
+      i++;
+      continue;
+    }
+    let openEnd = i;
+    while (openEnd < n && line[openEnd] === '`') openEnd++;
+    const runLen = openEnd - i;
+
+    let k = openEnd;
+    let closeStart = -1;
+    let closeEnd = -1;
+    while (k < n) {
+      if (line[k] !== '`') {
+        k++;
+        continue;
+      }
+      let l = k;
+      while (l < n && line[l] === '`') l++;
+      if (l - k === runLen) {
+        closeStart = k;
+        closeEnd = l;
+        break;
+      }
+      k = l;
+    }
+
+    if (closeStart === -1) {
+      // No matching close run — these backticks are literal, not a span.
+      result += line.slice(i, openEnd);
+      i = openEnd;
+    } else {
+      result += 'x'.repeat(closeEnd - i);
+      i = closeEnd;
+    }
+  }
+  return result;
+}
+
+// --------------------------------------------------------------------------
 // Per-file link extraction (fence-aware, inline-code-aware)
 // --------------------------------------------------------------------------
 
@@ -291,8 +398,10 @@ function extractLinks(content) {
     // copy and then re-extract label/target from the ORIGINAL line at the
     // same offsets, so a link whose LABEL legitimately contains inline
     // code (e.g. `[`verify`](...)`) isn't reported with its label
-    // replaced by placeholder x's in diagnostics.
-    const masked = line.replace(/`[^`]*`/g, (m) => 'x'.repeat(m.length));
+    // replaced by placeholder x's in diagnostics. Uses maskCodeSpans(),
+    // NOT a naive single-backtick regex — see that function's header for
+    // why the naive form silently ate real links on a multi-backtick line.
+    const masked = maskCodeSpans(line);
 
     const linkRe = /\[([^\]\n]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
     let m;
@@ -371,17 +480,47 @@ function main(argv) {
   }
 
   const problems = [];
-  let linksChecked = 0;
+  let anchorLinksChecked = 0;
+  let pathLinksChecked = 0;
+
+  // Any URI-scheme target (https:, mailto:, tel:, ftp:, etc.) is external —
+  // never validated against the local filesystem. Generalized beyond the
+  // original https:/mailto:/tel: allowlist so a future scheme in these docs
+  // doesn't need a matching edit here; verified against every link target
+  // in this repo's docs at the time of writing (issue #929) that no
+  // genuinely repo-relative path collides with this pattern.
+  const URI_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
   for (const file of Array.from(files).sort()) {
     const content = fs.readFileSync(file, 'utf8');
     const links = extractLinks(content);
 
     for (const { line, label, target } of links) {
-      // Only relative intra-repo links carrying a #anchor are in scope.
-      if (/^(https?:|mailto:|tel:)/i.test(target)) continue;
+      if (!target) continue;
+      if (URI_SCHEME_RE.test(target)) continue;
+
       const hashIdx = target.indexOf('#');
-      if (hashIdx === -1) continue; // no anchor — out of scope
+
+      if (hashIdx === -1) {
+        // Bare relative-path link — no #anchor at all (issue #929). Resolve
+        // it against the SOURCE file's directory and check it exists on
+        // disk, as either a file or a directory (a link to a folder is
+        // legitimate — several of this repo's docs link to `./setup/` /
+        // `../agents/issue-worker/` etc.).
+        pathLinksChecked++;
+        const targetAbs = path.resolve(path.dirname(file), target);
+        if (!fs.existsSync(targetAbs)) {
+          problems.push({
+            kind: 'broken-path',
+            file,
+            line,
+            label,
+            target,
+            targetAbs,
+          });
+        }
+        continue;
+      }
 
       const rawPathPart = target.slice(0, hashIdx);
       const anchor = target.slice(hashIdx + 1);
@@ -395,7 +534,7 @@ function main(argv) {
       // Only .md targets have headings we can validate.
       if (!targetAbs.endsWith('.md')) continue;
 
-      linksChecked++;
+      anchorLinksChecked++;
       const headings = headingsFor(targetAbs);
 
       if (!headings) {
@@ -431,18 +570,22 @@ function main(argv) {
 
   if (problems.length === 0) {
     console.log(
-      `check-anchor-links: OK — ${linksChecked} intra-repo #anchor link(s) checked across ${files.size} file(s), 0 broken.`
+      `check-anchor-links: OK — ${anchorLinksChecked} intra-repo #anchor link(s) and ${pathLinksChecked} bare relative-path link(s) checked across ${files.size} file(s), 0 broken.`
     );
     return 0;
   }
 
   console.log(
-    `check-anchor-links: FOUND ${problems.length} broken anchor link(s) (of ${linksChecked} checked across ${files.size} file(s)):\n`
+    `check-anchor-links: FOUND ${problems.length} broken link(s) (of ${anchorLinksChecked} #anchor link(s) + ${pathLinksChecked} bare relative-path link(s) checked across ${files.size} file(s)):\n`
   );
   for (const p of problems) {
     if (p.kind === 'missing-file') {
       console.log(
         `  ${rel(p.file)}:${p.line}: [${p.label}](${p.target}) -> target file does not exist: ${rel(p.targetAbs)}`
+      );
+    } else if (p.kind === 'broken-path') {
+      console.log(
+        `  ${rel(p.file)}:${p.line}: [${p.label}](${p.target}) -> target path does not exist: ${rel(p.targetAbs)}`
       );
     } else {
       console.log(
