@@ -2,23 +2,19 @@
  * do-work-dispatch.workflow.js — Dynamic Workflows scaffold for /shipyard:do-work
  * ==============================================================================
  *
- * PHASE 5 of 5 shipped as planned (issue #791, completing the #782 epic; carried
- * the 3.x -> 4.0.0 major bump) — SINCE PARTIALLY REVERTED BY #825. Phase 1 (#787)
- * committed this file as an inert reference scaffold alongside the then-live
- * hand-rolled `Agent`-tool orchestrator (commands/do-work/dispatch-rules.md +
- * steady-state.md). Phase 2 (#788) wired ONE mode — `issue-work`.
- * Phase 3 (#789) wired the REMAINING SIX — `fix-checks-only`, `fix-rebase`,
- * `fix-main-ci`, `fix-failing-prs-batch`, `investigate`, `spike`. Phase 4 (#790)
- * flipped the built-in `dispatch.substrate` default from "agent" to "workflow", retaining the
- * legacy path for one release as an instant-revert override. Phase 5 REMOVED that
- * legacy path and DELETED the `dispatch.substrate` knob. #825 then found this
- * substrate's dispatched workers could not perform a single file write (the
- * harness refused every Edit/Write call with a "parent bg session hasn't
- * isolated" error) and restored the `Agent`-tool dispatch shape as the DEFAULT
- * for `mode:`-driven workers — WITHOUT reintroducing the `dispatch.substrate`
- * knob. See dispatch-rules.md's "Agent-tool dispatch" (default) and "Workflow-
- * substrate dispatch" (alternate) sections for the current split and the full
- * per-mode call-site walkthrough of this script.
+ * The #782 epic's five-phase migration (#787-#791, completing with a 3.x ->
+ * 4.0.0 major bump) made this script the SOLE dispatch substrate for all seven
+ * `mode:`-driven workers, retiring the hand-rolled `Agent`-tool orchestrator
+ * entirely — full phase-by-phase history in commands/do-work-RATIONALE.md's
+ * "Why two dispatch shapes exist" section. #825 THEN PARTIALLY REVERTED THAT:
+ * this substrate's dispatched workers could not perform a single file write
+ * (the harness refused every Edit/Write call with a "parent bg session hasn't
+ * isolated" error), so #825 restored the `Agent`-tool dispatch shape as the
+ * DEFAULT for `mode:`-driven workers — WITHOUT reintroducing the
+ * `dispatch.substrate` knob #791 deleted. See dispatch-rules.md's "Agent-tool
+ * dispatch" (default) and "Workflow-substrate dispatch" (alternate) sections
+ * for the current split and the full per-mode call-site walkthrough of this
+ * script.
  *
  * STATUS as of #825:
  *   - This script is an ALTERNATE way a `mode:`-driven /do-work worker can be
@@ -83,24 +79,26 @@
  * -------------------------------------------------------------------------------
  * The `Agent` tool's `isolation: "worktree"` parameter has the harness
  * auto-provision and cwd-pin an isolated worktree for the dispatched subagent
- * before it runs a single tool call — but that tool is no longer how a `mode:`-driven
- * worker is dispatched (#791). As of this writing, the Dynamic Workflows
- * docs (code.claude.com/docs/en/workflows) document NO equivalent option on
- * `agent()` — the docs state plainly that "the workflow [script] itself" has no
- * filesystem/shell access ("Agents read, write, and run commands. The script
- * coordinates the agents") and describe `agent()`'s options only as prompt/label
- * /model/schema; there is no isolation, worktree, or sandboxing field in that
- * surface. This script therefore CANNOT auto-provision worker isolation the way
- * the retired `Agent`-tool path did — that responsibility sits with the CALLER (the
- * orchestrator session, which still has full shell access, unlike this script):
+ * before it runs a single tool call — that's how the DEFAULT `Agent`-tool shape
+ * gets isolation for free (see the file-header #825 note above). THIS script's
+ * `Workflow` substrate has no equivalent primitive: as of this writing, the
+ * Dynamic Workflows docs (code.claude.com/docs/en/workflows) document NO
+ * isolation option on `agent()` at all — the docs state plainly that "the
+ * workflow [script] itself" has no filesystem/shell access ("Agents read,
+ * write, and run commands. The script coordinates the agents") and describe
+ * `agent()`'s options only as prompt/label/model/schema; there is no isolation,
+ * worktree, or sandboxing field in that surface. This script therefore CANNOT
+ * auto-provision worker isolation the way the `Agent`-tool path does — that
+ * responsibility sits with the CALLER (the orchestrator session, which still
+ * has full shell access, unlike this script):
  *   1. Before invoking this script, the orchestrator provisions the isolated
  *      worktree itself and passes the resulting absolute path as
  *      `unit.worktreePath`. The exact git-worktree invocation depends on the
  *      mode's branch shape:
  *        - `issue-work` / `investigate` / `spike`: `git worktree add <path> -b
  *          do-work/issue-<N> origin/<default-branch>` — a fresh branch off
- *          default (what the retired `Agent`-tool path's `isolation: "worktree"`
- *          produced for these modes).
+ *          default (what the `Agent`-tool path's `isolation: "worktree"`
+ *          produces for these modes).
  *        - `fix-checks-only` / `fix-rebase`: `git worktree add <path> -B
  *          <headRefName> origin/<headRefName>` — checked out directly onto the
  *          EXISTING PR branch being fixed/rebased, not a fresh branch off
@@ -242,7 +240,7 @@
 
 export const meta = {
   name: 'do-work-dispatch',
-  description: 'The /shipyard:do-work dispatch loop as a Dynamic Workflow: the only substrate for all seven mode-driven workers (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, spike). The caller pre-provisions each worker isolated worktree and passes it in as worktreePath.',
+  description: 'The /shipyard:do-work dispatch loop as a Dynamic Workflow: an alternate substrate (Agent-tool dispatch is the default, #825) for all seven mode-driven workers (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, spike). The caller pre-provisions each worker isolated worktree and passes it in as worktreePath.',
 }
 
 // ---------------------------------------------------------------------------
