@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.3.1 — 2026-07-25
+
+`plugins/shipyard/workflows/do-work-dispatch.workflow.js` was ~40KB / ~996 lines, but the maintainer decision that closed #888 (which only removed the file's unused `parallel()`/`pipeline()` fan-out branch) measured that the bulk of that size was the seven embedded `build<Mode>Prompt` worker-dispatch-prompt template functions (~469 lines), not orchestration logic — and directed that extracting those templates be filed and handled separately, without treating file size itself as evidence for or against the Workflow-substrate's shape. A source-level `import`/`require` split isn't possible for the file the Dynamic Workflows runtime actually executes — it runs in an isolated sandbox with no filesystem access of its own — so the fix is a generate-from-source split: the seven builders and their shared worktree-anchor helpers now live as independently-editable ES modules, and a small generator concatenates them with the orchestration logic into the runtime file, which stays checked into git as the generated artifact (closes #958).
+
+- `plugins/shipyard/workflows/do-work-dispatch.core.js` (new) — the orchestration-logic source of truth: `meta`, `args` handling, the select/dispatch/collect stages, `unitLabel`, `buildWorkerPrompt`'s mode-routing switch, and `workerReturnSchema`.
+- `plugins/shipyard/workflows/prompt-templates/` (new) — `shared.mjs` (the `worktreeAnchorLines`/`worktreeAnchorCheckLines` helpers) plus one file per mode (`issue-work.mjs`, `fix-checks-only.mjs`, `fix-rebase.mjs`, `fix-main-ci.mjs`, `fix-failing-prs-batch.mjs`, `investigate.mjs`, `spike.mjs`) — each a normal, valid, independently `node --check`-able ES module.
+- `plugins/shipyard/scripts/generate-dispatch-workflow.mjs` (new) — concatenates the core fragment + template modules (stripping `import`/`export` syntax) into `do-work-dispatch.workflow.js`; run with no args to regenerate, `--check` to verify without writing.
+- `plugins/shipyard/workflows/do-work-dispatch.workflow.js` — now a generated artifact (byte-for-byte what the generator produces from the sources above); its function bodies are unchanged, so `scripts/check-dispatch-prompt-parity.mjs` (issue #880/#918) keeps working unmodified — it parses the generated file directly.
+- `plugins/shipyard/scripts/tests/dispatch-workflow-generated-958.test.sh` (new) — drift-checks the checked-in generated file against regenerating from source, validates every source fragment's syntax in isolation, exercises the generator's strip/concatenate logic against fixture fragments, and confirms the #880 parity checker still passes post-split.
+- `plugins/shipyard/workflows/README.md` — documents the new core/prompt-templates/generator split and the "never hand-edit the generated file" contract.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.3.0` → `4.3.1`.
+
 ### 4.3.0 — 2026-07-25
 
 A `/do-work` issue can be **undispatchable by construction** — the harness auto-mode permission classifier denies the dispatch itself, regardless of prompt wording, so the session discovers this only after burning both permitted attempts (the initial dispatch plus #718's one corrective re-dispatch) and handing back with no worker ever having run. #718's denial handling was already correct (record, one corrective re-dispatch, hard stop, `needs-human-review`); the gap was that the hand-back was indistinguishable at a glance from a worker that started and later bailed, and nothing marked the outcome for reuse by a later session (closes #953).
