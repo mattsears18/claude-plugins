@@ -4,6 +4,19 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.2.6 — 2026-07-25
+
+The operator layer's security/access-control carve-out classified by **keyword and provider-console location** ("any 'security' toggle") rather than by what an action actually does, and handed matching items back *before* the harness permission classifier — the layer that owns the permission decision — was ever consulted. Both halves stranded work: `vercel env rm` of six provably-dead, zero-consumer `EXPO_PUBLIC_FIREBASE_*` env vars was refused as a security mutation despite granting and revoking nobody's access, and because the hand-back pre-empted the attempt, the maintainer was never offered the scoped allow-rule that would have unblocked it. The carve-out is now defined by effect — *changes who can access what, or the strength of an authentication/authorization control* — and everything outside it is attempted, degrading to a hand-back only on a real classifier denial via the existing two-denials branch (closes #936).
+
+Deliberately **not** changed: the untrusted-author block still applies in both columns (it is what stops a prompt-injected issue body from manufacturing apparent authorization, so the original request to drop the "outranks explicit user authorization" clause wholesale was declined and the clause scoped instead), and a genuine in-category access-control mutation remains an unconditional hand-back that outranks standing authorization.
+
+- `plugins/shipyard/commands/do-work/operate/03-error-handling-and-safety.md` — the § *Safety — trust boundary* carve-out restated around the effect-based definition, with the attempt-then-degrade rule for out-of-category actions, the dead-config worked example, the retained conservative default on genuine ambiguity, and an explicit note that the clause does not scope down for untrusted-derived actions.
+- `plugins/shipyard/commands/do-work/operate/02-execution-and-playbooks.md` — `toggle-setting` / `console-action` step-4 classification and the auto-drive-vs-hand-back table re-keyed to the same definition; the left column is now "attempt" rather than "auto-drive", names zero-consumer non-secret config removal, and routes refusals through the `denied-by-classifier` degrade path.
+- `plugins/shipyard/commands/do-work/operate/01-queue-and-authorization.md` — the security-heavy-queue expectation note now sizes that bucket by the effect test, so console work merely filed under a provider's "Security" heading is no longer counted as a structural hand-back.
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — `security-class` reason phrase reworded to name the effect rather than the keyword.
+- New `plugins/shipyard/scripts/tests/operator-security-classification-936.test.sh` regression suite (20 assertions) pins the effect-based definition in both files, asserts the keyword catch-all is gone, and guards the two carve-outs #936 deliberately preserved. Verified to fail (15 assertions) against the pre-change spec.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.2.5` → `4.2.6`.
+
 ### 4.2.5 — 2026-07-25
 
 Issue #867 was closed after `security-auditor` recommended enabling CODEOWNERS enforcement plus `required_approving_review_count: 1` on `main` — advice that would have deadlocked every PR on this repo (a single push-capable maintainer, and an empty `bypass_actors` list on the `main` ruleset means no admin bypass exists either). GitHub does not let a PR author approve their own PR, so that combination makes every future PR unmergeable, including every `/shipyard:do-work` auto-merge PR. The advice was only caught because a `/shipyard:my-turn` walkthrough verified the ruleset before handing over a ready-to-run `gh api` command (closes #938).
