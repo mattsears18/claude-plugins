@@ -72,6 +72,23 @@ gh label list --repo <owner/repo> --limit 100 | grep -q "^audit:<dimension>" || 
 
 Then pass `--label "audit:<dimension>"` on every `gh issue create` you do — alongside `--label shipyard`.
 
+## Severity label (`P0`/`P1`/`P2` — REQUIRED, issue [#889](https://github.com/mattsears18/shipyard/issues/889))
+
+Every finding you file is already bucketed `P0`/`P1`/`P2` by `shipyard:audit-rubrics` — that bucket is not just prose for the title/body, it MUST also land as a GitHub label on the issue. `is:open label:P1` (and similar label-scoped searches) is the primary way the backlog gets triaged; a severity that only exists in the title or body text is invisible to that filter. Stating the severity without labeling it is an incomplete filing, not a stylistic choice.
+
+Same **ensure-then-label** pattern as the `shipyard` and `audit:<dimension>` labels above — auto-create the three severity labels idempotently (once, at the start of the run, alongside the other ensure calls) if the target repo hasn't bootstrapped them yet:
+
+```bash
+gh label create P0 --repo <owner/repo> --color B60205 \
+  --description "Critical — production down, data loss, security, or release-blocker. Drop other work." 2>/dev/null || true
+gh label create P1 --repo <owner/repo> --color D93F0B \
+  --description "High — must ship this cycle. Doesn't preempt in-flight work, but is next." 2>/dev/null || true
+gh label create P2 --repo <owner/repo> --color FBCA04 \
+  --description "Normal — standard planned work; gets done in natural backlog order." 2>/dev/null || true
+```
+
+Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the bucket you just assigned per `shipyard:audit-rubrics` — on **every** `gh issue create` you do, alongside `--label shipyard` and your `--label "audit:<dimension>"`. This is not optional and does not depend on whether `P0`/`P1`/`P2` already exist in the target repo's label list (unlike the "apply whichever of these actually exist" guidance for `bug`/`enhancement`/etc. under "Discover labels once" above) — severity labels are auto-created exactly like `audit:<dimension>` and `needs-triage`, because the severity bucket is the filing agent's own classification, not a repo-config decision.
+
 ## `needs-triage` label (when the finding needs refinement before work)
 
 Apply `needs-triage` to any issue you file that **can't be picked up by `/do-work` as-is** because it requires human judgment before implementation. Signals:
@@ -254,11 +271,12 @@ Only reference issue numbers you verified this session via `gh issue view N` or 
 
 ## Filing command (HEREDOC pattern)
 
-Always include `--label shipyard` (the provenance stamp — see "shipyard provenance label" above) alongside your other labels:
+Always include `--label shipyard` (the provenance stamp — see "shipyard provenance label" above) and `--label "P<n>"` (the severity label — see "Severity label" above) alongside your other labels:
 
 ```bash
 gh issue create --repo <owner/repo> \
   --label shipyard \
+  --label "P1" \
   --label <label1> --label <label2> \
   --title "<conventional-commit title>" \
   --body "$(cat <<'EOF'
@@ -276,6 +294,7 @@ HEREDOC with quoted `'EOF'` preserves backticks, dollar signs, and special chars
 ```bash
 issue_url=$(gh issue create --repo <owner/repo> \
   --label shipyard \
+  --label "P1" \
   --label <label1> --label <label2> \
   --title "<conventional-commit title>" \
   --body "$(cat <<'EOF'
