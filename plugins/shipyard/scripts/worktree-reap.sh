@@ -147,68 +147,18 @@
 #       0  sweep succeeded (output is always at least the summary line)
 #       64 bad usage (missing required flag, malformed flag value)
 #
-#   detect-orchestrator-pid [<comm-name>]
-#     Walks the process-ancestor chain and prints the PID of the nearest
-#     ancestor whose `comm` matches <comm-name> (default `claude`). Empty
-#     stdout if no match. Used to bootstrap SHIPYARD_ORCHESTRATOR_PID.
-#
-#   derive-session-id --repo-root <path>
-#     Issue #513 — recover THIS session's id from disk when the per-call
-#     env var doesn't persist (each Bash tool call is hermetic — see
-#     setup.md step 0.55). Reads `.shipyard-session-id` from the orchestrator
-#     worktree under <repo-root>/.claude/worktrees/orchestrator-*.
-#
-#     The naive `git worktree list --porcelain | awk '...; exit'` derive
-#     picked the FIRST orchestrator-* worktree in listing order, which is
-#     the OLDEST orphan when prior crashed sessions left their
-#     `orchestrator-<dead-id>` worktrees un-reaped. That misattributed every
-#     `session-state.sh` write to a dead orphan's session file (same-repo, so
-#     the --expected-repo guard did not catch it).
-#
-#     This subcommand instead selects the NEWEST `orchestrator-*` worktree by
-#     directory mtime — the live session's worktree was just created in
-#     setup.md step 0.5, so among coexisting orchestrator worktrees it is the
-#     most recently created. Strictly better than first-by-listing-order: it
-#     resolves to the live session even when orphans accumulate.
-#
-#     Stdout: the session id (contents of the chosen worktree's
-#       `.shipyard-session-id`, trailing newline stripped). Empty stdout when
-#       no orchestrator worktree exists or none carries a readable stash.
-#     Exit codes:
-#       0  a session id was printed, OR no candidate was found (empty stdout —
-#          the caller decides what an empty result means)
-#       64 bad usage (missing required flag, unknown flag)
-#
-#   find-orphan-orchestrators --repo-root <path> --current-session-id <id>
-#     Issue #280 — companion to step 1.6's orphan session-file sweep, but
-#     for the orchestrator worktrees themselves. If a prior /do-work
-#     session crashed before reaching cleanup-summary.md step 6, its
-#     `.claude/worktrees/orchestrator-<dead-session-id>` directory is
-#     never reaped — step 1.6 only reaps session FILES, and setup.md
-#     step 3b only reaps `agent-*` worktrees. The session file might also
-#     be gone (its prior cleanup got far enough to flush + delete it,
-#     just not far enough to reap its own worktree). Either way, the
-#     worktree dir lingers indefinitely.
-#
-#     This subcommand emits one line per orphan orchestrator worktree
-#     path, where "orphan" means:
-#       (a) name matches `.claude/worktrees/orchestrator-*`, AND
-#       (b) embedded session id is NOT the current session id, AND
-#       (c) the owning session is INACTIVE — either the session file
-#           is missing from $SHIPYARD_HOME/sessions/<id>.json, OR
-#           `session-state.sh is-active` returns non-zero (PID dead,
-#           unparseable, or null).
-#
-#     The caller is responsible for the actual `git worktree remove
-#     --force` + audit-log write. This helper just enumerates candidates
-#     so the discovery logic is testable in isolation.
-#
-#     Env vars:
-#       SHIPYARD_HOME — override the session-file lookup root (defaults
-#                       to `$HOME/.shipyard`). Mirrors session-state.sh.
-#     Exit codes:
-#       0  enumeration succeeded (output may be empty)
-#       64 bad usage (missing required flag)
+#   detect-orchestrator-pid, derive-session-id, find-orphan-orchestrators
+#     Issue #941 — these three orchestrator-PID / session-identity forensics
+#     subcommands moved to a dedicated sibling script,
+#     `plugins/shipyard/scripts/session-identity.sh` — they answer "what is
+#     the orchestrator's PID" / "what session am I" questions, not "is this
+#     worktree safe to remove" ones, so they don't belong in a script whose
+#     job is reaping. See that file's own header for the full per-subcommand
+#     documentation. This file's `classify-lock` still uses the ancestor-walk
+#     primitives (self_ancestor_pids / is_self_ancestor) for its own,
+#     genuinely different question — lock-PID liveness classification — so
+#     those primitives were NOT moved; the two scripts are siblings, not
+#     layered on each other.
 #
 #   reap-orphan-branches --repo-root <path> --session-id <id>
 #        [--dry-run]
@@ -429,10 +379,6 @@ Usage:
                               [--exclude-agent-id <id> ...] \
                               [--orchestrator-pid <N>] \
                               [--peer-stale-min <N>] [--dry-run]
-  worktree-reap.sh detect-orchestrator-pid [<comm-name>]
-  worktree-reap.sh derive-session-id --repo-root <path>
-  worktree-reap.sh find-orphan-orchestrators --repo-root <path> \
-                                             --current-session-id <id>
   worktree-reap.sh reap-orphan-branches --repo-root <path> \
                                         --session-id <id> [--dry-run]
   worktree-reap.sh reap-session-worktrees --repo-root <path> \
@@ -483,29 +429,13 @@ reap-stale                — Issue #836 fix 2. Bounded, checkpointed sweep
                           remaining=<REMAIN>` line. --dry-run skips
                           removes and audit writes.
 
-detect-orchestrator-pid — Walks the process-ancestor chain and prints the
-                          PID of the nearest ancestor whose `comm` matches
-                          <comm-name> (default `claude`). Empty stdout if
-                          no match. Useful for bootstrapping
-                          SHIPYARD_ORCHESTRATOR_PID in shell snippets that
-                          want classify-lock to short-circuit reliably.
-
-derive-session-id       — Issue #513. Prints THIS session's id by reading
-                          `.shipyard-session-id` from the NEWEST-by-mtime
-                          `orchestrator-*` worktree under
-                          <repo-root>/.claude/worktrees. Picking newest (not
-                          first-in-listing-order) resolves to the live session
-                          even when prior crashed sessions left orphan
-                          orchestrator worktrees behind. Empty stdout (exit 0)
-                          when no candidate carries a readable stash.
-
-find-orphan-orchestrators — Emits one path per line for each orphan
-                          orchestrator worktree under
-                          <repo-root>/.claude/worktrees/orchestrator-*
-                          whose embedded session id is NOT
-                          <current-session-id> AND whose owning session
-                          is inactive (session file missing OR PID dead).
-                          Empty stdout when there are no orphans.
+detect-orchestrator-pid, derive-session-id, find-orphan-orchestrators
+                        — Issue #941: moved to the sibling script
+                          session-identity.sh — see that file's own
+                          `--help` / header for the full documentation.
+                          classify-lock's own self-ancestor short-circuit
+                          (SHIPYARD_ORCHESTRATOR_PID) is unaffected; it
+                          still lives here and works the same way.
 
 reap-orphan-branches    — Issue #326. Deletes every local worktree-agent-*
                           branch whose branch ref has no live worktree
@@ -588,15 +518,11 @@ Env vars:
   SHIPYARD_ORCHESTRATOR_PID  Explicit orchestrator PID for self-ancestor
                              short-circuit (classify-lock). Overridden by
                              --orchestrator-pid.
-  SHIPYARD_HOME              Override session-file lookup root for
-                             find-orphan-orchestrators (defaults to
-                             $HOME/.shipyard). Also the root for
-                             reap-audit.jsonl writes used by `reap`.
+  SHIPYARD_HOME              Root for reap-audit.jsonl writes used by `reap`.
 
 Exit codes:
-  0  classification emitted (classify-lock) / PID printed or empty
-     (detect-orchestrator-pid) / enumeration succeeded, output may be
-     empty (find-orphan-orchestrators) / audit-log write attempted (reap)
+  0  classification emitted (classify-lock) / audit-log write attempted
+     (reap) / enumeration succeeded, output may be empty (other sweeps)
   64 usage error (missing path, malformed flag, missing required flag)
 EOF
 }
@@ -662,45 +588,13 @@ is_self_ancestor() {
   return 1
 }
 
-# Walk our own ancestor chain looking for a process whose comm matches the
-# Claude Code orchestrator (default: literal `claude`). Emits the matched PID
-# on stdout (empty if no match found). Used by the `detect-orchestrator-pid`
-# subcommand and by `classify-lock`'s lazy auto-detect path to bootstrap the
-# `SHIPYARD_ORCHESTRATOR_PID` short-circuit when callers haven't set it
-# explicitly.
-#
-# The match is intentionally narrow: if the Claude Code binary is renamed,
-# this detection returns empty and callers fall back to the ancestor-walk
-# semantics inside `classify-lock`. False matches (a foreign `claude` process
-# in the chain) are extremely unlikely — process names in the ancestor chain
-# of a bash spawned by Claude Code are bash, sh, claude, login, etc. The risk
-# threshold is low because a detected PID only short-circuits to
-# `self-ancestor` when it EXACTLY matches the lock PID; a wrong detection
-# only matters if it coincidentally matches a foreign live PID (negligible
-# probability).
-detect_orchestrator_pid() {
-  local match_comm="${1:-claude}"
-  local pid=$$
-  local guard=0
-  local comm
-  while [ -n "$pid" ] && [ "$pid" != "1" ] && [ "$pid" != "0" ]; do
-    guard=$((guard + 1))
-    [ "$guard" -gt 64 ] && return 0
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')
-    # `comm` on macOS returns the full executable path; basename it for the match.
-    comm=$(basename "$comm" 2>/dev/null)
-    if [ "$comm" = "$match_comm" ]; then
-      echo "$pid"
-      return 0
-    fi
-    local parent
-    parent=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-    [ -z "$parent" ] && return 0
-    [ "$parent" = "$pid" ] && return 0
-    pid="$parent"
-  done
-}
-
+# detect_orchestrator_pid() moved to session-identity.sh (issue #941). Note
+# for anyone tracing classify-lock's SHIPYARD_ORCHESTRATOR_PID short-circuit
+# below: classify_lock does NOT call it — the short-circuit only ever
+# consults the env var / --orchestrator-pid flag a caller already resolved
+# (typically by shelling out to `session-identity.sh detect-orchestrator-pid`
+# once, at phase start, and exporting the result). classify-lock has no
+# lazy auto-detect path of its own.
 classify_lock() {
   local lock_file=""
   local orchestrator_pid="${SHIPYARD_ORCHESTRATOR_PID:-}"
@@ -1110,233 +1004,6 @@ classify_all() {
   # leading field), then drop that sort key from the printed line.
   printf '%s\n' "${out_lines[@]}" | sort -n -k1,1 | while IFS= read -r line; do
     printf '%s\n' "${line#* }"
-  done
-
-  return 0
-}
-
-# Issue #513 — recover THIS session's id from disk by reading the
-# `.shipyard-session-id` stash out of the orchestrator's own worktree.
-#
-# Background: setup.md step 0.55 stashes the session id at
-# `<orch-worktree>/.shipyard-session-id` and re-reads it at the top of every
-# Bash tool call, because the harness's per-call shells are hermetic (an
-# `export SESSION_ID=...` in call N is invisible in call N+1). The original
-# porcelain-derive used `awk '... {print p; exit}'` to find the orchestrator
-# worktree, which returns the FIRST `orchestrator-*` entry in listing order.
-# When prior crashed sessions left their `orchestrator-<dead-id>` worktrees
-# un-reaped, "first in listing order" is the OLDEST orphan — so the derive
-# read a dead orphan's stash and every `session-state.sh` write landed in
-# the orphan's session file (same repo, so `--expected-repo` never tripped).
-#
-# Fix: select the NEWEST `orchestrator-*` worktree by directory mtime. The
-# live session's worktree was created in step 0.5 (this run), so among any
-# set of coexisting orchestrator worktrees it is the most recently created.
-# Newest-by-mtime is a heuristic, but strictly better than first-by-listing-
-# order: it resolves to the live session whenever orphans coexist, and is a
-# no-op (single candidate) in the common case of exactly one orchestrator
-# worktree.
-#
-# We deliberately do NOT use `git worktree list` here — `git rev-parse`/`git
-# worktree list` are cwd-sensitive and the harness can relocate the
-# orchestrator's Bash cwd into a just-returned agent worktree (#477). A
-# direct filesystem glob of `<repo-root>/.claude/worktrees/orchestrator-*`
-# is cwd-independent given the explicit `--repo-root`.
-#
-# Stdout: the session id (stash contents, trailing whitespace stripped), or
-#   empty when no candidate exists or none has a readable stash.
-# Exit: 0 (printed or empty), 64 on bad usage.
-derive_session_id() {
-  local repo_root=""
-
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --repo-root)
-        repo_root="${2:-}"
-        shift 2
-        ;;
-      --repo-root=*)
-        repo_root="${1#--repo-root=}"
-        shift
-        ;;
-      --)
-        shift
-        ;;
-      -*)
-        echo "derive-session-id: unknown flag: $1" >&2
-        return 64
-        ;;
-      *)
-        echo "derive-session-id: unexpected positional arg: $1" >&2
-        return 64
-        ;;
-    esac
-  done
-
-  if [ -z "$repo_root" ]; then
-    echo "derive-session-id: --repo-root is required" >&2
-    return 64
-  fi
-
-  local orch_root="$repo_root/.claude/worktrees"
-  # No worktrees dir at all → nothing to derive. Empty stdout, exit 0.
-  [ -d "$orch_root" ] || return 0
-
-  # Walk every orchestrator-* worktree and keep the one with the newest
-  # directory mtime that also carries a readable, non-empty stash. We require
-  # the stash to be present so a candidate without one (a half-set-up or
-  # already-cleaned worktree) never wins over an older worktree that DOES
-  # have the id — correctness beats recency when recency has no id to offer.
-  local entry newest_mtime="" newest_id="" mtime stash id
-  for entry in "$orch_root"/orchestrator-*; do
-    # No-glob-match fallthrough: bash leaves the literal pattern when nothing
-    # matches. Guard with `-d` so we silently skip.
-    [ -d "$entry" ] || continue
-
-    stash="$entry/.shipyard-session-id"
-    [ -f "$stash" ] || continue
-    # Strip surrounding whitespace/newlines from the stash contents.
-    id="$(tr -d '[:space:]' < "$stash" 2>/dev/null)"
-    [ -n "$id" ] || continue
-
-    # Portable mtime: GNU `stat -c %Y` and BSD/macOS `stat -f %m` differ, so
-    # try both. Fall back to 0 (oldest) if neither works, so a stat-less
-    # platform still picks *a* candidate deterministically (the last one
-    # scanned among those tied at 0).
-    mtime="$(stat -c %Y "$entry" 2>/dev/null || stat -f %m "$entry" 2>/dev/null || echo 0)"
-
-    if [ -z "$newest_mtime" ] || [ "$mtime" -ge "$newest_mtime" ] 2>/dev/null; then
-      newest_mtime="$mtime"
-      newest_id="$id"
-    fi
-  done
-
-  [ -n "$newest_id" ] && printf '%s\n' "$newest_id"
-  return 0
-}
-
-# Issue #280 — discover orphan orchestrator worktrees from prior crashed
-# sessions. Companion to setup.md step 1.6 (which reaps orphan session
-# FILES) and step 3b (which reaps `agent-*` worktrees). Neither covers
-# the `.claude/worktrees/orchestrator-<dead-session-id>` case.
-#
-# An orphan, for this helper's purposes, is a worktree directory whose
-# basename matches `orchestrator-*` AND whose embedded session id is
-# NOT the current session AND whose owning session is inactive (file
-# missing OR PID dead). The "or" branch matters: a prior session that
-# crashed AFTER session-state cleanup but BEFORE worktree reap (step 7
-# → step 6 reordering in cleanup-summary.md) leaves no session file
-# behind, but the worktree dir still exists.
-#
-# We emit paths instead of reaping in-place so:
-#   1. The caller controls the audit-log shape (the spec wants
-#      action: "reaped-orphan-orchestrator" with phase: "setup-3b-orch").
-#   2. The discovery logic is independently testable.
-#   3. A dry-run mode comes for free — the caller can choose to log
-#      candidates without acting on them.
-#
-# Output: one absolute path per line, no surrounding quoting. Paths
-# always exist at emit time (we filter against `-d` before printing).
-# Empty stdout when there are no orphans.
-find_orphan_orchestrators() {
-  local repo_root=""
-  local current_session_id=""
-
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --repo-root)
-        repo_root="${2:-}"
-        shift 2
-        ;;
-      --repo-root=*)
-        repo_root="${1#--repo-root=}"
-        shift
-        ;;
-      --current-session-id)
-        current_session_id="${2:-}"
-        shift 2
-        ;;
-      --current-session-id=*)
-        current_session_id="${1#--current-session-id=}"
-        shift
-        ;;
-      --)
-        shift
-        ;;
-      -*)
-        echo "find-orphan-orchestrators: unknown flag: $1" >&2
-        return 64
-        ;;
-      *)
-        echo "find-orphan-orchestrators: unexpected positional arg: $1" >&2
-        return 64
-        ;;
-    esac
-  done
-
-  if [ -z "$repo_root" ]; then
-    echo "find-orphan-orchestrators: --repo-root is required" >&2
-    return 64
-  fi
-  if [ -z "$current_session_id" ]; then
-    echo "find-orphan-orchestrators: --current-session-id is required" >&2
-    return 64
-  fi
-
-  local orch_root="$repo_root/.claude/worktrees"
-  # No worktrees dir at all → no orphans. Exit cleanly with empty output
-  # rather than erroring; a brand-new repo or one that's never run
-  # /do-work has nothing to reap.
-  [ -d "$orch_root" ] || return 0
-
-  local shipyard_home
-  shipyard_home=$(shipyard_home)
-  local sessions_dir="$shipyard_home/sessions"
-
-  # Resolve the helper script path so we can call `session-state.sh
-  # is-active` against each candidate. This script lives alongside it.
-  local self_dir
-  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local session_state_sh="$self_dir/session-state.sh"
-
-  local entry name session_id session_file
-  for entry in "$orch_root"/orchestrator-*; do
-    # No-glob-match fallthrough: bash leaves the literal pattern when
-    # nothing matches. Guard with `-d` so we silently skip.
-    [ -d "$entry" ] || continue
-
-    name=$(basename "$entry")
-    # Strip the `orchestrator-` prefix to recover the session id.
-    session_id="${name#orchestrator-}"
-
-    # Skip our own worktree — never reap the running session out from
-    # under itself.
-    [ "$session_id" = "$current_session_id" ] && continue
-
-    session_file="$sessions_dir/$session_id.json"
-
-    # Inactive ≡ (file missing) OR (file present AND is-active exits non-zero).
-    # File-missing is the common case for the bug report (#280): the
-    # prior session's step 7→8 cleanup ran before its step 6 worktree
-    # reap, so its session file is gone but its worktree lingers.
-    if [ ! -f "$session_file" ]; then
-      printf '%s\n' "$entry"
-      continue
-    fi
-
-    # File present — defer to session-state.sh is-active for the PID
-    # liveness check. If is-active is unavailable (script missing,
-    # somehow), fall back to "present file means active" — the
-    # conservative choice that preserves a still-running peer.
-    if [ ! -x "$session_state_sh" ] && [ ! -f "$session_state_sh" ]; then
-      continue
-    fi
-    if bash "$session_state_sh" is-active --session-id "$session_id" 2>/dev/null; then
-      # Owning process is alive — skip.
-      continue
-    fi
-    # File present but PID dead/unparseable → orphan.
-    printf '%s\n' "$entry"
   done
 
   return 0
@@ -2591,28 +2258,14 @@ main() {
       shift
       reap_stale "$@"
       ;;
-    detect-orchestrator-pid)
-      # Emit the PID of the nearest ancestor whose `comm` is `claude` (or
-      # the override passed as the first arg). Empty stdout on no match.
-      # Exit 0 whether or not a match was found — the caller decides what
-      # to do with an empty result.
-      shift
-      detect_orchestrator_pid "${1:-claude}"
-      ;;
-    derive-session-id)
-      # Issue #513 — recover THIS session's id from the newest-by-mtime
-      # orchestrator-* worktree's `.shipyard-session-id` stash, so the
-      # derive resolves to the live session rather than the oldest orphan.
-      # See the derive_session_id function's docstring for the algorithm.
-      shift
-      derive_session_id "$@"
-      ;;
-    find-orphan-orchestrators)
-      # Issue #280 — enumerate orphan `orchestrator-*` worktrees from
-      # prior crashed sessions. See the find_orphan_orchestrators
-      # function's docstring for the orphan definition.
-      shift
-      find_orphan_orchestrators "$@"
+    detect-orchestrator-pid|derive-session-id|find-orphan-orchestrators)
+      # Issue #941 — these three moved to the sibling script
+      # session-identity.sh. Fail loudly with a pointer rather than
+      # silently no-op'ing, so a caller that hasn't been updated yet
+      # gets an actionable error instead of empty stdout it might
+      # mistake for "no match found".
+      echo "worktree-reap.sh: '$sub' moved to session-identity.sh (issue #941) — call \"\${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh\" $sub instead" >&2
+      return 64
       ;;
     reap-orphan-branches)
       # Issue #326 — delete stale worktree-agent-* branch refs that have

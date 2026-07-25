@@ -40,6 +40,10 @@ fi
 
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 worktree_reap_path="$repo_root/plugins/shipyard/scripts/worktree-reap.sh"
+# detect-orchestrator-pid moved to session-identity.sh (issue #941) — the
+# reap/classify-lock subcommands this test also exercises stayed put in
+# worktree-reap.sh, so both paths are needed.
+session_identity_path="$repo_root/plugins/shipyard/scripts/session-identity.sh"
 
 pass=0
 fail=0
@@ -240,10 +244,11 @@ else
   fail=$((fail+1))
 fi
 
-# detect-orchestrator-pid subcommand exists and is callable. We don't
-# assert the output — the result depends on the test runner's process
-# tree — only that the subcommand is recognized (exit 0).
-if bash "$worktree_reap_path" detect-orchestrator-pid >/dev/null 2>&1; then
+# detect-orchestrator-pid subcommand exists and is callable (now in the
+# sibling session-identity.sh — issue #941). We don't assert the output —
+# the result depends on the test runner's process tree — only that the
+# subcommand is recognized (exit 0).
+if bash "$session_identity_path" detect-orchestrator-pid >/dev/null 2>&1; then
   printf '  %sPASS%s  detect-orchestrator-pid subcommand is callable\n' "$GREEN" "$RESET"
   pass=$((pass+1))
 else

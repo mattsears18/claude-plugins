@@ -1774,7 +1774,7 @@ assert_contains "$steady_state_path" \
   "steady-state.md A.0 has the required preamble subsection for cwd-independent session-id derive (#548)"
 assert_contains "$steady_state_path" \
   'derive-session-id' \
-  "steady-state.md A.0 preamble uses worktree-reap.sh derive-session-id (#548)"
+  "steady-state.md A.0 preamble uses session-identity.sh derive-session-id (#548, moved from worktree-reap.sh by #941)"
 assert_contains "$steady_state_path" \
   '[session-id-derive] empty' \
   "steady-state.md A.0/A.1 blocks emit a loud advisory when session-id derive returns empty (#548)"

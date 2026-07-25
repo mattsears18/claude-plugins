@@ -46,7 +46,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    REPO_ROOT="$(git rev-parse --show-toplevel)"
    # Declare our orchestrator PID so classify-lock short-circuits on our own
    # locks (issue #263) — same rationale as the generic sweep below.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
 
    # Feed this session's agent-ids (one per line) on stdin: the union of
    # reconciled_agent_ids and every live in_flight slot's agent_id. The helper
@@ -95,7 +95,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    # ancestor walk inside classify-lock can fail to find the orchestrator
    # whenever an intermediate harness layer returns empty PPID, deferring
    # the reap and stranding worktrees.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
 
    for wt_dir in .git/worktrees/agent-*; do
      [ -d "$wt_dir" ] || continue
