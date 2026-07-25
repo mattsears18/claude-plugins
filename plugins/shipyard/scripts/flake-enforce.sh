@@ -322,15 +322,27 @@ do_file_tracking_issue() {
 
   # Dedupe across sessions — an OPEN issue carrying this exact marker means we
   # already filed it. `--search` does a full-text match on the marker token.
-  local existing
+  #
+  # Capture the lookup's own exit status (rather than swallowing it with
+  # `2>/dev/null || echo ""`) so a transient `gh` failure (rate limit, network
+  # blip, auth hiccup) is distinguishable from a genuine "no existing issue"
+  # empty result — both used to fail open identically and file a duplicate
+  # tracking issue with no diagnostic explaining why dedupe didn't catch it.
+  # `set -e` isn't in effect for this script, but we avoid relying on that:
+  # the status is captured explicitly. See issue #873.
+  local existing dedupe_status=0
   existing="$("$GH" issue list --repo "$repo" --state open \
     --search "$marker in:body" \
-    --json number,url --jq '.[0].url // ""' 2>/dev/null || echo "")"
+    --json number,url --jq '.[0].url // ""' 2>/dev/null)" || dedupe_status=$?
   if [[ -n "$existing" ]]; then
     printf '%s' "$existing"
     printf 'file-tracking-issue skip (exists) repo=%s url=%s flake=%q\n' \
       "$repo" "$existing" "$human_label" >&2
     return 0
+  fi
+  if [[ "$dedupe_status" -ne 0 ]]; then
+    printf 'file-tracking-issue dedupe-lookup-failed repo=%s marker=%q status=%s — proceeding to file anyway\n' \
+      "$repo" "$marker" "$dedupe_status" >&2
   fi
 
   # Ensure the stability label exists (idempotent — create errors are swallowed
