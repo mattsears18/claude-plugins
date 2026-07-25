@@ -48,6 +48,21 @@
         "spike": { "type": "string" }
       }
     },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Canonical-path alias of default_models (issue #854) — accepted directly so `shipyard-config.sh set models.<mode> <id> --global` (the same dot-path used at the repo/local layers) doesn't fail schema validation. normalize_user_layer merges this key-by-key with default_models onto the effective models.* path, with an explicit value here winning over the matching default_models.<mode> key. Prefer this over default_models when writing by hand; both remain accepted so existing default_models.* config files keep validating.",
+      "properties": {
+        "issue_work": { "type": "string" },
+        "fix_checks_only": { "type": "string" },
+        "fix_rebase": { "type": "string" },
+        "fix_main_ci": { "type": "string" },
+        "fix_failing_prs_batch": { "type": "string" },
+        "investigate": { "type": "string" },
+        "verify": { "type": "string" },
+        "spike": { "type": "string" }
+      }
+    },
     "cost_tracking_enabled": {
       "type": "boolean",
       "description": "Default-on cost-tracking switch across every repo. Remapped onto the canonical cost_tracking.enabled path on load (shipyard-config.sh normalize_user_layer, issue #403); repo-level / local cost_tracking.enabled overrides this."

@@ -157,7 +157,7 @@ const src = readFileSync(wfPath, 'utf8').replace(/^export\s+const\s+meta/m, 'con
 
 const modes = ['issue-work', 'fix-checks-only', 'fix-rebase', 'fix-main-ci',
                'fix-failing-prs-batch', 'investigate', 'spike'];
-const models = { 'issue-work': 'sonnet', 'fix-checks-only': 'haiku', 'fix-rebase': 'haiku',
+const models = { 'issue-work': 'sonnet', 'fix-checks-only': 'haiku', 'fix-rebase': 'sonnet',
                  'fix-main-ci': 'sonnet', 'fix-failing-prs-batch': 'sonnet',
                  'investigate': 'sonnet', 'spike': 'opus' };
 const WT = '/tmp/wt-790';

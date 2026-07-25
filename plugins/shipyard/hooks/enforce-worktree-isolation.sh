@@ -34,7 +34,7 @@
 #
 #   shipyard:issue-worker               (mode: issue-work)
 #   shipyard:fix-checks-worker          (mode: fix-checks-only — haiku)
-#   shipyard:fix-rebase-worker          (mode: fix-rebase — haiku)
+#   shipyard:fix-rebase-worker          (mode: fix-rebase — sonnet, #854)
 #   shipyard:fix-main-ci-worker         (mode: fix-main-ci — sonnet)
 #   shipyard:fix-pr-batch-worker        (mode: fix-failing-prs-batch — sonnet)
 #   shipyard:investigate-worker         (mode: investigate — sonnet)

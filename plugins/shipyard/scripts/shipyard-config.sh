@@ -146,7 +146,7 @@ DEFAULTS_JQ='{
   "models": {
     "issue_work": "claude-sonnet-5",
     "fix_checks_only": "claude-haiku-4-5",
-    "fix_rebase": "claude-haiku-4-5",
+    "fix_rebase": "claude-sonnet-5",
     "fix_main_ci": "claude-sonnet-5",
     "fix_failing_prs_batch": "claude-sonnet-5",
     "investigate": "claude-sonnet-5",
@@ -519,6 +519,15 @@ load_user() {
 # built-in default (with repo/local still winning per last-wins). The aliases
 # are removed from the normalized object so they can never leak into the
 # effective config under their inert names.
+#
+# As of #854, the user-global schema ALSO accepts the canonical `models`
+# top-level key directly (alongside `default_models`) — `cmd_set` writes
+# whatever dot-path the caller passed verbatim, and `set models.fix_rebase
+# <id> --global` used to fail schema validation because only `default_models`
+# was schema-legal at that layer, forcing the alias name on every --global
+# write. The merge below already anticipated a coexisting `.models` (the
+# `(.models // {})` fallback), it just needed the schema to let one land on
+# disk — see `shipyard.user-config.schema.json`'s `models` property.
 #
 # Reads raw user JSON on stdin (or "{}"), emits the normalized object.
 normalize_user_layer() {
