@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.2.2 — 2026-07-25
+
+`worktree-reap.sh` (~111KB) fused two responsibilities: worktree/branch reaping and orchestrator-PID/session-identity forensics (`detect-orchestrator-pid`, `derive-session-id`, `find-orphan-orchestrators`). `derive-session-id` in particular sits on the cwd-leak hot path (`steady-state.md`'s A.0 required preamble) and has nothing to do with reaping. This was the deferred, optional item from #887/#940's `scripts/lib/common.sh` dedup (closes #941).
+
+- `plugins/shipyard/scripts/session-identity.sh` — new sibling script exporting the three orchestrator-PID/session-identity forensics subcommands, extracted byte-for-byte (same argv parsing, same stdout/exit-code contracts, same env-var names) from `worktree-reap.sh`. Sources the shared `lib/common.sh` for `shipyard_home`.
+- `plugins/shipyard/scripts/worktree-reap.sh` — the three subcommands and their function bodies were removed; the reaping-scoped subcommands (`classify-lock`, `classify-all`, `reap-stale`, `reap-orphan-branches`, `reap-session-worktrees`, `reap`, `report-unreaped`) and their own ancestor-walk helpers (`self_ancestor_pids`/`is_self_ancestor`, used by `classify-lock`'s self-ancestor classification — a genuinely different question from "which PID is the orchestrator") are unchanged. A caller that still invokes one of the three moved subcommands now gets a loud `unknown subcommand … moved to session-identity.sh` error instead of silently no-op'ing.
+- `plugins/shipyard/scripts/tests/session-identity.test.sh` — new suite covering the three moved subcommands (28 assertions), split out of `worktree-reap.test.sh` with no coverage lost — the combined assertion count across both files (156 + 28 = 184) is unchanged from before the split.
+- ~19 call sites across `commands/do-work/**/*.md` (`steady-state.md`, `dispatch-rules.md`, `cleanup-summary.md`, `drain.md`, `setup/00-config-worktree.md`, `setup/01-repo-recovery.md`) now invoke `session-identity.sh` for `detect-orchestrator-pid` / `derive-session-id` / `find-orphan-orchestrators`, plus a runtime sanity check in `scripts/tests/post-return-reap-A05.test.sh` and doc-prose references in `do-work-RATIONALE.md` and the two setup sub-files.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.2.1` → `4.2.2`.
+
 ### 4.2.1 — 2026-07-25
 
 README.md's "Dispatch substrate" section still asserted the `Workflow` substrate was the only way a `mode:`-driven worker is dispatched, contradicting #825/PR #830's restoration of `Agent`-tool dispatch (`isolation: "worktree"`) as the default, primary shape — the fifth sighting of this drift pattern in ~24 hours, after PR #944 fixed two instances in `do-work-dispatch.workflow.js` (closes #945).

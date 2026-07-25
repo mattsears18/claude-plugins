@@ -195,7 +195,7 @@ When filling a slot, walk this decision tree:
      | awk '/^worktree /{print substr($0,10); exit}')
    # Declare the orchestrator PID once so classify-lock short-circuits self-locks
    # to `self-ancestor` (issue #263) regardless of process-tree shape.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
    # In-flight guard (issue #832) — snapshot this session's currently
    # in-flight agent-ids BEFORE the loop below ever consults classify-lock.
    # In-flight membership is authoritative liveness; the lock file's
@@ -349,7 +349,7 @@ When filling a slot, walk this decision tree:
    # can mis-classify our own session's locks as peer-alive whenever an
    # intermediate harness layer returns empty PPID, blocking dispatch
    # against issues we're actively working.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
    for wt_dir in $(find "$(git rev-parse --show-toplevel)/.git/worktrees" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
      # Read the branch ref from the worktree metadata
      branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')

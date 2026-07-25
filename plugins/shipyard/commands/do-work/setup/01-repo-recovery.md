@@ -225,7 +225,7 @@ Regression coverage: [`scripts/tests/sweep-orphan-tmp.test.sh`](../../../scripts
 
 When a prior session crashed *between* step 7→8 (cost-history flush + session-file cleanup) and step 6 (orchestrator-worktree reap), the session file is gone but the worktree lingers. See [RATIONALE → Step 1.6.5 production trace](../../do-work-RATIONALE.md#step-165--orphan-orchestrator-worktree-production-trace-280) for the incident that surfaced this gap (issue #280).
 
-The discovery uses [`worktree-reap.sh find-orphan-orchestrators`](../../../scripts/worktree-reap.sh), which applies the same liveness gate as step 1.6 — `is-active` exits 0 if the owning session's PID is alive, exit 1 otherwise (missing file, missing/null pid, dead pid). Both the worktree-sweep and the session-file-sweep treat "file missing" as inactive: the common case for the bug is that prior cleanup got far enough to flush + delete the session file but stopped short of reaping its own worktree.
+The discovery uses [`session-identity.sh find-orphan-orchestrators`](../../../scripts/session-identity.sh), which applies the same liveness gate as step 1.6 — `is-active` exits 0 if the owning session's PID is alive, exit 1 otherwise (missing file, missing/null pid, dead pid). Both the worktree-sweep and the session-file-sweep treat "file missing" as inactive: the common case for the bug is that prior cleanup got far enough to flush + delete the session file but stopped short of reaping its own worktree.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
@@ -245,7 +245,7 @@ while read -r orph_path; do
     --session-id "<session-id>" \
     --reaped-session-id "$orph_session_id" \
     --phase "setup-1.6.5"
-done < <("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" find-orphan-orchestrators \
+done < <("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" find-orphan-orchestrators \
            --repo-root "$(git rev-parse --show-toplevel)" \
            --current-session-id "<session-id>")
 git worktree prune
@@ -557,7 +557,7 @@ unreaped_stale=0
 # (issue #263). The harness writes our PID into every agent lock file;
 # without an explicit declaration, classify-lock's ancestor walk can fail
 # to find it whenever an intermediate harness layer returns empty PPID.
-export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
 # Use `find` instead of a bare `agent-*` glob so the loop survives zsh's
 # default `nomatch` option when no agent worktrees exist
 # ([#335](https://github.com/mattsears18/shipyard/issues/335)). Bare globs

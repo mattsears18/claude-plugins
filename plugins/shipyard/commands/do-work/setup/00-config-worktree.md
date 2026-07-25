@@ -262,7 +262,7 @@ git checkout "$DEFAULT_BRANCH"
 git reset --hard "origin/$DEFAULT_BRANCH"
 ```
 
-Both `EnterWorktree` forms resolve to the same path, `.claude/worktrees/orchestrator-<session-id>`, so every downstream consumer that keys off that path is unaffected by which mechanism created it — `worktree-reap.sh derive-session-id`'s newest-by-mtime `orchestrator-*` glob ([#513](https://github.com/mattsears18/shipyard/issues/513)), the [step-1.6.5 orphan-orchestrator sweep](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees) ([#280](https://github.com/mattsears18/shipyard/issues/280)), the [`.shipyard-session-id` stash convention](#055-session-id-storage-per-worktree-not-tmp) ([#365](https://github.com/mattsears18/shipyard/issues/365)), and [cleanup-summary's step-6 reap](../cleanup-summary.md#end-of-session-cleanup) of the orchestrator's own worktree all still resolve correctly.
+Both `EnterWorktree` forms resolve to the same path, `.claude/worktrees/orchestrator-<session-id>`, so every downstream consumer that keys off that path is unaffected by which mechanism created it — `session-identity.sh derive-session-id`'s newest-by-mtime `orchestrator-*` glob ([#513](https://github.com/mattsears18/shipyard/issues/513)), the [step-1.6.5 orphan-orchestrator sweep](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees) ([#280](https://github.com/mattsears18/shipyard/issues/280)), the [`.shipyard-session-id` stash convention](#055-session-id-storage-per-worktree-not-tmp) ([#365](https://github.com/mattsears18/shipyard/issues/365)), and [cleanup-summary's step-6 reap](../cleanup-summary.md#end-of-session-cleanup) of the orchestrator's own worktree all still resolve correctly.
 
 **One deliberate behavioral difference — branch, not detached HEAD.** `EnterWorktree` creates the new worktree **on a branch** (`worktree-orchestrator-<session-id>`), whereas the raw-git fallback below produces a **detached HEAD**. Call this out explicitly rather than let it be an accident of mechanism: the branch is harmless for how the orchestrator actually uses the worktree (every write still lands as an explicit commit the orchestrator controls) and is arguably an improvement — the orchestrator has a branch to commit to if it ever needs one. This file adopts the branch as the documented default rather than fighting the tool's shape; a reader relying on the orchestrator worktree being detached (it never was, under this primary path) should update that assumption.
 
@@ -333,7 +333,7 @@ SESSION_ID=$(cat "$ORCH_WT/.shipyard-session-id")
 
 Equivalently — when `$ORCH_WT` isn't already in scope — derive the orchestrator worktree path and read the stash from there. **Do NOT derive it from `git rev-parse --show-toplevel`** (issue [#477](https://github.com/mattsears18/shipyard/issues/477)): `git rev-parse --show-toplevel` returns whatever worktree the shell's cwd is in, and the harness can silently relocate the orchestrator's own Bash-tool cwd into a just-returned **agent's** `agent-*` isolation worktree on a reconcile turn (the same `isolation: "worktree"` cwd-leak class as [#452](https://github.com/mattsears18/shipyard/issues/452), which [A.0.6's primary-leak guard](../steady-state.md#a06-primary-checkout-branch-leak-guard-fires-every-reconcile-turn-before-a1) already hardens against). When cwd is in an `agent-*` worktree, `git rev-parse --show-toplevel` returns the **agent** worktree path — which has no `.shipyard-session-id` stash (that file lives only in the orchestrator worktree, per the "MUST live inside the orchestrator's own worktree" rule above). The `cat` then comes up empty, every downstream `session-state.sh` call is invoked with an empty `--session-id` and exits 64 (`--session-id is required`), and the turn silently loses its cost attribution + `session_prs` append (a lost `session_prs` append can strand a PR out of the drain watch list).
 
-Derive the session id with the `worktree-reap.sh derive-session-id` helper instead of an inline `awk` walk. The helper globs `<repo-root>/.claude/worktrees/orchestrator-*` (cwd-independent given the explicit `--repo-root`, so it is immune to the #477 cwd-leak) and reads the `.shipyard-session-id` stash from the **newest-by-mtime** orchestrator worktree.
+Derive the session id with the `session-identity.sh derive-session-id` helper instead of an inline `awk` walk. The helper globs `<repo-root>/.claude/worktrees/orchestrator-*` (cwd-independent given the explicit `--repo-root`, so it is immune to the #477 cwd-leak) and reads the `.shipyard-session-id` stash from the **newest-by-mtime** orchestrator worktree.
 
 **Newest-by-mtime, not first-in-listing-order — issue [#513](https://github.com/mattsears18/shipyard/issues/513).** The previous inline derive used `awk '... {print p; exit}'`, which returns the *first* `orchestrator-*` entry in `git worktree list --porcelain` order. When prior crashed sessions leave their `orchestrator-<dead-id>` worktrees un-reaped (the [step 1.6.5 sweep](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees) didn't run, or hasn't run yet), "first in listing order" is the **oldest orphan**, so the derive read a dead orphan's stash and every `session-state.sh update` / `bump-tokens` write landed in the orphan's session file — same repo, so the `--expected-repo` guard never tripped, silently corrupting the cost ledger, `/shipyard:status`, and `--resume` while this session's real file stayed at init defaults (the #513 repro: 245k tokens + 11 deferred issues + `session_prs += [1897]` all misattributed to a 6-day-old orphan). The live session's orchestrator worktree was created **this run** in [step 0.5](#05-move-into-the-orchestrators-worktree), so among any set of coexisting orchestrator worktrees it has the newest directory mtime — selecting newest resolves to the live session whenever orphans coexist, and is a no-op (a single candidate) in the common one-worktree case. (The deeper fix is to make [step 1.6.5](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees) reap orphans so the multi-orchestrator-worktree precondition rarely arises in the first place; newest-by-mtime is the correctness floor for when it does.)
 
@@ -344,7 +344,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 # from a prior crashed session can't shadow the live session). cwd-independent
 # given the explicit --repo-root (immune to the #477 cwd-leak).
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
   --repo-root "$REPO_ROOT" 2>/dev/null)
 # Last-resort fallback for a non-worktree layout where the glob found no
 # orchestrator worktree: the cwd-derived stash read. Vulnerable to the #477
@@ -479,7 +479,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
       --session-id "<session-id>" \
       --reaped-session-id "$orph_session_id" \
       --phase "setup-1.6.5" 2>/dev/null || true
-  done < <("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" find-orphan-orchestrators \
+  done < <("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" find-orphan-orchestrators \
              --repo-root "$(pwd)" --current-session-id "<session-id>" 2>/dev/null)
   git worktree prune 2>/dev/null || true
 
@@ -553,7 +553,7 @@ EOF
   # writes the orchestrator's PID into every dispatched agent's lock, and
   # without this declaration the ancestor walk can fail to find it whenever
   # an intermediate harness layer returns empty PPID.
-  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
 
   # In-flight guard (issue #832) — snapshot the set of agent-ids this
   # session currently has dispatched, BEFORE reap-stale ever consults

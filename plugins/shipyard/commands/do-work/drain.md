@@ -283,7 +283,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 cd "$(git rev-parse --show-toplevel)"
 # Declare the orchestrator PID once so classify-lock short-circuits self-locks
 # to `self-ancestor` (issue #263) regardless of process-tree shape.
-export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
 
 # $head_ref is the PR's headRefName (already in the drain snapshot's
 # `headRefName` field — no extra `gh` round-trip needed).

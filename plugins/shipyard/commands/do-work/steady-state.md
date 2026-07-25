@@ -123,7 +123,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 # cwd-independent given the explicit --repo-root (immune to the #477 cwd-leak
 # that fires on reconcile turns). See setup.md §0.55 for the full rationale.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
   --repo-root "$REPO_ROOT" 2>/dev/null)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
 # Loud abort when both derive paths return empty — cascading exit-64s from
@@ -368,7 +368,7 @@ if [ "$is_terminal" = "false" ]; then
   if [ -d "$wt_dir" ]; then
     # Bootstrap the orchestrator PID so classify-lock can short-circuit on
     # our own session's locks (issue #263 — same pattern as A.1/B's reaps).
-    export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+    export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
 
     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
       classify-lock "$wt_dir/locked")
@@ -641,7 +641,7 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
     # orchestrator worktree stash, not from a bare `cat .shipyard-session-id`
     # that reads from the (possibly leaked-to-agent) cwd.
     REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-    SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+    SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
       --repo-root "$REPO_ROOT" 2>/dev/null)
     [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
     [ -z "$SESSION_ID" ] && echo "[session-id-derive] empty — A.0.5 reap audit-log entry will lack session-id; check for #477 cwd-leak (#548)"
@@ -808,7 +808,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
     --repo-root "$REPO_ROOT" 2>/dev/null)
   [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
   if [ -z "$SESSION_ID" ]; then
@@ -873,7 +873,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   # This closes #548: the reap's --session-id must not read from the (possibly
   # leaked-to-agent) cwd; it must read from the orchestrator worktree stash.
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
     --repo-root "$REPO_ROOT" 2>/dev/null)
   [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
   [ -z "$SESSION_ID" ] && echo "[session-id-derive] empty — reap audit-log entries will lack session-id; check for #477 cwd-leak (#548)"
@@ -886,7 +886,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   # concurrent-session guard further down in step C.
   # Bootstrap the orchestrator PID so classify-lock can short-circuit
   # on our own session's locks (issue #263).
-  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
   # In-flight guard (issue #832) — NOT applicable as an exclusion here, and
   # deliberately so. The `do-work/issue-<N>` branch filter below scopes this
   # loop to exactly one worktree: THIS just-shipped slot's own worktree
@@ -1084,7 +1084,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" derive-session-id \
+  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
     --repo-root "$REPO_ROOT" 2>/dev/null)
   [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
   if [ -z "$SESSION_ID" ]; then
@@ -1263,7 +1263,7 @@ worktree_path="${PRIMARY_CHECKOUT}/.claude/worktrees/agent-${completed_agent_id}
 if [ -d "$wt_dir" ]; then
   # Bootstrap the orchestrator PID so classify-lock can short-circuit on
   # our own session's locks (issue #263 — same pattern as A.1's reap).
-  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" detect-orchestrator-pid)
+  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
 
   classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
     classify-lock "$wt_dir/locked")
