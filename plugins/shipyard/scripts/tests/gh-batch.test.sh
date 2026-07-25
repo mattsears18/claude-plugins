@@ -110,6 +110,11 @@ if [[ "${GH_BATCH_FAIL:-0}" == "1" ]]; then
   exit 1
 fi
 
+# Partial-GraphQL-error injection: if GH_BATCH_PARTIAL_ERROR=1 is set,
+# the response below carries BOTH a `data` object (all aliases resolve
+# normally) AND a non-empty top-level `errors` array — the "some nodes
+# resolved, one transient error alongside them" shape from issue #875.
+
 # Find the query body. We're called like:
 #   gh api graphql -f query=<multiline body>
 query=""
@@ -145,7 +150,11 @@ aliases=$(printf '%s\n' "$query" | grep -oE "${kind}_[0-9]+" | sort -u)
 # magic test number 999 produces a `null` entry to exercise the
 # drop-on-missing branch in the reducer.
 {
-  printf '{"data":{'
+  printf '{'
+  if [[ "${GH_BATCH_PARTIAL_ERROR:-0}" == "1" ]]; then
+    printf '"errors":[{"message":"transient error on one node"}],'
+  fi
+  printf '"data":{'
   first=1
   for a in $aliases; do
     n="${a#${kind}_}"
@@ -394,6 +403,28 @@ assert_equals "$rc" "rc=2" "gh failure surfaces as exit 2"
 # Stdout (everything before the rc= line) must be empty / no chunk JSON.
 stdout_only=$(printf '%s' "$out" | sed '$d')
 assert_not_contains "$stdout_only" '"pullRequest"' "no partial output on gh failure"
+
+rm -rf "$env"
+
+# --------------------------------------------------------------------------
+echo "== pr-status: partial graphql error (data + errors) → traced, chunk kept"
+# --------------------------------------------------------------------------
+
+env=$(mktmpenv)
+counter="$env/calls.log"
+
+stderr_log="$env/stderr.log"
+out=$(GH_BATCH_TEST_COUNTER="$counter" GH_BATCH_PARTIAL_ERROR=1 PATH="$env/bin:$PATH" \
+  bash "$helper" pr-status --repo owner/name --numbers "1 2 3" 2>"$stderr_log")
+rc=$?
+stderr_out=$(cat "$stderr_log")
+
+assert_equals "$rc" "0" "partial graphql error does not fail the call"
+assert_contains "$stderr_out" "gh-batch.sh: partial graphql error" "partial graphql error is traced to stderr"
+assert_contains "$stderr_out" "transient error on one node" "traced diagnostic names the partial error message"
+
+key_count=$(printf '%s' "$out" | jq 'length')
+assert_equals "$key_count" "3" "partial graphql error still keeps all 3 resolved entries"
 
 rm -rf "$env"
 

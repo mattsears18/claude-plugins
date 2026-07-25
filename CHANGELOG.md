@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.29 — 2026-07-25
+
+`run_chunk` in `gh-batch.sh` — the shared GraphQL batch layer behind `pr-status` and `issue-state` — only logged a diagnostic when a response carried `errors` and NO `data` at all; a partial-success response (some aliases resolved, one hit a transient GraphQL error alongside them — common on a large chunk) fell through both branches silently, so the per-alias error vanished with zero stderr trace, indistinguishable from "the PR was deleted" (closes #875). `run_chunk` still keeps the chunk (the correct behavior — partial data is genuinely usable and callers depend on it), but now also traces the dropped error(s) to stderr before falling through to the reducer, so a transient partial GraphQL error is no longer invisible to an operator debugging why the drain phase's PR-mergeability view skipped a specific PR for one poll cycle.
+
+- `plugins/shipyard/scripts/gh-batch.sh` — `run_chunk` gains a second branch: when the response has BOTH `data` and a non-empty `errors` array, it now logs `gh-batch.sh: partial graphql error (chunk still processed): <message(s)>` to stderr before falling through to the reducer. The pre-existing hard-failure branch (`errors` with no `data` at all → return 2) is unchanged.
+- `plugins/shipyard/scripts/tests/gh-batch.test.sh` — fake `gh` gains a `GH_BATCH_PARTIAL_ERROR=1` injection mode that emits a response carrying both `data` (all aliases resolve) and a non-empty `errors` array; new "pr-status: partial graphql error (data + errors) → traced, chunk kept" case asserts exit 0, the new stderr diagnostic (naming the partial error message), and that all resolved entries are still present in the output.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.28` → `4.1.29`.
+
 ### 4.1.28 — 2026-07-25
 
 `reap_orphan_branches` in `worktree-reap.sh` discarded `git branch -D`'s exit status (`|| true`) and unconditionally emitted both a `reaped-branch:` stdout line and a `"action":"reaped-orphan-branch"` audit-log line for every orphan `worktree-agent-*` branch, so a delete that actually failed (an unmerged commit, a permission error, a concurrent-delete race) was recorded as a successful reap — the same false-success-audit-log shape issue #712 fixed one function over in this file for `fast_worktree_remove`/`reap_action`, but `reap_orphan_branches` predates that fix and was never brought in line with it (closes #874). The delete's exit status is now checked: a successful `git branch -D` still emits the `reaped-branch:` stdout line and the `reaped-orphan-branch` audit line; a failed one emits neither, and instead writes a distinguishable `"action":"reaped-branch-failed"` audit line with `"reason":"branch-delete-failed"`, mirroring the `reaped`/`reaped-failed` split `reap_action` already uses.
