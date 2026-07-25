@@ -4,6 +4,22 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.22 — 2026-07-25
+
+Drops the Haiku default for `fix-rebase` — the drain-phase rebase mode requires real conflict-resolution judgment, not just git mechanics, and Haiku gets it wrong (closes #854). A drain-phase Haiku `fix-rebase` worker hit a conflict where main's release-notes strategy had already been settled by a merged sibling PR 36 seconds before the target PR's last commit, misread the stale-collateral conflict as a live design decision, and bailed to a human with an incorrect claim. Re-dispatching the identical task on Sonnet resolved it cleanly. `fix-rebase` now pins Sonnet 5 — the same tier as `issue-work` — in the built-in `models.fix_rebase` default, the `shipyard:fix-rebase-worker` shim's frontmatter, and every prose routing table that documented the old Haiku pin; `fix-checks-only` (log pattern-matching, no comparable judgment fork) is unaffected and stays on Haiku. Also fixes the issue's secondary finding: `models.*` couldn't be set at the user-global layer via its canonical dot-path — `shipyard-config.sh set models.fix_rebase <id> --global` failed schema validation because only the `default_models` alias was accepted there, even though the merge logic already anticipated a coexisting `models` key. The user-config schema now accepts `models` directly, alongside `default_models`, with an explicit `models.<mode>` winning on conflict.
+
+- `plugins/shipyard/scripts/shipyard-config.sh` — built-in default `models.fix_rebase` `claude-haiku-4-5` → `claude-sonnet-5`; `normalize_user_layer` comment updated to note `models` is now schema-legal at the user-global layer.
+- `plugins/shipyard/schemas/shipyard.user-config.schema.json` — new top-level `models` object property (mirrors `default_models`'s per-mode string properties).
+- `plugins/shipyard/agents/fix-rebase-worker.md` — frontmatter `model: haiku` → `model: sonnet`; description and body updated with the #854 rationale.
+- `plugins/shipyard/agents/fix-checks-worker.md` — mode → shim → model table's `fix-rebase` row updated to `sonnet`.
+- `plugins/shipyard/agents/issue-worker.md` — intro paragraph and mode-routing table's `fix-rebase` row updated to `sonnet`.
+- `plugins/shipyard/commands/do-work/dispatch-rules.md` — per-mode routing table, the "Per-mode routing" intro, and two "Haiku-pinned" prose references updated for `fix-rebase`.
+- `plugins/shipyard/hooks/enforce-worktree-isolation.sh` — guarded-shim comment updated.
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new `Dispatch rules — fix-rebase moved off Haiku (#854)` section.
+- `plugins/shipyard/scripts/tests/resolve-dispatch-model.test.sh` — regression-guard assertion updated to expect `sonnet` for an unconfigured `fix-rebase`.
+- `plugins/shipyard/scripts/tests/dispatch-substrate-cutover-790.test.sh` — test-fixture model map updated for consistency.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.21` → `4.1.22`.
+
 ### 4.1.21 — 2026-07-25
 
 Closes the visibility gap where the orchestrator's own `gh` token lacking the `workflow` OAuth scope silently blocked auto-merge with no signal at all, distinct from #812's earlier fix which only covered the worker-side path (closes #850). #812 taught a dispatched worker to detect the missing-`workflow`-scope GraphQL block, name it distinctly (`auto-merge: unavailable — gh token lacks workflow scope`), and feed a session-local `workflow_scope_blocked_prs` list that the end-of-session summary reports once. But four call sites where the *orchestrator itself* arms `--auto` directly — inline-trivial's fast path, the A.0.5 crash-recovery re-arm, setup-3c's orphan-recovery re-arm, and the release-train sweep — discarded the merge-arm call's stderr unconditionally (`2>/dev/null || true`, or no capture at all), so an orchestrator-armed PR that hit the identical block surfaced nothing, even though a worker-armed PR hitting the same block was already fully reported. Investigated and rejected the issue's alternate "delegate the arm to a worker" suggestion (documented in RATIONALE): a dispatched worker shares the orchestrator's own `gh` credentials on this host, so delegating wouldn't route around a genuinely missing scope — the fix is visibility, not delegation. All four sites now capture stderr, match the same GraphQL signature the worker-side fragment already uses, and feed the identical `workflow_scope_blocked_prs` list on a match.

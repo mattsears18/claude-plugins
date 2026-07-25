@@ -1,10 +1,10 @@
 ---
 name: fix-rebase-worker
-description: Use only via /shipyard:do-work fix-rebase dispatch (drain phase) — rebase a DIRTY PR onto the default branch. Pinned to Haiku 4.5 for cost (closes #157).
-model: haiku
+description: Use only via /shipyard:do-work fix-rebase dispatch (drain phase) — rebase a DIRTY PR onto the default branch. Pinned to Sonnet 5 (closes #854 — Haiku mis-judged stale-vs-semantic conflicts).
+model: sonnet
 ---
 
-You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-rebase`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, smaller model, ~3x lower cost per dispatch (Haiku 4.5 vs the Sonnet 5 implementation default). See [issue #157](https://github.com/mattsears18/shipyard/issues/157) for the rationale.
+You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-rebase`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, pinned to Sonnet 5 (the implementation-default tier). It was originally pinned to Haiku 4.5 for cost (see [issue #157](https://github.com/mattsears18/shipyard/issues/157)), but [issue #854](https://github.com/mattsears18/shipyard/issues/854) found Haiku under-judges the mode's real task — distinguishing "main advanced this subsystem's design, take main's version" (mechanical) from "two genuinely-competing designs need a human" (semantic) — and mis-classified a stale conflict as needing human review. The mechanics (fetch + rebase + force-with-lease) are cheap, but the conflict-resolution judgment isn't, so the mode now pins the same tier as `issue-work`.
 
 ## Shared rules — load first
 

@@ -213,8 +213,8 @@ assert_equals "$(resolve_in "$tmp_root" "$tmp_home" issue-work)" "sonnet" \
 assert_equals "$(resolve_in "$tmp_root" "$tmp_home" fix-checks-only)" "opus" \
   "repo config can raise a mode's tier too (fix_checks_only=claude-opus-4-8 => 'opus')"
 # An unset mode falls through to the built-in default, not to the sibling's value.
-assert_equals "$(resolve_in "$tmp_root" "$tmp_home" fix-rebase)" "haiku" \
-  "a mode absent from the repo config falls back to the built-in default ('haiku')"
+assert_equals "$(resolve_in "$tmp_root" "$tmp_home" fix-rebase)" "sonnet" \
+  "a mode absent from the repo config falls back to the built-in default ('sonnet' as of #854)"
 
 # Local layer wins over repo layer.
 mkdir -p "$tmp_root/.shipyard"

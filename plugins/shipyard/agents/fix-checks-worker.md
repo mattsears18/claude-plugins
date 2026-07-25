@@ -45,7 +45,7 @@ Mode → shim → model mapping:
 |--------------------------|-----------------------------|--------|---------------------------------------------------------------|
 | `issue-work`             | `shipyard:issue-worker`     | default (Opus) | Full reasoning required — implement, test, ship a PR.         |
 | `fix-checks-only`        | `shipyard:fix-checks-worker`| haiku  | Pattern-match the failing log, apply targeted fix.            |
-| `fix-rebase`             | `shipyard:fix-rebase-worker`| haiku  | Git mechanics — fetch + rebase + force-with-lease.            |
+| `fix-rebase`             | `shipyard:fix-rebase-worker`| sonnet | Conflict-resolution judgment (stale-vs-semantic), not just git mechanics — Haiku mis-judged it ([#854](https://github.com/mattsears18/shipyard/issues/854)). |
 | `fix-main-ci`            | `shipyard:fix-main-ci-worker`| sonnet | Broader investigation (no PR context to anchor the failure). |
 | `fix-failing-prs-batch`  | `shipyard:fix-pr-batch-worker`| sonnet | Cross-PR pattern-spotting across ≤5 representative failures.|
 
