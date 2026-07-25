@@ -1009,8 +1009,18 @@ for _ in $(seq 1 "$n_racers"); do
 done
 race_failures=0
 for pid in "${pids[@]}"; do
-  wait "$pid" || race_failures=$((race_failures + 1))
+  wait "$pid"
+  pid_rc=$?
+  if [[ $pid_rc -ne 0 ]]; then
+    race_failures=$((race_failures + 1))
+    echo "  racer pid $pid exited $pid_rc" >&2
+  fi
 done
+
+if [[ $race_failures -ne 0 ]]; then
+  echo "  -- racer stderr (diagnostic; see below) --" >&2
+  cat "$tmphome/racer-stderr.log" >&2
+fi
 
 assert_equals "$race_failures" "0" \
   "all $n_racers concurrent flush invocations exit 0 (none time out waiting for the lock)"

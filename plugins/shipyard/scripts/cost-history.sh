@@ -245,9 +245,21 @@ append_jsonl() {
 # macOS/BSD `stat` and GNU `stat` take incompatible flags; try both and
 # let whichever succeeds win. Prints nothing (caller treats that as
 # "unknown age") if neither form works or the directory is gone.
+#
+# Order matters here (issue #861 CI repro): GNU `stat -c %Y` cleanly
+# rejects with a non-zero exit on BSD/macOS `stat` ("illegal option --
+# c"), so trying it first and falling back to `stat -f %m` is safe on
+# both platforms. The REVERSE order is NOT safe — BSD's `-f` means "use
+# this output format" but GNU's `-f` means something entirely different
+# ("display filesystem status instead of file status"), so `stat -f %m`
+# on GNU coreutils doesn't cleanly fail into the `||` fallback the way
+# `-c` does on BSD; it can exit 0 with `%m` uninterpreted in filesystem
+# mode, poisoning the caller's staleness comparison with garbage instead
+# of the empty/absent signal it expects. Trying the GNU form first
+# sidesteps the ambiguity entirely.
 _dir_mtime_epoch() {
   local dir="$1"
-  stat -f %m "$dir" 2>/dev/null || stat -c %Y "$dir" 2>/dev/null
+  stat -c %Y "$dir" 2>/dev/null || stat -f %m "$dir" 2>/dev/null
 }
 
 # acquire_flush_lock — block (polling) until we own $1 (a not-yet-existing
@@ -285,7 +297,13 @@ acquire_flush_lock() {
 
     local age now
     age=$(_dir_mtime_epoch "$lockdir")
-    if [[ -n "$age" ]]; then
+    # Numeric guard: only trust $age if it's a plain non-negative integer.
+    # Belt-and-suspenders alongside the GNU-first stat ordering above — a
+    # non-numeric or garbage value here must never feed the arithmetic
+    # comparison below (a stray non-numeric string would abort the whole
+    # script under `set -u`'s companion `(( ))` evaluation, and a garbage
+    # numeric value could falsely trigger premature stale-lock stealing).
+    if [[ "$age" =~ ^[0-9]+$ ]]; then
       now=$(date +%s)
       if (( now - age >= FLUSH_LOCK_STALE_SECONDS )); then
         echo "cost-history.sh: flush lock $lockdir is older than ${FLUSH_LOCK_STALE_SECONDS}s — assuming its owner crashed and stealing it" >&2
