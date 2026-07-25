@@ -23,6 +23,25 @@
 # byte diff — see check-dispatch-prompt-parity.mjs's own header comment for
 # the full rationale.
 #
+# #918 UPDATE — augmentation-anchor derivation, not a static table
+# -----------------------------------------------------------------
+# #880's original augmentation-anchor check (CHECK 3) compared against a
+# hand-maintained table inside the checker script itself — it caught a KNOWN
+# anchor's text drifting, but was structurally blind to a brand-NEW
+# augmentation being added to dispatch-rules.md and never wired into the
+# corresponding builder. That happened twice in two consecutive releases
+# (PR #917 / #851's operator-residual augmentation, PR #919 / #852's
+# verification-scope augmentation) with this suite green both times. #918
+# replaces the static table with structural derivation: every bolded
+# "**<Name> augmentation ...**" heading in dispatch-rules.md marks the start
+# of an augmentation, and the checker extracts the anchor phrase from the
+# Context-paragraph blockquote that follows it — so a NEW augmentation
+# extends coverage automatically. Sections (C) and (G) below cover this
+# directly; sections (D.4)/(D.5) were updated to match the new message
+# format (the underlying augmentations they exercise are unchanged) and every
+# fixture below now carries the heading paragraphs the new derivation
+# requires to find an augmentation at all.
+#
 # Pure bash + node, no other external dependencies. Run with:
 #   bash plugins/shipyard/scripts/tests/dispatch-prompt-parity-880.test.sh
 
@@ -143,117 +162,51 @@ echo "== (B) POSITIVE — the real repo files match today (the #880 fix itself)"
 assert_parity_ok "$dispatch_rules_path" "$workflow_js_path" \
   "workflow.js's per-mode prompt builders match dispatch-rules.md's templates today"
 
-# ==========================================================================
-echo
-echo "== (C) NEGATIVE — the checker catches the EXACT pre-#880 regression"
-# ==========================================================================
-
-# Minimal but structurally-real fixture pair (two modes: issue-work, spike —
-# the only two modes dispatch-rules.md documents augmentation paragraphs
-# for) reproducing the SHAPE the real files had before #880: the workflow.js
-# copy's user-feedback preamble is missing the trailing "misread the user"
-# clause. If this fixture ever starts PASSING, the guard is broken and the
-# same silent drift can recur.
-cat > "$tmp/dispatch-rules-pre880.md" <<'MDEOF'
-   > **`mode: spike`** — Work issue #<N> in `<owner/repo>` to completion. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/spike.md`.** Branch: `do-work/issue-<N>`.
-
-   > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/issue-work.md`.** Branch: `do-work/issue-<N>`. Open a PR that closes the issue.
-
-   **Verify gate: `on`.** Before arming auto-merge (step 6), run step 5.9.
-
-   **This issue originated from end-user feedback** and was refined by a prior `/refine-issues` pass. If the original raw user text (in the preserved comment) contradicts what's in the refined body, trust the **raw text** and flag the discrepancy in the issue — the refinement step may have misread the user.
-
-   **Phase-1 slice (scope-agent-supplied):** This issue was scoped as a multi-phase change.
-
-   **Next-available version (orchestrator-supplied):** the manifest's version row is coordination-managed.
-MDEOF
-
-cat > "$tmp/workflow-pre880.js" <<'JSEOF'
-function buildWorkerPrompt(unit, repoSlug) {
-  switch (unit.mode) {
-    case 'issue-work':
-      return buildIssueWorkPrompt(unit, repoSlug)
-    case 'spike':
-      return buildSpikePrompt(unit, repoSlug)
-  }
-}
-
-function worktreeAnchorLines(unit, mode) {
-  if (!unit.worktreePath) {
-    return [`CALLER BUG: no worktreePath was supplied for this ${mode} dispatch.`]
-  }
-  return [`cd "${unit.worktreePath}"`]
-}
-
-function buildSpikePrompt(unit, repoSlug) {
-  const lines = [`mode: spike`, ``, ...worktreeAnchorLines(unit, 'spike')]
-  lines.push(`Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/spike.md\`.`)
-  if (unit.nextAvailableVersion) {
-    lines.push(`**Next-available version (orchestrator-supplied):** the manifest's version row is coordination-managed.`)
-  }
-  return lines.join('\n')
-}
-
-// Reproduces the EXACT pre-#880 shape: user-feedback preamble present, but
-// missing the trailing "the refinement step may have misread the user"
-// clause dispatch-rules.md's copy has.
-function buildIssueWorkPrompt(unit, repoSlug) {
-  const lines = [`mode: issue-work`, ``, ...worktreeAnchorLines(unit, 'issue-work')]
-  lines.push(`Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/issue-work.md\`.`)
-  if (unit.verifyGate) {
-    lines.push(`**Verify gate: on.** Before arming auto-merge (step 6), run step 5.9.`)
-  }
-  if (unit.userFeedback) {
-    lines.push(
-      `**This issue originated from end-user feedback** and was refined by a prior`,
-      `\`/refine-issues\` pass. If the original raw user text (in the preserved comment)`,
-      `contradicts what's in the refined body, trust the **raw text** and flag the`,
-      `discrepancy in the issue.`,
-    )
-  }
-  if (unit.phase1Scope) {
-    lines.push(`**Phase-1 slice (scope-agent-supplied):** This issue was scoped as a multi-phase change.`)
-  }
-  if (unit.nextAvailableVersion) {
-    lines.push(`**Next-available version (orchestrator-supplied):** the manifest's version row is coordination-managed.`)
-  }
-  return lines.join('\n')
-}
-JSEOF
-
-assert_parity_drift "$tmp/dispatch-rules-pre880.md" "$tmp/workflow-pre880.js" \
-  "the pre-#880 regression fixture is REJECTED (missing 'misread the user' clause)" \
-  'the refinement step may have misread the user'
-
-# node --check must still pass on the regression fixture — proving syntax
-# checks alone can't catch this (same property #809's fixture pins for
-# check-workflow-meta-literal.mjs, and #856's for the schema checker).
-if node --check "$tmp/workflow-pre880.js" >/dev/null 2>&1; then
-  assert_pass "the pre-#880 regression fixture PASSES 'node --check' (proving syntax checks alone can't catch this)"
+# #918: the operator-residual and verification-scope augmentations are
+# currently documented but not yet wired into buildIssueWorkPrompt — an
+# EXPLICIT waiver marker on each keeps the check above green rather than
+# silently skipping them. Assert the waiver escape hatch is actually what's
+# keeping this passing (not, say, both augmentations having quietly lost
+# their headings) — if this ever regresses to 0, either the augmentations
+# got wired (great — remove the waiver comments in dispatch-rules.md) or the
+# waiver markers were dropped without wiring anything (a real regression).
+real_output=$(node "$checker" "$dispatch_rules_path" "$workflow_js_path" 2>&1)
+if grep -q 'augmentation(s) explicitly waived' <<<"$real_output"; then
+  assert_pass "real files: the operator-residual/verification-scope gap is an explicit, checked-for waiver (not silent)"
 else
-  assert_fail "the pre-#880 regression fixture PASSES 'node --check' (proving syntax checks alone can't catch this)"
+  assert_fail "real files: the operator-residual/verification-scope gap is an explicit, checked-for waiver (not silent)"
+  printf '    got:\n    %s\n' "$real_output"
 fi
 
 # ==========================================================================
 echo
-echo "== (D) NEGATIVE — other drift shapes the checker must also catch"
+echo "== (C) sanity — the heading-DERIVED anchor set finds all four known augmentations"
 # ==========================================================================
 
-# Fixture pair that otherwise matches CLEANLY (fixed copy of the pre-880
-# fixture above) — each (D) case below mutates ONE thing off this baseline
-# so the drift being tested is isolated.
+# Every fixture from here down carries a "**<Name> augmentation**" heading
+# immediately before each augmentation's Context-paragraph blockquote — that
+# heading is what the #918 derivation keys off (see check-dispatch-prompt-
+# parity.mjs's extractAugmentations). A fixture pair with NO drift at all.
 cat > "$tmp/dispatch-rules-clean.md" <<'MDEOF'
    > **`mode: spike`** — Work issue #<N> in `<owner/repo>` to completion. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/spike.md`.** Branch: `do-work/issue-<N>`.
 
    > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/issue-work.md`.** Branch: `do-work/issue-<N>`. Open a PR that closes the issue.
 
-   **Verify gate: `on`.** Before arming auto-merge (step 6), run step 5.9.
+   **Verify-gate augmentation (opt-in via verify_gate.enabled).** Before composing the prompt, read the flag from config.
 
-   **This issue originated from end-user feedback** and was refined by a prior `/refine-issues` pass. If the original raw user text (in the preserved comment) contradicts what's in the refined body, trust the **raw text** and flag the discrepancy in the issue — the refinement step may have misread the user.
+   > **Verify gate: `on`.** Before arming auto-merge (step 6), run step 5.9.
 
-   **Phase-1 slice (scope-agent-supplied):** This issue was scoped as a multi-phase change.
+   **User-feedback augmentation.** If the issue carries the `user-feedback` label, prepend this extra-scrutiny preamble to the prompt above:
 
-   **Next-available version (orchestrator-supplied):** the manifest's version row is coordination-managed.
+   > **This issue originated from end-user feedback** and was refined by a prior `/refine-issues` pass. If the original raw user text (in the preserved comment) contradicts what's in the refined body, trust the **raw text** and flag the discrepancy in the issue — the refinement step may have misread the user.
+
+   **Phase-1 slice augmentation ([#298](https://github.com/mattsears18/shipyard/issues/298)).** When the candidate carries a `phase_1_scope` field, append an extra Context paragraph.
+
+   > **Phase-1 slice (scope-agent-supplied):** This issue was scoped as a multi-phase change.
+
+   **Next-available-version augmentation.** When `next_available_version` is non-empty, append a Context paragraph.
+
+   > **Next-available version (orchestrator-supplied):** the manifest's version row is coordination-managed.
 MDEOF
 
 make_clean_js() {
@@ -313,6 +266,11 @@ make_clean_js "$tmp/workflow-clean.js"
 assert_parity_ok "$tmp/dispatch-rules-clean.md" "$tmp/workflow-clean.js" \
   "sanity: the clean fixture pair (baseline for (D)'s isolated mutations) passes"
 
+# ==========================================================================
+echo
+echo "== (D) NEGATIVE — other drift shapes the checker must also catch"
+# ==========================================================================
+
 # (D.1) a mode added to dispatch-rules.md's routing but never wired into
 # buildWorkerPrompt's switch (or vice versa — the switch has a mode with no
 # documented template).
@@ -364,11 +322,11 @@ d4_js="$tmp/d4.js"
 grep -v 'Verify gate: on' "$tmp/workflow-clean.js" > "$d4_js"
 assert_parity_drift "$tmp/dispatch-rules-clean.md" "$d4_js" \
   "(D.4) the verify-gate augmentation deleted from the builder only is caught" \
-  'augmentation "Verify gate:" (mode "issue-work"): present in dispatch-rules.md but missing'
+  'augmentation "Verify-gate augmentation (opt-in via verify_gate.enabled)." (anchor "Verify gate: on."): missing from'
 
 # (D.5) the next-available-version augmentation deleted from buildSpikePrompt
 # only (issue-work still has it) — proves the per-mode augmentation
-# applicability table (issue-work AND spike both get this one) is enforced
+# applicability (issue-work AND spike both get this one) is enforced
 # independently per mode, not just "present somewhere in the file."
 d5_js="$tmp/d5.js"
 awk '
@@ -379,7 +337,7 @@ awk '
 ' "$tmp/workflow-clean.js" > "$d5_js"
 assert_parity_drift "$tmp/dispatch-rules-clean.md" "$d5_js" \
   "(D.5) next-available-version deleted from buildSpikePrompt only (issue-work keeps it) is caught" \
-  'augmentation "Next-available version (orchestrator-supplied):" (mode "spike"): present in dispatch-rules.md but missing'
+  'augmentation "Next-available-version augmentation." (anchor "Next-available version (orchestrator-supplied):"): missing from'
 
 # (D.6) buildIssueWorkPrompt regresses to inlining its own worktree-anchor
 # CALLER-BUG copy instead of delegating to worktreeAnchorLines — the exact
@@ -527,6 +485,113 @@ if grep -q "find plugins -type f -name '\*.test.sh'" "$repo_root/.github/workflo
 else
   assert_fail "tests.yml auto-discovers *.test.sh under plugins/ (confirms this suite runs in CI without a workflow edit)"
 fi
+
+# ==========================================================================
+echo
+echo "== (G) NEGATIVE/POSITIVE — the #918 fix itself: a NEW augmentation the"
+echo "       static table could never have known about"
+# ==========================================================================
+
+# (G.1) THE #917/#919 REPRO. A brand-new augmentation heading + blockquote is
+# appended to dispatch-rules.md — mirroring exactly what PR #917 (#851) and
+# PR #919 (#852) each did — and buildIssueWorkPrompt is NEVER updated to
+# render it. Under the pre-#918 static-table checker this passed silently
+# (the table simply never grew an entry for it); under the #918 derivation
+# it MUST fail, because the anchor set is read from dispatch-rules.md itself.
+g1_md="$tmp/g1.md"
+cat "$tmp/dispatch-rules-clean.md" > "$g1_md"
+cat >> "$g1_md" <<'MDEOF'
+
+   **Operator-residual augmentation ([#851](https://github.com/mattsears18/shipyard/issues/851)).** When the candidate carries an `operator_residual` field, append a second Context paragraph.
+
+   > **Operator residual (scope-agent-supplied, #851):** After shipping the phase-1 slice above, this issue is NOT resolved.
+MDEOF
+assert_parity_drift "$g1_md" "$tmp/workflow-clean.js" \
+  "(G.1) a brand-new augmentation added to dispatch-rules.md and never wired into the builder is caught (the #917/#919 shape)" \
+  'augmentation "Operator-residual augmentation ([#851](https://github.com/mattsears18/shipyard/issues/851))." (anchor "Operator residual (scope-agent-supplied, #851):"): missing from'
+
+# (G.2) The SAME new-and-unwired augmentation, but now carrying the explicit
+# waiver marker `check-dispatch-prompt-parity.mjs` recognizes — this is
+# EXACTLY how #918's own fix resolves the real operator-residual /
+# verification-scope gap in the real dispatch-rules.md (see section (B)
+# above). A waived augmentation must NOT fail the suite.
+g2_md="$tmp/g2.md"
+cat "$tmp/dispatch-rules-clean.md" > "$g2_md"
+cat >> "$g2_md" <<'MDEOF'
+
+   **Operator-residual augmentation ([#851](https://github.com/mattsears18/shipyard/issues/851)).** <!-- dispatch-prompt-parity: waived — not yet rendered by buildIssueWorkPrompt; see #918 --> When the candidate carries an `operator_residual` field, append a second Context paragraph.
+
+   > **Operator residual (scope-agent-supplied, #851):** After shipping the phase-1 slice above, this issue is NOT resolved.
+MDEOF
+assert_parity_ok "$g2_md" "$tmp/workflow-clean.js" \
+  "(G.2) the SAME new-and-unwired augmentation, now with an explicit waiver marker, does NOT fail the suite"
+
+# (G.3) STALE WAIVER — the waiver marker from (G.2) is kept, but the anchor
+# text has since been added to the builder (i.e. someone wired the
+# augmentation and forgot to remove the now-stale waiver comment). The
+# checker must flag this so the waiver doesn't silently outlive its reason.
+# Built directly (not via sed on the clean fixture) to keep the mutation
+# unambiguous: identical to workflow-clean.js's buildIssueWorkPrompt, plus
+# ONE extra line rendering the operator-residual anchor.
+g3_js="$tmp/g3.js"
+cat > "$g3_js" <<'JSEOF'
+function buildWorkerPrompt(unit, repoSlug) {
+  switch (unit.mode) {
+    case 'issue-work':
+      return buildIssueWorkPrompt(unit, repoSlug)
+    case 'spike':
+      return buildSpikePrompt(unit, repoSlug)
+  }
+}
+
+function worktreeAnchorLines(unit, mode) {
+  if (!unit.worktreePath) {
+    const label = unit.number != null ? `issue #${unit.number}` : `this ${mode} dispatch`
+    return [`CALLER BUG: no worktreePath was supplied for ${label}.`]
+  }
+  return [`cd "${unit.worktreePath}"`]
+}
+
+function buildSpikePrompt(unit, repoSlug) {
+  const lines = [`mode: spike`, ``, ...worktreeAnchorLines(unit, 'spike')]
+  lines.push(`Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/spike.md\`.`)
+  if (unit.nextAvailableVersion) {
+    lines.push(`**Next-available version (orchestrator-supplied):** the manifest's version row is coordination-managed.`)
+  }
+  return lines.join('\n')
+}
+
+function buildIssueWorkPrompt(unit, repoSlug) {
+  const lines = [`mode: issue-work`, ``, ...worktreeAnchorLines(unit, 'issue-work')]
+  lines.push(`Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/issue-work.md\`.`)
+  if (unit.verifyGate) {
+    lines.push(`**Verify gate: on.** Before arming auto-merge (step 6), run step 5.9.`)
+  }
+  if (unit.userFeedback) {
+    lines.push(
+      `**This issue originated from end-user feedback** and was refined by a prior`,
+      `\`/refine-issues\` pass. If the original raw user text (in the preserved comment)`,
+      `contradicts what's in the refined body, trust the **raw text** and flag the`,
+      `discrepancy in the issue — the refinement step may have misread the user.`,
+    )
+  }
+  if (unit.phase1Scope) {
+    lines.push(`**Phase-1 slice (scope-agent-supplied):** This issue was scoped as a multi-phase change.`)
+  }
+  // STALE WAIVER: this augmentation is now actually rendered here, but (g2_md
+  // above) still carries the waiver comment saying it isn't.
+  if (unit.operatorResidual) {
+    lines.push(`**Operator residual (scope-agent-supplied, #851):** stub.`)
+  }
+  if (unit.nextAvailableVersion) {
+    lines.push(`**Next-available version (orchestrator-supplied):** the manifest's version row is coordination-managed.`)
+  }
+  return lines.join('\n')
+}
+JSEOF
+assert_parity_drift "$g2_md" "$g3_js" \
+  "(G.3) a stale waiver — the waived anchor is now actually present in the builder — is caught" \
+  'is marked waived but its anchor'
 
 # ==========================================================================
 echo
