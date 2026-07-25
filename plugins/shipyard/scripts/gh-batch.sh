@@ -309,7 +309,11 @@ run_chunk() {
   # If the response carries a top-level `errors` array AND no `data`,
   # treat as failure. Partial-success responses (some aliases resolved,
   # some errored — common when a PR was deleted) are kept; reducers
-  # drop the null aliases.
+  # drop the null aliases. A partial-success response still gets its
+  # error(s) traced to stderr (issue #875) — the chunk is correctly
+  # processed either way, but a transient per-alias GraphQL error
+  # would otherwise vanish with zero diagnostic trail, indistinguishable
+  # from "the PR was deleted."
   local has_data has_errors
   has_data=$(printf '%s' "$resp" | jq 'has("data") and (.data != null)' 2>/dev/null)
   has_errors=$(printf '%s' "$resp" | jq 'has("errors") and ((.errors | length) > 0)' 2>/dev/null)
@@ -318,6 +322,11 @@ run_chunk() {
     err_msg=$(printf '%s' "$resp" | jq -r '.errors[0].message // "unknown graphql error"' 2>/dev/null)
     echo "gh-batch.sh: graphql error: $err_msg" >&2
     return 2
+  fi
+  if [[ "$has_data" == "true" ]] && [[ "$has_errors" == "true" ]]; then
+    local partial_err_msg
+    partial_err_msg=$(printf '%s' "$resp" | jq -r '[.errors[].message] | join("; ")' 2>/dev/null)
+    echo "gh-batch.sh: partial graphql error (chunk still processed): ${partial_err_msg:-unknown graphql error}" >&2
   fi
   case "$kind" in
     pr)    printf '%s' "$resp" | reduce_pr_chunk ;;
