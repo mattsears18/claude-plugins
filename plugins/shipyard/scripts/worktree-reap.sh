@@ -222,8 +222,14 @@
 #     For each local branch matching `worktree-agent-*`:
 #       1. Parse `git worktree list --porcelain` to check for a live
 #          worktree referencing `refs/heads/<branch-name>`.
-#       2. If no live worktree → delete via `git branch -D` and write
-#          one JSONL audit line to $SHIPYARD_HOME/reap-audit.jsonl.
+#       2. If no live worktree → delete via `git branch -D`. On success,
+#          write one `"action":"reaped-orphan-branch"` JSONL audit line to
+#          $SHIPYARD_HOME/reap-audit.jsonl. On failure (e.g. an unmerged
+#          commit, a permission error, or a concurrent-delete race), write a
+#          distinguishable `"action":"reaped-branch-failed"` audit line with
+#          `"reason":"branch-delete-failed"` instead — the delete's exit
+#          status is checked, never discarded, so a failed reap can never be
+#          recorded as a successful one (issue #874).
 #       3. If live worktree exists → skip (safe-by-default).
 #
 #     The subcommand is idempotent: running it twice produces no second-pass
@@ -236,8 +242,11 @@
 #       SHIPYARD_HOME — override the audit-log root (defaults to
 #                       `$HOME/.shipyard`). Mirrors session-state.sh.
 #     Stdout:
-#       One `reaped-branch: <branch-name>` line per deleted branch (both
-#       live and dry-run). Empty stdout when nothing was reaped.
+#       One `reaped-branch: <branch-name>` line per successfully deleted
+#       branch, plus one per branch reported in `--dry-run` mode. A branch
+#       whose `git branch -D` fails emits NO stdout line — only the
+#       `reaped-branch-failed` audit line above. Empty stdout when nothing
+#       was reaped.
 #     Exit codes:
 #       0  sweep succeeded (output may be empty)
 #       64 bad usage (missing required flag, unknown flag)
@@ -1974,20 +1983,32 @@ reap_orphan_branches() {
       continue
     fi
 
-    # Orphan branch — emit the reaped-branch line.
-    printf 'reaped-branch: %s\n' "$branch"
+    # Orphan branch.
+    if [ "$dry_run" -eq 1 ]; then
+      # --dry-run: report what WOULD be reaped, without touching anything or
+      # writing to the audit log.
+      printf 'reaped-branch: %s\n' "$branch"
+      continue
+    fi
 
-    if [ "$dry_run" -eq 0 ]; then
-      # Delete the branch ref. `git branch -D` works even when not on the
-      # branch being deleted. Redirect stdout so the "Deleted branch ..."
-      # confirmation line from git doesn't pollute our reaped-branch: output.
-      # Errors are non-fatal (e.g., the branch was deleted in a concurrent
-      # run) — fire-and-forget.
-      git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1 || true
-
-      # Audit log entry.
+    # Delete the branch ref. `git branch -D` works even when not on the
+    # branch being deleted. Redirect stdout so the "Deleted branch ..."
+    # confirmation line from git doesn't pollute our reaped-branch: output.
+    #
+    # Issue #874 — the exit status used to be discarded (`|| true`) and the
+    # audit line below was written unconditionally, so a failed delete (an
+    # unmerged commit, a permission error, or a concurrent delete race) was
+    # indistinguishable from a real reap in both stdout and the audit log.
+    # Mirrors the `reaped`/`reaped-failed` split `reap_action` already uses
+    # for worktree removal (issue #712, above in this file).
+    if git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1; then
+      printf 'reaped-branch: %s\n' "$branch"
       printf '%s\n' \
         "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"branch\":\"$branch\",\"action\":\"reaped-orphan-branch\",\"reason\":\"no-live-worktree\"}" \
+        >> "$audit_log" 2>/dev/null || true
+    else
+      printf '%s\n' \
+        "{\"ts\":\"$ts\",\"session\":\"$session_id\",\"actor_pid\":$actor_pid,\"branch\":\"$branch\",\"action\":\"reaped-branch-failed\",\"reason\":\"branch-delete-failed\"}" \
         >> "$audit_log" 2>/dev/null || true
     fi
   done <<< "$branch_list"
