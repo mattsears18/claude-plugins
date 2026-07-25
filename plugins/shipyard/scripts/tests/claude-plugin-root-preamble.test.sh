@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Test: every bash code block in the /shipyard:do-work phase files that
-# references ${CLAUDE_PLUGIN_ROOT} also carries the canonical idempotent
-# fallback-export preamble as its first non-blank line.
+# Test: every bash code block in the /shipyard:do-work orchestrator + worker
+# spec tree that references ${CLAUDE_PLUGIN_ROOT} also carries the canonical
+# idempotent fallback-export preamble as its first non-blank line (or is a
+# bare script-invocation block immediately preceded by a preamble-only
+# block — the two-block idiom used in a few places, see (3) below).
 #
 # Background — issue #354: $CLAUDE_PLUGIN_ROOT expands to the empty string
 # inside the Bash-tool subprocess shells the orchestrator uses. The very
 # first templated invocation of /shipyard:do-work (setup.md step 0.4's
 # `"${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" exists`) therefore
 # evaluates as `/scripts/shipyard-config.sh` and exits 127. Every subsequent
-# script invocation in setup / steady-state / drain / cleanup-summary /
-# inline-trivial would fail the same way.
+# script invocation anywhere in the orchestrator or worker spec tree would
+# fail the same way.
 #
 # The fix is an idempotent preamble at the top of every bash snippet:
 #
@@ -44,12 +46,39 @@
 # fails. Existing blocks were swept by the issue #354 PR; new ones (or
 # any block whose preamble got moved / removed) regress here.
 #
-# Scope — explicitly the do-work orchestrator phase files. NOT version.md,
-# eas-watch.md, or status.md: those are different surfaces with different
-# rationales (version.md wants the *installed* plugin path, not the repo
-# checkout; eas-watch.md runs in an Expo project where the repo's
-# plugins/shipyard doesn't exist; status.md is invoked by the user, not
-# templated into orchestrator output).
+# --- File discovery (issue #910) -------------------------------------------
+#
+# Earlier versions of this test walked a hardcoded FILES array. Since #611
+# split setup.md into a thin router + step-cluster sub-files under
+# commands/do-work/setup/, setup.md itself carries ZERO ${CLAUDE_PLUGIN_ROOT}
+# occurrences (they moved to the sub-files) — the array entry passed
+# vacuously and covered nothing. Separately, dispatch-rules.md,
+# skills/worker-preamble/SKILL.md (+ its on-demand fragments),
+# agents/issue-worker/issue-work.md, and agents/issue-worker/fix-rebase.md
+# all grew their own preamble-carrying bash blocks over time and were never
+# added to the array either — 41 of 69 preamble occurrences (59%) had zero
+# regression coverage at the time #910 was filed.
+#
+# Rather than append the missing filenames (which just recreates the same
+# rot at the next reorg — see #611's own history), FILES below is discovered
+# MECHANICALLY: every *.md file under the three directories that make up the
+# do-work orchestrator + worker spec tree — commands/do-work/ (recursive,
+# so a future setup/ or operate/ sub-file is swept in automatically),
+# skills/worker-preamble/ (the skill + all its on-demand fragments), and
+# agents/issue-worker/ (every per-mode worker spec) — is a candidate. A
+# candidate with zero ${CLAUDE_PLUGIN_ROOT}-referencing bash blocks is a
+# no-op (nothing to check), so this glob is safe to keep wide: adding a new
+# file to any of these three directories costs nothing until it actually
+# grows a bash block using the variable, at which point this test starts
+# covering it with no manual edit required.
+#
+# Scope — explicitly the do-work orchestrator + worker spec tree. NOT
+# version.md, eas-watch.md, init.md, or status.md: those are different
+# surfaces with different rationales (version.md wants the *installed*
+# plugin path, not the repo checkout; eas-watch.md runs in an Expo project
+# where the repo's plugins/shipyard doesn't exist; status.md is invoked by
+# the user, not templated into orchestrator output; init.md only mentions
+# the variable in prose/JSON, never in a bash block).
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -71,16 +100,18 @@ if [[ "$repo_root" == "/" ]]; then
   exit 1
 fi
 
-# Files in scope — the do-work orchestrator phase files. Each templated
-# bash block in these files runs in a fresh Bash-tool subprocess shell, so
-# the harness-env-var quirk applies to every one of them.
-FILES=(
-  "$repo_root/plugins/shipyard/commands/do-work/setup.md"
-  "$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
-  "$repo_root/plugins/shipyard/commands/do-work/drain.md"
-  "$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
-  "$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
+# Directories that make up the do-work orchestrator + worker spec tree.
+# Every *.md file under these (recursively) is a discovery candidate.
+SCAN_DIRS=(
+  "$repo_root/plugins/shipyard/commands/do-work"
+  "$repo_root/plugins/shipyard/skills/worker-preamble"
+  "$repo_root/plugins/shipyard/agents/issue-worker"
 )
+
+FILES=()
+while IFS= read -r -d '' f; do
+  FILES+=("$f")
+done < <(find "${SCAN_DIRS[@]}" -type f -name '*.md' -print0 2>/dev/null | sort -z)
 
 # The canonical preamble line. Anchored against literal text so any
 # substitution (e.g. swapping the fallback path) trips this test. The
@@ -107,16 +138,38 @@ assert_fail() {
   fail=$((fail+1))
 }
 
-echo "claude-plugin-root preamble regression tests (issue #354)"
+echo "claude-plugin-root preamble regression tests (issue #354, discovery per #910)"
 echo
 
-# (1) Every file under test must exist. A missing file is a different
-# class of regression (rename without test update) but still a failure.
-for f in "${FILES[@]}"; do
-  if [[ -f "$f" ]]; then
-    assert_pass "$f exists"
+# (1) Discovery sanity. A `find` scope regression (wrong repo_root, a
+# directory rename that silently drops out of SCAN_DIRS) would make FILES
+# empty and every subsequent check "pass" vacuously — exactly the
+# false-confidence failure mode #910 was filed to close, just moved one
+# layer down. Assert discovery actually found a non-trivial number of files,
+# and that a small canary set of well-known phase/skill files — which must
+# always exist under this scope — was among them.
+if (( ${#FILES[@]} >= 10 )); then
+  assert_pass "discovery found ${#FILES[@]} candidate *.md files under SCAN_DIRS"
+else
+  assert_fail "discovery found ${#FILES[@]} candidate *.md files under SCAN_DIRS (expected >= 10 — SCAN_DIRS or repo_root may be wrong)"
+fi
+
+CANARY_FILES=(
+  "$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+  "$repo_root/plugins/shipyard/commands/do-work/drain.md"
+  "$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
+  "$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
+  "$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+)
+for canary in "${CANARY_FILES[@]}"; do
+  found=0
+  for f in "${FILES[@]}"; do
+    [[ "$f" == "$canary" ]] && { found=1; break; }
+  done
+  if (( found )); then
+    assert_pass "discovery includes canary file $canary"
   else
-    assert_fail "$f exists (missing)"
+    assert_fail "discovery includes canary file $canary (missing — SCAN_DIRS regressed)"
   fi
 done
 
@@ -139,15 +192,24 @@ if [[ -f "$SETUP_MD" ]]; then
   fi
 fi
 
-# (3) Walk every bash code block in every file under test. For each block
-# that references ${CLAUDE_PLUGIN_ROOT}, assert the first non-blank line
-# after the opening fence is the canonical preamble.
+# (3) Walk every bash code block in every discovered file, IN FILE ORDER.
+# For each block that references ${CLAUDE_PLUGIN_ROOT}, the block passes if
+# EITHER:
+#   (a) its own first non-blank line is the canonical preamble
+#       (the common, single-block idiom), OR
+#   (b) the block is a bare script-invocation block (no preamble of its
+#       own) immediately preceded — in the same file, skipping only prose
+#       between fences — by a bash block whose ENTIRE content is the
+#       canonical preamble line and nothing else (the two-block idiom used
+#       by skills/worker-preamble/SKILL.md's step-0 / mid-session-anchoring
+#       sections, which document the preamble once and then show two
+#       different follow-up commands that reuse it).
 #
-# Walking is done by an awk one-liner that emits one line per offending
-# block: "<file>:<line-of-opening-fence>:<first-non-blank-line>".
+# Walking is done by an awk one-liner that emits one line per bash block:
+# "<block_start_line>|<has_ref 0/1>|<is_preamble_only 0/1>|<first_non_blank_line>"
 walk_blocks() {
   local file="$1"
-  awk -v file="$file" -v expected="$EXPECTED_PREAMBLE" '
+  awk -v expected="$EXPECTED_PREAMBLE" '
     BEGIN { in_block = 0 }
 
     # opening bash fence (any indent)
@@ -157,20 +219,17 @@ walk_blocks() {
       first_line = ""
       first_line_num = 0
       has_ref = 0
+      nonblank_count = 0
       next
     }
 
     # closing fence
     /^[ \t]*```[ \t]*$/ {
-      if (in_block && has_ref) {
-        # Strip indent for comparison — preamble may be indented to match
-        # the fence indent (e.g. inside a numbered list item).
+      if (in_block) {
         stripped = first_line
         sub(/^[ \t]+/, "", stripped)
-        if (stripped != expected) {
-          # Emit: file:block_start_line:first_line_num:literal-first-line
-          printf "%s|%d|%d|%s\n", file, block_start, first_line_num, first_line
-        }
+        is_preamble_only = (nonblank_count == 1 && stripped == expected) ? 1 : 0
+        printf "%d|%d|%d|%s\n", block_start, has_ref, is_preamble_only, first_line
       }
       in_block = 0
       next
@@ -181,40 +240,46 @@ walk_blocks() {
       if (/\$\{CLAUDE_PLUGIN_ROOT\}/) {
         has_ref = 1
       }
-      # capture the first non-blank line for the preamble check
-      if (first_line == "" && /[^ \t]/) {
-        first_line = $0
-        first_line_num = NR
+      if (/[^ \t]/) {
+        nonblank_count++
+        if (first_line == "") {
+          first_line = $0
+          first_line_num = NR
+        }
       }
     }
   ' "$file"
 }
 
 offending_blocks=0
+total_ref_blocks=0
 for f in "${FILES[@]}"; do
   [[ -f "$f" ]] || continue
-  while IFS='|' read -r file fence_line first_line_num first_line; do
-    offending_blocks=$((offending_blocks + 1))
-    assert_fail "$file: bash block at line $fence_line uses \${CLAUDE_PLUGIN_ROOT} but first non-blank line (L$first_line_num) is not the canonical preamble"
-    printf '         expected: %s\n' "$EXPECTED_PREAMBLE"
-    printf '         got:      %s\n' "$first_line"
+  prev_is_preamble_only=0
+  while IFS='|' read -r fence_line has_ref is_preamble_only first_line; do
+    if (( has_ref )); then
+      total_ref_blocks=$((total_ref_blocks + 1))
+      stripped_first="$first_line"
+      # strip leading whitespace for comparison (preamble may be indented
+      # to match the fence indent, e.g. inside a numbered list item).
+      stripped_first="${stripped_first#"${stripped_first%%[![:space:]]*}"}"
+      if [[ "$stripped_first" == "$EXPECTED_PREAMBLE" ]]; then
+        : # (a) inline preamble — pass
+      elif (( prev_is_preamble_only )); then
+        : # (b) two-block idiom — pass
+      else
+        offending_blocks=$((offending_blocks + 1))
+        assert_fail "$f: bash block at line $fence_line uses \${CLAUDE_PLUGIN_ROOT} but is not preceded by the canonical preamble (own first line, or an immediately preceding preamble-only block)"
+        printf '         expected: %s\n' "$EXPECTED_PREAMBLE"
+        printf '         got:      %s\n' "$first_line"
+      fi
+    fi
+    prev_is_preamble_only=$is_preamble_only
   done < <(walk_blocks "$f")
 done
 
 if (( offending_blocks == 0 )); then
-  # Count the blocks that DID pass for an informational line.
-  total_blocks=0
-  for f in "${FILES[@]}"; do
-    [[ -f "$f" ]] || continue
-    # count bash blocks containing ${CLAUDE_PLUGIN_ROOT}
-    count=$(awk '
-      /^[ \t]*```bash[ \t]*$/ { in_block = 1; has_ref = 0; next }
-      /^[ \t]*```[ \t]*$/ { if (in_block && has_ref) print "x"; in_block = 0; next }
-      in_block && /\$\{CLAUDE_PLUGIN_ROOT\}/ { has_ref = 1 }
-    ' "$f" | wc -l | tr -d ' ')
-    total_blocks=$((total_blocks + count))
-  done
-  assert_pass "all $total_blocks bash blocks using \${CLAUDE_PLUGIN_ROOT} carry the canonical preamble"
+  assert_pass "all $total_ref_blocks bash blocks using \${CLAUDE_PLUGIN_ROOT} across ${#FILES[@]} scanned files carry the canonical preamble"
 fi
 
 # (4) Sanity check — the preamble itself must actually work. Run it in a
