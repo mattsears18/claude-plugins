@@ -7,6 +7,29 @@ These complement the global rules in `~/.claude/CLAUDE.md`. They apply only when
 - **You always have permission to land changes on `main` without asking — but `main` requires a PR.** The repo's branch ruleset rejects direct pushes (`GH013: Changes must be made through a pull request`), so the mechanism is always the same: push to a branch, open a PR, and arm auto-merge. You do NOT need a review gate or to ask first — the user grants this durably because this is personal tooling, not a multi-contributor codebase that needs human sign-off on every change. Use judgment on *how much ceremony*: trivial fixes / config / docs / cleanup → a PR with auto-merge armed lands fast and is fine; substantive code or spec changes → also a PR, but lean on CI to catch regressions and keep the change reviewable in isolation. The constant is the PR; what varies is how carefully you treat the review.
 - Worktree-isolation rules from `/shipyard:do-work` (#34) still apply: orchestrated multi-agent sessions work in `.claude/worktrees/orchestrator-<session-id>` so they don't clobber the user's in-progress edits in the primary checkout. The PR-via-auto-merge permission doesn't override the worktree isolation contract for `/do-work` runs.
 
+### Required status checks on `main` — and the two that must never be added
+
+The `main` ruleset (id `16669759`) requires **five** status checks. Until 2026-07-25 it required **none**, which meant `gh pr merge --auto` did not queue behind CI — it fell through to an *immediate direct merge* for an admin, the exact ungated shape [`scripts/detect-ungated-admin-direct-merge.sh`](plugins/shipyard/scripts/detect-ungated-admin-direct-merge.sh) exists to detect (issues #438 / #465 / #598 / #602 / #645 / #716). Run that script (`bash plugins/shipyard/scripts/detect-ungated-admin-direct-merge.sh <owner/repo>`) rather than reasoning about the shape by hand; it is the single executable source of truth and now reports `verdict=gated` for this repo.
+
+Required contexts — all five come from workflows triggered on **every** `pull_request` against `main`:
+
+| Context | Workflow | Guards |
+|---|---|---|
+| `conflict markers` | `conflict-markers.yml` | unresolved merge markers reaching `main` (see #436 — this already happened once and poisoned every branch cut afterwards) |
+| `gitleaks` | `secret-scan.yml` | secrets committed to a **public** repo (unrecoverable — rotation, not revert) |
+| `bash test suites` | `tests.yml` | the ~3,800 assertions across 97 suites |
+| `shell tests` | `shellcheck.yml` | same suites, second job |
+| `shellcheck` | `shellcheck.yml` | ~14K lines of production shell under `plugins/shipyard/scripts/` |
+
+**Never add `External-author gate` or `Audit label event` to the required list.** Both appear as passing checks on a PR that happens to trigger them, which makes them look like reasonable additions — they are not:
+
+- `external-author-gate.yml` triggers on `issues: [opened, reopened]` only. It **never** runs on a pull request, so requiring it blocks every PR permanently.
+- `label-event-audit.yml` triggers on `[labeled, unlabeled]`. It runs on a PR only if a label event occurs (e.g. `gh pr create --label shipyard`); a PR that never sees one would hang forever.
+
+A required check that never reports is indistinguishable from one that never passes. This is the same failure family as the deadlock caught in #938 — a plausible-looking ruleset change that bricks the repo — so treat any proposal to extend this list as needing the same live verification: confirm the workflow's trigger actually fires on `pull_request` before requiring its context.
+
+`strict_required_status_checks_policy` is deliberately **`false`**. Setting it `true` requires every PR branch to be up-to-date with `main` before merging, which at this repo's merge volume (~97 PRs/week, mostly autonomous) would force a rebase on nearly every PR and fight `/do-work`'s own rebase handling.
+
 ## Release process
 
 **ALWAYS cut a release when a PR merges.** No exceptions for "trivial" docs-only PRs — `/shipyard:update` and the marketplace only see what's in `plugin.json`'s `version` field. A PR that merges without a version bump is invisible to every existing installation, so the work might as well not have shipped.
