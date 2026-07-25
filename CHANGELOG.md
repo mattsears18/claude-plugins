@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.2.4 — 2026-07-25
+
+Issue #879 was filed against a premise that #825/PR #830 had already inverted by the time it was worked: `Agent`-tool dispatch (by `subagent_type`, honoring frontmatter `model:` pins) is the live default dispatch shape for the seven `/shipyard:do-work` mode-shim agents, not the `Workflow` substrate the issue's "collapse into one router" suggestion assumed was the only path. Collapsing the seven into one router would have destroyed six live, separately-dispatchable `subagent_type` identities. The genuinely-valid residual — ~15-20 lines of near-identical scaffold duplicated across all seven shim files — was extracted instead, following the same shape #886/#942 used for the 18 auditor agents (closes #879).
+
+- New `shipyard:mode-shim-preamble` skill (`plugins/shipyard/skills/mode-shim-preamble/SKILL.md`) documents the two worktree-isolation dispatch shapes (`Agent`-tool default + `Workflow`-substrate alternate), the shared worker-preamble bullet list, and the mode→shim→model mapping table — previously re-inlined per-file.
+- `agents/issue-worker.md` and all six sibling shims (`fix-checks-worker.md`, `fix-main-ci-worker.md`, `fix-pr-batch-worker.md`, `fix-rebase-worker.md`, `investigate-worker.md`, `spike-worker.md`) now point at the skill for the "Worktree isolation contract" mechanism and the "Why a separate shim file" model-mapping table, keeping only their own frontmatter identity, per-mode caveats, and model-choice reasoning. Verified zero `name:`/`description:`/`model:` frontmatter drift.
+- `fix-rebase-worker.md`'s "Per-mode spec" section fixed a stale `haiku` reference left over from #854's haiku→sonnet model change (a drive-by fix, adjacent to the section being edited).
+- New `plugins/shipyard/scripts/tests/mode-shim-preamble.test.sh` regression suite (75 assertions) guards the new shape.
+- `dispatch-integration-774.test.sh` and `legacy-agent-dispatch-retired-791.test.sh` updated — two assertions had pinned the exact pre-refactor wording/location of content that legitimately moved to the new skill; also fixed a latent "seventh row" → "eighth row" off-by-one in the decompose-worker carve-out count (stale since spike-worker's #774 addition grew the table to 7 rows).
+- Issue #879's own GitHub body corrected to reflect the post-#825 reality instead of asserting the now-contradicted premise — the fifth sighting of this exact drift pattern in ~24 hours (also fixed in #944, #949/#945).
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.2.3` → `4.2.4`.
+
 ### 4.2.3 — 2026-07-25
 
 Phase 2 of #886: the `Required inputs` and `Return summary` sections in the 18 `agents/*-auditor.md` files still duplicated boilerplate the `shipyard:auditor-preamble` skill already documents — the "The orchestrator's prompt will include:" intro sentence, and the generic header/verdict/`Filed`/`Skipped (duplicates)` Return-summary skeleton. Phase 1 (#886) deliberately left both alone as a higher-risk chunk requiring per-file review of bespoke content (closes #942).

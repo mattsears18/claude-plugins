@@ -8,14 +8,10 @@ You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** �
 
 ## Shared rules — load first
 
-Before doing anything else, **load the `shipyard:worker-preamble` skill**. That skill carries the rules every worker mode shares:
+Before doing anything else, **load the `shipyard:worker-preamble` skill**. See `shipyard:mode-shim-preamble` § "Shared worker-preamble bullets" for the generic list every shim inherits (worktree discipline, worktree-reaped escape hatch, hook-bypass prohibition, return-contract discipline). This mode's own variations on the two per-file bullets:
 
-- Worktree discipline (never `cd` outside your worktree; never use `gh pr checkout`; never `git switch` to the default branch on return).
 - The `--label shipyard` requirement on every `gh pr create` call (not applicable to this mode — fix-checks-only never opens a new PR — but the rule still applies to any incidental PR work).
 - The auto-merge + snapshot + return pattern (this mode is the documented exception that DOES `--watch` CI).
-- The worktree-reaped escape hatch (`WORKTREE_PATH` capture + pre-write directory check).
-- The absolute prohibition on `--no-verify` / `--no-gpg-sign` / `--no-commit-hooks` / any hook-bypass flag.
-- The return-contract discipline (no narrative status updates).
 
 The worker-preamble skill is the single source of truth for those rules.
 
@@ -31,22 +27,8 @@ and exit.
 
 ## Worktree isolation contract
 
-Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call — agent-definition frontmatter doesn't support an `isolation:` default, so the caller is responsible. The [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) PreToolUse hook hard-fails any dispatch of this shim that omits it (closes #293).
-
-**`/shipyard:do-work` dispatches this shim by name again, as the default shape ([#825](https://github.com/mattsears18/shipyard/issues/825)).** The orchestrator's default dispatch shape is the `Agent` tool with `subagent_type: shipyard:fix-checks-worker` and `isolation: "worktree"` — this shim was briefly not a dispatch target ([#791](https://github.com/mattsears18/shipyard/issues/791), when the orchestrator routed every `mode:`-driven worker through the `Workflow` substrate exclusively), and #825 restored this path as the default after the `Workflow` substrate proved unable to complete a single file write (see [`dispatch-rules.md`](../commands/do-work/dispatch-rules.md#agent-tool-dispatch--the-default-dispatch-shape-825) for the repro). The `Workflow` substrate ([`workflows/do-work-dispatch.workflow.js`](../workflows/do-work-dispatch.workflow.js)) remains a documented alternate shape, whose `agent()` primitive takes no `subagent_type` — it pre-provisions the worktree with `git worktree add` and passes the path as the work unit's `worktreePath` instead, and the built prompt's first instruction is a `cd` into it. Either way, the `isolation: "worktree"` requirement above applies to the default `Agent`-tool shape, and the hook enforces it.
+Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call. See `shipyard:mode-shim-preamble` § "Worktree isolation contract — the two dispatch shapes" for the full mechanism (why the caller is responsible, the `Workflow`-substrate alternate, the #791/#825 history). This shim's `subagent_type` is `shipyard:fix-checks-worker`; [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh)'s guarded set includes it (closes #293).
 
 ## Why a separate shim file
 
-Claude Code subagents take their model from frontmatter — the `model:` field is read once per agent definition and applies to every invocation of that subagent. The orchestrator's existing single-entry router (`shipyard:issue-worker`) handles five modes; pinning a model on its frontmatter would force all five modes onto the same model. The per-mode shim pattern (`shipyard:fix-checks-worker` for fix-checks-only, `shipyard:fix-rebase-worker` for fix-rebase, etc.) lets each mode run on the model best fit for its workload while keeping the per-mode behavioral spec in one place (`agents/issue-worker/<mode>.md`).
-
-Mode → shim → model mapping:
-
-| Mode                     | Shim agent                  | Model  | Reason                                                        |
-|--------------------------|-----------------------------|--------|---------------------------------------------------------------|
-| `issue-work`             | `shipyard:issue-worker`     | default (Opus) | Full reasoning required — implement, test, ship a PR.         |
-| `fix-checks-only`        | `shipyard:fix-checks-worker`| haiku  | Pattern-match the failing log, apply targeted fix.            |
-| `fix-rebase`             | `shipyard:fix-rebase-worker`| sonnet | Conflict-resolution judgment (stale-vs-semantic), not just git mechanics — Haiku mis-judged it ([#854](https://github.com/mattsears18/shipyard/issues/854)). |
-| `fix-main-ci`            | `shipyard:fix-main-ci-worker`| sonnet | Broader investigation (no PR context to anchor the failure). |
-| `fix-failing-prs-batch`  | `shipyard:fix-pr-batch-worker`| sonnet | Cross-PR pattern-spotting across ≤5 representative failures.|
-
-If Haiku's success rate on fix-checks drops measurably (e.g., contract-violation rate climbs, 3-attempt cap fires more often), bump this shim's `model:` field to `sonnet`. The escalation-fallback pattern from the issue body (Haiku → Sonnet → Opus on retry) is a follow-up — not implemented in this PR.
+See `shipyard:mode-shim-preamble` § "Mode → shim → model mapping" for the rationale (Claude Code subagents take their model from frontmatter, so a per-mode model choice needs a per-mode agent file) and the full table. Haiku for this mode specifically: pattern-match the failing log, apply a targeted fix — the narrowest, most pattern-matchable task in the set. If Haiku's success rate drops measurably (e.g., contract-violation rate climbs, 3-attempt cap fires more often), bump this shim's `model:` field to `sonnet`. The escalation-fallback pattern from the issue body (Haiku → Sonnet → Opus on retry) is a follow-up — not implemented in this PR.

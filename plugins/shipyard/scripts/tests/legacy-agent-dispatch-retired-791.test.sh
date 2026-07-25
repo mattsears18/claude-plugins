@@ -430,18 +430,29 @@ assert_contains "$dispatch_rules" 'not reinstated by #825' \
   "dispatch-rules.md's Migration note explicitly says the knob was NOT reinstated"
 
 # Every sibling shim (and the issue-worker router) says it's dispatched by name
-# again, not merely retained as a hand-dispatch target.
+# again, not merely retained as a hand-dispatch target. As of issue #879's
+# dedup, the "dispatched by name again" mechanism paragraph moved to the
+# shared shipyard:mode-shim-preamble skill (single source of truth instead of
+# 7 near-identical copies) — each shim now points at the skill's own name
+# rather than re-stating the full paragraph, so check both: the skill states
+# the fact once, and every shim file still references the skill AND names its
+# own subagent_type (verified by mode-shim-preamble.test.sh in more depth).
+mode_shim_preamble="$repo_root/plugins/shipyard/skills/mode-shim-preamble/SKILL.md"
+assert_contains "$mode_shim_preamble" "dispatches this shim by name again" \
+  "mode-shim-preamble skill documents shims as dispatched by name again (#825)"
 for shim_file in fix-main-ci-worker fix-pr-batch-worker fix-checks-worker \
                  fix-rebase-worker investigate-worker spike-worker; do
   f="$repo_root/plugins/shipyard/agents/${shim_file}.md"
-  assert_contains "$f" "dispatches this shim by name again" \
-    "${shim_file}.md documents itself as dispatched by name again (#825)"
+  assert_contains "$f" "shipyard:mode-shim-preamble" \
+    "${shim_file}.md references shipyard:mode-shim-preamble for the dispatched-by-name-again mechanism"
   assert_not_contains "$f" "no longer dispatches this shim by name" \
     "${shim_file}.md no longer claims it's not dispatched by name"
 done
 
-assert_contains "$issue_worker_agent" "Agent\` tool (how \`/shipyard:do-work\` dispatches every one of the 7 modes by default" \
-  "issue-worker.md's worktree-isolation contract leads with the Agent-tool default"
+assert_contains "$mode_shim_preamble" "Agent\` tool (the default shape for all seven modes" \
+  "mode-shim-preamble skill's worktree-isolation contract leads with the Agent-tool default"
+assert_contains "$issue_worker_agent" "shipyard:mode-shim-preamble" \
+  "issue-worker.md's worktree-isolation contract points at the mode-shim-preamble skill"
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"

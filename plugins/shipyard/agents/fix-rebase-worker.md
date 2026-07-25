@@ -8,20 +8,16 @@ You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** �
 
 ## Shared rules — load first
 
-Before doing anything else, **load the `shipyard:worker-preamble` skill**. That skill carries the rules every worker mode shares:
+Before doing anything else, **load the `shipyard:worker-preamble` skill**. See `shipyard:mode-shim-preamble` § "Shared worker-preamble bullets" for the generic list every shim inherits (worktree discipline, worktree-reaped escape hatch, hook-bypass prohibition, return-contract discipline). This mode's own variations on the two per-file bullets:
 
-- Worktree discipline (never `cd` outside your worktree; never use `gh pr checkout`; never `git switch` to the default branch on return).
 - The `--label shipyard` requirement on every `gh pr create` call (not applicable to this mode — fix-rebase never opens a new PR — but the rule still applies to any incidental PR work).
 - The auto-merge + snapshot + return pattern (don't `--watch` CI in this mode).
-- The worktree-reaped escape hatch (`WORKTREE_PATH` capture + pre-write directory check).
-- The absolute prohibition on `--no-verify` / `--no-gpg-sign` / `--no-commit-hooks` / any hook-bypass flag.
-- The return-contract discipline (no narrative status updates).
 
 The worker-preamble skill is the single source of truth for those rules.
 
 ## Per-mode spec
 
-Then follow [`agents/issue-worker/fix-rebase.md`](./issue-worker/fix-rebase.md) **verbatim** — every rule, every return string, the trivial-conflict-or-bail policy. That file is the canonical specification; this shim exists only to pin the harness model to `haiku` so the orchestrator's dispatch picks up the cheaper inference cost. **Do not** re-derive behavior from the dispatch prompt — read the per-mode file.
+Then follow [`agents/issue-worker/fix-rebase.md`](./issue-worker/fix-rebase.md) **verbatim** — every rule, every return string, the trivial-conflict-or-bail policy. That file is the canonical specification; this shim exists only to pin the harness model to `sonnet` (per #854 above) so the orchestrator's dispatch picks up the conflict-resolution-capable tier. **Do not** re-derive behavior from the dispatch prompt — read the per-mode file.
 
 The dispatch prompt will name `mode: fix-rebase` explicitly. If it names any other mode, that's an orchestrator-side bug. Fail safe: return
 
@@ -31,10 +27,8 @@ and exit.
 
 ## Worktree isolation contract
 
-Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call — agent-definition frontmatter doesn't support an `isolation:` default, so the caller is responsible. The [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh) PreToolUse hook hard-fails any dispatch of this shim that omits it (closes #293).
-
-**`/shipyard:do-work` dispatches this shim by name again, as the default shape ([#825](https://github.com/mattsears18/shipyard/issues/825)).** The orchestrator's default dispatch shape is the `Agent` tool with `subagent_type: shipyard:fix-rebase-worker` and `isolation: "worktree"` — this shim was briefly not a dispatch target ([#791](https://github.com/mattsears18/shipyard/issues/791), when the orchestrator routed every `mode:`-driven worker through the `Workflow` substrate exclusively), and #825 restored this path as the default after the `Workflow` substrate proved unable to complete a single file write (see [`dispatch-rules.md`](../commands/do-work/dispatch-rules.md#agent-tool-dispatch--the-default-dispatch-shape-825) for the repro). The `Workflow` substrate ([`workflows/do-work-dispatch.workflow.js`](../workflows/do-work-dispatch.workflow.js)) remains a documented alternate shape, whose `agent()` primitive takes no `subagent_type` — it pre-provisions the worktree with `git worktree add` and passes the path as the work unit's `worktreePath` instead, and the built prompt's first instruction is a `cd` into it. Either way, the `isolation: "worktree"` requirement above applies to the default `Agent`-tool shape, and the hook enforces it.
+Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call. See `shipyard:mode-shim-preamble` § "Worktree isolation contract — the two dispatch shapes" for the full mechanism (why the caller is responsible, the `Workflow`-substrate alternate, the #791/#825 history). This shim's `subagent_type` is `shipyard:fix-rebase-worker`; [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh)'s guarded set includes it (closes #293).
 
 ## Why a separate shim file
 
-See `shipyard:fix-checks-worker`'s "Why a separate shim file" section for the rationale and the full mode-to-model mapping. Same pattern — different per-mode file under `agents/issue-worker/`.
+See `shipyard:mode-shim-preamble` § "Mode → shim → model mapping" for the rationale (Claude Code subagents take their model from frontmatter, so a per-mode model choice needs a per-mode agent file) and the full table. Sonnet (not Haiku) for this mode per #854's conflict-resolution-judgment postmortem above.
