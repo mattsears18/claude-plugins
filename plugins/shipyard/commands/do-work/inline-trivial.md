@@ -107,8 +107,16 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
 
 if [ "$VERDICT" = "gated" ]; then
-  # `--auto` genuinely queues behind CI. Arm it and move on.
-  gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
+  # `--auto` genuinely queues behind CI. Arm it and move on. Capture stderr —
+  # don't discard it — the exact same missing-`workflow`-OAuth-scope block a
+  # worker's own `gh pr merge --auto` can hit (worker-preamble auto-merge.md
+  # step 1.1, issue #812) can hit this inline-path call too, and this call
+  # site previously threw the error away unread, so an inline-shipped
+  # workflow-touching PR failed to arm with zero visibility (#850).
+  MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+  if printf '%s' "$MERGE_ARM_ERR" | grep -qi "without .workflow. scope"; then
+    echo "[inline-trivial] PR #<pr-num> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
+  fi
 else
   # UNGATED: `--auto` would land this PR immediately, before its checks run.
   # Leave it OPEN and unarmed — step F appends <M> to session_prs, and drain's
@@ -116,6 +124,8 @@ else
   echo "[inline-trivial] PR #<pr-num> left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
 fi
 ```
+
+When the `[inline-trivial] PR #<pr-num> auto-merge arm blocked` line fires, append `<pr-num>` to the orchestrator's session-local [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) list — the identical list [step A.1's `shipped` handler](./steady-state.md#a1-parse-the-return-string) appends to from a worker's return string ([#812](https://github.com/mattsears18/shipyard/issues/812)). This is the **inline-path counterpart** of that handler: the finding still reaches the same end-of-session banner ([`cleanup-summary.md`](./cleanup-summary.md#end-of-session-summary)) and the same one-time remediation, whether the arm was attempted by a worker or by this fast path.
 
 **Why defer rather than `--watch`, and why not abort to worker.** A worker on the `ungated` branch re-creates the missing gate by *blocking* on `gh pr checks --watch` — affordable because it owns a dispatch slot. The inline path has no slot: it **is** the orchestrator's turn, so a multi-minute block would stall the dispatch loop, every in-flight reconcile, and every other PR's progress. Aborting to a worker isn't right either — the PR already exists by step E, and a fresh worker's [step-0 pre-flight](../../agents/issue-worker/issue-work.md#0-pre-flight-confirm-the-issue-is-still-workable) would bail with `blocked: PR #<M> already open for this issue`. Deferring to [drain's lander](./drain.md#deferred-merge-lander-merge-unarmed-green-session-prs--720) costs nothing, blocks nobody, and still merges only on green. **Trivial ≠ safe:** a typo-class diff can and does red CI — this session's own [#716](https://github.com/mattsears18/shipyard/issues/716) fix landed a CHANGELOG control byte that broke the monotonicity scanner — so "the change is too small to break CI" is never the argument for skipping the gate.
 
