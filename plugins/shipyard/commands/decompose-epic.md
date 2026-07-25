@@ -54,7 +54,7 @@ gh repo view --json nameWithOwner -q .nameWithOwner   # if --repo omitted
 gh label create needs-human-review --repo <owner/repo> --description "Awaiting human sign-off before /do-work will touch it" --color D93F0B 2>/dev/null || true
 ```
 
-`needs-human-review` is ensured by `do-work/setup.md` step 3a as well — the create is idempotent so it's safe in either entry point. Under the [#519](https://github.com/mattsears18/shipyard/issues/519) binary-backlog re-key there is no separate `tracking` label to create: a successfully-sharded parent **keeps** `needs-human-review` (it's still a human-gated umbrella) and the `<!-- do-work-decompose-agent -->` idempotency sentinel on the success comment is what keeps it from being mistaken for a fresh decomposition candidate (the candidate fetch in [step 3](#3-fetch-candidates) skips any epic already carrying that sentinel). See [step C](#worker-step-c--mutate-the-parent-epic).
+`needs-human-review` is ensured by `do-work/setup.md` step 3a as well — the create is idempotent so it's safe in either entry point. Under the [#519](https://github.com/mattsears18/shipyard/issues/519) binary-backlog re-key there is no separate `tracking` label to create: a successfully-sharded parent **keeps** `needs-human-review` (it's still a human-gated umbrella) and the `<!-- do-work-decompose-agent -->` idempotency sentinel on the success comment is what keeps it from being mistaken for a fresh decomposition candidate (the candidate fetch in [step 3](#3-fetch-candidates) skips any epic already carrying that sentinel). See [Step C in the worker prompt template](#worker-prompt-template).
 
 ### 3. Fetch candidates
 
