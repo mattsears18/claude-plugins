@@ -85,7 +85,7 @@ The three rules above assume your working directory **is** the isolated worktree
 Resolve `CLAUDE_PLUGIN_ROOT` first, as its own plain `Bash` call — `${CLAUDE_PLUGIN_ROOT}` is not reliably set in Bash-tool subprocesses (issue [#354](https://github.com/mattsears18/shipyard/issues/354)), so a bare reference to it in the script call below can silently resolve to nothing. This is the canonical idempotent re-export preamble used everywhere else in this plugin that invokes a `scripts/*.sh` helper:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 ```
 
 Then run the guard as one plain `Bash` call:
@@ -142,7 +142,7 @@ git rev-parse --show-toplevel
 That output is your `WORKTREE_PATH`. Re-verify it hasn't drifted using the same [`scripts/assert-worktree-cwd.sh`](../../scripts/assert-worktree-cwd.sh) predicate the step-0 guard uses ([#826](https://github.com/mattsears18/shipyard/issues/826)) — it accepts a directory argument, so it can assert against `WORKTREE_PATH` directly without a `cd`. Re-resolve `CLAUDE_PLUGIN_ROOT` first (it does not persist from step-0's call — see the same [#354](https://github.com/mattsears18/shipyard/issues/354) note there):
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 ```
 
 Then, using the literal `WORKTREE_PATH` value from the first call in place of `$WORKTREE_PATH` (not a live shell variable):
