@@ -88,36 +88,35 @@
  *     (the family alias — `opus`/`sonnet`/`haiku`/`fable` — that
  *     `resolve-dispatch-model.sh` resolves from the merged config's
  *     `models.<mode>` key and the caller passes in as `unit.model`).
- *   - `pipeline(list, fn)` — run one agent per item in a list.
- *   - `parallel(tasks, opts)` — run a bounded-concurrency pool over tasks. NOT
- *     exercised by the issue-work wiring below: the orchestrator's own
- *     `--concurrency N` rolling pool remains the concurrency mechanism for
- *     `issue-work` dispatch (see "Concurrency model" below) — this script is
- *     invoked once per work unit, one invocation per pool slot. `parallel()`'s
- *     in-script fan-out stays reserved for a future batch-dispatch phase; its exact option surface
- *     is still not fully public as of this writing, so pinning behavior on it now
- *     would be speculative.
- *   - `args` — global carrying invocation input: one work unit per `agent()` call
- *     in the current (single-unit) wiring, though the script accepts an array so a
- *     future batch-dispatch phase can widen the caller without changing this file.
+ *   - `args` — global carrying invocation input: one work unit per `agent()` call.
  *
- * The runtime caps concurrency at 16 agents and 1,000 agents/run regardless of what
- * this script requests — see the docs "Behavior and limits" table. Irrelevant to
- * the current single-unit-per-run wiring; relevant once a future phase exercises
- * parallel() for real.
+ * The runtime also exposes `pipeline(list, fn)` and `parallel(tasks, opts)`
+ * fan-out primitives (a bounded-concurrency pool, capped at 16 agents / 1,000
+ * agents-per-run regardless of what a caller requests — see the docs "Behavior
+ * and limits" table), but THIS SCRIPT DOES NOT CALL EITHER (issue #888). An
+ * earlier revision kept an unused `parallel()`/`pipeline()` selection branch as
+ * scaffolding for a hypothetical future batch-dispatch phase; it was deleted
+ * rather than left dormant — see "Concurrency model" below for why, and the
+ * issue #888 decision comment for the full reasoning (in short: `parallel()`'s
+ * option surface is still not fully public as of this writing, so pinning
+ * behavior on an untested API ahead of a real need was a liability, not free
+ * insurance; recovering the deleted branch from git history is cheaper than
+ * carrying an unexercised one). If a genuine multi-unit batch need ever
+ * materializes, re-add fan-out then, against a stable option surface.
  *
  * Concurrency model (all modes)
  * ----------------------------------------
  * The orchestrator's `--concurrency N` rolling worker pool (steady-state.md step C
  * / setup.md step 7) is what bounds parallelism — not this script. Each pool slot
  * corresponds to exactly one dispatch: filling a slot for ANY mode invokes the
- * `Workflow` tool against this script with ONE work unit in `args.issues`. The
- * orchestrator's own pool is what bounds how many of these are in flight
- * simultaneously — this script's own `parallel()` is not asked to manage a
- * multi-unit pool. See dispatch-rules.md's substrate section for the
- * full call-site walkthrough (pre-provisioning the worktree, building `args`,
- * translating the structured return back into the free-text vocabulary
- * steady-state.md's step A.1 already parses).
+ * `Workflow` tool against this script with ONE work unit in `args.issues`, and
+ * this script dispatches it with a single `agent()` call and returns. There is
+ * no in-script fan-out layer coordinating with the orchestrator's pool — the
+ * pool IS the sole concurrency mechanism, for every mode, full stop. See
+ * dispatch-rules.md's substrate section for the full call-site walkthrough
+ * (pre-provisioning the worktree, building `args`, translating the structured
+ * return back into the free-text vocabulary steady-state.md's step A.1 already
+ * parses).
  *
  * Worktree isolation (all modes) — GENUINE GAP, closed by the caller
  * -------------------------------------------------------------------------------
@@ -183,7 +182,7 @@
  *     `args.issues[]` fields consumed by the per-mode builders below.
  *   - Worktree provisioning, per-mode model resolution, version coordination — the
  *     orchestrator computes/performs these and passes the results in.
- * The script's job is the ORCHESTRATION shape (select → pipeline → parallel), not
+ * The script's job is the ORCHESTRATION shape (select → dispatch → collect), not
  * the policy. That division is what no native tool provides and what the epic keeps.
  *
  * `export const meta` MUST BE A PURE LITERAL (issue #809)
@@ -340,9 +339,9 @@ const input = typeof normalizedArgs === 'object' && normalizedArgs !== null ? no
 const repo = input.repo ?? '<owner/repo>'
 const concurrency = Math.max(1, Number(input.concurrency ?? 1)) // --concurrency N; runtime caps at 16
 
-// (3) `log` is a workflow-runtime global. Guard it the same way `parallel` is
-// guarded below, so a manual dry read (or a runtime that doesn't expose it)
-// degrades to a no-op instead of a ReferenceError.
+// (3) `log` is a workflow-runtime global. Guard it with a `typeof` check so a
+// manual dry read (or a runtime that doesn't expose it) degrades to a no-op
+// instead of a ReferenceError.
 const emit = (message) => {
   // eslint-disable-next-line no-undef -- `log` is a workflow-runtime global (see header)
   if (typeof log === 'function') log(message)
@@ -524,7 +523,7 @@ if (workUnits.length > 0) {
 }
 
 // ---------------------------------------------------------------------------
-// STAGE 2 — DISPATCH one worker per unit, bounded by the concurrency pool.
+// STAGE 2 — DISPATCH one worker per unit, sequentially.
 //
 // Each worker runs the SAME per-mode lifecycle it runs today (implement → verify →
 // open-PR / arm-merge), driven by the per-mode spec in agents/issue-worker/<mode>.md
@@ -532,14 +531,14 @@ if (workUnits.length > 0) {
 // return + building the exact same dispatch prompt the Agent-tool path builds for
 // that mode — see the per-mode `build<Mode>Prompt` helpers below.
 //
-// `parallel(tasks, { concurrency })` is the rolling worker pool primitive — but as
-// documented in the "Concurrency model" file-header note, the current wiring is
-// invoked ONCE PER WORK UNIT by the orchestrator (mirroring one `Agent` call per
-// pool slot), so `workUnits` is a one-element array on the live path. The
-// `parallel()`/`pipeline()` branch below is preserved so a future batch-dispatch
-// phase can widen `args.issues` to a real multi-unit list without touching this
-// stage's shape — it is exercised today only when a caller (e.g. a manual dry run)
-// passes more than one unit.
+// No in-script fan-out primitive is used here (issue #888) — `workUnits` is a
+// one-element array on the live path (this script is invoked ONCE PER WORK UNIT
+// by the orchestrator's own `--concurrency N` rolling pool, mirroring one `Agent`
+// call per pool slot; see "Concurrency model" in the file header). The loop below
+// simply awaits `dispatchWorker` for each unit in turn — on the live single-unit
+// path that's one iteration; a manual dry run passing more than one unit gets
+// them dispatched one after another rather than concurrently, which is fine
+// since nothing exercises multi-unit args on the real dispatch path.
 // ---------------------------------------------------------------------------
 const dispatchWorker = (unit) =>
   agent(buildWorkerPrompt(unit, repo), {
@@ -548,11 +547,10 @@ const dispatchWorker = (unit) =>
     schema: workerReturnSchema, // structured return validated at the stage boundary
   })
 
-// eslint-disable-next-line no-undef -- `parallel` is a workflow-runtime global (see header)
-const results =
-  typeof parallel === 'function'
-    ? await parallel(workUnits.map((u) => () => dispatchWorker(u)), { concurrency })
-    : await pipeline(workUnits, dispatchWorker) // fallback: sequential fan-out
+const results = []
+for (const unit of workUnits) {
+  results.push(await dispatchWorker(unit))
+}
 
 // ---------------------------------------------------------------------------
 // STAGE 3 — COLLECT.
