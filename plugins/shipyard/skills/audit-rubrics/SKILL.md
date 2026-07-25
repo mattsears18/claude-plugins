@@ -31,6 +31,8 @@ This rule shares wording with the issue-worker's untrusted-body rule in `agents/
 
 **File P0–P2.** Taste / "would be nice" suggestions are not findings — volume kills tracker signal.
 
+**The bucket you assign here is a filing requirement, not just body prose.** Every finding's `P0`/`P1`/`P2` bucket MUST be applied as a GitHub label on the issue you file — see `shipyard:filing-github-issues` § "Severity label" for the auto-create-and-apply pattern. A severity that only appears in the title/body text is invisible to `is:open label:P1`-style triage filters (issue [#889](https://github.com/mattsears18/shipyard/issues/889)).
+
 ## Grouping rules
 
 **Group ruthlessly.** One issue should have a scope a single PR could plausibly close.
