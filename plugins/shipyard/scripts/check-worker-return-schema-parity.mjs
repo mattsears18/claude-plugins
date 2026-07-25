@@ -77,7 +77,8 @@
  * fails on it.
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const PUNCT = new Set(['{', '}', '[', ']', ':', ','])
 const KEYWORD_LITERALS = { true: true, false: false, null: null }
@@ -345,7 +346,18 @@ export function parseJsObjectLiteral(src, varName) {
 // --------------------------------------------------------------------------
 // CLI
 // --------------------------------------------------------------------------
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`
+// Compare REALPATHs, not raw strings — see check-workflow-meta-literal.mjs's
+// identical comment for why a naive string compare silently no-ops when
+// invoked via a symlinked path (issue #933).
+function resolvesToThisFile() {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+  } catch {
+    return false
+  }
+}
+const isMain = resolvesToThisFile()
 if (isMain) {
   const rawArgs = process.argv.slice(2)
   let varName = 'workerReturnSchema'

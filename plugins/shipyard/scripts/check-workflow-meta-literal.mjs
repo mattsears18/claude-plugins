@@ -80,7 +80,8 @@
  * run, against the real file. See #878 for the full investigation.
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const PUNCT = new Set(['{', '}', '[', ']', ':', ','])
 const KEYWORD_LITERALS = new Set(['true', 'false', 'null'])
@@ -364,7 +365,23 @@ export function checkSource(src, label) {
 // --------------------------------------------------------------------------
 // CLI
 // --------------------------------------------------------------------------
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`
+// Compare REALPATHs, not raw strings — `import.meta.url` is always the
+// fully-resolved real path while `process.argv[1]` is the path exactly as
+// typed. When the script is invoked via a symlinked path (e.g. macOS's
+// `/tmp` -> `/private/tmp`), those differ even though it's the same file on
+// disk, so a naive string compare goes false and this whole gate silently
+// no-ops with exit 0 having checked nothing (issue #933). `fileURLToPath`
+// also avoids a second latent bug in the old hand-built `file://` string,
+// which is wrong for any path containing spaces or non-ASCII characters.
+function resolvesToThisFile() {
+  if (!process.argv[1]) return false
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+  } catch {
+    return false
+  }
+}
+const isMain = resolvesToThisFile()
 if (isMain) {
   const files = process.argv.slice(2)
   if (files.length === 0) {
