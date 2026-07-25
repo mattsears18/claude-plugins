@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.28 — 2026-07-25
+
+`reap_orphan_branches` in `worktree-reap.sh` discarded `git branch -D`'s exit status (`|| true`) and unconditionally emitted both a `reaped-branch:` stdout line and a `"action":"reaped-orphan-branch"` audit-log line for every orphan `worktree-agent-*` branch, so a delete that actually failed (an unmerged commit, a permission error, a concurrent-delete race) was recorded as a successful reap — the same false-success-audit-log shape issue #712 fixed one function over in this file for `fast_worktree_remove`/`reap_action`, but `reap_orphan_branches` predates that fix and was never brought in line with it (closes #874). The delete's exit status is now checked: a successful `git branch -D` still emits the `reaped-branch:` stdout line and the `reaped-orphan-branch` audit line; a failed one emits neither, and instead writes a distinguishable `"action":"reaped-branch-failed"` audit line with `"reason":"branch-delete-failed"`, mirroring the `reaped`/`reaped-failed` split `reap_action` already uses.
+
+- `plugins/shipyard/scripts/worktree-reap.sh` — `reap_orphan_branches` now branches on `git branch -D`'s exit status instead of swallowing it; header docstring and the `reap-orphan-branches` subcommand's own doc comment updated to describe the `reaped-branch-failed` variant and the now-conditional stdout line.
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — step 4.5's description of the audit-log shape updated to cover the failure path.
+- `plugins/shipyard/scripts/tests/worktree-reap.test.sh` — new (57b)/(57c) cases: force a deterministic `git branch -D` failure via a read-only `.git/refs/heads` (mirroring the existing (81) `reaped-failed` permission-denial fixture) and assert no stdout `reaped-branch:` line, no `reaped-orphan-branch` audit line, a `reaped-branch-failed` audit line with `reason:"branch-delete-failed"`, the branch survives, and the sweep still exits 0.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.27` → `4.1.28`.
+
 ### 4.1.27 — 2026-07-25
 
 `do_file_tracking_issue` in `flake-enforce.sh` deduped chronic-flake tracking issues by searching OPEN issues for the flake-key marker via `gh issue list --search ... 2>/dev/null || echo ""` — a transient `gh` failure (rate limit, network blip, auth hiccup) at that lookup and a genuine "no existing issue" result both collapsed to the same empty string, so the function silently fell through and filed a duplicate tracking issue with no diagnostic explaining why dedupe didn't catch it (closes #873). This is the same swallowed-failure shape fixed for `do_apply_blocked_ci` in the same file earlier this session (#872): capture the `gh` call's own exit status explicitly instead of discarding it with `|| echo ""`, and log a distinguishable stderr line (`file-tracking-issue dedupe-lookup-failed repo=... marker=... status=<rc> — proceeding to file anyway`) only when the lookup itself errored, leaving the genuine-empty-result skip path unchanged.

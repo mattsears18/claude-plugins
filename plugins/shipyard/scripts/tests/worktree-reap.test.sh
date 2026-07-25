@@ -1037,6 +1037,9 @@ assert_exit_code "$?" "0" \
 #   - Idempotent — second pass with no orphan branches produces empty output.
 #   - Dry-run mode emits reaped-branch: lines without deleting or auditing.
 #   - Audit log entry has the expected shape.
+#   - A `git branch -D` failure emits `reaped-branch-failed` + a reason, NOT
+#     a false `reaped-orphan-branch`, and no stdout `reaped-branch:` line
+#     (issue #874).
 #   - Bad-usage cases exit 64.
 #   - --repo-root=value and --session-id=value forms accepted.
 # ============================================================================
@@ -1235,6 +1238,56 @@ assert_equals "$result" "$expected" \
 line_count=$(wc -l < "$rob_audit_log" 2>/dev/null | tr -d ' ')
 assert_equals "$line_count" "2" \
   "(57a) two orphan branches → two audit-log lines"
+
+# --- (57b)/(57c) a `git branch -D` failure does NOT log a false success ---
+# Issue #874 — the exit status used to be discarded (`|| true`) and the audit
+# line was written unconditionally, so a branch whose delete failed (unmerged
+# commit, permission error, concurrent-delete race) was indistinguishable
+# from a real reap. Force a deterministic failure by making `.git/refs/heads`
+# non-writable: `git branch -D` needs to create a `*.lock` file there to
+# unlink the ref, so every branch delete in the sweep fails and the ref
+# survives — mirroring the (81) `reaped-failed` permission-denial fixture
+# above for `reap_action`. Skipped under root, which bypasses permission bits.
+if [ "$(id -u)" = "0" ]; then
+  printf '  %sSKIP%s  (57b) reaped-branch-failed audit line (running as root — permission bits are a no-op)\n' "$GREEN" "$RESET"
+else
+  reset_rob_layout
+  git -C "$rob_repo" branch worktree-agent-perm-fail-test HEAD
+  chmod 0500 "$rob_repo/.git/refs/heads"
+  result=$(run_rob)
+  rob_rc=$?
+  chmod 0700 "$rob_repo/.git/refs/heads"
+
+  assert_equals "${result:-EMPTY}" "EMPTY" \
+    "(57b) failed git branch -D emits NO 'reaped-branch:' stdout line"
+  assert_exit_code "$rob_rc" "0" \
+    "(57b1) a failed branch delete still exits 0 (the sweep must continue)"
+
+  if git -C "$rob_repo" rev-parse --verify worktree-agent-perm-fail-test >/dev/null 2>&1; then
+    printf '  %sPASS%s  (57b2) branch survived (the failure being recorded is real)\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (57b2) branch was deleted — the failure could not be simulated\n' "$RED" "$RESET"
+    fail=$((fail+1))
+  fi
+
+  fail_line=$(cat "$rob_audit_log" 2>/dev/null)
+  shape_ok=1
+  case "$fail_line" in *'"action":"reaped-branch-failed"'*) ;; *) shape_ok=0 ;; esac
+  case "$fail_line" in *'"branch":"worktree-agent-perm-fail-test"'*) ;; *) shape_ok=0 ;; esac
+  case "$fail_line" in *'"reason":"branch-delete-failed"'*) ;; *) shape_ok=0 ;; esac
+  case "$fail_line" in *'"session":"rob-test-session"'*) ;; *) shape_ok=0 ;; esac
+  # A `"action":"reaped-orphan-branch"` line here would be the pre-#874
+  # silent-success lie the issue reported.
+  case "$fail_line" in *'"action":"reaped-orphan-branch"'*) shape_ok=0 ;; esac
+  if [ "$shape_ok" = "1" ]; then
+    printf '  %sPASS%s  (57c) failed delete emits reaped-branch-failed + reason (never a silent reaped-orphan-branch)\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (57c) expected a reaped-branch-failed audit line with a reason; was: %s\n' "$RED" "$RESET" "$fail_line"
+    fail=$((fail+1))
+  fi
+fi
 
 # ============================================================================
 # reap-session-worktrees subcommand tests (issue #509)
