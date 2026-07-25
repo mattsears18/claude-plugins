@@ -411,6 +411,12 @@
 
 set -u
 
+# --------------------------------------------------------------------------
+# Shared helpers (shipyard_home) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
 usage() {
   cat <<'EOF' >&2
 Usage:
@@ -1283,7 +1289,8 @@ find_orphan_orchestrators() {
   # /do-work has nothing to reap.
   [ -d "$orch_root" ] || return 0
 
-  local shipyard_home="${SHIPYARD_HOME:-$HOME/.shipyard}"
+  local shipyard_home
+  shipyard_home=$(shipyard_home)
   local sessions_dir="$shipyard_home/sessions"
 
   # Resolve the helper script path so we can call `session-state.sh
@@ -1695,7 +1702,8 @@ reap_action() {
 
   # Resolve the audit-log path lazily. Mirrors the cost-history /
   # session-state convention of `$SHIPYARD_HOME` overriding `$HOME/.shipyard`.
-  local shipyard_home="${SHIPYARD_HOME:-$HOME/.shipyard}"
+  local shipyard_home
+  shipyard_home=$(shipyard_home)
   # Ensure the dir exists — same fire-and-forget posture as the write itself.
   # The mkdir is critical because the previous inline `printf >> $LOG` would
   # fail silently when $SHIPYARD_HOME didn't exist (the `2>/dev/null || true`
@@ -1953,7 +1961,8 @@ reap_orphan_branches() {
     | sed 's|^branch refs/heads/||')
 
   # Prepare audit log infrastructure (skip in dry-run).
-  local shipyard_home="${SHIPYARD_HOME:-$HOME/.shipyard}"
+  local shipyard_home
+  shipyard_home=$(shipyard_home)
   local audit_log="$shipyard_home/reap-audit.jsonl"
   local ts actor_pid
   actor_pid=$$

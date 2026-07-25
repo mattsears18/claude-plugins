@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.43 — 2026-07-25
+
+`plugins/shipyard/scripts/*.sh` re-implemented three small pieces of logic identically across a large fraction of the directory because there was nowhere shared for them to live: `${SHIPYARD_HOME:-$HOME/.shipyard}` path resolution (open-coded in 9 scripts), the `command -v jq` dependency guard (duplicated across 8 scripts), and a mktemp-then-rename atomic-write helper reimplemented with drifting levels of defensiveness (session-state.sh's copy alone carried the issue #357 empty-tempfile guard; three of its four sibling copies didn't) (closes #887).
+
+- `plugins/shipyard/scripts/lib/common.sh` — new shared library exporting `shipyard_home`, `require_jq`, and `atomic_write`. `atomic_write` adopts the most defensive of the four near-identical implementations it replaces (the 0-byte-tempfile guard, previously session-state.sh-only) — a strict superset on the success path, not a behavior change for any existing caller; the 66/67 return-code contract `shipyard-config.test.sh`'s issue #871 regression test pins is preserved exactly.
+- `session-state.sh`, `cost-history.sh`, `flake-registry.sh`, `flake-enforce.sh`, `gh-cached.sh`, `eas-watch.sh`, `worktree-reap.sh`, `status.sh`, `setup-timing.sh`, `shipyard-config.sh`, `report-plugin-error.sh` — now source `lib/common.sh` and call the shared helpers in place of their own duplicated definitions. Every script's existing test suite (and the full `plugins/` shellcheck + test-suite sweep) passes unchanged.
+- `plugins/shipyard/scripts/tests/common-lib.test.sh` — new regression suite for the shared library: `shipyard_home`'s default + override, `require_jq`'s present/missing paths (including its `$0`-derived default script name), and `atomic_write`'s success path, 0-byte guard, and custom-script-name argument.
+- Splitting `worktree-reap.sh`'s orchestrator-PID/session-identity forensics subcommands (`detect-orchestrator-pid`, `derive-session-id`, `find-orphan-orchestrators`) out into a dedicated `session-identity.sh` — the issue's own optional, separate-PR item — is deferred to a follow-up issue rather than folded into this phase-1 dedup.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.42` → `4.1.43`.
+
 ### 4.1.42 — 2026-07-25
 
 `check-dispatch-prompt-parity.mjs`'s augmentation-anchor check (CHECK 3, added by #880) compared against a hand-maintained `AUGMENTATION_ANCHORS` table inside the script — it caught a *known* anchor's text drifting, but was structurally blind to the *addition* of a brand-new augmentation to `dispatch-rules.md` that was never wired into the corresponding builder. That blind spot wasn't hypothetical: PR #917 (#851) added the operator-residual augmentation and the very next PR, #919 (#852), added the verification-scope augmentation — both landed with zero coverage in `buildIssueWorkPrompt`, and the static table never grew to notice either, so the parity suite stayed green for both (closes #918).

@@ -99,12 +99,15 @@
 set -u
 
 # --------------------------------------------------------------------------
+# Shared helpers (require_jq) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+# --------------------------------------------------------------------------
 # Dependencies
 # --------------------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-  echo "flake-enforce.sh: jq is required but not installed" >&2
-  exit 65
-fi
+require_jq
 
 GH="${GH:-gh}"
 

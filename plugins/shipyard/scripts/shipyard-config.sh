@@ -73,13 +73,16 @@
 set -u
 
 # --------------------------------------------------------------------------
+# Shared helpers (require_jq, atomic_write) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+# --------------------------------------------------------------------------
 # Dependency check — jq is required for merge, projection, and validation
 # (we implement a small Draft-07 subset in-script, no external validator).
 # --------------------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-  echo "shipyard-config.sh: jq is required but not installed" >&2
-  exit 65
-fi
+require_jq
 
 usage() {
   cat <<'EOF' >&2
@@ -254,32 +257,11 @@ local_config_path() {
   printf '%s/.shipyard/config.local.json\n' "$root"
 }
 
-# --------------------------------------------------------------------------
-# Atomic write — mirrors session-state.sh's pattern. Same-fs tmp + rename
-# is POSIX-atomic; a crash mid-write leaves the previous file intact.
-# --------------------------------------------------------------------------
-atomic_write() {
-  local target="$1"
-  local dir
-  dir=$(dirname "$target")
-  mkdir -p "$dir"
-  local tmp="${target}.tmp.$$"
-  # shellcheck disable=SC2064
-  trap "rm -f '$tmp'" EXIT
-  if ! cat > "$tmp"; then
-    rm -f "$tmp"
-    trap - EXIT
-    echo "shipyard-config.sh: failed to write tmp file $tmp" >&2
-    return 66
-  fi
-  if ! mv -f "$tmp" "$target"; then
-    rm -f "$tmp"
-    trap - EXIT
-    echo "shipyard-config.sh: failed to rename $tmp -> $target" >&2
-    return 67
-  fi
-  trap - EXIT
-}
+# atomic_write() (same-fs tmp + rename; POSIX-atomic) now lives in
+# lib/common.sh (issue #887) — this was a byte-for-byte functional copy of
+# session-state.sh's implementation, minus the 0-byte guard the shared
+# version adds. shipyard-config.test.sh's issue-#871 regression test pins
+# the 66/67 return-code contract this preserves.
 
 # --------------------------------------------------------------------------
 # Schema validation — minimal Draft-07 subset implemented in jq. We don't

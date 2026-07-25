@@ -110,8 +110,16 @@
 set -u
 
 # --------------------------------------------------------------------------
+# Shared helpers (shipyard_home, atomic_write) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+# --------------------------------------------------------------------------
 # Dependency checks. `gh` is the underlying CLI we wrap; `sha256sum` (Linux)
-# or `shasum` (macOS) hashes argv; `jq` is used for stats JSON updates.
+# or `shasum` (macOS) hashes argv; `jq` is used for stats JSON updates (but
+# treated as soft-optional there — see bump_stats below — so it has no hard
+# require_jq call here).
 # --------------------------------------------------------------------------
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -158,37 +166,14 @@ EOF
 # Resolve the canonical cache directory for a session.
 cache_dir() {
   local session_id="$1"
-  local home="${SHIPYARD_HOME:-${HOME}/.shipyard}"
+  local home
+  home=$(shipyard_home)
   printf '%s/cache/%s\n' "$home" "$session_id"
 }
 
-# Atomic write: stdin → target. Same pattern as session-state.sh — tmp
-# in the same dir + rename. POSIX-atomic on the same filesystem; a crash
-# mid-write leaves the previous file (or no file) intact rather than a
-# corrupted half-write.
-atomic_write() {
-  local target="$1"
-  local dir
-  dir=$(dirname "$target")
-  mkdir -p "$dir"
-  local tmp="${target}.tmp.$$"
-  # shellcheck disable=SC2064
-  # rationale: capture current $tmp value, not deferred expansion.
-  trap "rm -f '$tmp'" EXIT
-  if ! cat > "$tmp"; then
-    rm -f "$tmp"
-    trap - EXIT
-    echo "gh-cached.sh: failed to write tmp file $tmp" >&2
-    return 66
-  fi
-  if ! mv -f "$tmp" "$target"; then
-    rm -f "$tmp"
-    trap - EXIT
-    echo "gh-cached.sh: failed to rename $tmp -> $target" >&2
-    return 67
-  fi
-  trap - EXIT
-}
+# Atomic write: stdin → target. Now shared in lib/common.sh (issue #887) —
+# this was a byte-for-byte copy of session-state.sh's original tmp-in-place
+# + rename implementation, minus the 0-byte guard the shared version adds.
 
 # Compute the file mtime in epoch seconds. macOS BSD stat vs Linux GNU
 # stat disagree on the flag:

@@ -106,10 +106,13 @@
 
 set -u
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "eas-watch.sh: jq is required but not installed" >&2
-  exit 65
-fi
+# --------------------------------------------------------------------------
+# Shared helpers (shipyard_home, require_jq, atomic_write) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+require_jq
 
 usage() {
   cat <<'EOF' >&2
@@ -140,27 +143,18 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Path resolution. Mirrors session-state.sh's $SHIPYARD_HOME convention.
+# Path resolution. shipyard_home() itself now lives in lib/common.sh
+# (issue #887).
 # ---------------------------------------------------------------------------
 state_path() {
-  local home="${SHIPYARD_HOME:-${HOME}/.shipyard}"
+  local home
+  home=$(shipyard_home)
   printf '%s/eas-state.json\n' "$home"
 }
 
-# ---------------------------------------------------------------------------
-# Atomic-write helper. Writes stdin to <target>.tmp.<pid> then renames.
-# A crash mid-write leaves the previous file intact — same property
-# session-state.sh relies on.
-# ---------------------------------------------------------------------------
-atomic_write() {
-  local target="$1"
-  local dir
-  dir=$(dirname "$target")
-  mkdir -p "$dir" || { echo "eas-watch.sh: failed to mkdir $dir" >&2; return 65; }
-  local tmp="${target}.tmp.$$"
-  cat > "$tmp" || { rm -f "$tmp"; return 65; }
-  mv -f "$tmp" "$target" || { rm -f "$tmp"; return 65; }
-}
+# atomic_write() (stdin → target, tmp-in-place + rename) now lives in
+# lib/common.sh (issue #887) — this was a byte-for-byte functional copy of
+# session-state.sh's original implementation.
 
 # ---------------------------------------------------------------------------
 # Expo project detection. Returns 0 if app.json or app.config.{js,ts} is

@@ -96,10 +96,13 @@
 
 set -u
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "setup-timing.sh: jq is required but not installed" >&2
-  exit 65
-fi
+# --------------------------------------------------------------------------
+# Shared helpers (shipyard_home, require_jq) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+require_jq
 
 usage() {
   cat <<'EOF' >&2
@@ -121,10 +124,6 @@ Exit codes:
   64   usage error
   65+  internal helper failure
 EOF
-}
-
-shipyard_home() {
-  printf '%s\n' "${SHIPYARD_HOME:-${HOME}/.shipyard}"
 }
 
 sidecar_path() {

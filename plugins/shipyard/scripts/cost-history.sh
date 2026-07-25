@@ -141,13 +141,16 @@
 set -u
 
 # --------------------------------------------------------------------------
+# Shared helpers (shipyard_home, require_jq, atomic_write) — issue #887.
+# --------------------------------------------------------------------------
+# shellcheck source=lib/common.sh disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+# --------------------------------------------------------------------------
 # Dependency check — jq is required for record projection and report
 # aggregation. Same posture as session-state.sh and shipyard-config.sh.
 # --------------------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-  echo "cost-history.sh: jq is required but not installed" >&2
-  exit 65
-fi
+require_jq
 
 usage() {
   cat <<'EOF' >&2
@@ -173,12 +176,9 @@ EOF
 }
 
 # --------------------------------------------------------------------------
-# Path resolution
+# Path resolution. shipyard_home() itself now lives in lib/common.sh
+# (issue #887) — this file just builds ledger-specific paths on top of it.
 # --------------------------------------------------------------------------
-shipyard_home() {
-  printf '%s\n' "${SHIPYARD_HOME:-${HOME}/.shipyard}"
-}
-
 session_ledger_path() {
   printf '%s/cost-history.jsonl\n' "$(shipyard_home)"
 }
