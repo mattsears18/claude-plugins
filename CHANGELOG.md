@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.2.1 — 2026-07-25
+
+README.md's "Dispatch substrate" section still asserted the `Workflow` substrate was the only way a `mode:`-driven worker is dispatched, contradicting #825/PR #830's restoration of `Agent`-tool dispatch (`isolation: "worktree"`) as the default, primary shape — the fifth sighting of this drift pattern in ~24 hours, after PR #944 fixed two instances in `do-work-dispatch.workflow.js` (closes #945).
+
+- `README.md` — rewrote the "Dispatch substrate" section to describe `Agent`-tool dispatch as the default/primary shape and the `Workflow` substrate as a documented, reversible-on-evidence alternate for the same seven `mode:` values, cross-linking to `dispatch-rules.md`'s "Dispatch shapes" section (the authoritative spec) rather than re-deriving the mechanics. Corrected the "no flag, no fallback" upgrade note — `dispatch.substrate` genuinely stays removed, but the "therefore one substrate" conclusion no longer holds. Also fixed the Layout section's `workflows/` comment, which made the same "only way" claim.
+- `plugins/shipyard/workflows/README.md` — fixed a stale line 27 missed by PR #944's otherwise-thorough pass on this same file: "This substrate governs the seven worker modes only" implied the `Workflow` substrate was still the sole dispatcher for the seven modes, contradicting the file's own already-corrected header note two paragraphs above it.
+
 ### 4.2.0 — 2026-07-25
 
 Neither of the two workflows that run the repo's `*.test.sh` bash suites (`tests.yml`'s `bash-tests` job and `shellcheck.yml`'s `shell-tests` job) uploaded any test-report artifact — a failed run's per-suite output was only recoverable by scrolling the raw job log, and nothing survived past the log-retention window for later flake analysis (closes #865).
