@@ -115,25 +115,14 @@ Apply `security` label if it exists (privacy ⊂ security for tracker purposes),
 
 ### 9. Return summary
 
-```
-Privacy audit:
-<one-line verdict>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines, and the optional URGENT out-of-band-action bracket — a leaked credential is exactly the case that bracket exists for). This auditor's own lines:
 
+```
 Data processors: <N declared / M actual / X undeclared>
 Deletion flow: <ok | missing | too-deep>
 ASC privacy: <complete | gaps | missing>
 Play data safety: <complete | gaps | missing>
 COPPA: <n/a | gated | gap>
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
-
-URGENT (out-of-band action):
-- <any P0 needing immediate user action, like "rotate credential">
 ```
 
 ## Don't

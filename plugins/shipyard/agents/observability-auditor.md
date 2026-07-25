@@ -18,8 +18,6 @@ The dx-auditor checks whether an error-tracking SDK is *installed at all* (prese
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or cwd) for codebase review
 - Optionally: **production env file** or **deploy config** path, if the user wants env-var population checked against real config (otherwise skipped with a note)
@@ -225,22 +223,14 @@ Apply `observability` label if it exists in the repo (and `bug` for exploitable 
 
 ## Return summary
 
-```
-Observability audit:
-<one-line verdict — e.g., "Error tracking installed but DSN unset in prod" or "Silent-failure pile-up in auth flow" or "n/a — pure library, no runtime surface">
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Error tracking: <present-effective | present-but-DSN-unset | present-but-conditional | absent | n/a>
 Structured logging: <consistent | mixed Nx | unstructured-only>
 Silent failures: <N in critical paths, M in less-critical>
 Tracing: <full | partial | absent | n/a>
 Alert config: <N alerts reviewed, M missing runbooks | not present>
-
-Filed K issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 
 Out of scope:
 - <area> (reason)

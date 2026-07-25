@@ -16,8 +16,6 @@ Your remit is **functional correctness** — *does each feature actually work?* 
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **URL** to audit (the running app — a deployed test/staging surface, or a local dev server).
 - **Target GitHub repo** as `owner/repo`.
 - Optionally: **test credentials** for authenticated surfaces, **scope hints** ("just the messaging flow" / "everything"), a **committed QA checklist path**, and **destructive-action / target-env config** (see § "Safety config" below).

@@ -16,8 +16,6 @@ You are a security audit agent. You review the codebase + live app for security 
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - Optionally: **live URL** for header / TLS / surface review
 - The working directory (or cwd) for codebase review
@@ -117,17 +115,9 @@ Apply `security` label if it exists in the repo (and `bug` for exploitable issue
 
 ### Return summary
 
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
+
 ```
-Security audit:
-<one-line verdict>
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
-
 Out of scope:
 - <area> (reason)
 ```

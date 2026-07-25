@@ -114,27 +114,17 @@ Body must include the failing URL / file path + the specific structural gap + ex
 
 ### 7. Return summary
 
-```
-Marketing audit of <URL>:
-<one-line verdict>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Brand docs: <found docs/brand/… | none — generic heuristics>
 Landing: <hero+CTA present | value-prop/CTA gap>
 Store listings: <reviewed N | not committed>
 Cross-surface positioning: <consistent | N divergences>
 
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
-
 Surfaces not reviewed:
 - <surface> (reason)
 ```
-
-Keep under 30 lines.
 
 ## Don't
 

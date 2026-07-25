@@ -14,8 +14,6 @@ You are an accessibility audit agent. You review a live web URL for WCAG complia
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **URL** to audit
 - **Target GitHub repo** as `owner/repo`
 - Optionally: **test credentials** for authenticated surfaces
@@ -109,17 +107,10 @@ Never delete files from the repo root or any other working directory — the rou
 
 ### 6. Return summary
 
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
+
 ```
-A11y audit of <URL>:
-<one-line verdict>
 WCAG conformance: AA failing on N audits, AAA failing on M
-
-Filed N issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 
 Surfaces not reviewed:
 - <surface>

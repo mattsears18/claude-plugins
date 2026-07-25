@@ -18,8 +18,6 @@ You are a documentation audit agent. You review the markdown / RST / asciidoc / 
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or cwd) for the codebase
 
@@ -241,10 +239,9 @@ Apply `documentation` label if it exists in the repo. Quick-start P0s also get `
 
 ### 10. Return summary
 
-```
-Docs audit:
-<one-line verdict — what was the biggest theme?>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 README freshness: <verdict + N drift sites>
 Internal links: <N broken across M files>
 External links: <N broken (M 404s, K closed-issue refs)>
@@ -252,13 +249,6 @@ Docstring drift: <N sites across M files>
 ADR coverage: <ok | N substantial changes without ADR>
 Stale dated markers: <N past-deadline>
 Quick-start: <ok | N commands error>
-
-Filed K issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 
 Skipped (docs-audit:skip markers):
 - <file/section> (reason if present)

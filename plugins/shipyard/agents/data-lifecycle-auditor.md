@@ -40,8 +40,6 @@ If the repo has **no datastore** — a pure library, a static site, a stateless 
 
 ## Required inputs
 
-The orchestrator's prompt will include:
-
 - **Target GitHub repo** as `owner/repo`
 - The working directory (or cwd) for the codebase
 
@@ -136,23 +134,15 @@ Apply the `audit:data-lifecycle` label to every issue (auto-create it first per 
 
 ### Return summary
 
-```
-Data-lifecycle audit:
-<one-line verdict — biggest cascade gap, or n/a if no datastore>
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict, `Filed`/`Skipped (duplicates)` lines). This auditor's own lines:
 
+```
 Entities discovered: <N collections/tables>
 Delete-cascade gaps: <N | none>
 Denormalization drift: <N snapshots with no propagation>
 Create-time invariant gaps: <N | none>
 GC/TTL gaps: <N ephemeral/counter collections unbounded>
 Storage/external side-effect gaps: <N | none>
-
-Filed K issues:
-- #NNN <title> (URL)
-...
-
-Skipped (duplicates):
-- <finding> → existing #NNN
 
 Deferred to sibling auditors:
 - <finding> → audit:privacy / audit:security / audit:testing / audit:api
