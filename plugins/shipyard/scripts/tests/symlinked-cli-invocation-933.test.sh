@@ -163,15 +163,18 @@ echo
 echo "== (B) check-dispatch-prompt-parity.mjs via a symlinked invocation path"
 # ==========================================================================
 
-# A minimal but structurally-real drift fixture pair, reproducing the exact
-# pre-#880 regression shape (borrowed verbatim from
-# dispatch-prompt-parity-880.test.sh's own fixture): the workflow.js copy's
-# user-feedback preamble is missing the trailing "misread the user" clause.
+# A minimal but structurally-real drift fixture pair: the workflow.js copy's
+# user-feedback augmentation is missing entirely, which the #918 heading-
+# derived anchor check (dispatch-prompt-parity-880.test.sh's own suite covers
+# the derivation mechanism in full — this suite only needs ANY real drift to
+# confirm the symlinked CLI body actually runs) must still catch.
 drift_md="$tmp/dispatch-rules-drift.md"
 cat > "$drift_md" <<'MDEOF'
    > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/issue-work.md`.** Branch: `do-work/issue-<N>`. Open a PR that closes the issue.
 
-   **This issue originated from end-user feedback** and was refined by a prior `/refine-issues` pass. If the original raw user text (in the preserved comment) contradicts what's in the refined body, trust the **raw text** and flag the discrepancy in the issue — the refinement step may have misread the user.
+   **User-feedback augmentation.** If the issue carries the `user-feedback` label, prepend this extra-scrutiny preamble to the prompt above:
+
+   > **This issue originated from end-user feedback** and was refined by a prior `/refine-issues` pass. If the original raw user text (in the preserved comment) contradicts what's in the refined body, trust the **raw text** and flag the discrepancy in the issue — the refinement step may have misread the user.
 MDEOF
 
 drift_js="$tmp/workflow-drift.js"
@@ -190,18 +193,13 @@ function worktreeAnchorLines(unit, mode) {
   return [`cd "${unit.worktreePath}"`]
 }
 
-// Missing the trailing "the refinement step may have misread the user"
-// clause dispatch-rules.md's copy has — the exact pre-#880 drift shape.
+// Missing the user-feedback augmentation entirely — a drift the #918
+// heading-derived anchor check must still catch via a symlinked invocation.
 function buildIssueWorkPrompt(unit, repoSlug) {
   const lines = [`mode: issue-work`, ``, ...worktreeAnchorLines(unit, 'issue-work')]
   lines.push(`Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/issue-work.md\`.`)
-  if (unit.userFeedback) {
-    lines.push(
-      `**This issue originated from end-user feedback** and was refined by a prior`,
-      `\`/refine-issues\` pass. If the original raw user text (in the preserved comment)`,
-      `contradicts what's in the refined body, trust the **raw text** and flag the`,
-      `discrepancy in the issue.`,
-    )
+  if (false) {
+    lines.push(`unreachable — userFeedback augmentation intentionally omitted for this drift fixture`)
   }
   return lines.join('\n')
 }

@@ -51,9 +51,9 @@
  *   2. Per-mode spec-file parity — for every mode present in both, dispatch-
  *      rules.md's blockquote and the mode's `build<Mode>Prompt` function body
  *      must both reference the same `agents/issue-worker/<mode>.md` path.
- *   3. Augmentation-anchor parity — for each (anchor phrase, applicable mode)
- *      pair in a static table below, the anchor phrase must appear in BOTH
- *      dispatch-rules.md and the applicable mode's builder function body.
+ *   3. Augmentation-anchor parity — DERIVED, not hand-listed (issue #918, see
+ *      below) — every applicable augmentation's anchor phrase must appear in
+ *      the applicable mode's builder function body.
  *   4. Worktree-anchor dedup — every mode's builder function body must call
  *      the shared `worktreeAnchorLines(unit, '<mode>')` helper rather than
  *      inlining its own separate "no worktreePath" CALLER-BUG copy.
@@ -67,6 +67,36 @@
  * of rigor: it catches every drift shape #880 evidenced without being brittle
  * to legitimate prose rewording that doesn't change the underlying meaning.
  *
+ * WHY CHECK 3 IS DERIVED, NOT A STATIC TABLE (issue #918)
+ * --------------------------------------------------------
+ * The original CHECK 3 compared against a hand-maintained `AUGMENTATION_
+ * ANCHORS` array in this file — it caught a KNOWN anchor's text drifting, but
+ * was structurally blind to a brand-NEW augmentation being added to
+ * dispatch-rules.md and never wired into the corresponding builder. That's
+ * exactly what happened, twice, in two consecutive releases: PR #917 (#851)
+ * added the operator-residual augmentation and PR #919 (#852) added the
+ * verification-scope augmentation, both landing with zero coverage in
+ * `buildIssueWorkPrompt` — and the static table never grew to notice either,
+ * so this suite stayed green both times.
+ *
+ * The fix: every bolded `**<Name> augmentation ...**` heading paragraph in
+ * dispatch-rules.md marks the start of an augmentation. `extractAugmentations`
+ * locates the Context-paragraph blockquote immediately following each such
+ * heading and extracts THAT blockquote's own leading bold span as the anchor
+ * phrase (the actual text handed to the worker) — mirroring
+ * `check-worker-return-schema-parity.mjs`'s #856 precedent of deriving the
+ * comparison set from the canonical source rather than hand-copying it.
+ * Adding a new augmentation heading + blockquote to dispatch-rules.md
+ * therefore extends checker coverage automatically; no companion edit here is
+ * needed. An augmentation applies to `['issue-work']` by default — the only
+ * known exception (next-available-version, shared with `spike`) is handled
+ * by the tiny `modesForHeading` exception below, not a per-augmentation table.
+ * An augmentation intentionally left unwired can carry an explicit
+ * `<!-- dispatch-prompt-parity: waived — <reason> -->` marker so the gap is a
+ * documented, checked-for waiver rather than a silent miss — and the checker
+ * fails if a waived anchor is later found present in the builder anyway (a
+ * stale waiver nobody removed once the augmentation actually got wired).
+ *
  * USAGE
  *   node check-dispatch-prompt-parity.mjs <dispatch-rules.md> <workflow.js>
  *
@@ -77,27 +107,113 @@
  *      mechanically located
  *
  * Consumed by scripts/tests/dispatch-prompt-parity-880.test.sh, which also
- * runs it against fixtures reproducing each drift shape above to prove the
- * checker actually fails on them.
+ * runs it against fixtures reproducing each drift shape above (including the
+ * #918 new-augmentation-never-wired shape) to prove the checker actually
+ * fails on them.
  */
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 // --------------------------------------------------------------------------
-// Static tables — the known augmentation anchors and which builder(s) they
-// apply to. Keep in sync with dispatch-rules.md's "Verify-gate augmentation" /
-// "If the issue carries the user-feedback label" / "Phase-1 slice
-// augmentation" / next-available-version paragraphs and workflow.js's
-// `buildIssueWorkPrompt` / `buildSpikePrompt`.
+// Augmentation-anchor derivation (issue #918) — see the file header above.
 // --------------------------------------------------------------------------
-const AUGMENTATION_ANCHORS = [
-  { anchor: 'Verify gate:', modes: ['issue-work'] },
-  { anchor: 'This issue originated from end-user feedback', modes: ['issue-work'] },
-  { anchor: 'the refinement step may have misread the user', modes: ['issue-work'] },
-  { anchor: 'Phase-1 slice (scope-agent-supplied):', modes: ['issue-work'] },
-  { anchor: 'Next-available version (orchestrator-supplied):', modes: ['issue-work', 'spike'] },
-]
+
+/** An augmentation heading paragraph: a bolded span containing the word "augmentation". */
+const AUGMENTATION_HEADING_RE = /^\s*\*\*([^*]+?\baugmentation\b[^*]*)\*\*/i
+
+/** Explicit waiver marker: `<!-- dispatch-prompt-parity: waived — <reason> -->`. */
+const WAIVER_RE = /<!--\s*dispatch-prompt-parity:\s*waived\s*(?:[—:-]\s*)?([^>]*?)\s*-->/i
+
+const DEFAULT_AUGMENTATION_MODES = ['issue-work']
+
+/**
+ * Which mode(s) a derived augmentation applies to. Default is issue-work-only
+ * (every augmentation but one currently lives entirely inside the `mode:
+ * issue-work` template section). The lone known exception —
+ * next-available-version, shared verbatim with `spike` — is named here
+ * explicitly rather than inferred, since inference from doc structure alone
+ * would be more fragile than a one-line named exception.
+ */
+function modesForHeading(headingKey) {
+  if (headingKey.startsWith('next available version augmentation')) return ['issue-work', 'spike']
+  return DEFAULT_AUGMENTATION_MODES
+}
+
+/**
+ * Scan dispatch-rules.md for every augmentation heading, and for each one
+ * locate the Context-paragraph blockquote that documents what actually gets
+ * appended to the prompt, extracting its leading bold span as the anchor
+ * phrase to check for presence in the applicable builder(s).
+ *
+ * Returns an array of either:
+ *   { heading, anchor, modes, waived, waiverReason }  — successfully derived
+ *   { heading, error }                                — malformed (heading
+ *                                                        with no following
+ *                                                        blockquote, or a
+ *                                                        blockquote with no
+ *                                                        leading bold span)
+ */
+function extractAugmentations(mdSrc) {
+  const lines = mdSrc.split('\n')
+  const augmentations = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const headingMatch = AUGMENTATION_HEADING_RE.exec(lines[i])
+    if (!headingMatch) continue
+    const headingText = headingMatch[1].trim()
+    const headingKey = headingText
+      .toLowerCase()
+      .replace(/[-_]/g, ' ')
+      .replace(/[^a-z ]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    // The waiver marker rides on the heading line itself (this is the only
+    // place it's placed today, but scanning one extra line is cheap and
+    // tolerant of a marker placed just after).
+    const waiverMatch = WAIVER_RE.exec(lines.slice(i, i + 2).join(' '))
+
+    // Scan forward for the first blockquote (`>`-prefixed) line. Stop early
+    // if another augmentation heading appears first — that heading has no
+    // blockquote of its own, which is a malformed-doc condition worth
+    // surfacing rather than silently attributing its neighbor's blockquote
+    // to it.
+    let blockquoteStart = -1
+    for (let j = i + 1; j < lines.length && j < i + 60; j++) {
+      if (AUGMENTATION_HEADING_RE.test(lines[j])) break
+      if (/^\s*>/.test(lines[j])) { blockquoteStart = j; break }
+    }
+
+    if (blockquoteStart === -1) {
+      augmentations.push({ heading: headingText, error: `no blockquote paragraph found within 60 lines of this heading` })
+      continue
+    }
+
+    const quoteLines = []
+    for (let k = blockquoteStart; k < lines.length; k++) {
+      if (!/^\s*>/.test(lines[k])) break
+      quoteLines.push(lines[k].replace(/^\s*>\s?/, ''))
+    }
+    const blockquoteText = quoteLines.join(' ').replace(/\s+/g, ' ').trim()
+
+    const anchorMatch = /\*\*([^*]+)\*\*/.exec(blockquoteText)
+    if (!anchorMatch) {
+      augmentations.push({ heading: headingText, error: `the blockquote following this heading has no leading bold anchor span` })
+      continue
+    }
+
+    augmentations.push({
+      heading: headingText,
+      anchor: anchorMatch[1].replace(/`/g, '').replace(/\s+/g, ' ').trim(),
+      modes: modesForHeading(headingKey),
+      waived: Boolean(waiverMatch),
+      waiverReason: waiverMatch ? waiverMatch[1].trim() || null : null,
+    })
+  }
+
+  return augmentations
+}
 
 // --------------------------------------------------------------------------
 // dispatch-rules.md extraction
@@ -263,19 +379,39 @@ export function diffDispatchPrompts(mdSrc, jsSrc) {
     }
   }
 
-  // CHECK 3 — augmentation-anchor parity.
-  for (const { anchor, modes } of AUGMENTATION_ANCHORS) {
-    const mdHasAnchor = mdSrc.includes(anchor)
-    for (const mode of modes) {
-      if (!sharedModes.includes(mode) || !(mode in builderRendered)) continue
-      const jsHasAnchor = builderRendered[mode].includes(anchor)
-      if (!mdHasAnchor && !jsHasAnchor) {
-        diffs.push(`augmentation "${anchor}" (mode "${mode}"): missing from BOTH dispatch-rules.md and \`${builderMapResult.map[mode]}\``)
-      } else if (!mdHasAnchor) {
-        diffs.push(`augmentation "${anchor}" (mode "${mode}"): present in \`${builderMapResult.map[mode]}\` but missing from dispatch-rules.md`)
-      } else if (!jsHasAnchor) {
-        diffs.push(`augmentation "${anchor}" (mode "${mode}"): present in dispatch-rules.md but missing from \`${builderMapResult.map[mode]}\``)
+  // CHECK 3 — augmentation-anchor parity, DERIVED from dispatch-rules.md's
+  // own "**<Name> augmentation**" headings (issue #918) rather than a static
+  // table — see extractAugmentations's doc comment and the file header.
+  const waivedNotes = []
+  const augmentations = extractAugmentations(mdSrc)
+  for (const aug of augmentations) {
+    if (aug.error) {
+      diffs.push(`augmentation heading "${aug.heading}": ${aug.error}`)
+      continue
+    }
+
+    const applicableModes = aug.modes.filter((m) => sharedModes.includes(m) && m in builderRendered)
+    const missingIn = applicableModes.filter(
+      (m) => !builderRendered[m].replace(/`/g, '').includes(aug.anchor),
+    )
+
+    if (aug.waived) {
+      if (applicableModes.length > 0 && missingIn.length === 0) {
+        diffs.push(
+          `augmentation "${aug.heading}" is marked waived but its anchor "${aug.anchor}" is now present in ` +
+            `${applicableModes.map((m) => `\`${builderMapResult.map[m]}\` (mode "${m}")`).join(' and ')} — remove the stale waiver comment`,
+        )
+      } else {
+        waivedNotes.push(`${aug.heading}${aug.waiverReason ? ` (${aug.waiverReason})` : ''}`)
       }
+      continue
+    }
+
+    if (missingIn.length > 0) {
+      diffs.push(
+        `augmentation "${aug.heading}" (anchor "${aug.anchor}"): missing from ` +
+          `${missingIn.map((m) => `\`${builderMapResult.map[m]}\` (mode "${m}")`).join(', ')}`,
+      )
     }
   }
 
@@ -293,7 +429,7 @@ export function diffDispatchPrompts(mdSrc, jsSrc) {
     }
   }
 
-  return { ok: diffs.length === 0, diffs }
+  return { ok: diffs.length === 0, diffs, waivedNotes }
 }
 
 // --------------------------------------------------------------------------
@@ -333,9 +469,12 @@ if (isMain) {
     process.exit(2)
   }
 
-  const { ok, diffs } = diffDispatchPrompts(mdSrc, jsSrc)
+  const { ok, diffs, waivedNotes } = diffDispatchPrompts(mdSrc, jsSrc)
   if (ok) {
     console.log(`OK    ${jsPath}'s per-mode prompt builders match ${mdPath}'s templates on every checked facet`)
+    if (waivedNotes?.length) {
+      console.log(`      (${waivedNotes.length} augmentation(s) explicitly waived: ${waivedNotes.join('; ')})`)
+    }
     process.exit(0)
   }
 
