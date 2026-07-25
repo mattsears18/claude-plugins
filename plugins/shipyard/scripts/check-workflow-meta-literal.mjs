@@ -57,6 +57,27 @@
  * Consumed by scripts/tests/workflow-meta-pure-literal-809.test.sh, which also
  * runs it against deliberately-broken fixtures (including a byte-for-byte copy
  * of the #809 regression) to prove the checker actually fails on them.
+ *
+ * ALREADY WIRED INTO CI (issue #878) — don't re-flag this as "unwired"
+ * -----------------------------------------------------------------------
+ * This script deliberately has NO entry in `.github/workflows/`,
+ * `.pre-commit-config.yaml`, or `package.json`, and never will — this repo's
+ * CI-wiring convention for a standalone `scripts/*.mjs` checker (the same
+ * one every sibling checker under `scripts/` uses) is
+ * `.github/workflows/tests.yml`'s `find plugins -type f -name '*.test.sh'`
+ * auto-discovery, not a static per-checker reference anywhere else.
+ * `scripts/tests/workflow-meta-pure-literal-809.test.sh`'s section (A)
+ * already runs THIS checker against the real
+ * `plugins/shipyard/workflows/*.workflow.js` files on every push/PR — if
+ * `do-work-dispatch.workflow.js`'s `meta` ever regresses to a non-literal
+ * form, that assertion fails and the suite's final `[[ $fail -eq 0 ]]` exit
+ * makes CI red (its own section (F) pins the fact that its filename ends in
+ * `.test.sh` so `tests.yml`'s discovery can't silently stop picking it up).
+ * A plain `grep -r check-workflow-meta-literal .github/` will never find
+ * this wiring, because the wiring is dynamic (test-file discovery), not
+ * textual — that's exactly the grep that led issue #878 to conclude this
+ * checker was "never invoked in production." It is invoked, on every CI
+ * run, against the real file. See #878 for the full investigation.
  */
 
 import { readFileSync } from 'node:fs'
