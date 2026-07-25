@@ -36,7 +36,7 @@ When `--record` is passed and the extension backend is selected, wrap the action
 
 ## Playbooks by kind
 
-All perception defaults to **reading the page**. The mutating playbooks (`close-pr` / `merge-pr` / `toggle-setting` / `paste-secret` / `reply-comment`) *complete* an action; [`verify`](#verify-read-only-console-verification--never-mutates) is the read-only outcome that only *reads* — it confirms a premise, makes a hand-back concrete, or checks that a just-completed human action took, and never mutates.
+All perception defaults to **reading the page**. The mutating playbooks (`close-pr` / `merge-pr` / `toggle-setting` / `paste-secret` / `reply-comment`) *complete* an action; [`verify`](#playbooks-by-kind) is the read-only outcome that only *reads* — it confirms a premise, makes a hand-back concrete, or checks that a just-completed human action took, and never mutates.
 
 **`close-pr` / `merge-pr` (mechanical, ranking-surfaced):**
 0. **If the target PR is not session-owned** (not in `session_prs`, not opened/touched this session), it needs the [batched inherited-PR confirmation](../operate/01-queue-and-authorization.md#scope-of-standing-authorization--session-owned-artifacts-vs-inherited-third-party-prs-746) before step 1 — standing authorization alone does not reliably cover it, and the harness classifier may deny the action outright regardless of this playbook. Skip this step for session-owned PRs.
