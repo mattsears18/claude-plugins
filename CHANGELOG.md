@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.44 — 2026-07-25
+
+All 18 auditor agents (`agents/*-auditor.md`, dispatched by name from `commands/audit.md`) already deferred to the shared `shipyard:filing-github-issues` and `shipyard:audit-rubrics` skills for filing mechanics and severity/grouping rules — but each also re-inlined the same generic "no approval gates" / "no git writes" `Don't` bullets verbatim, so the convention was simultaneously deferred and duplicated (closes #886).
+
+- `plugins/shipyard/skills/auditor-preamble/SKILL.md` — new shared skill documenting the autonomous-filing contract (no approval gates, no git writes), the required-inputs convention, the audit-label convention, and the generic Return-summary shape every auditor's own summary follows. Explicitly disclaims ownership of agent frontmatter (`name`/`description`/`model`/`tools`) and `## Process` passes — those stay per-auditor so the 18 dispatchable identities are untouched.
+- `plugins/shipyard/agents/*-auditor.md` (all 18) — each now carries a one-line pointer to `shipyard:auditor-preamble` right after its audit-label declaration, and the two universal `Don't` bullets ("Don't ask for approval before filing.", "Don't `git add` or commit anything.") are removed in favor of the skill. `security-auditor.md`'s customized approval bullet (with its P0/P1 urgency rationale) is left untouched rather than flattened into the generic form. Frontmatter identity, domain-specific untrusted-content examples, `## Required inputs` lists, `## Process` passes, and each auditor's own Return-summary metrics are unchanged.
+- `plugins/shipyard/scripts/tests/auditor-preamble.test.sh` — new regression suite: asserts the skill exists with the expected frontmatter and documented sections, asserts every one of the 18 `*-auditor.md` files references the skill while still declaring its own `name:`/`description:`/`model:` frontmatter, asserts the two generic `Don't` bullets are not re-duplicated verbatim, and cross-checks `commands/audit.md`'s dispatch table is unaffected.
+- This is a phase-1 slice per the issue's own scope note — the `## Required inputs` and `## Return-summary` sections still carry their (smaller, genuinely domain-specific) per-auditor content inline rather than being further templated into the skill; a follow-up issue tracks that heavier, higher-risk consolidation.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.43` → `4.1.44`.
+
 ### 4.1.43 — 2026-07-25
 
 `plugins/shipyard/scripts/*.sh` re-implemented three small pieces of logic identically across a large fraction of the directory because there was nowhere shared for them to live: `${SHIPYARD_HOME:-$HOME/.shipyard}` path resolution (open-coded in 9 scripts), the `command -v jq` dependency guard (duplicated across 8 scripts), and a mktemp-then-rename atomic-write helper reimplemented with drifting levels of defensiveness (session-state.sh's copy alone carried the issue #357 empty-tempfile guard; three of its four sibling copies didn't) (closes #887).
