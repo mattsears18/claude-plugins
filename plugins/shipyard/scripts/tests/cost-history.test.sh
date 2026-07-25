@@ -977,6 +977,79 @@ assert_file_exists "$tmphome/cost-history-issues.jsonl" \
 rm -rf "$tmphome" "$enabled_repo"
 
 # --------------------------------------------------------------------------
+echo "== flush — concurrent flush of the SAME session id never double-appends (#861)"
+# --------------------------------------------------------------------------
+# Regression test for the TOCTOU race: cmd_flush's dedupe check ("does the
+# ledger already have a record for this session_id?") and its append used
+# to be two separate, unlocked steps. Two independent /do-work
+# orchestrators racing to flush the same dead orphan session (the
+# `do-work/setup/01-repo-recovery.md` orphan-sweep scenario from the issue
+# body) could both observe "no existing record" before either appended,
+# landing two session records for the same session_id and silently
+# double-counting that session's tokens in every subsequent
+# `/shipyard:cost report`.
+#
+# Fire a stack of concurrent `flush --session-id` calls against the SAME
+# session id and SAME ledger, all backgrounded together so their process
+# startup genuinely overlaps, then wait for all of them. With the
+# cross-process lock in place, exactly one of them must win the
+# dedupe-check-then-append race and every other one must observe the
+# freshly-written record and skip — regardless of scheduling order. Before
+# the fix this reliably produced more than one line for N=8 concurrent
+# racers on every run of this suite.
+
+tmphome=$(mktmphome)
+seed_session "$tmphome" "concurrent-race"
+
+n_racers=8
+pids=()
+for _ in $(seq 1 "$n_racers"); do
+  SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "concurrent-race" >/dev/null 2>>"$tmphome/racer-stderr.log" &
+  pids+=("$!")
+done
+race_failures=0
+for pid in "${pids[@]}"; do
+  wait "$pid"
+  pid_rc=$?
+  if [[ $pid_rc -ne 0 ]]; then
+    race_failures=$((race_failures + 1))
+    echo "  racer pid $pid exited $pid_rc" >&2
+  fi
+done
+
+if [[ $race_failures -ne 0 ]]; then
+  echo "  -- racer stderr (diagnostic; see below) --" >&2
+  cat "$tmphome/racer-stderr.log" >&2
+fi
+
+assert_equals "$race_failures" "0" \
+  "all $n_racers concurrent flush invocations exit 0 (none time out waiting for the lock)"
+
+session_lines=$(grep -c '"session_id":"concurrent-race"' "$tmphome/cost-history.jsonl" 2>/dev/null || echo 0)
+assert_equals "$session_lines" "1" \
+  "concurrent flush of the same session id never double-appends the session record"
+
+issue_lines_142=$(grep -c '"issue_number":142' "$tmphome/cost-history-issues.jsonl" 2>/dev/null || echo 0)
+assert_equals "$issue_lines_142" "1" \
+  "concurrent flush of the same session id never double-appends per-issue records either"
+
+# No leaked lock directory after every racer has exited. A plain `-d`
+# check (not a glob loop) — "cost-history.jsonl.lock" has no wildcard
+# characters, so a glob loop over it iterates once with the literal
+# string regardless of whether the path exists; nullglob only suppresses
+# a non-matching *pattern* (one containing actual glob metacharacters)
+# and has no effect on a plain literal.
+if [[ -d "$tmphome/cost-history.jsonl.lock" ]]; then
+  leftover_lock="cost-history.jsonl.lock"
+else
+  leftover_lock=""
+fi
+assert_equals "$leftover_lock" "" \
+  "no leaked lock directory after all concurrent racers exit"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo
 echo "== Summary"
 echo "  $pass passed, $fail failed"

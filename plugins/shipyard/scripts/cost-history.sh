@@ -134,6 +134,8 @@
 #   3   — read of a missing ledger file
 #   64  — usage error (bad subcommand or missing required argument)
 #   65+ — internal helper failure (jq missing, write failure, etc.)
+#   66  — flush: could not acquire the cross-process ledger lock in time
+#         (see FLUSH_LOCK_TIMEOUT_SECONDS / acquire_flush_lock, issue #861)
 #   70  — reset aborted by user
 
 set -u
@@ -205,6 +207,118 @@ append_jsonl() {
   # whether $line already had one. Newline-after-line is the .jsonl
   # contract; without it the next append would extend the previous record.
   printf '%s\n' "$line" >> "$target"
+}
+
+# --------------------------------------------------------------------------
+# Cross-process flush lock (issue #861).
+#
+# `cmd_flush`'s dedupe-check-then-append sequence (read the session ledger
+# for an existing record with this session_id, decide whether to append)
+# is a classic TOCTOU race: two independent `/do-work` orchestrators can
+# each observe "no existing record" before either has appended, and both
+# proceed to append — landing two session records for the same session_id
+# and silently double-counting that session's tokens/USD in every
+# subsequent `/shipyard:cost report`. The repro in #861: two orchestrators
+# (two terminals/repos) both discover and flush the SAME dead orphan
+# session via the `do-work/setup/01-repo-recovery.md` orphan-sweep at
+# roughly the same time.
+#
+# The reconcile rewrite path (further down in cmd_flush) has an analogous
+# race even for DIFFERENT session ids: a concurrent writer's plain `>>`
+# append landing between the rewrite's `jq` snapshot-read and its `mv`
+# would be silently discarded by the temp-file swap. Serializing the
+# whole critical section — from the dedupe-check through the final write,
+# whichever branch — behind one lock closes both races at once.
+#
+# mkdir-based, not flock: `mkdir` on a not-yet-existing path is atomic on
+# every filesystem this script runs on (POSIX guarantee — exactly one
+# concurrent caller can win the `mkdir`), so it doubles as a mutex with no
+# external dependency. `flock` is Linux util-linux and is NOT installed by
+# default on macOS/Darwin — the primary local execution environment for
+# `/shipyard:do-work` — so depending on it would silently break locking on
+# exactly the host class this race was found running on, while appearing
+# to work in CI (which does ship flock) — a gap that would only surface
+# the first time two local orchestrators actually raced.
+# --------------------------------------------------------------------------
+
+# Portable directory-mtime-in-seconds (epoch), for stale-lock detection.
+# macOS/BSD `stat` and GNU `stat` take incompatible flags; try both and
+# let whichever succeeds win. Prints nothing (caller treats that as
+# "unknown age") if neither form works or the directory is gone.
+#
+# Order matters here (issue #861 CI repro): GNU `stat -c %Y` cleanly
+# rejects with a non-zero exit on BSD/macOS `stat` ("illegal option --
+# c"), so trying it first and falling back to `stat -f %m` is safe on
+# both platforms. The REVERSE order is NOT safe — BSD's `-f` means "use
+# this output format" but GNU's `-f` means something entirely different
+# ("display filesystem status instead of file status"), so `stat -f %m`
+# on GNU coreutils doesn't cleanly fail into the `||` fallback the way
+# `-c` does on BSD; it can exit 0 with `%m` uninterpreted in filesystem
+# mode, poisoning the caller's staleness comparison with garbage instead
+# of the empty/absent signal it expects. Trying the GNU form first
+# sidesteps the ambiguity entirely.
+_dir_mtime_epoch() {
+  local dir="$1"
+  stat -c %Y "$dir" 2>/dev/null || stat -f %m "$dir" 2>/dev/null
+}
+
+# acquire_flush_lock — block (polling) until we own $1 (a not-yet-existing
+# directory path) or FLUSH_LOCK_TIMEOUT_SECONDS elapses. On success,
+# registers a script-level EXIT trap that removes the lock directory, so
+# the lock is released no matter which of cmd_flush's several return/exit
+# paths fires — including the #869 `exit 68` abort-on-jq-failure path.
+# cost-history.sh is always invoked as a fresh subprocess per call (never
+# sourced — see the module docstring), so one EXIT trap per process is
+# always exactly the one this lock owns; there's no risk of it colliding
+# with or overwriting a caller's own trap.
+#
+# A lock dir older than FLUSH_LOCK_STALE_SECONDS is assumed to be held by
+# a crashed owner (process killed, host crashed mid-flush) and is stolen
+# rather than deadlocking every future flush forever — the same "stale
+# beats correctness-forever" posture worktree-reap.sh already applies to
+# its own peer-lock staleness floor (SHIPYARD_PEER_LOCK_STALE_MIN).
+FLUSH_LOCK_STALE_SECONDS="${SHIPYARD_FLUSH_LOCK_STALE_SECONDS:-30}"
+FLUSH_LOCK_TIMEOUT_SECONDS="${SHIPYARD_FLUSH_LOCK_TIMEOUT_SECONDS:-15}"
+
+acquire_flush_lock() {
+  local lockdir="$1"
+  local waited_ds=0                                    # elapsed, deciseconds
+  local timeout_ds=$((FLUSH_LOCK_TIMEOUT_SECONDS * 10))
+
+  while true; do
+    if mkdir "$lockdir" 2>/dev/null; then
+      # shellcheck disable=SC2064
+      # rationale: $lockdir must expand NOW, at trap-registration time —
+      # it's a local var that won't exist when the trap later fires.
+      trap "rm -rf '$lockdir' 2>/dev/null" EXIT
+      echo "$$" > "$lockdir/pid" 2>/dev/null || true
+      return 0
+    fi
+
+    local age now
+    age=$(_dir_mtime_epoch "$lockdir")
+    # Numeric guard: only trust $age if it's a plain non-negative integer.
+    # Belt-and-suspenders alongside the GNU-first stat ordering above — a
+    # non-numeric or garbage value here must never feed the arithmetic
+    # comparison below (a stray non-numeric string would abort the whole
+    # script under `set -u`'s companion `(( ))` evaluation, and a garbage
+    # numeric value could falsely trigger premature stale-lock stealing).
+    if [[ "$age" =~ ^[0-9]+$ ]]; then
+      now=$(date +%s)
+      if (( now - age >= FLUSH_LOCK_STALE_SECONDS )); then
+        echo "cost-history.sh: flush lock $lockdir is older than ${FLUSH_LOCK_STALE_SECONDS}s — assuming its owner crashed and stealing it" >&2
+        rm -rf "$lockdir" 2>/dev/null
+        continue
+      fi
+    fi
+
+    if (( waited_ds >= timeout_ds )); then
+      echo "cost-history.sh: flush: timed out after ${FLUSH_LOCK_TIMEOUT_SECONDS}s waiting for lock $lockdir" >&2
+      return 1
+    fi
+    sleep 0.1
+    waited_ds=$((waited_ds + 1))
+  done
 }
 
 # --------------------------------------------------------------------------
@@ -556,6 +670,19 @@ cmd_flush() {
           )
         }
     ' "$source")
+
+  # Acquire the cross-process ledger lock (issue #861) before the
+  # dedupe-check-then-append sequence below. Everything from here to the
+  # end of cmd_flush — the dedupe read, the plain-append path, and the
+  # reconcile rewrite path — runs under this lock; it releases
+  # automatically via the EXIT trap acquire_flush_lock registers, however
+  # this function returns or exits (including the #869 abort-on-jq-failure
+  # path further down).
+  local lockdir="${session_target}.lock"
+  if ! acquire_flush_lock "$lockdir"; then
+    echo "flush: could not acquire lock on $session_target for session $session_id — another flush may be stuck; giving up" >&2
+    exit 66
+  fi
 
   # Dedupe / reconcile gate: does the session ledger already have a record
   # for this session id? Cheap enough (one jq pass over the ledger) and
