@@ -58,6 +58,7 @@ worker_return_schema_path="$repo_root/plugins/shipyard/schemas/worker-return.sch
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 config_schema_path="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+rationale_path="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
 
 pass=0
 fail=0
@@ -97,7 +98,8 @@ assert_not_contains() {
 }
 
 for f in "$workflow_js_path" "$workflow_readme_path" "$worker_return_schema_path" \
-         "$dispatch_rules_path" "$steady_state_path" "$config_schema_path"; do
+         "$dispatch_rules_path" "$steady_state_path" "$config_schema_path" \
+         "$rationale_path"; do
   assert_file_exists "$f" "$(basename "$f") exists"
 done
 
@@ -114,8 +116,13 @@ else
   echo "  SKIP  node not on PATH — skipping syntax check"
 fi
 
-assert_contains "$workflow_js_path" "#788" \
-  "header comment still cites #788 (phase 2, issue-work wiring)"
+# #881 condensed the header comment's inline phase-by-phase narrative to a
+# single line pointing at RATIONALE.md — the phase-2 (#788) detail now lives
+# there instead of being repeated in full on every hot-path read.
+assert_contains "$workflow_js_path" "commands/do-work-RATIONALE.md" \
+  "header comment points to RATIONALE.md for full phase-by-phase history (#881)"
+assert_contains "$rationale_path" "#788 wired \`issue-work\` to it" \
+  "RATIONALE.md's phase history still cites #788 wiring issue-work"
 assert_contains "$workflow_js_path" "function buildIssueWorkPrompt(unit, repoSlug)" \
   "a real buildIssueWorkPrompt function exists"
 assert_contains "$workflow_js_path" "case 'issue-work':" \
@@ -235,8 +242,10 @@ fi
 echo
 echo "== (F) workflows/README.md — current phase status, no stale phase-1-inert framing"
 
-assert_contains "$workflow_readme_path" "Phase 5" \
-  "README declares the current (phase 5) status"
+# #881 condensed the phase-by-phase narrative out of README's opening
+# paragraph; the full history now lives in RATIONALE.md (checked in section A).
+assert_contains "$workflow_readme_path" "made this the SOLE dispatch substrate" \
+  "README declares the current (fully-migrated, pre-#825) status"
 assert_not_contains "$workflow_readme_path" "nothing here is wired yet" \
   "README no longer claims nothing is wired"
 

@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.1.45 — 2026-07-25
+
+The 5-phase native-Workflows migration (#787→#791) was complete history by the time #825 partially reverted it (restoring `Agent`-tool dispatch as the default), but three files still retold the phase-by-phase blow-by-blow at length — two of them hot-path files read on every dispatch (closes #881).
+
+- `plugins/shipyard/workflows/do-work-dispatch.workflow.js` — the file-header comment's "PHASE 1...PHASE 5" recap condensed to a single paragraph pointing at `commands/do-work-RATIONALE.md`'s "Why two dispatch shapes exist" section for the full history. Also fixed two stale claims left over from before #825 restored `Agent`-tool dispatch as the default: the "Worktree isolation" section's "that tool is no longer how a mode:-driven worker is dispatched (#791)" (now correctly describes the `Agent`-tool path as the current default, with this script as the alternate), and `meta.description`'s "the only substrate for all seven mode-driven workers" (now "an alternate substrate").
+- `plugins/shipyard/workflows/README.md` — the same Phase-1…Phase-5 paragraph condensed, with a pointer to RATIONALE.md for the phase-by-phase detail; the "Why this substrate" section's phase-numbered cutover sentence trimmed similarly.
+- `plugins/shipyard/scripts/tests/dispatch-workflow-substrate-788.test.sh` and `dispatch-workflow-substrate-789.test.sh` — updated the assertions that pinned the now-condensed inline phase text (`"#788"`, `"Phase 3 (#789) wired the REMAINING SIX"`, `"Phase 5"`, `"Phase 3"` in the README) to instead check that the hot-path files point at RATIONALE.md and that RATIONALE.md itself still carries the phase-specific citations.
+- `plugins/shipyard/commands/do-work/dispatch-rules.md` needed no changes — its own phase-history narrative had already been condensed to a single parenthetical (`#787 scaffolding, #788 issue-work, ...`) with a RATIONALE.md pointer, ahead of this issue.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.1.44` → `4.1.45`.
+
 ### 4.1.44 — 2026-07-25
 
 All 18 auditor agents (`agents/*-auditor.md`, dispatched by name from `commands/audit.md`) already deferred to the shared `shipyard:filing-github-issues` and `shipyard:audit-rubrics` skills for filing mechanics and severity/grouping rules — but each also re-inlined the same generic "no approval gates" / "no git writes" `Don't` bullets verbatim, so the convention was simultaneously deferred and duplicated (closes #886).

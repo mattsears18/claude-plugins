@@ -53,6 +53,7 @@ steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 config_schema_path="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 worker_return_schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
 enforce_isolation_hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
+rationale_path="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
 
 pass=0
 fail=0
@@ -92,7 +93,7 @@ assert_contains() {
 }
 
 for f in "$workflow_js_path" "$workflow_readme_path" "$dispatch_rules_path" \
-         "$steady_state_path" "$config_schema_path"; do
+         "$steady_state_path" "$config_schema_path" "$rationale_path"; do
   assert_file_exists "$f" "$(basename "$f") exists"
 done
 
@@ -109,11 +110,13 @@ else
   echo "  SKIP  node not on PATH — skipping syntax check"
 fi
 
-# The header's leading phase marker advanced to PHASE 4 (#790, the cutover) — but
-# the phase-3 (#789) contribution this suite guards must still be cited in the
-# lineage. Assert both: the current phase-4 marker AND the #789 wired-six lineage.
-assert_contains "$workflow_js_path" "Phase 3 (#789) wired the REMAINING SIX" \
-  "header comment still cites phase 3 (#789) wiring the remaining six in its lineage"
+# #881 condensed the header comment's inline phase-by-phase narrative to a
+# single line pointing at RATIONALE.md — the phase-3 (#789) contribution this
+# suite guards now lives there instead of being repeated in full inline.
+assert_contains "$workflow_js_path" "commands/do-work-RATIONALE.md" \
+  "header comment points to RATIONALE.md for full phase-by-phase history (#881)"
+assert_contains "$rationale_path" "#789 wired the remaining six modes" \
+  "RATIONALE.md's phase history still cites #789 wiring the remaining six modes"
 # #825 restored the Agent-tool shape as the default and demoted this script to
 # the documented alternate — the header now says ALTERNATE, not ONLY. See
 # legacy-agent-dispatch-retired-791.test.sh section (H) for the #825 regression
@@ -270,10 +273,11 @@ fi
 echo
 echo "== (I) workflows/README.md — phase-3 status, no stale phase-2-only-issue-work framing"
 
-assert_contains "$workflow_readme_path" "Phase 3" \
-  "README declares phase 3 status"
-assert_contains "$workflow_readme_path" "#789" \
-  "README cites #789"
+# #881 condensed the phase-by-phase narrative out of README's opening
+# paragraph; the phase-3 (#789) detail now lives in RATIONALE.md (checked in
+# section A above).
+assert_contains "$workflow_readme_path" "made this the SOLE dispatch substrate" \
+  "README declares the current (fully-migrated, pre-#825) status"
 
 echo
 echo "== (J) enforce-worktree-isolation.sh — guarded-set unaffected by the substrate migration"
