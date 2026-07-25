@@ -15,36 +15,52 @@
 #
 # The fix is an idempotent preamble at the top of every bash snippet:
 #
-#   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+#   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 #
 # Semantics:
 #   - When the harness DOES set $CLAUDE_PLUGIN_ROOT, the `${VAR:-default}`
 #     short-circuits and the export is a no-op.
 #   - When the harness does NOT set it (the observed steady-state for every
-#     Bash-tool call inside this orchestrator), the fallback PROBES in order:
+#     Bash-tool call inside this orchestrator), the fallback PROBES two
+#     install layouts in order (issue #883 collapsed this from four layers
+#     to two — see below):
 #       1. repo-local `<repo>/plugins/shipyard` IF it actually carries a
-#          `scripts/` dir (the dogfooding case — shipyard's own checkout);
+#          `scripts/` dir (the dogfooding case — shipyard's own checkout).
+#          Kept unconditionally: #907 is the governing decision on whether
+#          this layer survives, and it kept it (added a staleness warning,
+#          did not remove the layer);
 #       2. else the AUTHORITATIVE installed path from
 #          `$HOME/.claude/plugins/installed_plugins.json` (the `installPath`
 #          for `shipyard@shipyard`) IF it carries a `scripts/` dir (issue
 #          #681). This is the loaded install under `cache/<mp>/<plugin>/
-#          <version>/`, so it can never resolve to a stale backup or a
-#          version-mismatched marketplace checkout;
-#       3. else the marketplace install `$HOME/.claude/plugins/marketplaces/
-#          */plugins/shipyard` (the consumer-install fallback — issue #417,
-#          where a marketplace-installed shipyard runs against a repo that has
-#          no repo-local plugins/shipyard). This glob is HARDENED (issue #681):
-#          it tries the exact `marketplaces/shipyard` path first, EXCLUDES
-#          `.bak`/`.old`/`.orig`/`.disabled` siblings (a `shipyard.bak` sorts
-#          before the real dir because `.` < `/`, so the old `ls -d | head -1`
-#          silently selected the backup), and requires a real `scripts/` dir;
-#       4. else the repo-local path anyway (preserves a meaningful path for
-#          error messaging when no layer resolves).
+#          <version>/`, and it resolves identically for the maintainer's own
+#          installs and for any marketplace consumer — it isn't a special
+#          case;
+#       3. else the repo-local path anyway (preserves a meaningful path for
+#          error messaging when neither layer above resolves).
+#
+#   Collapsed from four layers to two (issue #883): the preamble used to
+#   ALSO glob `$HOME/.claude/plugins/marketplaces/*/plugins/shipyard` as a
+#   third layer (hardened against a shadowing `.bak` sibling and a
+#   version-mismatched marketplace checkout — issue #681/#417), used only
+#   when installed_plugins.json was unreadable or missing the
+#   `shipyard@shipyard` entry. installed_plugins.json is populated by the
+#   harness's own plugin manager for every install method (verified
+#   directly against the maintainer's own install before this collapse
+#   landed — see #883's decision comment), so that third layer was pure
+#   dead weight in practice. Dropping it saves ~350 bytes per occurrence
+#   (~696 -> ~403 bytes) while keeping the one layer that's both
+#   authoritative and universal. Helper-script extraction (source a
+#   `resolve-plugin-root.sh`) was proposed and explicitly rejected for this
+#   same issue: every occurrence runs in a fresh, hermetic subshell, so
+#   sourcing a helper first requires re-deriving $CLAUDE_PLUGIN_ROOT to
+#   locate it — the circularity this whole preamble exists to avoid.
 #
 # This test is the regression guard: if anyone adds a new bash block that
 # uses ${CLAUDE_PLUGIN_ROOT} without the preamble at its top, the test
-# fails. Existing blocks were swept by the issue #354 PR; new ones (or
-# any block whose preamble got moved / removed) regress here.
+# fails. Existing blocks were swept by the issue #354 PR (then shrunk in
+# place by issue #883); new ones (or any block whose preamble got moved /
+# removed / reverted to the old four-layer form) regress here.
 #
 # --- File discovery (issue #910) -------------------------------------------
 #
@@ -120,7 +136,7 @@ done < <(find "${SCAN_DIRS[@]}" -type f -name '*.md' -print0 2>/dev/null | sort 
 # (<<'EOF') captures it verbatim with no escaping. Command substitution
 # strips the trailing newline, so the value is exactly the one-line preamble.
 EXPECTED_PREAMBLE=$(cat <<'PREAMBLE_EOF'
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "${M:-$R/plugins/shipyard}"; fi; fi)}"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 PREAMBLE_EOF
 )
 
@@ -298,24 +314,24 @@ else
   assert_fail "preamble resolves to a directory containing scripts/shipyard-config.sh (got '$sanity_dir')"
 fi
 
-# (5) Consumer-install sanity check (issue #417). Simulate a marketplace
-# install running against a repo with NO repo-local plugins/shipyard: the
-# old bare `$(git rev-parse --show-toplevel)/plugins/shipyard` fallback
-# resolved to a non-existent path and every helper call exited 127. The
-# new probe must fall through to the marketplace install path.
+# (5) Consumer-install sanity check (issue #417, re-verified after the
+# #883 layer collapse). Simulate a marketplace-installed shipyard running
+# against a repo with NO repo-local plugins/shipyard: the probe must fall
+# through repo-local (layer 1 fails) to installed_plugins.json's
+# installPath (layer 2) — the one layer that replaces the old layers 2+3.
 #
-# Build a throwaway sandbox: a fake $HOME containing a marketplace tree,
-# and a fake consumer git repo with no plugins/shipyard dir. Then run the
-# preamble with cd into the consumer repo and confirm it resolves to the
-# marketplace path (not the missing repo-local one).
+# Build a throwaway sandbox: a fake $HOME with an installed_plugins.json
+# pointing at a cache install, and a fake consumer git repo with no
+# plugins/shipyard dir. Then run the preamble with cd into the consumer
+# repo and confirm it resolves to the cache install path.
 sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-417)
 if [[ -n "$sandbox" && -d "$sandbox" ]]; then
   fake_home="$sandbox/home"
-  fake_mp="$fake_home/.claude/plugins/marketplaces/shipyard/plugins/shipyard"
-  mkdir -p "$fake_mp/scripts"
-  # the probe only checks for the scripts/ dir on the repo-local branch and
-  # returns the marketplace path verbatim, so an empty marketplace dir is
-  # enough to prove the fall-through.
+  cache_install="$fake_home/.claude/plugins/cache/shipyard/shipyard/9.9.9"
+  mkdir -p "$cache_install/scripts"
+  mkdir -p "$fake_home/.claude/plugins"
+  printf '{"plugins":{"shipyard@shipyard":[{"installPath":"%s"}]}}\n' \
+    "$cache_install" > "$fake_home/.claude/plugins/installed_plugins.json"
   consumer_repo="$sandbox/consumer"
   mkdir -p "$consumer_repo"
   ( cd "$consumer_repo" && git init -q 2>/dev/null )
@@ -325,84 +341,58 @@ if [[ -n "$sandbox" && -d "$sandbox" ]]; then
     $EXPECTED_PREAMBLE
     echo \"\$CLAUDE_PLUGIN_ROOT\"
   ")
-  if [[ "$consumer_dir" == "$fake_mp" ]]; then
-    assert_pass "preamble falls through to marketplace install when repo has no plugins/shipyard (issue #417)"
+  if [[ "$consumer_dir" == "$cache_install" ]]; then
+    assert_pass "preamble falls through to installed_plugins.json's installPath when repo has no plugins/shipyard (issue #417)"
   else
-    assert_fail "preamble falls through to marketplace install when repo has no plugins/shipyard (got '$consumer_dir', expected '$fake_mp')"
+    assert_fail "preamble falls through to installed_plugins.json's installPath when repo has no plugins/shipyard (got '$consumer_dir', expected '$cache_install')"
   fi
   rm -rf "$sandbox"
 else
   assert_fail "could not create sandbox for consumer-install sanity check"
 fi
 
-# (6) Authoritative-install preference over a shadowing .bak (issue #681).
-# The old fallback globbed `marketplaces/*/plugins/shipyard | head -1`, and
-# because `.` (0x2E) sorts before `/` (0x2F), a `shipyard.bak` sibling sorted
-# BEFORE the real `shipyard` dir and won `head -1` — so a stale backup copy
-# shadowed the live install. Worse, the glob targets `marketplaces/` while the
-# actually-installed plugin lives under `cache/<mp>/<plugin>/<version>/`, so
-# even without a .bak the two could differ in version. The fix probes
-# `installed_plugins.json`'s installPath FIRST (the authoritative pointer to
-# the loaded install). This scenario proves the cache install wins over BOTH
-# a shadowing .bak and a real marketplace dir.
-sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-681)
+# (6) Malformed/partial installed_plugins.json entry falls through to the
+# repo-local-anyway default rather than being trusted blindly (issue
+# #883). Before the layer collapse, a malformed layer-2 entry (installPath
+# set but no scripts/ dir — e.g. a stale or half-written record) fell
+# through to layer 3 (the marketplace glob). That layer no longer exists,
+# so the guard's fall-through destination changed to the final
+# repo-local-anyway default — this proves the `-d "$I/scripts"` guard is
+# still load-bearing post-collapse, not silently dead code.
+sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-883)
 if [[ -n "$sandbox" && -d "$sandbox" ]]; then
   fake_home="$sandbox/home"
-  cache_install="$fake_home/.claude/plugins/cache/shipyard/shipyard/9.9.9"
-  bak_mp="$fake_home/.claude/plugins/marketplaces/shipyard.bak/plugins/shipyard"
-  real_mp="$fake_home/.claude/plugins/marketplaces/shipyard/plugins/shipyard"
-  mkdir -p "$cache_install/scripts" "$bak_mp/scripts" "$real_mp/scripts"
+  broken_install="$fake_home/.claude/plugins/cache/shipyard/shipyard/0.0.0"
+  # installPath is recorded but the directory has NO scripts/ subdir —
+  # simulates a stale/half-written installed_plugins.json entry.
+  mkdir -p "$broken_install"
   mkdir -p "$fake_home/.claude/plugins"
   printf '{"plugins":{"shipyard@shipyard":[{"installPath":"%s"}]}}\n' \
-    "$cache_install" > "$fake_home/.claude/plugins/installed_plugins.json"
+    "$broken_install" > "$fake_home/.claude/plugins/installed_plugins.json"
   consumer_repo="$sandbox/consumer"
   mkdir -p "$consumer_repo"
   ( cd "$consumer_repo" && git init -q 2>/dev/null )
+  # Canonicalize via `git rev-parse --show-toplevel` itself (the same call
+  # the preamble makes) rather than the raw mktemp path — on macOS $TMPDIR
+  # is a symlink (/var/... -> /private/var/...), so comparing against the
+  # raw path would spuriously fail even though the preamble resolved
+  # correctly.
+  consumer_repo_canonical=$(cd "$consumer_repo" && git rev-parse --show-toplevel)
 
   resolved=$(env -i HOME="$fake_home" PATH="$PATH" bash -c "
     cd '$consumer_repo'
     $EXPECTED_PREAMBLE
     echo \"\$CLAUDE_PLUGIN_ROOT\"
   ")
-  if [[ "$resolved" == "$cache_install" ]]; then
-    assert_pass "preamble prefers installed_plugins.json installPath over a shadowing .bak marketplace (issue #681)"
+  expected_fallback="$consumer_repo_canonical/plugins/shipyard"
+  if [[ "$resolved" == "$expected_fallback" ]]; then
+    assert_pass "a malformed installed_plugins.json entry (no scripts/ dir) falls through to the repo-local-anyway default (issue #883)"
   else
-    assert_fail "preamble prefers installed_plugins.json installPath (got '$resolved', expected '$cache_install')"
+    assert_fail "a malformed installed_plugins.json entry should fall through to repo-local-anyway (got '$resolved', expected '$expected_fallback')"
   fi
   rm -rf "$sandbox"
 else
-  assert_fail "could not create sandbox for authoritative-install sanity check (#681)"
-fi
-
-# (7) .bak exclusion in the marketplace-glob fallback (issue #681). When
-# installed_plugins.json is unreadable, the fallback still globs the
-# marketplace tree — but it must EXCLUDE `.bak`/`.old`/`.orig`/`.disabled`
-# siblings and prefer the exact `marketplaces/shipyard` path, rather than
-# blindly taking the sort-first `head -1` (which the .bak dir would win).
-sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-681b)
-if [[ -n "$sandbox" && -d "$sandbox" ]]; then
-  fake_home="$sandbox/home"
-  bak_mp="$fake_home/.claude/plugins/marketplaces/shipyard.bak/plugins/shipyard"
-  real_mp="$fake_home/.claude/plugins/marketplaces/shipyard/plugins/shipyard"
-  # Both present, no installed_plugins.json. `ls -d` would sort .bak first.
-  mkdir -p "$bak_mp/scripts" "$real_mp/scripts"
-  consumer_repo="$sandbox/consumer"
-  mkdir -p "$consumer_repo"
-  ( cd "$consumer_repo" && git init -q 2>/dev/null )
-
-  resolved=$(env -i HOME="$fake_home" PATH="$PATH" bash -c "
-    cd '$consumer_repo'
-    $EXPECTED_PREAMBLE
-    echo \"\$CLAUDE_PLUGIN_ROOT\"
-  ")
-  if [[ "$resolved" == "$real_mp" ]]; then
-    assert_pass "marketplace-glob fallback excludes .bak and picks the real marketplace dir (issue #681)"
-  else
-    assert_fail "marketplace-glob fallback should skip .bak (got '$resolved', expected '$real_mp')"
-  fi
-  rm -rf "$sandbox"
-else
-  assert_fail "could not create sandbox for .bak-exclusion sanity check (#681)"
+  assert_fail "could not create sandbox for malformed-installed_plugins.json sanity check (#883)"
 fi
 
 echo
