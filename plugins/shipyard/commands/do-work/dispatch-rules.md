@@ -45,6 +45,14 @@ dispatch_model=$("${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh" <mode
 
 **Don't fail a dispatch on a model-resolution problem.** The resolver's posture is fail-open: an unreadable config or a typo'd model id resolves to empty, and the dispatch proceeds on the shape's own default. A missing override must never block work.
 
+**Resolve the plugin root once and pass it to every worker as a literal path ([#965](https://github.com/mattsears18/shipyard/issues/965)).** `shipyard:worker-preamble`'s step-0 fail-fast instructs every worker to resolve `CLAUDE_PLUGIN_ROOT` itself via a compound `export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(...)}"` one-liner — but that exact compound shape (command substitutions plus an inline `if`) is refused by the harness's Auto Mode classifier as "too complex to verify that it stays inside the worktree" when it fires as, or near, a worktree-isolated dispatch's first tool call. The orchestrator already resolved `CLAUDE_PLUGIN_ROOT` for its own use above (the per-dispatch model-resolution call); reuse that **same** resolved value rather than re-deriving it a second time, and pass it to every worker as a literal string embedded directly in the dispatch prompt — so the worker never has to run the compound block at all, and the refusal (plus the wasted tool call and misrouted recovery text it costs on nearly every dispatch) is sidestepped entirely rather than merely documented.
+
+Prepend this Context paragraph as the **first** paragraph of every dispatch prompt this section builds, for every mode in the routing table above, under **both** dispatch shapes:
+
+> **Resolved plugin root (orchestrator-supplied, literal path):** `<CLAUDE_PLUGIN_ROOT>`. This session's orchestrator already resolved `CLAUDE_PLUGIN_ROOT` at setup; use this literal path directly for any `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` invocation instead of running the preamble's compound `export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(...)}"` resolution block — that block is exactly what issue #965 reports as refused by the harness's Auto Mode classifier when it fires inside a worktree-isolated dispatch.
+
+Under the `Workflow`-substrate alternate, the **same** resolved value is additionally passed as the `pluginRoot` field on the work unit — required on every unit, alongside `worktreePath` (see the per-mode payload examples in [Workflow-substrate dispatch](#workflow-substrate-dispatch--an-alternate-dispatch-shape-825) below) — so the shared `worktreeAnchorLines` helper can render the literal path directly into the worktree-anchor block instead of the compound export, closing the same gap at the point a `Workflow`-dispatched worker hits it first: its own dispatch prompt, before it has even loaded the skill. When `pluginRoot` is omitted (a caller predating #965), `worktreeAnchorLines` falls back to emitting the compound block unchanged — every existing behavior is preserved, this is additive.
+
 **Every dispatch in the table above MUST run in an isolated worktree — the mechanism is shape-specific.** Under the default `Agent`-tool shape, set `isolation: "worktree"` on the `Agent` call; the harness provisions and cwd-pins the worktree in response (see [Agent-tool dispatch](#agent-tool-dispatch--the-default-dispatch-shape-825) below). Under the `Workflow`-substrate alternate, the Dynamic Workflows `agent()` primitive documents no isolation/worktree option of its own, so the orchestrator — which still has full shell access — pre-provisions the worktree itself with `git worktree add` before the `Workflow` call and passes the resulting absolute path in as the work unit's `worktreePath`; the built prompt's very first instruction is a `cd` into it plus the same git-dir-vs-git-common-dir verification `shipyard:worker-preamble`'s step-0 fail-fast uses (see [step 1 of the substrate section](#workflow-substrate-dispatch--an-alternate-dispatch-shape-825) for the per-mode `git worktree add` invocations). The [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) `PreToolUse` hook hard-fails a dispatch missing either shape's isolation signal — an `Agent` call to a guarded `subagent_type` with no `isolation: "worktree"`, or a `Workflow` dispatch of `do-work-dispatch.workflow.js` carrying a work unit with no `worktreePath` (#293 / #514 / #774 / #791) — so both shapes are mechanically enforced, not just documented.
 
 When filling a slot, walk this decision tree:
@@ -620,13 +628,13 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
 2. **Resolve the model exactly as the per-dispatch model-resolution rule above** — `resolve-dispatch-model.sh <mode>` — and put the resolved family alias (`opus`/`sonnet`/`haiku`/`fable`) on the work unit's `model` field; the workflow script's `agent()` call takes it as its own `model` option. This preserves every mode's tier from the routing table at the top of this file (Haiku for `fix-checks-only`, Sonnet for `fix-rebase`/`fix-main-ci`/`fix-failing-prs-batch`/`investigate`/`issue-work`, session-default for `spike`) — the resolver is mode-parameterized, so nothing here re-derives or overrides those tiers.
 
-3. **Invoke the `Workflow` tool** against `${CLAUDE_PLUGIN_ROOT}/workflows/do-work-dispatch.workflow.js`, passing `args`. The shared envelope is the same across every mode (`repo`, `concurrency`, `models`); the single `issues[0]` entry's fields vary by mode — only the fields each mode's builder consumes need be present, everything else may be omitted. **`mode` and `worktreePath` are required on every unit regardless of mode**:
+3. **Invoke the `Workflow` tool** against `${CLAUDE_PLUGIN_ROOT}/workflows/do-work-dispatch.workflow.js`, passing `args`. The shared envelope is the same across every mode (`repo`, `concurrency`, `models`); the single `issues[0]` entry's fields vary by mode — only the fields each mode's builder consumes need be present, everything else may be omitted. **`mode` and `worktreePath` are required on every unit regardless of mode** (hook-enforced — [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) hard-fails a unit with no `worktreePath`). **`pluginRoot` should also be supplied on every unit ([#965](https://github.com/mattsears18/shipyard/issues/965), not yet hook-enforced)** — the same literal `CLAUDE_PLUGIN_ROOT` value resolved once above (see [Resolve the plugin root once and pass it to every worker as a literal path](#dispatch-rules-used-by-step-7-and-step-c) above). `worktreeAnchorLines` reads it off the unit and, when present, renders it as a literal `export CLAUDE_PLUGIN_ROOT="<pluginRoot>"` line in place of the compound resolution block; when absent it falls back to the compound block unchanged, so an older caller that omits the field still works exactly as before:
 
    **`issue-work`**:
 
    ```jsonc
    { "number": <N>, "mode": "issue-work", "trust": "<originating_author_trust>",
-     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>",
+     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>", "pluginRoot": "<CLAUDE_PLUGIN_ROOT>",
      "verifyGate": <bool>, "userFeedback": <bool>,
      "phase1Scope": "<phase_1_scope, or omit>",
      "nextAvailableVersion": "<computed value, or omit>", "changelogPath": "<or omit>" }
@@ -636,14 +644,14 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
    ```jsonc
    { "pr": <M>, "mode": "fix-checks-only", "headRefName": "<headRefName>",
-     "worktreePath": "<WORKTREE_PATH>" }
+     "worktreePath": "<WORKTREE_PATH>", "pluginRoot": "<CLAUDE_PLUGIN_ROOT>" }
    ```
 
    **`fix-rebase`**:
 
    ```jsonc
    { "pr": <M>, "mode": "fix-rebase", "headRefName": "<headRefName>",
-     "worktreePath": "<WORKTREE_PATH>",
+     "worktreePath": "<WORKTREE_PATH>", "pluginRoot": "<CLAUDE_PLUGIN_ROOT>",
      "versionCoordinationParagraph": "<pre-formatted §259-263 paragraph, or omit>" }
    ```
 
@@ -651,7 +659,7 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
    ```jsonc
    { "mode": "fix-main-ci", "branch": "do-work/fix-main-ci-<short-sha>",
-     "worktreePath": "<WORKTREE_PATH>",
+     "worktreePath": "<WORKTREE_PATH>", "pluginRoot": "<CLAUDE_PLUGIN_ROOT>",
      "earliestRedRunUrl": "<earliest_red_run_url>", "earliestRedSha": "<earliest_red_sha>" }
    ```
 
@@ -659,7 +667,7 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
    ```jsonc
    { "mode": "fix-failing-prs-batch", "branch": "do-work/fix-pr-pileup-<short-timestamp>",
-     "worktreePath": "<WORKTREE_PATH>",
+     "worktreePath": "<WORKTREE_PATH>", "pluginRoot": "<CLAUDE_PLUGIN_ROOT>",
      "failingPrCountAll": <int>, "failingPrNumbers": "<comma-separated list>" }
    ```
 
@@ -667,7 +675,7 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
    ```jsonc
    { "number": <N>, "mode": "investigate", "trust": "<originating_author_trust>",
-     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>",
+     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>", "pluginRoot": "<CLAUDE_PLUGIN_ROOT>",
      "triageAutoClose": "<triage.auto_close policy>" }
    ```
 
@@ -675,7 +683,7 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
    ```jsonc
    { "number": <N>, "mode": "spike", "trust": "<originating_author_trust>",
-     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>",
+     "branch": "do-work/issue-<N>", "worktreePath": "<WORKTREE_PATH>", "pluginRoot": "<CLAUDE_PLUGIN_ROOT>",
      "decomposeMaxSubissues": <decompose.max_subissues, default 8>,
      "nextAvailableVersion": "<computed value, or omit>", "changelogPath": "<or omit>" }
    ```

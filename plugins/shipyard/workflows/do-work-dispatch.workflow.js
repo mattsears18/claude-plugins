@@ -693,7 +693,18 @@ function buildWorkerPrompt(unit, repoSlug) {
 // `shipyard:worker-preamble` documents for its own step-0 / mid-session
 // sections (issue #802).
 // ===========================================================================
-function worktreeAnchorCheckLines(worktreePath) {
+function worktreeAnchorCheckLines(worktreePath, pluginRoot) {
+  const pluginRootExportLines = pluginRoot
+    ? [
+        '```bash',
+        `export CLAUDE_PLUGIN_ROOT="${pluginRoot}"`,
+        '```',
+      ]
+    : [
+        '```bash',
+        `export CLAUDE_PLUGIN_ROOT="\${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "\${M:-$R/plugins/shipyard}"; fi; fi)}"`,
+        '```',
+      ]
   return [
     `**Anchor to your isolated worktree FIRST, before anything else.** Run each of the`,
     `following as its OWN separate command — do not chain them with \`&&\`, a subshell,`,
@@ -701,9 +712,10 @@ function worktreeAnchorCheckLines(worktreePath) {
     '```bash',
     `cd "${worktreePath}"`,
     '```',
-    '```bash',
-    `export CLAUDE_PLUGIN_ROOT="\${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else M=$(for d in "$HOME/.claude/plugins/marketplaces/shipyard/plugins/shipyard" "$HOME/.claude/plugins/marketplaces/"*/plugins/shipyard; do [[ "$d" == *.bak/* || "$d" == *.old/* || "$d" == *.orig/* || "$d" == *.disabled/* ]] && continue; [ -d "$d/scripts" ] && { echo "$d"; break; }; done); echo "\${M:-$R/plugins/shipyard}"; fi; fi)}"`,
-    '```',
+    pluginRoot
+      ? `Your dispatching orchestrator already resolved CLAUDE_PLUGIN_ROOT — use this literal path directly rather than re-deriving it (issue #965):`
+      : `No orchestrator-supplied plugin root was provided for this dispatch (a caller predating #965) — resolve it yourself:`,
+    ...pluginRootExportLines,
     '```bash',
     `bash "\${CLAUDE_PLUGIN_ROOT}/scripts/assert-worktree-cwd.sh"`,
     '```',
@@ -723,6 +735,13 @@ function worktreeAnchorCheckLines(worktreePath) {
     `\`COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"\` as three separate`,
     `\`Bash\` calls. If GIT_DIR and COMMON_DIR canonicalize to the same path (or TOPLEVEL`,
     `came back empty), treat that as the same primary-checkout failure as above.`,
+    ``,
+    `Reuse this same resolved plugin-root value for the rest of the dispatch (issue #965)`,
+    `— every later \`\${CLAUDE_PLUGIN_ROOT}\`-referencing call in \`shipyard:worker-preamble\``,
+    `and \`agents/issue-worker/<mode>.md\` (mid-session anchoring, the CHANGELOG`,
+    `monotonicity scan, the verify_gate model resolution, §6.a's ungated-admin-direct-`,
+    `merge detector) can substitute the literal value directly instead of re-running a`,
+    `resolution block.`,
   ]
 }
 
@@ -758,7 +777,7 @@ function worktreeAnchorLines(unit, mode) {
         `past this line.`,
     ]
   }
-  return worktreeAnchorCheckLines(unit.worktreePath)
+  return worktreeAnchorCheckLines(unit.worktreePath, unit.pluginRoot)
 }
 
 /*
