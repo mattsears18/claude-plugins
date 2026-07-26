@@ -170,7 +170,7 @@ This rule **composes with** the coordination-managed-paths contract above: the p
 
 **CHANGELOG entry write — never delete an existing `### <version>` heading ([#555](https://github.com/mattsears18/shipyard/issues/555)).** When you write the CHANGELOG entry for your release, you are inserting a new `### <version>` block at the top of the file. Never overwrite, reorder, or delete any existing `### <version>` heading that was already present on the base branch. The failure mode from issue #555 was silent: PRs #552 and #553 both resolved their CHANGELOG conflicts correctly (no conflict markers survived) but dropped `### 1.9.10` and `### 1.9.9` from main in the process — the loss was only noticed when a human eyeballed the file during a later manual rebase.
 
-Before committing a CHANGELOG edit, run the monotonicity scan to confirm no released heading was lost:
+Before committing a CHANGELOG edit, run the monotonicity scan to confirm no released heading was lost. **Reuse the literal plugin-root value you already resolved at `shipyard:worker-preamble`'s step-0 (whether orchestrator-supplied or self-resolved) in place of `${CLAUDE_PLUGIN_ROOT}` below rather than re-deriving it here — see [#965](https://github.com/mattsears18/shipyard/issues/965).** The block below still shows the compound resolution for completeness (and as the path if you somehow reach here without an already-resolved value), but re-running it is redundant once you already have the literal value:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
@@ -516,7 +516,7 @@ The PR is open and every mechanical guard (§5.7 / §5.8 / §5.85) has passed, b
 
 Dispatch the verifier as a nested subagent via the `Agent` tool. It is the one sanctioned nested dispatch in the do-work loop:
 
-- `subagent_type: "shipyard:verify-worker"` — pinned to **Opus 4.8** in its shim frontmatter (the strong, harder-to-fool tier this gate reserves for its highest-stakes judgment — [#784](https://github.com/mattsears18/shipyard/issues/784)). The tier is overridable per-role via `models.verify`: resolve it the same way the orchestrator resolves every dispatch's model, and pass it as the `Agent` call's `model` parameter (omit `model` when the resolution is empty so the Opus 4.8 frontmatter default applies):
+- `subagent_type: "shipyard:verify-worker"` — pinned to **Opus 4.8** in its shim frontmatter (the strong, harder-to-fool tier this gate reserves for its highest-stakes judgment — [#784](https://github.com/mattsears18/shipyard/issues/784)). The tier is overridable per-role via `models.verify`: resolve it the same way the orchestrator resolves every dispatch's model, and pass it as the `Agent` call's `model` parameter (omit `model` when the resolution is empty so the Opus 4.8 frontmatter default applies). **Reuse the literal plugin-root value already resolved at `shipyard:worker-preamble`'s step-0 in place of `${CLAUDE_PLUGIN_ROOT}` below instead of re-deriving it here ([#965](https://github.com/mattsears18/shipyard/issues/965)):**
 
   ```bash
   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
@@ -561,7 +561,7 @@ Branch on the `originating_author_trust` field the orchestrator put in your disp
 
 **Do not type `gh pr merge` until this check has returned.** `gh pr merge --auto` is widely assumed to mean *"queue this PR and merge it when CI goes green."* On two repo configurations that guarantee **silently does not hold** — gh falls through to an *immediate direct merge*, landing the PR while its own checks are still `IN_PROGRESS`. On those configurations the PR's own CI is the only gate that exists, and `--auto` bypasses it, so a red diff reaches the default branch with nothing having gated it.
 
-Run the detector. It is a **script, not a rule for you to re-derive** — do not reason about `allow_auto_merge` yourself:
+Run the detector. It is a **script, not a rule for you to re-derive** — do not reason about `allow_auto_merge` yourself. **Reuse the literal plugin-root value already resolved at `shipyard:worker-preamble`'s step-0 in place of `${CLAUDE_PLUGIN_ROOT}` below instead of re-deriving it here ([#965](https://github.com/mattsears18/shipyard/issues/965)):**
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
