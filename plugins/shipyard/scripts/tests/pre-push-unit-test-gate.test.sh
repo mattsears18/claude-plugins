@@ -144,10 +144,12 @@ if [[ -f "$fix_checks_path" ]]; then
     "fix-checks-only.md adds a pre-push unit-test run to the fix-loop"
   assert_contains "$fix_checks_path" "https://github.com/mattsears18/shipyard/issues/658" \
     "fix-checks-only.md links to originating issue #658"
-  # It must precede the push step (4.5 before 5).
+  # It must precede the push step (4.5 before 5). Marker updated for #966's
+  # detached-HEAD push step (explicit `git push origin HEAD:refs/heads/...`
+  # replaced the old "same branch" phrasing).
   assert_section_ordering "$fix_checks_path" \
     "Run the repo's unit-test suite locally before pushing the fix" \
-    "\`git commit\` + \`git push\` to the same branch" \
+    "then push to the PR's remote branch" \
     "fix-loop unit-test run precedes the git push step"
   # The i18n-parity signature is called out as the load-bearing case.
   assert_contains "$fix_checks_path" "i18n-parity signature" \
