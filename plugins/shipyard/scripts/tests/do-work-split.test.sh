@@ -2223,6 +2223,87 @@ assert_contains "$setup_worktree_path739" \
   "sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\\1|' | grep -qx \"\$n\"" \
   "00-config-worktree.md §3c row-5 stale-assign check recognizes a collision-fallback worktree as already-handled (#739)"
 
+# ── Regression: scope-preflight re-gates issues already resolved via
+#    /resolve-decisions (#962) ──────────────────────────────────────────────
+#
+# Repro (lightwork#3054, lightwork#3051, 2026-07-25): /my-turn posted a
+# <!-- shipyard-resolve-decisions --> comment and cleared needs-human-review;
+# hours later, with no new information, /do-work's scope-preflight re-applied
+# needs-human-review citing the SAME already-answered policy question. The
+# #569 fix taught the freshness check + scope-agent prompt to recognize
+# <!-- do-work-decision-resolved --> (a hand-written maintainer sentinel) as
+# a gate-clear signal, but never taught either to recognize
+# <!-- shipyard-resolve-decisions --> (the sentinel /resolve-decisions and
+# /my-turn's reused walkthrough post automatically) — so a resolve-decisions
+# clearance was invisible to both the freshness check and the scope agent.
+#
+# This closes the gap two ways: (1) both call sites now recognize BOTH
+# sentinels identically, and (2) a new mechanical Recording-path guard
+# (step 3.5) refuses to silently re-apply needs-human-review when a
+# resolution comment postdates the last time the label was removed, unless
+# the fresh defer names what changed since that resolution.
+
+# Fix (1a) — freshness check's Signal B must recognize the resolve-decisions
+#   sentinel alongside the decision-resolved sentinel.
+assert_contains "$setup_path" \
+  '<!-- shipyard-resolve-decisions -->' \
+  "setup.md freshness check documents the shipyard-resolve-decisions sentinel (#962)"
+
+assert_contains "$setup_path" \
+  '#962' \
+  "setup.md references issue #962"
+
+# Fix (1a) — the when-not-to-apply list must also mention the new sentinel.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'do-work-decision-resolved -->` or `<!-- shipyard-resolve-decisions -->` sentinel comment was posted' \
+  "setup.md when-not-to-apply list recognizes shipyard-resolve-decisions as a Signal B trigger (#962)"
+
+# Fix (1b) — the scope-agent prompt instruction must also recognize the
+#   resolve-decisions sentinel, not just do-work-decision-resolved.
+# shellcheck disable=SC2016
+# Backticks/apostrophes are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'the marker `/shipyard:resolve-decisions` and `/my-turn`'"'"'s reused decision-gated walkthrough post automatically once every blocking decision has been answered' \
+  "setup.md scope-agent prompt recognizes the shipyard-resolve-decisions sentinel (#962)"
+
+# Fix (2) — the new mechanical re-gate guard must exist as its own numbered
+#   Recording-path sub-step, distinct from step 4's label application.
+assert_contains "$setup_path" \
+  '3.5. **Re-gate guard' \
+  "setup.md Recording path carries the 3.5 re-gate guard sub-step (#962)"
+
+assert_contains "$setup_path" \
+  'a resolved decision cannot be silently re-applied' \
+  "setup.md re-gate guard names the failure mode it prevents (#962)"
+
+# The guard must compare the resolution comment's timestamp against the
+# last needs-human-review label removal, using the timeline API.
+# shellcheck disable=SC2016
+# Literal needle — must NOT expand $(gh api ...); this is markdown prose text.
+assert_contains "$setup_path" \
+  'LAST_UNGATE_AT=$(gh api "repos/<owner>/<repo>/issues/<N>/timeline"' \
+  "setup.md re-gate guard fetches the last needs-human-review unlabel event (#962)"
+
+# The guard must require the fresh defer to name what changed, else reject
+# rather than silently re-gate.
+assert_contains "$setup_path" \
+  'MUST explicitly name what changed since that resolution' \
+  "setup.md re-gate guard requires naming what changed since the resolution (#962)"
+
+assert_contains "$setup_path" \
+  're-gate guard #962' \
+  "setup.md re-gate guard's rejection log line cites issue #962"
+
+# The guard must scope itself to the two needs-human-review-gating classes,
+# not external-dependency (which gates needs-operator instead).
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'external-dependency` gates with `needs-operator` instead and is out of scope here' \
+  "setup.md re-gate guard scopes itself to human-decision-required / confirmed-non-shippable-as-single-PR (#962)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
