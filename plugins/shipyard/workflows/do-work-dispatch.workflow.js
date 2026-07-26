@@ -694,8 +694,32 @@ function buildWorkerPrompt(unit, repoSlug) {
 // sections (issue #802).
 // ===========================================================================
 function worktreeAnchorCheckLines(worktreePath, pluginRoot) {
+  // Worktree-local-preferred plugin-root resolution (issue #969). `pluginRoot`
+  // (when supplied) is the orchestrator's PRIMARY-CHECKOUT-resolved value —
+  // fine for `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` invocation, but on the
+  // dogfooding repo it is also the exact tree `dont.md` forbids reading-to-
+  // edit or writing to. Since `worktreePath` is already known here, prefer
+  // it: a plain `test -d` (no subshell, no command substitution, no `&&`/
+  // `if` chaining) checks for a worktree-local plugin copy BEFORE falling
+  // back to the orchestrator-supplied literal, so the safe path is the
+  // default rather than a caveat the worker has to remember.
+  const worktreePluginRoot = `${worktreePath}/plugins/shipyard`
   const pluginRootExportLines = pluginRoot
     ? [
+        '```bash',
+        `test -d "${worktreePluginRoot}/scripts"`,
+        '```',
+        `Exit 0 → this worktree carries its own plugin copy (the dogfooding`,
+        `case) — use it, not the orchestrator-supplied literal, for BOTH`,
+        `script invocation AND as the base for every spec file you`,
+        `read-to-edit or write for the rest of this dispatch:`,
+        '```bash',
+        `export CLAUDE_PLUGIN_ROOT="${worktreePluginRoot}"`,
+        '```',
+        `Non-zero exit → no worktree-local plugin copy (a consumer-install`,
+        `layout, with no plugin spec files under your worktree to edit`,
+        `anyway) — fall back to the orchestrator-supplied literal, for`,
+        `script invocation only:`,
         '```bash',
         `export CLAUDE_PLUGIN_ROOT="${pluginRoot}"`,
         '```',
@@ -713,7 +737,9 @@ function worktreeAnchorCheckLines(worktreePath, pluginRoot) {
     `cd "${worktreePath}"`,
     '```',
     pluginRoot
-      ? `Your dispatching orchestrator already resolved CLAUDE_PLUGIN_ROOT — use this literal path directly rather than re-deriving it (issue #965):`
+      ? `Your dispatching orchestrator resolved CLAUDE_PLUGIN_ROOT as a PRIMARY-CHECKOUT` +
+        ` literal (invocation fallback only, NEVER a read/edit target — issue #969).` +
+        ` Prefer your own worktree's copy first:`
       : `No orchestrator-supplied plugin root was provided for this dispatch (a caller predating #965) — resolve it yourself:`,
     ...pluginRootExportLines,
     '```bash',
