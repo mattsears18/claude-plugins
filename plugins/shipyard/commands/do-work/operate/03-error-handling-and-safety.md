@@ -58,4 +58,6 @@ Apply **only** when the chrome-devtools-mcp fallback is selected — the extensi
 
 ## Third-party console deep-links
 
+**Before deriving a deep link, check CLI-first** ([`02-execution-and-playbooks.md`'s CLI-first section](../operate/02-execution-and-playbooks.md#cli-first-prefer-an-authenticated-cli-over-the-browser-972)) — an already-authenticated `gcloud` / `vercel` / `gh` (or similar) often covers the action more reliably and more auditably than a browser deep link, and doesn't depend on the browser profile being logged into the right account. Fall back to the deep-link derivation below only when no CLI covers the action, or the CLI is absent/unauthenticated.
+
 Derive provider-console URLs using the same template table as `/my-turn`'s [third-party console deep-links section](../../my-turn.md#third-party-console-deep-links): substitute identifiers from the action's context (issue/PR body, comments, repo config). Fall back to the provider's top-level console when the specific page can't be constructed. **Never fabricate an identifier** to fill a template — a wrong deep link navigates to someone else's app.
