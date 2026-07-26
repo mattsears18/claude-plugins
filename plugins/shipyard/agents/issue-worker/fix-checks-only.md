@@ -12,15 +12,17 @@ Repair failing CI on an existing PR. **No new PR, no scope expansion, no PR titl
 
 ## Setup
 
-The harness placed you inside an isolated worktree on some placeholder branch (typically `worktree-agent-<id>`). Land on the PR's actual head branch with the **safe two-step** — do NOT use `gh pr checkout` (see worker-preamble's worktree discipline rule 2):
+The harness placed you inside an isolated worktree on some placeholder branch (typically `worktree-agent-<id>`). Land on the PR's head commit via **detached HEAD**, not a named branch — do NOT use `gh pr checkout` (see worker-preamble's worktree discipline rule 2) and do NOT `git switch <branch>`:
 
 ```bash
 HEAD_REF=$(gh pr view <M> --repo <owner/repo> --json headRefName -q .headRefName)
 git fetch origin "$HEAD_REF"
-git switch "$HEAD_REF"
+git checkout --detach "origin/$HEAD_REF"
 ```
 
-**If `git switch` fails with "is already checked out at <path>"** — the head branch is still locked in the originating worker's worktree. The orchestrator's pre-dispatch head-branch reap should already have released a `self-ancestor` (our own session's PID) lock before you started, regardless of dispatch site: from the steady-state `failed_prs` queue it's the [steady-state 2d reap (#368)](../../commands/do-work/steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action), and from drain it's the [drain pre-dispatch reap (#370)](../../commands/do-work/drain.md#pre-dispatch-head-branch-reap-self-pid-lock-release). A surviving collision means the lock is `peer-alive` (a genuinely-live non-orchestrator process), which the orchestrator correctly declined to yank. Bail with `blocked #<M> at fix-checks: head branch <HEAD_REF> locked in another worktree — needs end-of-session reap` rather than working around it with a temporary branch. The next session's startup sweep clears the lock.
+**Why detached HEAD, not a named-branch checkout ([#966](https://github.com/mattsears18/shipyard/issues/966)).** `git switch <branch>` claims that branch exclusively — git enforces one-worktree-per-branch, so it fails with *"is already checked out at \<path\>"* whenever the branch is checked out anywhere else. For a same-session PR that's not an edge case, it's the **normal** state: the originating issue-work worker's worktree deliberately keeps `do-work/issue-<N>` checked out until end-of-session cleanup (`dont.md`'s liveness rules — neither branch name nor lock PID can distinguish a live peer worktree from an abandoned one, so reaping it to free the branch is forbidden). The old guidance bailed on essentially every fix-checks dispatch against a PR the same session had just opened. Detached HEAD sidesteps the exclusivity rule entirely — any number of worktrees can sit at the same commit in detached HEAD at once, since only a *branch* checkout is exclusive — and this mode never needs a named branch: it only fetches, commits, and pushes to a ref (see the push command in the fix-loop below).
+
+If `git checkout --detach` itself fails, that's a real error, not a lock collision (there is nothing to reap and no lock to wait out) — return `blocked #<M> at fix-checks: could not check out PR head — <error>` and stop.
 
 ## Hard rules
 
@@ -225,7 +227,11 @@ On failure:
 3. Reproduce locally if practical.
 4. Fix the smallest thing that resolves the failure. Don't expand scope.
 4.5. **Run the repo's unit-test suite locally before pushing the fix ([#658](https://github.com/mattsears18/shipyard/issues/658)).** Same pre-push gate as issue-work [§4.6](./issue-work.md#46-pre-push-local-unit-test-gate-658): detect the unit-test command (`package.json` `scripts["test:unit"]` / `scripts.test`, a jest/vitest config, `pytest`, a `Makefile` `test` target) and run it — scoped to the changed files when the runner supports it, else the full unit suite — and confirm it passes *before* `git push`. Pushing a fix whose unit suite is still red locally just re-reds the same required gate in CI and burns another fix attempt against the 3-cap. This is especially load-bearing for the **i18n-parity signature** (see the [named-failing-check re-verification gate](#named-failing-check-re-verification-gate-load-bearing)): when the failing check is a `locales/*.json` ↔ `lib/strings.ts` parity test, running that parity suite locally is how you *confirm* your key-mirroring fix actually flips it green — never infer it from a "No tests found" worktree-ignore pass, which resolves a different check entirely. Skip only when the repo has no unit suite at all.
-5. `git commit` + `git push` to the same branch. Never `--no-verify` (see worker-preamble). Never force-push unless rewriting history is genuinely required.
+5. `git commit`, then push to the PR's remote branch. You're in detached HEAD (per Setup above), so a bare `git push` has no upstream to infer — push explicitly to the branch ref:
+   ```bash
+   git push origin "HEAD:refs/heads/$HEAD_REF"
+   ```
+   Never `--no-verify` (see worker-preamble). Never force-push unless rewriting history is genuinely required.
 6. Re-watch checks.
 
 **Hard cap: 3 fix attempts.** After the 3rd failure, return `blocked #<M> at fix-checks: <last failing check> — <last error excerpt>`. The orchestrator will label the PR `blocked:ci` and move on.
@@ -275,4 +281,4 @@ The registry lives at `~/.shipyard/flake-registry.jsonl` (one line per event). T
 - Don't `--no-verify` to skip hooks. Fix the underlying issue. (See worker-preamble for the absolute prohibition.)
 - Don't disable a failing test to make checks pass. If the test is genuinely broken (not the code), comment on the PR with the evidence and return `blocked #<M> at fix-checks: <reason>`.
 - Don't edit `.github/workflows/` or branch protection to make a check pass.
-- **Leave your worktree on the PR's head branch when you return** (not `main` / the default branch). See worker-preamble's worktree discipline rule 3.
+- **Leave your worktree checked out at the PR's head commit when you return** (not `main` / the default branch). Detached HEAD is the expected state in this mode — you never need to be on a named branch. See worker-preamble's worktree discipline rule 3.

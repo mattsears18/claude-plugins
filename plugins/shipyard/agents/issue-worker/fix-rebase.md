@@ -14,14 +14,16 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
 
 ## Process
 
-1. **Land on the PR's head branch** — the harness placed you on some placeholder branch. Use the safe two-step, do NOT use `gh pr checkout` (see worker-preamble's worktree discipline rule 2):
+1. **Land on the PR's head commit via detached HEAD** — the harness placed you on some placeholder branch. Do NOT use `gh pr checkout` (see worker-preamble's worktree discipline rule 2) and do NOT `git switch <branch>`:
    ```bash
    HEAD_REF=$(gh pr view <M> --repo <owner/repo> --json headRefName -q .headRefName)
    git fetch origin "$HEAD_REF"
-   git switch "$HEAD_REF"
+   git checkout --detach "origin/$HEAD_REF"
    ```
 
-   **If `git switch` fails with "is already checked out at <path>"** — the head branch is locked in another agent worktree (typically the original issue-work worker's worktree). The orchestrator's [drain pre-dispatch head-branch reap (#370)](../../commands/do-work/drain.md#pre-dispatch-head-branch-reap-self-pid-lock-release) is supposed to release this lock before you're dispatched — it reaps any worktree holding a `self-ancestor` (our own session's PID) lock on the head branch. If you still hit the collision, the lock classified as `peer-alive` (a genuinely-live non-orchestrator process still holds it) and the orchestrator correctly declined to yank it, OR the steady-state immediate-reap from [#282](https://github.com/mattsears18/shipyard/issues/282) deferred and #370's reap also deferred. Either way, bail rather than working around it with a temporary `<head>-rebase` branch (the workaround #282 documented). Return `blocked rebase #<M>: head branch <HEAD_REF> locked in another worktree — needs manual rebase or end-of-session reap`. The drain will leave the PR alone and the next session's startup sweep clears the lock. Do NOT create a `<head>-rebase` temp branch — the artifacts can't be cleaned up cleanly, and the force-push to origin's head is the same operation regardless of which local branch holds it.
+   **Why detached HEAD, not a named-branch checkout ([#966](https://github.com/mattsears18/shipyard/issues/966)).** `git switch <branch>` claims that branch exclusively — git enforces one-worktree-per-branch, so it fails with *"is already checked out at \<path\>"* whenever the branch is checked out anywhere else. For a same-session PR that's not an edge case, it's the **normal** state: the originating issue-work worker's worktree deliberately keeps `do-work/issue-<N>` checked out until end-of-session cleanup (`dont.md`'s liveness rules — neither branch name nor lock PID can distinguish a live peer worktree from an abandoned one, so reaping it to free the branch is forbidden). The old guidance bailed on essentially every fix-rebase dispatch against a PR the same session had just opened. Detached HEAD sidesteps the exclusivity rule entirely — any number of worktrees can sit at the same commit in detached HEAD at once, since only a *branch* checkout is exclusive — and this mode never needs a named branch: it fetches, rebases, and force-pushes to a ref (step 6 below). Do NOT create a `<head>-rebase` temp branch as a workaround either (the pre-#966 fallback documented here) — detached HEAD makes that unnecessary.
+
+   If `git checkout --detach` itself fails, that's a real error, not a lock collision (there is nothing to reap and no lock to wait out) — return `blocked rebase #<M>: could not check out PR head — <error>` and stop.
 
 2. **Pre-flight: confirm DIRTY is still the state.** State drifts between dispatch and you starting — another merge train tick may have already auto-merged this PR, or someone may have pushed a fix that resolved the dirty state, or new check failures may have appeared:
    ```bash
@@ -212,12 +214,12 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
    **Never force-push a branch whose net change vs base vanished.** Bailing leaves `origin/$HEAD_REF` and the PR untouched (the PR stays DIRTY for a human to rebase by hand) — the safe outcome whether the emptiness came from a dropped change (the data loss to prevent) or from the change having already landed on main via a sibling PR (in which case a human closes the PR cleanly rather than letting a silent force-push auto-close it). The guard is gated on `PRE_FILES > 0` so a PR that was *already* empty before the rebase doesn't false-bail. This assertion runs for **both** the conflict-resolved path and the clean-rebase path — a clean rebase whose result is empty is just as much a silent auto-close hazard. This is the worker-side root fix for #646; never resolve a conflict in a way that can produce this state in the first place (see the hunk-level resolution rule in step 4).
 
-6. **Push the rebased branch.** This is a fast-forward-incompatible operation (rebase rewrites commit SHAs), so a force push with lease is required:
+6. **Push the rebased branch.** This is a fast-forward-incompatible operation (rebase rewrites commit SHAs), so a force push with lease is required. You're in detached HEAD (per step 1), so push `HEAD` explicitly to the remote branch ref rather than relying on an upstream:
    ```bash
-   git push --force-with-lease origin "$HEAD_REF"
+   git push --force-with-lease origin "HEAD:refs/heads/$HEAD_REF"
    ```
 
-   `--force-with-lease` (not plain `--force`) refuses the push if someone else pushed to the branch between your `git fetch` and your `git push`. That's the safety net against clobbering a concurrent author push — bail with `blocked rebase #<M>: head branch moved during rebase — retry next session` if the lease check rejects.
+   `--force-with-lease` (not plain `--force`) refuses the push if someone else pushed to the branch between your `git fetch` and your `git push` — it checks the remote ref (`refs/heads/$HEAD_REF`, resolved from the push destination) against your locally-known `origin/$HEAD_REF`, which step 1's fetch established as the baseline. That's the safety net against clobbering a concurrent author push — bail with `blocked rebase #<M>: head branch moved during rebase — retry next session` if the lease check rejects.
 
 7. **Return one line.** No `gh pr edit`, no `gh pr merge --auto` re-call (auto-merge was already armed when the PR was opened; rebasing doesn't un-arm it), no `--watch`, and — per `shipyard:worker-preamble` § "Return-contract discipline" ([#529](https://github.com/mattsears18/shipyard/issues/529)) — no arming a `run_in_background` process / `Monitor` / background-waiter and returning a non-terminal narrative before it resolves. Run the rebase synchronously to a terminal state and return exactly one of the strings below. The drain phase's next per-poll snapshot will see the PR transition out of DIRTY:
    - `rebased #<M>` — rebase succeeded, branch was force-pushed, drain phase resumes monitoring it.
@@ -230,7 +232,7 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 - Never `gh pr merge` manually. Auto-merge was armed when the PR was first opened (or by the orchestrator's reconcile after a fix-checks). Rebasing a green-or-pending PR is sufficient to re-arm the merge train; manual merging would skip the merge train's protection against last-second base drift.
 - Never edit the PR's title, body, or labels. The PR's existing description references the original commits — a rebase preserves their content, not necessarily their SHAs, but the human-readable summary stays correct.
 - Never close the linked issue from this dispatch. The PR's body already has the `Closes #N` line; merging the rebased branch closes the issue automatically.
-- **Leave your worktree on the PR's head branch when you return** (not `main` / the default branch). See worker-preamble's worktree discipline rule 3.
+- **Leave your worktree checked out at the PR's head commit when you return** (not `main` / the default branch). Detached HEAD is the expected state in this mode — you never need to be on a named branch. See worker-preamble's worktree discipline rule 3.
 
 ## Don't
 

@@ -394,9 +394,10 @@ assert_count_at_least_across "issues/<M>/comments?per_page" 2 \
 #    - cleanup-summary.md documents the relationship to the immediate-
 #      reap path so a future reader doesn't think end-of-session is the
 #      only reap site.
-#    - fix-rebase.md carries a defensive bail clause for the residual
-#      case where the head branch is still locked (peer-alive defer,
-#      transient failure of the immediate-reap path).
+#    - (Superseded by #966 below) fix-rebase.md used to carry a defensive
+#      bail clause for the residual case where the head branch was still
+#      locked (peer-alive defer, transient failure of the immediate-reap
+#      path) — see the #966 block further down for what replaced it.
 assert_contains "$steady_state_path" \
   '--phase "steady-state-A1-shipped"' \
   "steady-state.md immediate-reap uses the steady-state-A1-shipped phase tag (#282)"
@@ -409,10 +410,42 @@ assert_count_at_least_across 'worktree-reap.sh" reap' 2 \
 assert_contains "$cleanup_path" \
   'Relationship to the immediate-reap in steady-state.md' \
   "cleanup-summary.md documents the relationship to the steady-state immediate-reap (#282)"
+
+# (Issue #966) fix-checks-only.md and fix-rebase.md land on the PR's head
+# commit via `git checkout --detach`, not `git switch <branch>`. A named-
+# branch checkout is exclusive per worktree (git enforces one-worktree-
+# per-branch), which made the #282 lock scenario above the *normal* case
+# for a same-session PR — the originating issue-work worker deliberately
+# keeps its branch checked out until end-of-session cleanup, so `git
+# switch` bailed on essentially every same-session fix-checks/fix-rebase
+# dispatch, and the old bail text ("needs end-of-session reap") pointed at
+# a reap-to-unblock remedy `dont.md` forbids (neither branch name nor lock
+# PID can distinguish a live peer worktree from an abandoned one).
+# Detached HEAD sidesteps the exclusivity rule entirely — only a *branch*
+# checkout is exclusive — so the old "locked in another worktree" bail
+# clause this test used to require is gone by design, replaced by a
+# residual bail for a genuine checkout error (network failure, deleted
+# branch), which is a different, much rarer case.
 fix_rebase_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
+fix_checks_path966="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
+# The $HEAD_REF token below is a literal substring of the markdown spec (a
+# documented shell-variable reference inside the spec's code block), meant
+# to be matched verbatim — single quotes are correct and SC2016's "did you
+# mean to expand" does not apply.
+# shellcheck disable=SC2016
 assert_contains "$fix_rebase_path" \
+  'git checkout --detach "origin/$HEAD_REF"' \
+  "fix-rebase.md lands on the PR head via detached HEAD, not git switch (#966)"
+assert_not_contains "$fix_rebase_path" \
   'locked in another worktree' \
-  "fix-rebase.md carries the defensive bail clause for the head-branch-locked residual case (#282)"
+  "fix-rebase.md no longer bails on a branch-lock — detached HEAD sidesteps it (#966)"
+# shellcheck disable=SC2016
+assert_contains "$fix_checks_path966" \
+  'git checkout --detach "origin/$HEAD_REF"' \
+  "fix-checks-only.md lands on the PR head via detached HEAD, not git switch (#966)"
+assert_not_contains "$fix_checks_path966" \
+  'needs end-of-session reap' \
+  "fix-checks-only.md no longer points a bail at the reap-to-unblock remedy dont.md forbids (#966)"
 
 # (Issue #295) Cost-attribution banner branches on the all-vs-partial
 # degraded ratio.
