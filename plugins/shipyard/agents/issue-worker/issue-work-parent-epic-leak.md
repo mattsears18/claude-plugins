@@ -12,6 +12,44 @@ Closes [#624](https://github.com/mattsears18/shipyard/issues/624) — the **sile
 
 **The mechanism the remediation loop guards.** GitHub can promote a bare `#<E>` token (in the PR body, a squashed-commit message, or a CHANGELOG entry that rides the merge) into `closingIssuesReferences` even with no closing keyword — so the merge auto-closes the protected issue. The same is true of a closing-keyword-shaped word sharing a line with an already-URL-form reference (above). The §5 prevention is to phrase the reference as a bare URL AND keep keyword-shaped words off its line; this step verifies the prevention took and, if it leaked, escalates through three remediation tiers.
 
+**Verification staleness — a single `closingIssuesReferences` read taken right after `gh pr create` can be stale, and the failure direction it produces is the dangerous one ([#982](https://github.com/mattsears18/shipyard/issues/982)).** GitHub computes `closingIssuesReferences` by parsing the PR body/commits *after* the PR object itself exists, so the very first read can come back empty even though the link registers moments later — a repro read the field as clean seconds after `gh pr create`, only for the protected issue to close on merge anyway. Because this is a **false negative** — the check reports "clean" when it isn't — it's worse than a false positive: a worker that trusts one immediate empty read and arms auto-merge never gets a second chance before the merge silently closes the protected issue. Two changes address this, both implemented by the `check_closing_ref` helper used throughout the verification below:
+
+1. **Never trust a single read taken immediately after `gh pr create` (or after a `gh pr edit` / `git push --force-with-lease` remediation).** Re-read a few seconds later and require two consecutive reads to agree before trusting an empty ("not leaked") result — a leak that shows up on *either* read counts as leaked, since a transient `true` is real evidence the link registered even if a later read goes back to `false`.
+2. **Query `closingIssuesReferences` directly via `gh api graphql`, not `gh pr view --json`.** `gh pr view --json closingIssuesReferences` resolves through the same underlying GraphQL field, but routing through `gh pr view`'s own object-resolution path adds a layer between you and the raw API response; querying directly removes that layer and gives a query you can re-run byte-for-byte to compare consecutive reads. Use this in place of `gh pr view --json closingIssuesReferences` for every epic check below.
+
+**Why this doesn't also change §5.8's own dispatched-issue check.** §5.8 verifies the *opposite* direction — that the PR's own issue `#<N>` DOES register as a closing reference — and its corrective action on a "false" read is to prepend an explicit `Closes #<N>` line, which is idempotent and harmless to over-apply. A stale-false read there just costs one redundant, safe edit, not a silent wrong outcome; §5.8 runs on *every* PR this worker opens, so paying this check's ~5-10s retry cost there would tax the common case to guard a low-severity failure. §5.85 only runs when a protected issue is genuinely in scope, and a stale-false read there arms auto-merge on a leak with no corrective action at all — that asymmetry is why the retry-and-direct-query treatment belongs here and not in §5.8.
+
+```bash
+# Direct-GraphQL, stale-read-resistant check for whether issue <E> is present
+# in PR <pr>'s closingIssuesReferences (#982). Reads twice, a few seconds
+# apart, and treats a leak surfacing on EITHER read as real — the field is
+# computed asynchronously after PR create/edit, so a single immediate read
+# can come back empty (a false negative) even when the link registers
+# moments later.
+check_closing_ref() {
+  local pr="$1" repo="$2" epic="$3"
+  local owner="${repo%%/*}" name="${repo##*/}"
+  local query='
+    query($owner: String!, $name: String!, $num: Int!) {
+      repository(owner: $owner, name: $name) {
+        pullRequest(number: $num) {
+          closingIssuesReferences(first: 50) { nodes { number } }
+        }
+      }
+    }'
+  local jq_expr="[.data.repository.pullRequest.closingIssuesReferences.nodes[].number] | index($epic) != null"
+  local first second
+  first=$(gh api graphql -f query="$query" -F owner="$owner" -F name="$name" -F num="$pr" --jq "$jq_expr")
+  sleep 5
+  second=$(gh api graphql -f query="$query" -F owner="$owner" -F name="$name" -F num="$pr" --jq "$jq_expr")
+  if [ "$first" = "true" ] || [ "$second" = "true" ]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+```
+
 **After `gh pr create` and before arming auto-merge in [§6](./issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)**, for each protected issue `#<E>` assert it is absent from the PR's `closingIssuesReferences`. If it leaked, run the tiers below **in order and don't stop early** — the [#893](https://github.com/mattsears18/shipyard/issues/893) repro showed a leak surviving a single body-rewrite-and-reverify (what an earlier version of this step stopped at) as well as a follow-up commit-message rewrite, so a worker that re-verifies once and declares victory, or that gives up after one rewrite and jumps straight to `needs-human-review`, is not exercising the full documented recovery path:
 
 ```bash
@@ -25,8 +63,7 @@ fi
 
 # <E> is each protected issue number collected above. Run this block per issue.
 CURRENT_PR=<pr-num>
-LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-  --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
+LEAKED=$(check_closing_ref "$CURRENT_PR" <owner/repo> <E>)
 
 # --- Tier 1: rewrite the PR body to bare-URL form, AND strip any
 # closing-keyword-shaped word sharing a line with the reference (#990 —
@@ -55,8 +92,7 @@ if [ "$LEAKED" = "true" ]; then
 
   gh pr edit "$CURRENT_PR" --repo <owner/repo> --body "$PATCHED_BODY"
 
-  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
+  LEAKED=$(check_closing_ref "$CURRENT_PR" <owner/repo> <E>)
 fi
 
 # --- Tier 2: also rewrite the HEAD commit message. A bare #<E> token riding
@@ -71,8 +107,7 @@ if [ "$LEAKED" = "true" ]; then
     git push --force-with-lease origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"
   fi
 
-  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
+  LEAKED=$(check_closing_ref "$CURRENT_PR" <owner/repo> <E>)
 fi
 
 # --- Tier 3: escape hatch — abandon this branch/PR and reopen from a NEUTRAL
@@ -97,8 +132,7 @@ if [ "$LEAKED" = "true" ]; then
     --title "<same title>" --body "$PATCHED_BODY"
 
   CURRENT_PR=$(gh pr list --repo <owner/repo> --head "$NEUTRAL_BRANCH" --json number --jq '.[0].number')
-  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
+  LEAKED=$(check_closing_ref "$CURRENT_PR" <owner/repo> <E>)
 fi
 
 # If the protected issue is already CLOSED (e.g. an admin ungated direct-merge
