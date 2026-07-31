@@ -126,10 +126,16 @@ assert_contains "$fix_checks_path" \
   "return contract widened from three to four terminal strings"
 
 # --- Step A: never bail 'logs unavailable' on an in-progress run ------------
+# Step A's heading and body were updated by issue #984 to scope the wait to
+# the SPECIFIC failing job (not the whole run) — see
+# fix-checks-infra-flake-classification-984.test.sh for the #984 regression
+# guard. This test still asserts the underlying #654 invariant survived the
+# #984 rewrite: a premature "logs unavailable" bail is still named and still
+# forbidden, just no longer phrased as "wait for the whole run to settle."
 
 assert_contains "$fix_checks_path" \
-  "never declare \"logs unavailable\" on an in-progress run" \
-  "Step A: in-progress run is a wait-signal, not a bail"
+  "resolve the failing job's own logs; don't wait on siblings" \
+  "Step A: in-progress run is a wait-signal (scoped to the specific job), not a bail"
 
 assert_contains "$fix_checks_path" \
   "logs unavailable while run in progress" \
