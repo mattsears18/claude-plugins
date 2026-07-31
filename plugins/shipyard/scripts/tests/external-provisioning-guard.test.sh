@@ -51,7 +51,20 @@ fi
 
 issue_work_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
-scope_preflight_path="$repo_root/plugins/shipyard/commands/do-work/setup/06-scope-preflight.md"
+# 06-scope-preflight.md was further split into 06/06b/06c (issue #994) once it
+# grew past the per-Read token cap on its own. The step-6 scoping-agent prompt
+# instruction (the "Provisioning carve-out" text) now lives in
+# 06b-scope-carveouts.md; the Recording-path diagnosis-comment template (the
+# "What to provision" checklist) now lives in 06c-scope-handling-ui.md.
+# Concatenate all three so this test keeps finding the wiring regardless of
+# which sub-file a future re-split moves it to next, mirroring the operate.md
+# concat pattern just below.
+scope_preflight_router_path="$repo_root/plugins/shipyard/commands/do-work/setup/06-scope-preflight.md"
+scope_preflight_path="$(mktemp -t external-provisioning-scope-preflight-concat.XXXXXX)"
+cat "$scope_preflight_router_path" \
+  "$repo_root/plugins/shipyard/commands/do-work/setup/06b-scope-carveouts.md" \
+  "$repo_root/plugins/shipyard/commands/do-work/setup/06c-scope-handling-ui.md" \
+  > "$scope_preflight_path" 2>/dev/null
 # operate.md was split into a thin router (browser-backend selection +
 # preflight) + on-demand bodies under operate/ (issue #808) — the A.1
 # reactive-enqueue hook that recognizes "external provisioning required" bails
@@ -64,7 +77,7 @@ operate_router_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
 operate_dir="$repo_root/plugins/shipyard/commands/do-work/operate"
 operate_path="$(mktemp -t external-provisioning-operate-concat.XXXXXX)"
 cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
-trap 'rm -f "$operate_path"' EXIT
+trap 'rm -f "$scope_preflight_path" "$operate_path"' EXIT
 
 pass=0
 fail=0

@@ -16,7 +16,7 @@
 #
 #   - inline-trivial.md §E        (fast-path PRs, skipped worker dispatch)
 #   - steady-state.md A.0.5       (crash-recovery re-arm)
-#   - setup/00-config-worktree.md §3c (orphan-recovery re-arm)
+#   - setup/00b-parallelization-cache.md §3c (orphan-recovery re-arm)
 #   - drain.md release-train sweep (release-please PR auto-arming)
 #
 # Before #850 all four discarded the merge-arm call's stderr unconditionally
@@ -93,7 +93,7 @@ echo
 
 INLINE_TRIVIAL="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
 STEADY_STATE="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
-SETUP_WORKTREE="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
+SETUP_WORKTREE="$repo_root/plugins/shipyard/commands/do-work/setup/00b-parallelization-cache.md"
 DRAIN="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 DO_WORK="$repo_root/plugins/shipyard/commands/do-work.md"
 RATIONALE="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
@@ -131,15 +131,15 @@ fi
 
 if [[ -f "$SETUP_WORKTREE" ]]; then
   assert_contains "$SETUP_WORKTREE" 'without .workflow. scope' \
-    "setup/00-config-worktree.md §3c matches the shared GraphQL 'without \`workflow\` scope' signature"
+    "setup/00b-parallelization-cache.md §3c matches the shared GraphQL 'without \`workflow\` scope' signature"
   # shellcheck disable=SC2016
   assert_contains "$SETUP_WORKTREE" '[setup-3c] PR #${pr_num} auto-merge arm blocked' \
-    "setup/00-config-worktree.md §3c logs a distinctly-tagged line on match"
+    "setup/00b-parallelization-cache.md §3c logs a distinctly-tagged line on match"
   # shellcheck disable=SC2016
   assert_contains "$SETUP_WORKTREE" 'merge_arm_err=$(gh pr merge "$pr_num"' \
-    "setup/00-config-worktree.md §3c captures the merge-arm call's stderr into a variable"
+    "setup/00b-parallelization-cache.md §3c captures the merge-arm call's stderr into a variable"
 else
-  assert_fail "setup/00-config-worktree.md exists (missing at $SETUP_WORKTREE)"
+  assert_fail "setup/00b-parallelization-cache.md exists (missing at $SETUP_WORKTREE)"
 fi
 
 if [[ -f "$DRAIN" ]]; then
@@ -217,7 +217,7 @@ fi
 if [[ -f "$SETUP_WORKTREE" ]]; then
   # shellcheck disable=SC2016
   assert_not_contains "$SETUP_WORKTREE" 'gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true' \
-    "setup/00-config-worktree.md §3c no longer discards the merge-arm call's stderr unconditionally"
+    "setup/00b-parallelization-cache.md §3c no longer discards the merge-arm call's stderr unconditionally"
 fi
 echo
 

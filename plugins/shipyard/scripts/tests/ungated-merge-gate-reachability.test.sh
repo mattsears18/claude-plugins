@@ -324,7 +324,7 @@ FIX_PR_BATCH_MD="$repo_root/plugins/shipyard/agents/issue-worker/fix-failing-prs
 INLINE_TRIVIAL_MD="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
 DRAIN_MD="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 STEADY_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
-SETUP_WORKTREE_MD="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
+SETUP_WORKTREE_MD="$repo_root/plugins/shipyard/commands/do-work/setup/00b-parallelization-cache.md"
 SETUP_REPO_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md"
 INVESTIGATE_MD="$repo_root/plugins/shipyard/agents/issue-worker/investigate.md"
 

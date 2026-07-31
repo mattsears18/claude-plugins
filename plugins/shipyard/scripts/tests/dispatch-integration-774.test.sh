@@ -54,7 +54,20 @@ issue_worker_path="$repo_root/plugins/shipyard/agents/issue-worker.md"
 hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
-scope_preflight_path="$repo_root/plugins/shipyard/commands/do-work/setup/06-scope-preflight.md"
+# 06-scope-preflight.md was further split into 06/06b/06c (issue #994) once it
+# grew past the per-Read token cap on its own. The inline auto-decompose
+# dispatch text this suite checks now lives in 06c-scope-handling-ui.md.
+# scope_preflight_router_path is the canonical filename (for the file-exists
+# check below); scope_preflight_path is a concatenation of all three sub-files
+# so the content assertions keep finding the wiring regardless of which
+# sub-file it lives in.
+scope_preflight_router_path="$repo_root/plugins/shipyard/commands/do-work/setup/06-scope-preflight.md"
+scope_preflight_path="$(mktemp -t dispatch-integration-774-scope-preflight-concat.XXXXXX)"
+cat "$scope_preflight_router_path" \
+  "$repo_root/plugins/shipyard/commands/do-work/setup/06b-scope-carveouts.md" \
+  "$repo_root/plugins/shipyard/commands/do-work/setup/06c-scope-handling-ui.md" \
+  > "$scope_preflight_path" 2>/dev/null
+trap 'rm -f "$scope_preflight_path"' EXIT
 decompose_epic_path="$repo_root/plugins/shipyard/commands/decompose-epic.md"
 spike_worker_path="$repo_root/plugins/shipyard/agents/spike-worker.md"
 decompose_worker_path="$repo_root/plugins/shipyard/agents/decompose-worker.md"
@@ -98,7 +111,7 @@ assert_not_contains() {
 }
 
 for f in "$issue_worker_path" "$hook_path" "$dispatch_rules_path" "$steady_state_path" \
-         "$scope_preflight_path" "$decompose_epic_path" "$spike_worker_path" "$decompose_worker_path" \
+         "$scope_preflight_router_path" "$decompose_epic_path" "$spike_worker_path" "$decompose_worker_path" \
          "$mode_shim_preamble_path"; do
   assert_file_exists "$f" "$(basename "$f") exists"
 done
