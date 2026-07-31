@@ -180,6 +180,22 @@ When the detector fires, synthesize a deferred entry:
 
 In all skip cases, fall through to normal scope-agent dispatch. The check is purely additive — it never promotes a cached defer to `ready`; that path is the scope agent's exclusive domain.
 
+#### Staleness probe — has this already landed on `origin/<default-branch>`? ([#992](https://github.com/mattsears18/shipyard/issues/992))
+
+**Before returning any shape, the scope agent checks whether the issue's own claims still hold against `origin/<default-branch>`.** An issue body can go stale relative to `main` with nothing in the comment thread saying so — a PR that fixes part or all of an issue without a closing keyword leaves no trace on the issue itself. The [comment-thread-awareness rule](../dispatch-rules.md) only catches staleness the thread *documents*; this catches staleness the thread is silent about. Dispatching a worker against a fully- or partially-stale premise wastes a full worker dispatch on a prompt that asserts a false premise — the dispatched worker's own pre-implementation verification ([`issue-work.md` step 2](../../../agents/issue-worker/issue-work.md)) recovers from this today, but only *after* burning the dispatch. This probe catches it before the dispatch happens.
+
+**Keep the probe cheap and bounded — it runs per-candidate on the dispatch critical path, and at `--concurrency 1` it sits directly between one worker returning and the next starting.** Prefer targeted, bounded queries over reading source broadly:
+
+- `git log --oneline origin/<default-branch> --grep "#<N>"` and/or `gh pr list --repo <owner/repo> --state merged --search "<N> in:body"` — did a merged PR already reference this issue number, closing keyword or not?
+- For each **concrete, individually-checkable claim** the body makes about repo state (a named file, a specific literal/string, a config key, a described-as-missing behavior) — a targeted `git grep` / `gh api` read of just that file or symbol on `origin/<default-branch>`, not a broad directory walk.
+- Vague or subjective claims ("the UX is confusing", "this needs better error handling") have no mechanical yes/no answer — skip them; the probe only applies to claims a bounded query can settle.
+
+**Three outcomes, not two:**
+
+1. **Every checkable claim still holds** → proceed to the normal ready/deferred decision unaffected. This is the common case; the probe is a no-op.
+2. **Some claims no longer hold, but at least one does (partial landing)** → narrow `phase_1_scope` to name only the surviving claims — the existing field, unchanged shape — rather than passing the whole issue through. State which claims were dropped and why (e.g. "gaps (a) and (b) already shipped in `<PR/commit>`; only gap (c) remains"). **Do not misclassify a partial landing as full** — a false "already landed" silently drops real remaining work from the backlog, which is far more costly than the wasted-dispatch cost this probe exists to avoid, so err toward outcome 2 whenever any claim still holds.
+3. **No checkable claim still holds (full landing)** → return the **already-landed shape** below instead of ready or deferred. Require at least one corroborating citation (a merged PR/commit referencing the issue, or the claim's confirmed absence at the specific file/line the body names) before concluding the whole issue is moot — never conclude this from a single ambiguous grep miss.
+
 Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping agents in parallel with `run_in_background: true` (one message, multiple background `Agent` tool calls). Each returns **one of two shapes**:
 
 **Ready shape** (default — the candidate is shippable as a single-worker dispatch, possibly as a phase-1 slice with explicit out-of-scope items):
@@ -211,4 +227,12 @@ Take the top `2 × concurrency` from `raw_backlog`. Dispatch read-only scoping a
 - `confirmed-non-shippable-as-single-PR` — the agent attempted to find a phase-1 slice and failed. Use this class only when the agent CAN'T construct a phase-1 description; otherwise prefer the ready-with-`phase_1_scope` form.
 
 `evidence_pointer` is **required** on every deferred return ([#302](https://github.com/mattsears18/shipyard/issues/302)) — a single concrete, mechanically-verifiable citation that grounds the chosen `defer_reason_class`. The orchestrator validates the pointer against the per-class shape table below before accepting the defer; a deferred return whose `evidence_pointer` is missing, empty, or doesn't match its class's shape is **rejected as a malformed defer** — see [Handling each returned entry → Deferred entries](06c-scope-handling-ui.md#handling-each-returned-entry-fires-as-each-background-agent-completes) for the rejection path. The point is to prevent plausible-sounding-prose defers (the failure mode the rationale's [Phase-slicing bias + classified defers](../../do-work-RATIONALE.md#phase-slicing-bias--classified-defers-issue-298) section already documented for `defer_reason_class` — same fix, one level deeper) from passing the audit; an agent that can't produce mechanical evidence for the class it picked isn't allowed to defer.
+
+**Already-landed shape** ([#992](https://github.com/mattsears18/shipyard/issues/992)) — the [staleness probe](#staleness-probe--has-this-already-landed-on-origindefault-branch-992) above found NO checkable claim in the issue still holds on `origin/<default-branch>`; there is nothing left for a worker to ship:
+
+```
+{ issue: N, already_landed: "<one-paragraph explanation of what already exists and where — cite the shipping commit/PR when findable>", evidence_pointer: "<file:line, commit SHA, or merged-PR reference on origin/<default-branch> proving the claim(s) already hold>" }
+```
+
+`evidence_pointer` is **required**, same discipline as the deferred shape's above — a bare "looks already fixed" with no mechanical citation is rejected by the orchestrator (see [Handling each returned entry → Already-landed entries](06c-scope-handling-ui.md#handling-each-returned-entry-fires-as-each-background-agent-completes)). Use this shape only for the staleness probe's outcome 3 (full landing) — a partial landing is outcome 2 and stays a **ready** return with a narrowed `phase_1_scope`, never this shape.
 
