@@ -54,6 +54,25 @@
 # deliberately-non-closing PR's branch `do-work/issue-<E>`-shaped in the
 # first place.
 #
+# Extended for issue #990: the bare-URL form alone doesn't protect against a
+# closing-keyword-shaped word (close/fix/resolve, even negated — "does NOT
+# close") sharing a line with an already-URL-form reference; §5's prevention
+# note and the fragment's tier 1 remediation now name and grep for this
+# hazard, and tier 3's branch-name attribution is softened pending that
+# re-check.
+#
+# Extended for issue #982: `gh pr view --json closingIssuesReferences` can
+# return a stale (falsely empty) result immediately after `gh pr
+# create`/`gh pr edit` — GitHub computes the field asynchronously, so a lone
+# read right after create can miss a link that registers moments later. That
+# is a false NEGATIVE: it would let the worker arm auto-merge believing a
+# leak is clean when it isn't, silently closing the protected issue on
+# merge. The fragment now defines a `check_closing_ref` helper that queries
+# `closingIssuesReferences` directly via `gh api graphql` (skipping `gh pr
+# view`'s own object-resolution layer) and requires two consecutive reads,
+# a few seconds apart, to agree before trusting an empty result — every
+# LEAKED= check in the verification/remediation script routes through it.
+#
 # Pure bash, no external dependencies. Run with:
 #
 #   bash plugins/shipyard/scripts/tests/parent-epic-leak-guard.test.sh
@@ -264,6 +283,38 @@ if [[ -f "$fragment_path" ]]; then
     "issue-work-parent-epic-leak.md's tier 1 adds a keyword-adjacency check, not just the #<E>-token rewrite (issue #990)"
   assert_contains "$fragment_path" "Don't jump to the branch-name conclusion without first re-checking for the keyword-adjacency hazard" \
     "issue-work-parent-epic-leak.md softens tier 3's branch-name attribution pending the keyword-adjacency re-check (issue #990)"
+
+  # (6.8) Issue #982: `gh pr view --json closingIssuesReferences` can serve a
+  # stale (falsely empty) value right after `gh pr create`/`gh pr edit`,
+  # producing a false negative that would arm auto-merge on a real leak. The
+  # fragment must document the staleness hazard and provide a direct-GraphQL,
+  # two-consecutive-reads-agree helper, and every LEAKED check in the
+  # verification/remediation script must go through it rather than a bare
+  # `gh pr view --json closingIssuesReferences` call.
+  assert_contains "$fragment_path" "https://github.com/mattsears18/shipyard/issues/982" \
+    "issue-work-parent-epic-leak.md links to the stale-read false-negative follow-up #982"
+  assert_contains "$fragment_path" "check_closing_ref" \
+    "issue-work-parent-epic-leak.md defines the check_closing_ref direct-GraphQL helper (issue #982)"
+  assert_contains "$fragment_path" "gh api graphql" \
+    "issue-work-parent-epic-leak.md's helper queries closingIssuesReferences directly via gh api graphql (issue #982)"
+  assert_contains "$fragment_path" "false negative" \
+    "issue-work-parent-epic-leak.md names the stale-read failure as a false negative (issue #982)"
+
+  # (6.9) Every LEAKED= assignment in the verification script must call the
+  # check_closing_ref helper — none should fall back to a bare `gh pr view
+  # --json closingIssuesReferences` read (the exact hazard #982 reports).
+  # shellcheck disable=SC2016  # literal needles — must NOT expand $( in this shell
+  leaked_lines=$(grep -c '^\s*LEAKED=\$(' "$fragment_path" 2>/dev/null || echo 0)
+  # shellcheck disable=SC2016  # literal needle — must NOT expand $( in this shell
+  leaked_helper_lines=$(grep -c 'LEAKED=\$(check_closing_ref' "$fragment_path" 2>/dev/null || echo 0)
+  if [[ "$leaked_lines" -gt 0 && "$leaked_lines" == "$leaked_helper_lines" ]]; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "issue-work-parent-epic-leak.md routes every LEAKED= check through check_closing_ref (issue #982)"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "issue-work-parent-epic-leak.md routes every LEAKED= check through check_closing_ref (issue #982)"
+    printf '    LEAKED= assignments: %s, routed through check_closing_ref: %s\n' "$leaked_lines" "$leaked_helper_lines"
+    fail=$((fail+1))
+  fi
 fi
 
 # (7) Scope guard — the other modes' specs MUST NOT contain the §5.85 guard.
