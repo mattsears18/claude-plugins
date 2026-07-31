@@ -591,6 +591,11 @@ Run the detector. It is a **script, not a rule for you to re-derive** — do not
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+# Resolve the merge method from config — never hardcode --merge (#989). The
+# merge method is repo policy, not worker choice; every `gh pr merge` call in
+# this step and the next uses $AUTO_MERGE_METHOD, resolved once here.
+AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
 ```
 
 - **`VERDICT == "ungated"`** → **do NOT run `gh pr merge --auto`.** Re-create the missing merge gate by hand: block on the PR's own checks, then merge only if they settle green. This is the one issue-work case where you DO `--watch` (it self-heartbeats on every tick, so it's watchdog-safe):
@@ -599,7 +604,7 @@ VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.
   gh pr checks <pr-num> --repo <owner/repo> --watch --interval 30
   ```
 
-  - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --merge --delete-branch` (use the repo's configured merge method). **Return this outcome in step 8 as `auto-merge: gated-manual` — never `merged-direct`** ([#734](https://github.com/mattsears18/shipyard/issues/734)). `merged-direct` is reserved for §6.b's `--auto` call unexpectedly falling through to an immediate merge; this branch never calls `--auto` at all, so that token doesn't describe what happened here. Skip §7's snapshot-and-categorize logic entirely on this path — you already know the outcome (`gated-manual`) and the check state (`green`, confirmed by the `--watch` above) — and go straight to the step-8 return.
+  - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --${AUTO_MERGE_METHOD} --delete-branch` (the value resolved above — never the literal `--merge`). **Return this outcome in step 8 as `auto-merge: gated-manual` — never `merged-direct`** ([#734](https://github.com/mattsears18/shipyard/issues/734)). `merged-direct` is reserved for §6.b's `--auto` call unexpectedly falling through to an immediate merge; this branch never calls `--auto` at all, so that token doesn't describe what happened here. Skip §7's snapshot-and-categorize logic entirely on this path — you already know the outcome (`gated-manual`) and the check state (`green`, confirmed by the `--watch` above) — and go straight to the step-8 return.
   - Checks settle **red** → do NOT merge. Hand the PR back via the step-8 `checks: failing` return so the orchestrator dispatches a fix-checks-only worker. Do NOT run the fix-loop inline — that's mode-switching, which this file forbids.
 
 - **`VERDICT == "gated"`** → `--auto` genuinely queues behind CI. Arm it and move on (§6.b). §7's MERGED-state categorization (`merged-direct` / `merged-direct-ungated`) is meaningful only on this branch — see the callout there.
@@ -609,7 +614,7 @@ VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.
 #### 6.b Arm auto-merge (only when §6.a returned `gated`)
 
 ```bash
-gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
+gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch
 ```
 
 If this errors because auto-merge isn't enabled at the repo level, **don't try to enable it** (that's a repo setting). But also **don't trust the exit status alone** — gh can silently direct-merge (without arming auto-merge) on the ungated admin-direct path, returning exit 0 with `autoMergeRequest: null` and the PR already at `state: MERGED`. **First, check whether the error is the `workflow`-OAuth-scope cause** — `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.1 (fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) matches the captured error text against the GraphQL `without \`workflow\` scope` signature; when it matches, the outcome is fixed at `auto-merge: unavailable — gh token lacks workflow scope` and you skip straight to that [step 8](#8-return) return line — don't run the state-snapshot categorization below for that case, and never attempt to escalate your own token's scope yourself (that's a one-time human action, `gh auth refresh -h github.com -s workflow`). Otherwise, the post-call state snapshot in [step 7](#7-snapshot-check-state--auto-merge-state-then-return--dont-block-on-ci) (and the categorization rules in the same fragment's step 1.5) distinguish the three remaining outcomes — `enabled`, `merged-direct`, and genuinely-`unavailable` — and pick the matching return-string suffix in [step 8](#8-return). Don't try to short-circuit that categorization from the merge call alone; let the post-call snapshot decide. A `merged-direct` outcome reaching step 7 after §6.a returned `gated` means the detector's prediction was wrong — the step-7 `merged-direct-ungated` refinement is the defense-in-depth backstop for exactly that residual case. (If §6.a instead returned `ungated`, you never reach this section at all — that branch's green-checks merge reports `auto-merge: gated-manual` directly and skips step 7, per [#734](https://github.com/mattsears18/shipyard/issues/734).)

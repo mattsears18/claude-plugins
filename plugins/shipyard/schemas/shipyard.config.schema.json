@@ -41,6 +41,11 @@
           "enum": ["always", "trusted-only", "never"],
           "description": "always = arm auto-merge on every PR; trusted-only = arm only when originating_author_trust == trusted (default); never = never arm auto-merge."
         },
+        "method": {
+          "type": "string",
+          "enum": ["squash", "merge", "rebase"],
+          "description": "Merge method every worker mode must pass to `gh pr merge --auto`/`gh pr merge` (default squash). This is repo policy, not worker choice — resolve this value rather than hardcoding a method (issue #989)."
+        },
         "_comment": { "type": "string" }
       }
     },
