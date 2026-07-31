@@ -117,14 +117,19 @@ For each errored build, **before** filing, check for an existing open issue carr
 gh issue list --repo <owner/repo> --state open --search "in:body <build-id>" --json number,url --jq 'length'
 ```
 
-If `>0`, skip — already filed. If `0`, file:
+If `>0`, skip — already filed. If `0`, file.
+
+**A multi-line `--body` fed via `$(cat <<EOF ... EOF)` command substitution is refused by the worktree-isolation `Bash` guard when this command happens to run from a worktree-isolated cwd** (issue [#1004](https://github.com/mattsears18/shipyard/issues/1004), following [#979](https://github.com/mattsears18/shipyard/issues/979)'s fix for the `/shipyard:do-work` worker specs) — write the body with the `Write` tool to a scratch file first, then pass `--body-file`, per `shipyard:worker-preamble` § "Multi-line `--body` payloads — use `--body-file`, never a heredoc command substitution":
 
 ```bash
-gh issue create --repo <owner/repo> \
-  --title "fix(eas): <profile>/<platform> build failed — <errorMessage-shortened>" \
-  --label "audit:eas-build" \
-  --label "shipyard" \
-  --body "$(cat <<EOF
+SCRATCH_ROOT="$(git rev-parse --show-toplevel)"
+mkdir -p "$SCRATCH_ROOT/.shipyard-scratch"
+BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+```
+
+Write this content (with the `Write` tool, substituting the real `$BUILD_TIME` value captured above) to `$SCRATCH_ROOT/.shipyard-scratch/eas-build-issue.md`:
+
+`````
 ## Build failure
 
 - **Build ID**: <id>
@@ -136,17 +141,26 @@ gh issue create --repo <owner/repo> \
 
 ## Error
 
-\`\`\`
+```
 <errorMessage>
-\`\`\`
+```
 
 ## Surfaced by
 
-\`/shipyard:eas-watch\` on $(date -u +%Y-%m-%dT%H:%M:%SZ) — see [#270](https://github.com/mattsears18/shipyard/issues/270) for the watcher's design rationale.
+`/shipyard:eas-watch` on <BUILD_TIME value> — see [#270](https://github.com/mattsears18/shipyard/issues/270) for the watcher's design rationale.
 
 <!-- audit-key: eas-build-<id> -->
-EOF
-)"
+`````
+
+Then:
+
+```bash
+gh issue create --repo <owner/repo> \
+  --title "fix(eas): <profile>/<platform> build failed — <errorMessage-shortened>" \
+  --label "audit:eas-build" \
+  --label "shipyard" \
+  --body-file "$SCRATCH_ROOT/.shipyard-scratch/eas-build-issue.md"
+rm -rf "$SCRATCH_ROOT/.shipyard-scratch"
 ```
 
 Auto-create the `audit:eas-build` label if it doesn't exist — same exception to the "don't auto-create labels" rule that the `audit:*` family enjoys (the label is shipyard's own metadata, not a repo-config decision):
