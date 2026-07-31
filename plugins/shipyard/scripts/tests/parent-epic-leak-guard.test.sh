@@ -184,6 +184,15 @@ if [[ -f "$issue_work_path" ]]; then
 
   assert_contains "$issue_work_path" "even with NO closing keyword" \
     "issue-work.md states the trigger is broader than closing keywords"
+
+  # (2.7) Issue #990: the URL form alone doesn't protect against a
+  # closing-keyword word sharing the reference's own sentence/line, even in
+  # negated form ("does NOT close ..."). issue-work.md's §5 prevention note
+  # must name this before the worker ever reaches the fragment's guard.
+  assert_contains "$issue_work_path" "https://github.com/mattsears18/shipyard/issues/990" \
+    "issue-work.md links to the negation-blind-parser follow-up #990"
+  assert_contains "$issue_work_path" "GitHub's parser doesn't understand negation" \
+    "issue-work.md's §5 prevention note names the negation-blind-parser hazard (issue #990)"
 fi
 
 # (2.6) Issue #980: the detailed procedure — verification, remediation tiers,
@@ -239,6 +248,22 @@ if [[ -f "$fragment_path" ]]; then
     "issue-work-parent-epic-leak.md documents the branch-naming prevention (issue #893)"
   assert_contains "$fragment_path" "independent of the PR body or commit-message text" \
     "issue-work-parent-epic-leak.md names the branch-name vector as independent of body/commit text (issue #893)"
+
+  # (6.7) Issue #990: the bare-URL form alone is not sufficient — a
+  # closing-keyword-shaped word sharing a line with the reference (even in
+  # negated form, "does NOT close") still registers a closing link. The
+  # fragment must name this hazard, add a keyword-adjacency check to tier 1,
+  # and soften tier 3's branch-name attribution to account for it.
+  assert_contains "$fragment_path" "https://github.com/mattsears18/shipyard/issues/990" \
+    "issue-work-parent-epic-leak.md links to the negation-blind-parser follow-up #990"
+  assert_contains "$fragment_path" "no negation awareness" \
+    "issue-work-parent-epic-leak.md states the parser has no negation awareness (issue #990)"
+  assert_contains "$fragment_path" "does NOT close" \
+    "issue-work-parent-epic-leak.md gives the negated-sentence example (issue #990)"
+  assert_contains "$fragment_path" "keyword-adjacency grep" \
+    "issue-work-parent-epic-leak.md's tier 1 adds a keyword-adjacency check, not just the #<E>-token rewrite (issue #990)"
+  assert_contains "$fragment_path" "Don't jump to the branch-name conclusion without first re-checking for the keyword-adjacency hazard" \
+    "issue-work-parent-epic-leak.md softens tier 3's branch-name attribution pending the keyword-adjacency re-check (issue #990)"
 fi
 
 # (7) Scope guard — the other modes' specs MUST NOT contain the §5.85 guard.
