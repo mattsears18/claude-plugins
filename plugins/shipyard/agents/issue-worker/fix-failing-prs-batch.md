@@ -33,6 +33,7 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
    gh pr checks <pr-num> --repo <owner/repo> --json name,state,conclusion,link
    gh run view <run-id> --repo <owner/repo> --log-failed | head -200
    ```
+   The `head -200` here is a deliberate excerpt for sampling, not a claim that 200 lines is the whole log — `gh run view --log-failed` can itself have already truncated silently before `head` ever runs. Treat "I don't see the error in this excerpt" as inconclusive for any one PR, not as proof the failure has no common cause with the others; the cross-PR pattern-match in step 3 is what actually establishes the root cause, not the absence of a string in any single sample (issue [#988](https://github.com/mattsears18/shipyard/issues/988); `shipyard:worker-preamble` § "A truncated read cannot support a negative claim" — fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)).
 
 3. **Identify the common root cause.** Look for:
    - Same error message / stack frame across multiple PRs

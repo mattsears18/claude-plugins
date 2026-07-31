@@ -37,6 +37,8 @@ The single highest-leverage action is: identify the root cause and ship the smal
    ```
    The earliest red run gives you the *first* failure mode — the one most likely to be the root cause, not a downstream symptom. Newer red runs may have cascading failures that go away once you fix the earliest one.
 
+   **`gh run view --log-failed` gives no truncation warning if it cuts a long log short** — a negative grep against a silently-truncated capture is not evidence the error isn't there (issue [#988](https://github.com/mattsears18/shipyard/issues/988); see `shipyard:worker-preamble` § "A truncated read cannot support a negative claim" — fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md)). If the run has more than one job, resolve the failing job's id and fetch that job's log directly (`gh api repos/<owner>/<repo>/actions/jobs/<job-id>/logs`) rather than trusting the whole-run capture — it's both less likely to truncate and scoped to what you actually need. If you can't fetch to completion, sanity-check the tail before concluding "no error here": it should end at a job-completion marker, not mid-step.
+
 3. **Triage the failure.** Categorize before fixing:
    - **Code regression** — a commit broke a test or build. Fix the code.
    - **Test infrastructure** — flaky CI, expired secret, broken external service. If the root cause is structural (the underlying infra needs human intervention to fix — rotate a secret, ask the vendor, upgrade a runner image), return `blocked main-ci-fix: <reason>`. Don't paper over it.
