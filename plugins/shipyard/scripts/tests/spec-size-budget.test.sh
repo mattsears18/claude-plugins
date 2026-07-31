@@ -32,6 +32,17 @@
 # "these files may never grow," it's "growth is a decision someone makes on
 # purpose," per #980's ask.
 #
+# issue-work.md's ceiling was raised 112000 -> 116000 by #986 (2026-07-31):
+# a new §6.7 deferred-slice disposition shape (mirroring §6.5/§6.6's already-
+# budgeted stub pattern) needed touchpoints at five spots — Inputs, a second
+# §5 non-closing exception, a fifth §5.85 leak-verification trigger shape,
+# the §6.7 stub itself, a step-8 return line, and a Don't bullet — all
+# genuinely necessary for a worker to find and use the new on-demand
+# fragment (issue-work-deferred-slice-dispatch.md, itself uncapped). Trimmed
+# every addition to the terseness of the existing #851/#852 stubs first;
+# what's left is the deliberate, reviewed growth this ceiling exists to
+# gate, not silent compounding.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/spec-size-budget.test.sh
 
@@ -76,7 +87,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  112000 \
+  116000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \
