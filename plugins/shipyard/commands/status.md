@@ -24,21 +24,23 @@ Default (text) format — one row per in-flight worker, grouped by session:
 $ /shipyard:status
 SHIPYARD STATUS — 3 active worker(s) across 1 session(s)
 
-  WORKER                     TARGET                           ELAPSED    TOKENS       STALE-AGE
-  ────────────────────────── ──────────────────────────────── ────────── ──────────── ──────────
+  WORKER                     TARGET                           MODEL    ELAPSED    TOKENS       STALE-AGE
+  ────────────────────────── ──────────────────────────────── ──────── ────────── ──────────── ──────────
   [session: 7c1a-… · repo: mattsears18/shipyard]
-  issue                      #142                             3m 12s     8.4k         3m 12s
-  issue                      #143                             45s        4.1k         45s
-  fix-checks                 PR #156                          1m 02s     2.0k         1m 02s
+  issue                      #142                             sonnet   3m 12s     8.4k         3m 12s
+  issue                      #143                             sonnet   45s        4.1k         45s
+  fix-checks                 PR #156                          haiku    1m 02s     2.0k         1m 02s
 
 TOTAL: 14.5k tokens in flight, oldest worker 3m 12s
 ```
 
 Workers that haven't updated within 5 minutes get a `⚠ STALE` marker — the orchestrator's reconciler uses the same signal to detect likely-reaped worktrees.
 
+**MODEL column ([#978](https://github.com/mattsears18/shipyard/issues/978)).** The family alias (`opus`/`sonnet`/`haiku`/`fable`) [`resolve-dispatch-model.sh`](../scripts/resolve-dispatch-model.sh) resolved for this dispatch's mode at dispatch time, or `default` when the resolver returned empty (the shim's frontmatter pin, or the `Workflow` runtime's own default, applies instead). This is what the orchestrator *intended* to dispatch on and recorded in `.in_flight[<slot>].model` — it is **not** independent confirmation of which model the dispatch actually ran on; the harness exposes no such signal after the fact. Its purpose is to make a `models.<mode>` override that silently failed to attach visible while the session is still running, rather than discoverable only by an after-the-fact token-ledger audit (the [#978](https://github.com/mattsears18/shipyard/issues/978) repro: a session self-reported Sonnet cost for dispatches that had actually run on Opus, and nothing surfaced the mismatch until the session was over).
+
 ## Flags
 
-- **`--json`** — emit a machine-readable JSON projection (one object per active session). Useful for piping into `jq` or for shell-script integrations. The shape is `[{session_id, repo, started_at, updated_at, concurrency, in_flight: [{slot, kind, target, started_at, progress_current, progress_total, progress_updated_at, tokens}]}]`.
+- **`--json`** — emit a machine-readable JSON projection (one object per active session). Useful for piping into `jq` or for shell-script integrations. The shape is `[{session_id, repo, started_at, updated_at, concurrency, in_flight: [{slot, kind, target, model, started_at, progress_current, progress_total, progress_updated_at, tokens}]}]`.
 
 - **`--stale`** — filter to ONLY workers whose last progress update (or dispatch time, if no progress write has happened yet) is older than the stale threshold. Useful for spotting workers that may be wedged.
 
@@ -66,7 +68,7 @@ The `progress_current` / `progress_total` fields live on the per-slot record ins
 `/shipyard:do-work` dispatches every `mode:`-driven worker through the [Dynamic Workflows substrate](../workflows/README.md) (the `Workflow` tool) — the default since the [#790](https://github.com/mattsears18/shipyard/issues/790) cutover, and the *only* path since [#791](https://github.com/mattsears18/shipyard/issues/791) retired the legacy `Agent`-tool dispatch and the `dispatch.substrate` knob. `/shipyard:status` reported accurate live rows across both changes **without any code path of its own that branches on the substrate** — and here is why that holds:
 
 - The dashboard reads only the per-session state file at `~/.shipyard/sessions/<id>.json`. It never talks to a dispatch tool directly.
-- The orchestrator writes each in-flight worker's `.in_flight[<slot>]` record (`kind` / `target` / `started_at` / progress trio) with the same shape it always has — see [dispatch-rules.md's Workflow-substrate section, step 5](./do-work/dispatch-rules.md#workflow-substrate-dispatch--an-alternate-dispatch-shape-825) (only relevant when that alternate shape is in use; the default `Agent`-tool shape writes the same fields without a `worktree_path`, since the harness — not the orchestrator — provisions the worktree). Text, `--json`, and `--stale` all render it the same way.
+- The orchestrator writes each in-flight worker's `.in_flight[<slot>]` record (`kind` / `target` / `model` / `started_at` / progress trio) with the same shape it always has — see [dispatch-rules.md's Workflow-substrate section, step 5](./do-work/dispatch-rules.md#workflow-substrate-dispatch--an-alternate-dispatch-shape-825) (only relevant when that alternate shape is in use; the default `Agent`-tool shape writes the same fields without a `worktree_path`, since the harness — not the orchestrator — provisions the worktree). Text, `--json`, and `--stale` all render it the same way.
 - Token counts (the `TOKENS` column) come from `.tokens.per_issue` / `.tokens.per_pr`, bumped by the orchestrator's step-A reconcile **after** the structured `Workflow` return has been translated back into the free-text vocabulary — so cost attribution is unaffected too (see [`/shipyard:cost`](./cost.md)).
 
 The upshot: the whole migration was invisible to this dashboard by construction, because the state file is the only contract between them. The `dispatch-substrate-cutover-790.test.sh` suite asserts a synthetic `Workflow`-dispatched session file renders correctly through all three output modes.
@@ -79,7 +81,7 @@ Claude Code's native [Agent View](https://code.claude.com/docs/en/agent-view) (`
 |---|---|---|
 | Scope | Every background session/subagent on this machine | Only this repo's `/shipyard:do-work` session(s) |
 | Granularity | One row per session/subagent (process-level) | One row per in-flight worker *and* its shipyard-specific semantics |
-| Fields | Status (needs-input / working / completed), one-line Haiku-generated summary, PR label when a session opens one | `mode` (issue / fix-checks / fix-rebase / …), `target` (issue or PR number), elapsed, token usage, staleness | 
+| Fields | Status (needs-input / working / completed), one-line Haiku-generated summary, PR label when a session opens one | `mode` (issue / fix-checks / fix-rebase / …), `target` (issue or PR number), `model` (opus/sonnet/haiku/fable/default), elapsed, token usage, staleness | 
 | Best for | Attaching to a specific worker's live transcript, peeking at its last output, or stepping in mid-task | Answering "what is shipyard's dispatch loop doing *right now*, and is any of it stuck?" across the whole session at a glance |
 | Data source | The harness's own supervisor process | `~/.shipyard/sessions/<id>.json`, written by [`session-state.sh`](../scripts/session-state.sh) |
 

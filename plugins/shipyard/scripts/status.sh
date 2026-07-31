@@ -194,6 +194,7 @@ render_json() {
             slot: .key,
             kind: .value.kind,
             target: .value.target,
+            model: (.value.model // "default"),
             started_at: (.value.started_at // null),
             progress_current: (.value.progress_current // null),
             progress_total: (.value.progress_total // null),
@@ -340,6 +341,7 @@ render_text() {
               slot: .key,
               kind: .value.kind,
               target: .value.target,
+              model: (.value.model // "default"),
               started_at: (.value.started_at // null),
               progress_current: (.value.progress_current // null),
               progress_total: (.value.progress_total // null),
@@ -360,11 +362,12 @@ render_text() {
     n=$(jq -r 'length' <<< "$slots_json")
     local i
     for ((i = 0; i < n; i++)); do
-      local slot kind target started_at progress_current progress_total progress_updated_at
+      local slot kind target model started_at progress_current progress_total progress_updated_at
       local t_input t_output t_cache_read t_cache_creation
       slot=$(jq -r ".[$i].slot" <<< "$slots_json")
       kind=$(jq -r ".[$i].kind" <<< "$slots_json")
       target=$(jq -r ".[$i].target" <<< "$slots_json")
+      model=$(jq -r ".[$i].model // \"default\"" <<< "$slots_json")
       started_at=$(jq -r ".[$i].started_at // \"null\"" <<< "$slots_json")
       progress_current=$(jq -r ".[$i].progress_current // \"null\"" <<< "$slots_json")
       progress_total=$(jq -r ".[$i].progress_total // \"null\"" <<< "$slots_json")
@@ -443,7 +446,7 @@ render_text() {
       local stale_age_str
       stale_age_str=$(fmt_duration "$stale_age")
 
-      rows+=("$session_id"$'\t'"$repo"$'\t'"$slot"$'\t'"$kind$progress_str"$'\t'"$target_str"$'\t'"$elapsed_str"$'\t'"$tokens_str"$'\t'"$stale_marker"$'\t'"$stale_age_str")
+      rows+=("$session_id"$'\t'"$repo"$'\t'"$slot"$'\t'"$kind$progress_str"$'\t'"$target_str"$'\t'"$model"$'\t'"$elapsed_str"$'\t'"$tokens_str"$'\t'"$stale_marker"$'\t'"$stale_age_str")
     done
   done
 
@@ -465,11 +468,17 @@ render_text() {
     return
   fi
 
-  # Render the table. Columns: WORKER (kind+progress) / TARGET / ELAPSED / TOKENS / STALE.
-  printf '  %-26s %-32s %-10s %-12s %-10s %s\n' "WORKER" "TARGET" "ELAPSED" "TOKENS" "STALE-AGE" ""
-  printf '  %-26s %-32s %-10s %-12s %-10s %s\n' \
+  # Render the table. Columns: WORKER (kind+progress) / TARGET / MODEL / ELAPSED / TOKENS / STALE.
+  # MODEL (#978) is the family alias `resolve-dispatch-model.sh` resolved at
+  # dispatch time ("default" when the resolver returned empty) — it records
+  # what the orchestrator INTENDED to dispatch on, not independent
+  # confirmation of what the worker actually ran on (the harness exposes no
+  # such signal). See do-work.md's `in_flight` struct doc for the caveat.
+  printf '  %-26s %-32s %-8s %-10s %-12s %-10s %s\n' "WORKER" "TARGET" "MODEL" "ELAPSED" "TOKENS" "STALE-AGE" ""
+  printf '  %-26s %-32s %-8s %-10s %-12s %-10s %s\n' \
     "──────────────────────────" \
     "────────────────────────────────" \
+    "────────" \
     "──────────" \
     "────────────" \
     "──────────" \
@@ -479,7 +488,7 @@ render_text() {
   local current_session=""
   local r
   for r in "${rows[@]}"; do
-    IFS=$'\t' read -r session_id repo slot worker target elapsed tokens stale_marker stale_age <<< "$r"
+    IFS=$'\t' read -r session_id repo slot worker target model elapsed tokens stale_marker stale_age <<< "$r"
     if [[ "$session_id" != "$current_session" ]]; then
       if [[ -n "$current_session" ]]; then
         printf '\n'
@@ -487,8 +496,8 @@ render_text() {
       printf '  [session: %s · repo: %s]\n' "$session_id" "$repo"
       current_session="$session_id"
     fi
-    printf '  %-26s %-32s %-10s %-12s %-10s%s\n' \
-      "$worker" "$target" "$elapsed" "$tokens" "$stale_age" "$stale_marker"
+    printf '  %-26s %-32s %-8s %-10s %-12s %-10s%s\n' \
+      "$worker" "$target" "$model" "$elapsed" "$tokens" "$stale_age" "$stale_marker"
   done
 
   printf '\n'

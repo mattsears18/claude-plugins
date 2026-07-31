@@ -96,6 +96,22 @@ mktmphome() {
   echo "$d"
 }
 
+# Isolate every bump-tokens call in this suite from THIS repo's own committed
+# shipyard.config.json by default. bump-tokens' mode/model policy-consistency
+# check (#978) reads models.<mode> from the merged config, resolving the repo
+# layer via `git rev-parse --show-toplevel` from cwd unless SHIPYARD_REPO_ROOT
+# overrides it — and this suite runs from inside the shipyard repo's own
+# worktree, whose committed shipyard.config.json sets `models.issue_work`.
+# Without this default, every pre-existing `--mode issue-work` fixture in this
+# file (none of which are testing model policy — they're testing token math,
+# degraded-init, the cross-repo guard, etc.) would trip a spurious mismatch
+# warning that has nothing to do with what it's actually testing. The
+# dedicated "mode/model policy-consistency" section below overrides this
+# per-call with its own tmp repo root when it needs a real configured value.
+sessionstate_repo_root_isolation=$(mktemp -d)
+export SHIPYARD_REPO_ROOT="$sessionstate_repo_root_isolation"
+trap 'rm -rf "$sessionstate_repo_root_isolation"' EXIT
+
 # --------------------------------------------------------------------------
 echo "== init"
 # --------------------------------------------------------------------------
@@ -476,7 +492,7 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --issue 153 --pr 200 \
   --input 1000 --output 500 \
   --cache-read 200 --cache-creation 100 \
-  --mode issue-work --model claude-opus-4-7 >/dev/null
+  --mode verify --model claude-opus-4-7 >/dev/null
 
 # Totals updated.
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.input")
@@ -500,7 +516,7 @@ assert_equals "$out" "153" "bump-tokens cross-links per_pr.issue when --issue+--
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation | length")
 assert_equals "$out" "1" "bump-tokens appends one entry to per_invocation"
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[0].mode")
-assert_equals "$out" "issue-work" "per_invocation[0].mode recorded"
+assert_equals "$out" "verify" "per_invocation[0].mode recorded"
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[0].model")
 assert_equals "$out" "claude-opus-4-7" "per_invocation[0].model recorded"
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.per_invocation[0].issue")
@@ -513,7 +529,7 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-bump" \
   --issue 153 --pr 200 \
   --input 500 --output 100 \
-  --mode fix-checks-only --model claude-opus-4-7 >/dev/null
+  --mode verify --model claude-opus-4-7 >/dev/null
 
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-bump" --path ".tokens.totals.input")
 assert_equals "$out" "1500" "second bump accumulates totals.input (sum, not replace)"
@@ -625,6 +641,63 @@ assert_equals "$out" "3" "dated sonnet suffix resolves to canonical pricing row"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== bump-tokens — mode/model policy-consistency warning (#978)"
+# --------------------------------------------------------------------------
+# bump-tokens has no way to verify which model a dispatch actually ran on —
+# the harness self-reports it, and nothing exposes ground truth after the
+# fact. What it CAN check is policy consistency: does the billed model's
+# family agree with what models.<mode> resolves to for this repo? A
+# mismatch here is the exact failure that produced a confidently-wrong
+# $4.39 total for a session that actually burned 2.6M+ tokens on Opus (the
+# orchestrator self-reported claude-sonnet-5 for dispatches that had really
+# run on Opus) — see scripts/session-state.sh's cmd_bump_tokens.
+
+tmphome=$(mktmphome)
+tmp_root=$(mktemp -d)
+cat > "$tmp_root/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "issue_work": "claude-sonnet-4-6" } }
+JSON
+
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-mismatch" --repo "o/r" >/dev/null
+
+# models.issue_work is configured to sonnet; billing this dispatch against
+# opus disagrees with policy -> warning on stderr.
+err=$(SHIPYARD_REPO_ROOT="$tmp_root" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-mismatch" \
+  --input 1000 \
+  --mode "issue-work" --model "claude-opus-4-8" 2>&1 >/dev/null)
+assert_contains "$err" "models.issue-work resolves to 'sonnet'" "mode/model mismatch warns when billed family disagrees with the configured override"
+
+# Billing the same dispatch against sonnet agrees with policy -> silent.
+err=$(SHIPYARD_REPO_ROOT="$tmp_root" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-mismatch" \
+  --input 1000 \
+  --mode "issue-work" --model "claude-sonnet-4-6" 2>&1 >/dev/null)
+assert_equals "$err" "" "mode/model consistency check is silent when the billed family matches the configured override"
+
+# `spike` has no models.spike key anywhere (built-in defaults or repo
+# config) — it's the one mode that genuinely has no configured override
+# (see dispatch-rules.md's "no cheaper pin" note). No override configured
+# means nothing to compare against -> silent regardless of billed model.
+err=$(SHIPYARD_REPO_ROOT="$tmp_root" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-mismatch" \
+  --input 1000 \
+  --mode "spike" --model "claude-opus-4-8" 2>&1 >/dev/null)
+assert_equals "$err" "" "mode/model consistency check stays silent when no models.<mode> override is configured for the mode"
+
+# No --mode supplied at all -> the check never engages (nothing to compare
+# the billed model's family against).
+err=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-mismatch" \
+  --input 1000 \
+  --model "claude-opus-4-8" 2>&1 >/dev/null)
+assert_equals "$err" "" "mode/model consistency check stays silent when --mode is omitted"
+
+rm -f "$tmp_root/shipyard.config.json"
+rm -rf "$tmp_root"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== bump-tokens — input validation"
 # --------------------------------------------------------------------------
 
@@ -659,7 +732,7 @@ tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-r" --repo "o/r" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-r" --issue 153 --pr 200 \
-  --input 1000 --output 500 --mode issue-work --model claude-opus-4-7 >/dev/null
+  --input 1000 --output 500 --mode verify --model claude-opus-4-7 >/dev/null
 
 # Session-wide totals (no --issue / --pr).
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-r" --format json)
@@ -693,7 +766,7 @@ SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-c" --repo "owner/
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-c" --issue 153 --pr 200 \
   --input 18203 --output 4102 --cache-read 8210 \
-  --mode issue-work --model claude-opus-4-7 >/dev/null
+  --mode verify --model claude-opus-4-7 >/dev/null
 
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-c" --pr 200 --format comment)
 assert_contains "$out" "<!-- do-work-cost-tracking -->" "comment format includes idempotency sentinel"
@@ -701,7 +774,7 @@ assert_contains "$out" "PR #200" "comment format names the PR in the heading"
 assert_contains "$out" "18203" "comment format includes the input token count"
 assert_contains "$out" "4102" "comment format includes the output token count"
 assert_contains "$out" "claude-opus-4-7" "comment format includes the model"
-assert_contains "$out" "issue-work" "comment format includes the mode"
+assert_contains "$out" "verify" "comment format includes the mode"
 
 # USD formatting contract (issue #277): the Estimated cost (USD) row must
 # render as `$X.YZ` — dollar sign prefix + exactly 2 decimal places (cents).
@@ -750,7 +823,7 @@ tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-round" --repo "o/r" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-round" --input 18203 \
-  --mode issue-work --model claude-opus-4-7 >/dev/null
+  --mode verify --model claude-opus-4-7 >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "tok-round" --format comment)
 assert_contains "$out" "| Estimated cost (USD) | \$0.09 |" "0.091015 USD rounds to \$0.09"
 rm -rf "$tmphome"
@@ -776,7 +849,7 @@ echo "== bump-tokens — atomicity (no .tmp files left behind)"
 tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-a" --repo "o/r" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
-  --session-id "tok-a" --issue 153 --pr 200 --input 1000 --mode issue-work --model claude-opus-4-7 >/dev/null
+  --session-id "tok-a" --issue 153 --pr 200 --input 1000 --mode verify --model claude-opus-4-7 >/dev/null
 
 leftover=""
 shopt -s nullglob
@@ -1089,7 +1162,7 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "recovered" \
   --issue 253 --pr 999 \
   --input 1000 --output 500 --cache-read 200 --cache-creation 100 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --allow-degraded-init --degraded-init-repo "owner/repo" 2>/dev/null
 rc=$?
 assert_equals "$rc" "0" "bump-tokens with --allow-degraded-init succeeds when file is missing"
@@ -1122,7 +1195,7 @@ assert_equals "$out" "1000" "bump-tokens lands the per_pr bucket after degraded-
 # behaviour for callers that explicitly want strict semantics).
 SHIPYARD_HOME="$tmphome" bash "$helper" cleanup --session-id "recovered" >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
-  --session-id "recovered" --input 100 --mode issue-work --model claude-opus-4-7 2>/dev/null; echo "rc=$?")
+  --session-id "recovered" --input 100 --mode verify --model claude-opus-4-7 2>/dev/null; echo "rc=$?")
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=3" "bump-tokens without --allow-degraded-init on missing file still exits 3"
 
@@ -1131,7 +1204,7 @@ assert_equals "$rc" "rc=3" "bump-tokens without --allow-degraded-init on missing
 # on a missing optional metadata field).
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "no-repo" --input 500 --output 200 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --allow-degraded-init 2>/dev/null
 rc=$?
 assert_equals "$rc" "0" "bump-tokens --allow-degraded-init without --degraded-init-repo still succeeds"
@@ -1142,7 +1215,7 @@ assert_equals "$out" "unknown/unknown" "missing --degraded-init-repo falls back 
 # it should just accumulate normally.
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "no-repo" --input 250 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --allow-degraded-init 2>/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "no-repo" --path ".tokens.totals.input")
 assert_equals "$out" "750" "bump on a recovered file accumulates normally (no double-init)"
@@ -1172,13 +1245,13 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --issue 279 --pr 285 \
   --input 1000 --output 500 \
   --cache-read 200 --cache-creation 100 \
-  --mode issue-work --model claude-opus-4-7 >/dev/null
+  --mode verify --model claude-opus-4-7 >/dev/null
 
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
   --issue 279 --pr 285 \
   --input 86413 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --degraded-total-only >/dev/null
 
 # Totals accumulated across both bumps (totals don't care about degraded).
@@ -1205,7 +1278,7 @@ assert_equals "$out" "1" "degraded_attribution_count increments by 1 per degrade
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
   --input 12345 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --degraded-total-only >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.degraded_attribution_count")
 assert_equals "$out" "2" "second degraded bump increments degraded_attribution_count to 2"
@@ -1216,7 +1289,7 @@ assert_equals "$out" "2" "second degraded bump increments degraded_attribution_c
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
   --input 1000 --output 500 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --degraded-total-only 2>&1; echo "rc=$?")
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --output is rejected (exit 64)"
@@ -1224,7 +1297,7 @@ assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --output is rej
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
   --input 1000 --cache-read 100 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --degraded-total-only 2>&1; echo "rc=$?")
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --cache-read is rejected (exit 64)"
@@ -1232,7 +1305,7 @@ assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --cache-read is
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
   --input 1000 --cache-creation 100 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --degraded-total-only 2>&1; echo "rc=$?")
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --cache-creation is rejected (exit 64)"
@@ -1246,7 +1319,7 @@ assert_equals "$rc" "rc=64" "--degraded-total-only with non-zero --cache-creatio
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
   --input 0 --output 0 --cache-read 0 --cache-creation 0 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --degraded-total-only 2>&1; echo "rc=$?")
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "--degraded-total-only with --input 0 is rejected (exit 64) — orchestrator copy-paste trap"
@@ -1258,7 +1331,7 @@ assert_contains "$msg" "--degraded-total-only requires --input <total_tokens>" "
 # --input omitted entirely (default 0) — same failure shape, same exit.
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --degraded-total-only 2>&1; echo "rc=$?")
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "--degraded-total-only with --input omitted (defaults to 0) is rejected (exit 64)"
@@ -1288,7 +1361,7 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "both-degraded" \
   --issue 279 --pr 285 \
   --input 86413 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --allow-degraded-init --degraded-init-repo "o/r" \
   --degraded-total-only 2>/dev/null
 rc=$?
@@ -1404,7 +1477,7 @@ tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "victim" --repo "victim/repo" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "victim" --input 10000 --output 5000 --cache-read 2000 \
-  --mode issue-work --model claude-opus-4-7 >/dev/null
+  --mode verify --model claude-opus-4-7 >/dev/null
 
 # Reap with --reap-audit. The audit log lands in $SHIPYARD_HOME/reap-audit.jsonl.
 SHIPYARD_HOME="$tmphome" bash "$helper" cleanup \
@@ -1588,7 +1661,7 @@ out=$(SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "xrepo-6" \
   --issue 153 --pr 200 \
   --input 1000 --output 500 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --expected-repo "owner/repo-B" 2>&1; echo "rc=$?")
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=66" "bump-tokens with mismatched --expected-repo exits 66"
@@ -1608,7 +1681,7 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "xrepo-7" \
   --issue 153 --pr 200 \
   --input 1000 --output 500 \
-  --mode issue-work --model claude-opus-4-7 \
+  --mode verify --model claude-opus-4-7 \
   --expected-repo "owner/repo-A" >/dev/null
 rc=$?
 assert_equals "$rc" "0" "bump-tokens with matching --expected-repo exits 0"

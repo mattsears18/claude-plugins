@@ -917,6 +917,36 @@ cmd_bump_tokens() {
     unpriced=1
     echo "bump-tokens: WARNING — model '${model}' is not in the pricing table; its token counts are recorded but its USD cost is UNKNOWN (booked as 0). Session USD totals are a LOWER BOUND. Add the model to PRICING_JQ in $(basename "${BASH_SOURCE[0]}") — see https://github.com/mattsears18/shipyard/issues/728" >&2
   fi
+
+  # --------------------------------------------------------------------------
+  # Mode/model policy-consistency check (issue #978). `--model` is the
+  # ORCHESTRATOR's self-reported belief about which model a dispatch ran on —
+  # nothing in the harness exposes "which model did this Agent dispatch
+  # actually run on" after the fact, so bump-tokens cannot verify the claim
+  # against ground truth. What it CAN check is policy consistency: when
+  # `--mode` names a mode that has a `models.<mode>` override configured for
+  # this repo, does the billed model's family agree with that override? A
+  # mismatch here is exactly the failure that produced a confidently-wrong
+  # $4.39 total for a session that actually burned 2.6M+ tokens on Opus — the
+  # orchestrator self-reported `claude-sonnet-5` for dispatches that had
+  # really run on Opus. This is advisory-only and fails open: an unreadable
+  # config, a missing resolver script, or an unresolvable mode/model all skip
+  # the check silently rather than block the bump — the token counts must
+  # land either way.
+  if [[ -n "$mode" && -n "$model" ]]; then
+    local dispatch_model_resolver
+    dispatch_model_resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/resolve-dispatch-model.sh"
+    if [[ -f "$dispatch_model_resolver" ]]; then
+      local expected_family actual_family
+      expected_family=$(bash "$dispatch_model_resolver" "$mode" 2>/dev/null) || expected_family=""
+      if [[ -n "$expected_family" ]]; then
+        actual_family=$(bash "$dispatch_model_resolver" --map "$model" 2>/dev/null) || actual_family=""
+        if [[ -n "$actual_family" && "$actual_family" != "$expected_family" ]]; then
+          echo "bump-tokens: WARNING — mode '${mode}' is billed against model '${model}' (family: ${actual_family}), but models.${mode} resolves to '${expected_family}' in the merged config. Either the dispatch didn't honor the configured override, or --model was reported incorrectly — this session's cost attribution for this mode may be wrong. See https://github.com/mattsears18/shipyard/issues/978" >&2
+        fi
+      fi
+    fi
+  fi
   # A miss still needs a numeric row for the arithmetic below; the `unpriced`
   # flag — not the zeros — is what carries "we don't know what to charge".
   [[ -z "$price_row" ]] && price_row='{"input":0,"output":0,"cache_read":0,"cache_creation":0}'

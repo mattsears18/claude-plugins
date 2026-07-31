@@ -137,6 +137,45 @@ assert_not_contains "$out" "⚠ STALE" "30s-old worker is not stale under 5min d
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== MODEL column renders (#978)"
+# --------------------------------------------------------------------------
+# in_flight[<slot>].model — the family alias resolve-dispatch-model.sh
+# resolved at dispatch time, or "default" when it resolved empty — records
+# what the orchestrator INTENDED to dispatch this slot on. Not independent
+# confirmation of what the worker actually ran on.
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$state_helper" init --session-id "s1m" --repo "owner/repo" >/dev/null
+ts=$(past_ts 30)
+SHIPYARD_HOME="$tmphome" bash "$state_helper" update --session-id "s1m" \
+  --set ".in_flight.slot1 = {kind: \"issue\", target: 142, claimed_paths: {hard: [], soft: []}, agent_id: \"abc\", model: \"sonnet\", started_at: \"$ts\"}" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper")
+assert_contains "$out" "MODEL" "MODEL column header rendered"
+assert_contains "$out" "sonnet" "explicit model 'sonnet' rendered in text dashboard"
+
+json_out=$(SHIPYARD_HOME="$tmphome" bash "$helper" --json)
+model_val=$(echo "$json_out" | jq -r '.[0].in_flight[0].model')
+assert_equals "$model_val" "sonnet" "--json carries .in_flight[].model"
+rm -rf "$tmphome"
+
+# A slot with no `model` field at all (older session file, or a mode whose
+# resolver returned empty) falls back to "default" rather than rendering
+# blank/null.
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$state_helper" init --session-id "s1n" --repo "owner/repo" >/dev/null
+ts=$(past_ts 30)
+SHIPYARD_HOME="$tmphome" bash "$state_helper" update --session-id "s1n" \
+  --set ".in_flight.slot1 = {kind: \"spike\", target: 300, claimed_paths: {hard: [], soft: []}, agent_id: \"abc\", started_at: \"$ts\"}" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper")
+assert_contains "$out" "default" "missing model field falls back to 'default' in text dashboard"
+
+json_out=$(SHIPYARD_HOME="$tmphome" bash "$helper" --json)
+model_val=$(echo "$json_out" | jq -r '.[0].in_flight[0].model')
+assert_equals "$model_val" "default" "--json falls back to 'default' when .model is absent"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== progress counters render"
 # --------------------------------------------------------------------------
 tmphome=$(mktmphome)
@@ -188,7 +227,7 @@ ts=$(past_ts 60)
 SHIPYARD_HOME="$tmphome" bash "$state_helper" update --session-id "s4" \
   --set ".in_flight.slot1 = {kind: \"issue\", target: 142, claimed_paths: {hard: [], soft: []}, agent_id: \"abc\", started_at: \"$ts\"}" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$state_helper" bump-tokens --session-id "s4" \
-  --issue 142 --input 1500 --output 250 --mode issue-work --model claude-opus-4-7 >/dev/null
+  --issue 142 --input 1500 --output 250 --mode verify --model claude-opus-4-7 >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$state_helper" set-progress --session-id "s4" --slot "slot1" --current 2 --total 5 >/dev/null
 
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" --json)

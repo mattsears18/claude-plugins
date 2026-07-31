@@ -18,7 +18,7 @@ The orchestrator mirrors every [orchestrator-state](../do-work.md#orchestrator-s
   "updated_at": "2026-05-20T18:04:22Z",
 
   "in_flight": {
-    "slot1": { "kind": "issue", "target": 90, "claimed_paths": { "hard": [], "soft": [] }, "agent_id": "...", "started_at": "2026-05-20T17:35:01Z", "progress_current": null, "progress_total": null, "progress_updated_at": null }
+    "slot1": { "kind": "issue", "target": 90, "claimed_paths": { "hard": [], "soft": [] }, "agent_id": "...", "model": "sonnet", "started_at": "2026-05-20T17:35:01Z", "progress_current": null, "progress_total": null, "progress_updated_at": null }
   },
   "ready_issues": [],
   "scope_bg_count": 0,
@@ -57,7 +57,7 @@ The orchestrator mirrors every [orchestrator-state](../do-work.md#orchestrator-s
 }
 ```
 
-Field names match the [orchestrator-state](../do-work.md#orchestrator-state) structure names 1:1 so a reader of either surface (file or prose) can cross-reference without translation. `started_at` and `updated_at` are always-present ISO-8601 UTC timestamps; `updated_at` advances on every successful `update` call so external watchers can detect change without diffing the body.
+Field names match the [orchestrator-state](../do-work.md#orchestrator-state) structure names 1:1 so a reader of either surface (file or prose) can cross-reference without translation. `started_at` and `updated_at` are always-present ISO-8601 UTC timestamps; `updated_at` advances on every successful `update` call so external watchers can detect change without diffing the body. `in_flight.<slot>.model` ([#978](https://github.com/mattsears18/shipyard/issues/978)) is the family alias `resolve-dispatch-model.sh` resolved for the slot's mode at dispatch time (`opus`/`sonnet`/`haiku`/`fable`), or `"default"` when the resolver returned empty — see the [per-slot dispatch metadata write-through](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) for where it's written and [`/shipyard:status`](../status.md) for where it's read back.
 
 The `tokens` block is the **per-session** cost ledger — written through `session-state.sh bump-tokens` after each Agent dispatch returns. `.tokens.totals` is cumulative across the session (including orchestrator overhead); `.tokens.per_issue[<N>]` and `.tokens.per_pr[<M>]` are attribution buckets the cost-comment hook in [step A reconcile](./steady-state.md#a-reconcile-the-return) reads when posting `<!-- do-work-cost-tracking -->`-marked comments on the resulting issue/PR. The persistent cross-session ledger at `~/.shipyard/cost-history.jsonl` is [#163](https://github.com/mattsears18/shipyard/issues/163)'s scope — out of scope here. `per_invocation` is a ring buffer capped at the most-recent 200 entries; each entry carries `degraded: <bool>`. `degraded_attribution_count` counts the degraded bumps (see [step A.0 degraded path](./steady-state.md#degraded-path--total-only-fallback-when-the-harness-usage-block-lacks-the-breakdown) — harness-gap fallback from [#279](https://github.com/mattsears18/shipyard/issues/279)) and, together with `per_invocation | length`, drives the [end-of-session banner](./cleanup-summary.md#end-of-session-summary) — which branches on the ratio so "100% of dispatches degraded" reads as a structural harness shape rather than per-dispatch degradation ([#295](https://github.com/mattsears18/shipyard/issues/295)).
 
