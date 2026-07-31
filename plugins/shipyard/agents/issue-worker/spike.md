@@ -93,14 +93,25 @@ Route here instead of completing the spike when the investigation surfaces somet
 
 ```bash
 gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage
-gh issue comment <N> --repo <owner/repo> --body "$(cat <<'EOF'
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
+
+Write this content (with the `Write` tool — a heredoc `--body` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979), `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/needs-human-review-comment.md`:
+
+```
 Spike investigated by shipyard. Findings so far: <summary>.
 
 Resolution needs a human: <one-line reason — product/business/legal call, access the worker lacks, or the question is unresolvable without info not discoverable in-repo>.
 
 Routing to the human queue rather than guessing at a conclusion.
-EOF
-)"
+```
+
+Then:
+
+```bash
+gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/needs-human-review-comment.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 Return: `spiked+needs-human-review #<N> (label applied)`.
@@ -136,19 +147,34 @@ For every decomposition-plan item **not** being implemented directly in this sam
 
 ```bash
 gh label create shipyard --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
 
-gh issue create --repo <owner/repo> \
-  --title "<conventional-commit-style title for this follow-on slice>" \
-  --label shipyard \
-  --body "$(cat <<'EOF'
+Write this content (with the `Write` tool — a heredoc `--body` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979), `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/sub-issue-body.md` (reuse/overwrite the path per sub-issue — write, create, then move to the next):
+
+```
 <Scope for this slice, acceptance criteria, and any constraint the design doc surfaced.>
 
 Part of the spike investigated in https://github.com/<owner>/<repo>/issues/<N> — see the design doc at <path> for full context.
 
 <if this item depends on another follow-on item landing first:>
 Blocked by #<sibling-issue-number>
-EOF
-)"
+```
+
+Then:
+
+```bash
+gh issue create --repo <owner/repo> \
+  --title "<conventional-commit-style title for this follow-on slice>" \
+  --label shipyard \
+  --body-file "$WORKTREE_PATH/.shipyard-scratch/sub-issue-body.md"
+```
+
+Repeat the write-then-create pair for each decomposition-plan item, then clean up once the whole loop is done:
+
+```bash
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 **Reference the parent by bare URL, never a bare `#<N>` token.** This PR will carry `Closes #<N>` for the spike issue itself ([step 8](#8-commit--push--pr)); a bare `#<N>` token in a *different* issue's body doesn't risk a closing-reference promotion the way a PR body / commit message / CHANGELOG entry can (per [#624](https://github.com/mattsears18/shipyard/issues/624), the promotion mechanism is specific to what rides a merge) — but using the bare-URL form here costs nothing and keeps the convention uniform with the guard in [step 8.5](#85-post-pr-create-follow-on-sub-issue-leak-verification) below, which does apply to the PR body.
@@ -195,11 +221,13 @@ If this trips, something went wrong upstream — the design doc from [step 5](#5
 Same mechanics as `issue-work` § 5 — stage specific paths (never `-A`), commit, push to the canonical `do-work/issue-<N>` remote branch, then:
 
 ```bash
-gh pr create --repo <owner/repo> \
-  --head "${REMOTE_BRANCH:-do-work/issue-<N>}" \
-  --label shipyard \
-  --title "<conventional commit title>" \
-  --body "$(cat <<'EOF'
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
+
+A heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the content instead (with the `Write` tool, per `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/pr-body.md`:
+
+```
 Closes #<N>
 
 ## Spike conclusion
@@ -219,8 +247,17 @@ Closes #<N>
 
 ## Test plan
 - [ ] <how any implemented slice is verified>
-EOF
-)"
+```
+
+Then:
+
+```bash
+gh pr create --repo <owner/repo> \
+  --head "${REMOTE_BRANCH:-do-work/issue-<N>}" \
+  --label shipyard \
+  --title "<conventional commit title>" \
+  --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 The body **must** carry `Closes #<N>` (case-insensitive, own line) — the spike issue is resolved by delivering the design + decomposition, exactly as `issue-work` requires for its dispatched issue (see `issue-work` § 5's closing-keyword rule and [#481](https://github.com/mattsears18/shipyard/issues/481) for why a bare reference leaves it stuck open).
