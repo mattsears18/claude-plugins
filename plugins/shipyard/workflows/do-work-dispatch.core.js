@@ -395,7 +395,7 @@ const workerReturnSchema = {
     },
     outcome: {
       type: 'string',
-      enum: ['shipped', 'green', 'pending', 'rebased', 'noop', 'blocked', 'reaped', 'disposition'],
+      enum: ['shipped', 'green', 'pending', 'dirty', 'rebased', 'noop', 'blocked', 'reaped', 'disposition'],
     },
     issue: { type: ['integer', 'null'], minimum: 1 },
     pr: { type: ['integer', 'null'], minimum: 1 },
