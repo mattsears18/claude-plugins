@@ -128,18 +128,24 @@ Closes [#654](https://github.com/mattsears18/shipyard/issues/654) — the **infr
 
 **This classification runs BEFORE you attempt any code fix.** Its job is to route: infra flake → re-run the failed jobs and return `flake #<M>`; deterministic code error → fall through to the [Fix-loop](#fix-loop). Only fall through to the code-fixing loop when the logs show a deterministic code error.
 
-### Step A — never declare "logs unavailable" on an in-progress run
+### Step A — resolve the failing job's own logs; don't wait on siblings ([#984](https://github.com/mattsears18/shipyard/issues/984))
 
-"Logs unavailable while the run is still in progress" is **not** a terminal condition — it is a signal to WAIT, never to bail. If a job hasn't finished, its logs aren't fetchable yet; the run finishes in minutes. Block your own turn on the foreground watch until the run settles, THEN fetch logs:
+"Logs unavailable while the run is still in progress" is **not** a terminal condition — it is a signal to WAIT, never to bail. But the wait, if any, is scoped to the **specific job you need**, never to the whole run: a job's logs are fetchable the moment *that job* reaches a terminal conclusion, independent of every other job still running. `gh run view --log-failed` returns empty while any sibling is `in_progress`, which used to read as "the run hasn't finished" — the correct read is "wrong command; resolve the job id and hit the per-job endpoint instead" ([Fix-loop step 2](#fix-loop)):
 
 ```bash
-# Blocks until the rollup resolves (all green, or at least one check concluded
-# non-SUCCESS). Exits non-zero on any failure — either way the run has settled
-# enough to fetch failed-job logs. NEVER bail "logs unavailable" before this.
-gh pr checks <M> --repo <owner/repo> --watch --interval 30 || true
+RUN_ID=<failing-run-id>   # from `gh run list` or the failing check's `link`
+JOBID=$(gh api "repos/<owner/repo>/actions/runs/${RUN_ID}/jobs" \
+  --jq '.jobs[] | select(.conclusion=="failure") | .id' | head -1)
+gh api "repos/<owner/repo>/actions/jobs/${JOBID}/logs"
 ```
 
-A `blocked` return whose reason is "logs unavailable while run in progress" is **always premature** — wait for completion first, then classify.
+Only block your own turn when the job you actually need — not a sibling — genuinely has no `conclusion` yet. Poll that job specifically, never the full rollup:
+
+```bash
+gh api "repos/<owner/repo>/actions/jobs/${JOBID}" --jq '.status, .conclusion'
+```
+
+A `blocked` return whose reason is "logs unavailable while run in progress" is **always premature** when the job you need already has a `conclusion` — that was the #654 repro's root failure (session `01XU6TMaDdGnDyptZqJJJiDm`, PR #2273: the cancelled/timed-out jobs already carried terminal conclusions the whole time) and is doubly true when it's a *slow sibling*, not your own job, that's still running (the #984 repro: PR #3245, a fast-failing `Unit Tests` job sat undiagnosed for 15+ minutes because `Web E2E Tests` was still mid-run). Wait for completion first only when it's genuinely your own job still in flight; then classify per Step B.
 
 ### Step B — match the infra-flake signature
 
@@ -216,13 +222,28 @@ On failure:
    fi
    ```
    When the key matches, return the `blocked #<M> at fix-checks: chronic flake ...` string above verbatim and stop — do NOT fall through to re-running, and do NOT count this against the 3-attempt cap (you never attempted a fix; you deliberately declined to rerun a known flake). The orchestrator's reconcile labels the PR `blocked:ci` on a `blocked #<M> at fix-checks:` return, which is exactly the desired end state for a chronic-flake-blocked PR (the setup-time `apply-blocked-ci` action may already have applied it; the label is idempotent). When the key is NOT on the list, proceed normally to step 2.
-2. Pull failed logs. **Stream the output rather than redirecting it to a file** — a big `--log-failed` fetch piped to `> /tmp/log` produces zero stream output for its whole duration and can trip the harness's ~600s stall watchdog (worker-preamble § "Heartbeat emission around long-running commands", fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md); issue [#372](https://github.com/mattsears18/shipyard/issues/372)). Pipe through `tee` if you also need the file:
+2. Pull the failing job's own logs — **resolve the job id and use the per-job REST endpoint as the primary path; `gh run view --log-failed` is a fallback, not the default** ([#984](https://github.com/mattsears18/shipyard/issues/984)). `gh run view --log-failed` returns **empty output whenever ANY sibling job in the same run is still `in_progress`** — even when the job you actually need already finished and failed. That emptiness reads as "logs not ready yet," and the natural response is to wait — which is exactly backwards: your own failing job's logs are retrievable the moment *that job* reaches a terminal conclusion, regardless of what the rest of the run is doing.
+
    ```bash
-   gh run view <run-id> --repo <owner/repo> --log-failed 2>&1 | tee /tmp/failed.log
+   RUN_ID=<failing-run-id>   # from the failing check's `link` (step 1's `gh pr checks --json name,state,link`)
+   JOBID=$(gh api "repos/<owner/repo>/actions/runs/${RUN_ID}/jobs" \
+     --jq '.jobs[] | select(.conclusion=="failure") | .id' | head -1)
+   gh api "repos/<owner/repo>/actions/jobs/${JOBID}/logs"
+   ```
+
+   **Stream the output rather than redirecting it to a file** — a big log fetch piped to `> /tmp/log` produces zero stream output for its whole duration and can trip the harness's ~600s stall watchdog (worker-preamble § "Heartbeat emission around long-running commands", fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md); issue [#372](https://github.com/mattsears18/shipyard/issues/372)). Pipe through `tee` if you also need the file:
+   ```bash
+   gh api "repos/<owner/repo>/actions/jobs/${JOBID}/logs" 2>&1 | tee /tmp/failed.log
    ```
    The same heartbeat discipline applies to `npm ci` and to a buffered local test re-run in step 3 — keep stream output flowing so a 5–15 min command doesn't read as a stall.
 
-   **If the logs aren't fetchable because the run is still in progress, do NOT bail "logs unavailable" — wait for completion first** (the [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing) Step A watch), then re-fetch. A run finishes in minutes; a premature "logs unavailable while run in progress" bail is the exact #654 failure mode.
+   **If `$JOBID` itself has no `conclusion` yet — the job you actually need, not a sibling, genuinely hasn't finished** — wait for *that job*, not the whole run, then re-fetch:
+   ```bash
+   gh api "repos/<owner/repo>/actions/jobs/${JOBID}" --jq '.status, .conclusion'
+   ```
+   Do NOT bail "logs unavailable" — that specific job finishes in minutes; a premature bail here is the exact #654 failure mode. But do NOT wait on sibling jobs that have nothing to do with your failing check — that wait is exactly what #984 closes.
+
+   `gh run view --log-failed` still has a legitimate use once the **entire** run has finished: it fetches every failed job's log in one call, convenient when several jobs failed and you'd rather not resolve each job id by hand. It is never the right first move while any job in the run is still running.
 2.5. **Infra-flake classification (before any code fix).** With the failed-job logs in hand, run the [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing) gate. If the failure matches the cancellation / dev-server-timeout / setup-job-failure / runner-lost signature AND your local gates pass AND the logs show no deterministic code error, `gh run rerun --failed` (respecting the attempt-count bound) and return `flake #<M>: re-ran failed jobs (<signature>)` — do NOT proceed to a code fix, and do NOT count this as a fix attempt. Only fall through to step 3 when the logs show a **deterministic code error** (a real defect your diff introduced).
 3. Reproduce locally if practical.
 4. Fix the smallest thing that resolves the failure. Don't expand scope.
@@ -265,7 +286,8 @@ The registry lives at `~/.shipyard/flake-registry.jsonl` (one line per event). T
 ## Don't
 
 - Don't open a new PR. The PR is already open; this mode repairs CI only.
-- **Don't bail `blocked … logs unavailable while run in progress`.** That's a wait-signal, not a diagnosis — block on the [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing) Step A watch until the run settles, then classify. A premature "logs unavailable" bail on an in-progress run is the exact [#654](https://github.com/mattsears18/shipyard/issues/654) failure mode (~139k tokens burned, no fix pushed, a healthy PR mislabeled).
+- **Don't bail `blocked … logs unavailable while run in progress`.** That's a wait-signal for *your own failing job*, never for the whole run — resolve the job id and fetch its logs via the per-job endpoint per [Fix-loop step 2](#fix-loop) / [Infra-flake classification Step A](#infra-flake-classification-and-re-run-load-bearing); only wait when that specific job (not a sibling) genuinely lacks a `conclusion`. A premature "logs unavailable" bail while your own job already failed is the exact [#654](https://github.com/mattsears18/shipyard/issues/654) failure mode (~139k tokens burned, no fix pushed, a healthy PR mislabeled) — and waiting the same way because a *sibling* job is still running, when your own failing job's logs were already fetchable, is the [#984](https://github.com/mattsears18/shipyard/issues/984) variant (~310k tokens burned across two dispatches, no diagnosis produced either time).
+- **Don't read an empty `gh run view --log-failed` as "logs not ready yet."** Empty output while a sibling job is `in_progress` means the wrong command was used, not that you need to wait longer — resolve the job id from `/actions/runs/<run-id>/jobs` and fetch that job's logs from `/actions/jobs/<job-id>/logs` instead ([#984](https://github.com/mattsears18/shipyard/issues/984)).
 - **Don't treat a cancelled job / dev-server boot timeout / setup-job failure as an undiagnosable code failure.** Those are the infra-flake signature — when local gates pass, `gh run rerun --failed` and return `flake #<M>: re-ran failed jobs (<signature>)` per [Infra-flake classification](#infra-flake-classification-and-re-run-load-bearing), do NOT attempt a code fix. But do NOT re-run *forever*: the attempt-count bound converts a chronic infra flake into a `blocked:ci` hand-off for a human/operator.
 - Don't modify the PR title or description.
 - Don't close the linked issue from this PR. The original PR body already has the `Closes #N` line; merging the rebased branch closes the issue automatically.
