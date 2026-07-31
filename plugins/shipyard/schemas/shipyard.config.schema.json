@@ -419,6 +419,44 @@
         },
         "_comment": { "type": "string" }
       }
+    },
+    "audits": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Recurring-cadence configuration for /shipyard:audit dimensions (issue #975). Neither `testing-auditor` nor `functional-qa-auditor` (nor any other audit dimension) ran on any cadence before this — both were invoke-on-demand only, which means they surface drift only once a maintainer already suspects a problem. `/shipyard:audit-scheduled` reads `schedule` below, checks each entry's last-run timestamp against its cadence via `scripts/audit-schedule.sh`, and dispatches only the dimensions that are actually due — reusing `/shipyard:audit`'s existing dispatch table and the `audit-key` fingerprint dedup already built into `filing-github-issues`, so a scheduled run that finds nothing new produces no issue churn for free. Compose with the existing `/loop` skill for the actual periodic trigger (e.g. `/loop 1h /shipyard:audit-scheduled`) — this block only decides WHEN a dimension is due, not how it gets invoked on a wall-clock schedule.",
+      "properties": {
+        "schedule": {
+          "type": "array",
+          "description": "One entry per audit dimension to run on a recurring cadence. Last-run state persists at ~/.shipyard/audit-schedule-state.json, keyed by (owner/repo, dimension) — NOT committed, so it isn't part of this schema.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "dimension": {
+                "type": "string",
+                "enum": ["lighthouse", "web-ux", "mobile-ux", "ux", "functional-qa", "security", "a11y", "seo", "marketing", "privacy", "release-readiness", "pwa", "tech-debt", "testing", "dx", "docs", "observability", "api", "data-lifecycle", "all"],
+                "description": "Audit dimension. Matches /audit's own type argument one-for-one (see commands/audit.md's Dispatching table) — `all` fans out to every auditor exactly as a bare `/audit all` would."
+              },
+              "cadence": {
+                "type": "string",
+                "pattern": "^[0-9]+[mhdw]$",
+                "description": "Minimum time between runs of this dimension, as an integer plus a unit suffix: m=minutes, h=hours, d=days, w=weeks. Example: '7d' = weekly, '24h' = daily. Parsed by scripts/audit-schedule.sh's `cadence-seconds` / `due` subcommands — the single source of truth for the format, not re-derived elsewhere."
+              },
+              "url": {
+                "type": "string",
+                "description": "URL to pass to this dimension's auditor(s), for URL-dependent dimensions (lighthouse, web-ux, ux, seo, marketing, pwa, a11y, functional-qa). Omit for codebase-only dimensions (testing, dx, tech-debt, docs, observability, api, data-lifecycle, mobile-ux, security without a live surface, release-readiness)."
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Set false to keep a schedule entry in config (documenting intent) without actually running it — cheaper than deleting and re-adding. A disabled entry never appears in `audit-schedule.sh due`'s output regardless of its recorded last-run state."
+              }
+            },
+            "required": ["dimension", "cadence"]
+          }
+        },
+        "_comment": { "type": "string" }
+      }
     }
   },
   "required": ["version"],

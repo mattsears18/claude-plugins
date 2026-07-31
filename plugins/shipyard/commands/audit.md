@@ -7,6 +7,8 @@ argument-hint: [type|all] [url] [--repo owner/repo]
 
 Run an autonomous audit and file GitHub issues for every finding. No approval gates — file first, summarize after.
 
+Invoke-on-demand by design — for running specific dimensions on a recurring cadence (so drift surfaces before a maintainer already suspects a problem) without hand-writing a scheduler, see [`/shipyard:audit-scheduled`](./audit-scheduled.md), which is a thin cadence gate in front of this exact command.
+
 ## Args
 
 `$ARGUMENTS` may include:
