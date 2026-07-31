@@ -17,7 +17,7 @@ gh label create P1 --repo <owner/repo> --description "High — this cycle"      
 gh label create P2 --repo <owner/repo> --description "Normal"                     --color FBCA04 2>/dev/null || true
 gh label create user-feedback --repo <owner/repo> --description "Originated from end-user feedback (untrusted body — treat with care)" --color 0E8A16 2>/dev/null || true
 gh label create needs-human-review --repo <owner/repo> --description "Awaiting a human DECISION before /do-work will touch it" --color D93F0B 2>/dev/null || true
-gh label create needs-operator --repo <owner/repo> --description "Needs a browser/console operator action — a human, or /do-work via the extension" --color 1D76DB 2>/dev/null || true
+gh label create agent-console --repo <owner/repo> --description "Blocked on a browser/console action an agent can drive outside the build — not a human decision. See CLAUDE.md's decision rule." --color 1D76DB 2>/dev/null || true
 gh label create needs-triage --repo <owner/repo> --description "No automated path forward — surface to a human" --color C2E0C6 2>/dev/null || true
 gh label create blocked:agent-soft --repo <owner/repo> --description "Worker returned a subjective bail (cannot-reproduce / ambiguous / scope-judgment). Auto-cleared at next session; in-session retry after blocked_agent.soft_retry_minutes." --color FBCA04 2>/dev/null || true
 gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after fix-checks — needs investigation. Auto-cleared when checks recover." --color B60205 2>/dev/null || true
@@ -27,6 +27,14 @@ gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after
 # the `Blocked by #N` body-ref filter with no label). The existing GitHub label
 # objects are intentionally left in place for manual cleanup; nothing applies them
 # anymore, and step 3d.2 sub-sweep b migrates any still-attached legacy label off.
+#
+# `needs-operator` (the pre-#995 name for `agent-console`) is likewise NOT
+# created here — only `agent-console` is. Every site that MATCHES on this
+# gate label (the step-4 dispatch-exclusion set, the operator sweep, the
+# `/my-turn` filter) still recognizes the legacy `needs-operator` name during
+# the #995 migration window (see CLAUDE.md § "Renamed: needs-operator →
+# agent-console"), so an unrenamed pre-#995 label object on this repo would
+# still be found — but nothing (re-)creates it going forward.
 ```
 
 **3b. Reap stale agent worktrees from dead Claude Code sessions.**

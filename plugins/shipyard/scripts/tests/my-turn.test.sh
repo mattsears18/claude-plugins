@@ -13,7 +13,7 @@
 # the queue is empty. It stays human-facing and non-autonomous (no agent
 # dispatch, no sharing of /do-work's worker machinery) and reuses
 # /shipyard:resolve-decisions' interactive walkthrough for decision-gated
-# items. Browser-completable (needs-operator) work is filtered out — that's
+# items. Browser-completable (agent-console) work is filtered out — that's
 # /do-work's job. The two-command division is: /do-work = autonomous code
 # loop + browser operation (operator-inclusive by default);
 # /my-turn = human-only interactive walkthrough.
@@ -178,13 +178,13 @@ if [[ -f "$cmd_path" ]]; then
     "command accepts an --all flag to render a static snapshot of the queue"
   assert_contains "$cmd_path" "list-snapshot mode" \
     "command documents the opt-in list-snapshot render mode (#635)"
-  # Human-only queue filter (issue #635): browser-completable / needs-operator
+  # Human-only queue filter (issue #635): browser-completable / agent-console
   # items are /do-work's job and must be excluded from the walkthrough
   # queue (surfaced only via a one-line operator pointer).
   assert_contains "$cmd_path" "Human-only queue filter" \
     "command documents the human-only queue filter (#635)"
   assert_contains "$cmd_path" "run /shipyard:do-work to have Claude complete them" \
-    "operator pointer points needs-operator / browser-completable work at /do-work (#635)"
+    "operator pointer points agent-console / browser-completable work at /do-work (#635)"
   assert_contains "$cmd_path" "#635" \
     "command cites issue #635 for the looping human-only walkthrough"
   # The empty-state one-liner is unchanged — it doubles as the

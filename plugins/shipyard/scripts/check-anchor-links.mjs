@@ -242,7 +242,7 @@ function isFenceLine(line) {
 // raw HTML in markdown, so an explicit id/name attribute becomes a real
 // link-fragment target directly — independent of the heading-slug
 // algorithm entirely. This repo's docs use the pattern deliberately (e.g.
-// `<a id="needs-operator"></a>` in CLAUDE.md, `<a id="operator-pointer-
+// `<a id="agent-console"></a>` in CLAUDE.md, `<a id="operator-pointer-
 // line"></a>` in my-turn.md) specifically to hang a stable anchor off a
 // bold list-item lead-in that isn't a real heading — exactly the case
 // #866's own case 1/4 flags as unresolvable when the promotion DIDN'T

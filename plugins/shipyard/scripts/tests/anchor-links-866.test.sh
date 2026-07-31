@@ -253,18 +253,18 @@ echo "== (F) explicit <a id=\"...\"> / <a name=\"...\"> anchors are honored"
 
 # GitHub renders raw HTML in markdown, so an explicit id attribute is a
 # real link-fragment target even with no corresponding heading — this repo
-# uses the pattern deliberately (CLAUDE.md's needs-operator, my-turn.md's
+# uses the pattern deliberately (CLAUDE.md's agent-console, my-turn.md's
 # operator-pointer-line) to hang a stable anchor off a bold lead-in.
 mkdir -p "$tmp/f1"
 cat > "$tmp/f1/target.md" <<'EOF'
 # Target
 
-- <a id="needs-operator"></a>`needs-operator` — an operator-action gate.
+- <a id="agent-console"></a>`agent-console` — an operator-action gate.
 EOF
 cat > "$tmp/f1/caller.md" <<'EOF'
 # Caller
 
-[the gate](target.md#needs-operator)
+[the gate](target.md#agent-console)
 EOF
 assert_ok "$tmp/f1" "explicit <a id=\"...\"> anchor is honored as a valid link target"
 

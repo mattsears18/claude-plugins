@@ -8,7 +8,7 @@
 #
 # Background — issue #970: #936 narrowed the carve-out to an effect-based
 # test ("changes who can access what") but did not ask WHICH WAY the change
-# moves exposure. On a real `needs-operator` queue this meant an action that
+# moves exposure. On a real `agent-console` queue this meant an action that
 # genuinely tightens security — e.g. adding an HTTP-referrer restriction to
 # a Maps API key — was handed back exactly like one that loosens it. The
 # sharpest example: refusing to add the referrer restriction leaves the key

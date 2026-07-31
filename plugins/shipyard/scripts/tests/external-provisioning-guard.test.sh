@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test: the do-work spec routes "external-service setup that needs a credential
 # the user hasn't provisioned yet" away from autonomously committing dead config
-# and toward the operator handoff (`needs-operator`), at three layers.
+# and toward the operator handoff (`agent-console`), at three layers.
 #
 # Background — issue #628: a user asked shipyard to work through their backlog,
 # one ticket being "set up Sentry". Because they manage infra with Terraform,
@@ -20,10 +20,10 @@
 #      provisioned required credential makes the worker bail
 #      `external provisioning required — ...` instead of committing dead config.
 #   2. Orchestrator routing (steady-state.md bail table): that bail string maps
-#      to the `needs-operator` label (an operator action), NOT needs-human-review.
+#      to the `agent-console` label (an operator action), NOT needs-human-review.
 #   3. Scope-preflight carve-out (06-scope-preflight.md): the default-to-slicing
 #      bias does NOT apply to external-service setup — defer `external-dependency`
-#      (→ needs-operator) with a provisioning checklist in the diagnosis comment.
+#      (→ agent-console) with a provisioning checklist in the diagnosis comment.
 #
 # This test is the regression guard: if any of those three layers regress, the
 # provisioning-gated issue silently reverts to "commit dead config" or lands in
@@ -149,18 +149,18 @@ if [[ -f "$issue_work_path" ]]; then
     "§4.4 lands before §4.5 empty-diff guard"
 fi
 
-# --- Layer 2: orchestrator routing (steady-state.md bail table → needs-operator) ---
+# --- Layer 2: orchestrator routing (steady-state.md bail table → agent-console) ---
 assert_file_exists "$steady_state_path" "commands/do-work/steady-state.md exists"
 if [[ -f "$steady_state_path" ]]; then
   assert_contains "$steady_state_path" "external provisioning required" \
     "steady-state.md recognizes the provisioning bail string"
-  # It routes to needs-operator (operator action), NOT needs-human-review.
+  # It routes to agent-console (operator action), NOT needs-human-review.
   assert_contains "$steady_state_path" 'grep -qi "external provisioning required"' \
     "steady-state.md classifies the bail before the refuse default"
-  assert_contains "$steady_state_path" '--add-label "needs-operator"' \
-    "steady-state.md applies the needs-operator label to the provisioning bail"
+  assert_contains "$steady_state_path" '--add-label "agent-console"' \
+    "steady-state.md applies the agent-console label to the provisioning bail"
   assert_contains "$steady_state_path" "Why a provisioning bail routes to" \
-    "steady-state.md documents the needs-operator routing rationale"
+    "steady-state.md documents the agent-console routing rationale"
 fi
 
 # --- Layer 3: scope-preflight carve-out (06-scope-preflight.md) ---
