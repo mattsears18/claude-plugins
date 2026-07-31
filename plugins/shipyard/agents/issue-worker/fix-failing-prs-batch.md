@@ -59,10 +59,11 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
    git commit -m "fix(ci): unstick <N> failing PRs — <one-line root cause>"
    git push -u origin do-work/fix-pr-pileup-<short-timestamp>
 
-   gh pr create --repo <owner/repo> \
-     --label shipyard \
-     --title "fix(ci): unstick <N> failing PRs — <one-line root cause>" \
-     --body "$(cat <<'EOF'
+   ```
+
+   A heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the content instead (with the `Write` tool, per `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/pr-body.md`:
+
+   ```
    Fixes the common root cause behind <N> currently-failing PRs. The affected PRs will go green when rebased.
 
    ## Root cause
@@ -77,8 +78,18 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
    ## Test plan
    - [ ] CI on this PR is green
    - [ ] Rebasing one affected PR onto this fix produces green CI on that PR
-   EOF
-   )"
+   ```
+
+   Then:
+
+   ```bash
+   WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+   mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+   gh pr create --repo <owner/repo> \
+     --label shipyard \
+     --title "fix(ci): unstick <N> failing PRs — <one-line root cause>" \
+     --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
+   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
    ```
    No `Closes #N` — this is a synthetic divert. The `--label shipyard` is required by the worker-preamble skill.
 

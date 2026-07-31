@@ -39,15 +39,22 @@ So auto-resume is a net reliability improvement (fewer dispatches lost outright 
 
 For workers whose job involves a multi-step investigation before any commit lands (scope pre-flight analysis, diagnostic investigation, fix-checks root-cause search), a worktree reap mid-run destroys the findings before they can be communicated. To prevent silent value loss, **post investigation findings to the originating issue before attempting any git/gh write**:
 
-```bash
-# After reaching a diagnostic conclusion but BEFORE git commit / git push / gh pr create:
-gh issue comment <N> --repo <owner/repo> --body "$(cat <<'EOF'
+A heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the content instead (with the `Write` tool, per `SKILL.md` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/progress-comment.md`:
+
+```
 <!-- shipyard-worker-progress -->
 **Investigation finding (pre-push):** <your diagnostic summary here — file paths, line numbers, root cause, rejected hypotheses>
 
 This comment is posted before the final push so findings survive a mid-run worktree reap.
-EOF
-)"
+```
+
+Then, after reaching a diagnostic conclusion but BEFORE `git commit` / `git push` / `gh pr create`:
+
+```bash
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/progress-comment.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 **When to post a progress comment.** Post one if BOTH are true:

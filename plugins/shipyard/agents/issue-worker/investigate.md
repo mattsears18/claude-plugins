@@ -78,7 +78,13 @@ Turn the cryptic crash into a workable issue. Edit the body (additive where poss
 # Rewrite is additive — prepend the investigation findings, keep the original
 # bot-generated body (and its Sentry links) below a horizontal rule so the
 # fingerprint survives and the original report stays auditable.
-gh issue edit <N> --repo <owner/repo> --body "$(cat <<'EOF'
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
+
+A heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the content instead (with the `Write` tool, per `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/issue-rewrite.md`:
+
+```
 ## Investigation (shipyard)
 
 **Root cause:** <file:line + precondition>
@@ -89,8 +95,13 @@ gh issue edit <N> --repo <owner/repo> --body "$(cat <<'EOF'
 ---
 
 <original body verbatim>
-EOF
-)"
+```
+
+Then:
+
+```bash
+gh issue edit <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/issue-rewrite.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 The rewrite happens regardless of disposition — even an auto-closed noise issue gets its reasoning recorded (in the closing comment, step 4) so the close is auditable.
@@ -119,14 +130,25 @@ The crash is real and understood, but the resolution requires something a worker
 
 ```bash
 gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage
-gh issue comment <N> --repo <owner/repo> --body "$(cat <<'EOF'
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
+
+Write this content (with the `Write` tool — a heredoc `--body` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979), `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/needs-human-review-comment.md`:
+
+```
 Investigated by shipyard. Root cause is understood (see the rewritten body), but resolution needs a human:
 
 <one-line reason: product decision / access the worker lacks / ambiguous correct behavior>
 
 Routing to the human queue (`needs-human-review`) rather than guessing.
-EOF
-)"
+```
+
+Then:
+
+```bash
+gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/needs-human-review-comment.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 `needs-human-review` is the single binary-backlog human-queue label (see CLAUDE.md → Label conventions for its full semantics) — `/do-work` is blocked, a human must act, no auto-clear. The investigate-vs-review nuance ("decide before any PR" vs "sign off on what exists") lives in the issue comment above, not in a separate label. Removing `needs-triage` and adding `needs-human-review` is what moves the issue out of the permanent-untriaged state into the workable-by-human state.
@@ -150,12 +172,11 @@ The issue should not exist as open work. Two sub-cases, both **gated on the `tri
 
 When the policy permits the close:
 
+`gh issue close` has no `--comment-file` flag, so a multi-line closing comment can't route through the `--body-file` pattern above — keep the noise-close comment to the one line this reason genuinely needs (a plain quoted string, no command substitution, never refused):
+
 ```bash
 # Noise:
-gh issue close <N> --repo <owner/repo> --reason "not planned" --comment "$(cat <<'EOF'
-Auto-closed by shipyard as non-actionable noise: <one-line reason — e.g. "transient timeout; the call path already retries with backoff (lib/net.ts:42), so this cannot recur">. Reopen if it resurfaces.
-EOF
-)"
+gh issue close <N> --repo <owner/repo> --reason "not planned" --comment "Auto-closed by shipyard as non-actionable noise: <one-line reason — e.g. transient timeout; the call path already retries with backoff (lib/net.ts:42), so this cannot recur>. Reopen if it resurfaces."
 
 # Duplicate:
 gh issue close <N> --repo <owner/repo> --reason "not planned" --comment "Auto-closed by shipyard as a duplicate of #<K> (same Sentry fingerprint / root cause). Tracking the fix there."

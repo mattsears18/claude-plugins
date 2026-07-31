@@ -144,6 +144,30 @@ assert_count_at_most() {
   fi
 }
 
+# Extended-regex sibling of assert_count_at_most, needed where a fixed-string
+# needle would also match the fix's own explanatory prose (issue #979's
+# regression guard quotes the refused shape inline as documentation — a
+# plain -F substring match can't tell "here's the shape that's refused" prose
+# apart from an actual, still-refused runnable heredoc).
+assert_count_at_most_regex() {
+  local file="$1"
+  local pattern="$2"
+  local max="$3"
+  local label="$4"
+  local count
+  count=$(grep -cE -- "$pattern" "$file" 2>/dev/null | head -n 1)
+  count=${count:-0}
+  if (( count <= max )); then
+    printf '  %sPASS%s  %s (found %d occurrences, expected ≤ %d)\n' \
+      "$GREEN" "$RESET" "$label" "$count" "$max"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s (found %d occurrences, expected ≤ %d)\n' \
+      "$RED" "$RESET" "$label" "$count" "$max"
+    fail=$((fail+1))
+  fi
+}
+
 echo "worker-preamble skill regression tests (issue #107)"
 echo
 
@@ -845,6 +869,101 @@ if [[ -f "$steady_state_path" ]]; then
     "never \`cd\` outside it, never use \`gh pr checkout\`" 2 \
     "steady-state.md dispatch prompts no longer inline the full worktree-discipline sentence"
 fi
+
+# Issue #979 — issue-work.md §5 prescribed a `gh pr create --body "$(cat
+# <<'EOF' ... EOF)"` shape that the worktree-isolation Bash guard refuses as
+# "too complex to verify that it stays inside the worktree" — the spec's own
+# documented command was unrunnable by the workers it's written for.
+# Reproduced twice against real dispatches (mattsears18/lightwork #3200 and
+# #3333) and a third time live during this fix's own authoring. The fix:
+# a new body-file-convention.md fragment documents a sanctioned
+# `--body-file` + worktree-root-dotdir scratch-location convention (kept
+# out of the always-loaded core to preserve the #617 300-line budget),
+# SKILL.md's core carries a short pointer at it, and every per-mode spec
+# that previously inlined a heredoc `--body` now points at it instead.
+#
+# The scratch location is a worktree-root dotdir (`$WORKTREE_PATH/.shipyard-
+# scratch/`), NOT `$(git rev-parse --git-dir)` — an earlier draft of this fix
+# used the per-worktree git directory, on the theory that it's categorically
+# outside the working tree git tracks. That theory doesn't survive contact
+# with the `Write` tool: `enforce-edit-scope.sh` checks the target path
+# against the worktree ROOT (`.claude/worktrees/agent-<id>/`), and the
+# per-worktree git-dir lives OUTSIDE that root (under the primary checkout's
+# `.git/worktrees/<name>/`) — so a `Write` call there is rejected by that
+# hook, confirmed by testing it directly during this fix's own authoring.
+# The corrected design uses a dotdir INSIDE the worktree root (the same
+# precedent write-probe.md's `.shipyard-write-probe` already relies on) and
+# an explicit `rm -rf` cleanup step, since (unlike the git-dir) this
+# location DOES show up in `git status --porcelain` until removed.
+#
+# Regression guard below: (a) SKILL.md points at the fragment, (b) the
+# fragment carries the corrected convention, and (c) no per-mode spec still
+# contains the refused heredoc-in-command-substitution shape.
+body_file_convention_path="$wp_dir/body-file-convention.md"
+assert_file_exists "$body_file_convention_path" "worker-preamble fragment body-file-convention.md exists (issue #979)"
+assert_contains "$skill_path" \
+  "refused by the worktree-isolation \`Bash\` guard" \
+  "SKILL.md's PR-creation contract names the heredoc --body refusal (issue #979)"
+# Expect ≥2 references: the PR-creation-contract pointer plus the
+# fragment-index table row.
+assert_count_at_least "$skill_path" "(./body-file-convention.md)" 2 \
+  "SKILL.md references body-file-convention.md from both the PR-creation contract and the fragment index (issue #979)"
+# shellcheck disable=SC2016
+# Literal grep needle — the scratch path is matched verbatim, not expanded.
+assert_contains "$body_file_convention_path" \
+  '$WORKTREE_PATH/.shipyard-scratch' \
+  "body-file-convention.md names the worktree-root dotdir scratch location (issue #979)"
+assert_contains "$body_file_convention_path" \
+  "enforce-edit-scope.sh" \
+  "body-file-convention.md explains why /tmp is rejected by the sibling edit-scope hook (issue #979)"
+assert_contains "$body_file_convention_path" \
+  "rejected by that hook" \
+  "body-file-convention.md documents that the per-worktree git-dir is ALSO rejected by Write's edit-scope hook (issue #979)"
+assert_contains "$body_file_convention_path" \
+  "rm -rf" \
+  "body-file-convention.md prescribes explicit cleanup rather than relying on git-dir invisibility (issue #979)"
+
+for mode_file in issue-work fix-main-ci fix-failing-prs-batch investigate spike; do
+  mode_path="$repo_root/plugins/shipyard/agents/issue-worker/${mode_file}.md"
+  if [[ -f "$mode_path" ]]; then
+    assert_contains "$mode_path" "#979" \
+      "${mode_file}.md references issue #979's --body-file fix"
+    assert_contains "$mode_path" "--body-file" \
+      "${mode_file}.md prescribes --body-file instead of a heredoc"
+    # shellcheck disable=SC2016
+    # Literal grep needle — the scratch path is matched verbatim, not expanded.
+    assert_contains "$mode_path" '$WORKTREE_PATH/.shipyard-scratch' \
+      "${mode_file}.md uses the worktree-root dotdir scratch location"
+    assert_contains "$mode_path" "rm -rf \"\$WORKTREE_PATH/.shipyard-scratch\"" \
+      "${mode_file}.md cleans up the scratch dir after use"
+    # Regression guard: the corrected design abandoned the per-worktree
+    # git-dir location (Write's enforce-edit-scope.sh hook rejects it) — a
+    # mode file that reintroduced it would be silently unrunnable again.
+    # shellcheck disable=SC2016
+    # Literal grep needle — asserting the rejected shape is ABSENT, not expanded.
+    assert_count_at_most "$mode_path" '$(git rev-parse --git-dir)/shipyard-scratch' 0 \
+      "${mode_file}.md does not use the rejected per-worktree git-dir scratch location"
+    # A real (still-refused) heredoc opener ends its line right after the
+    # <<EOF / <<'EOF' delimiter (bash requires the delimiter be the last
+    # token on the line); this fix's own explanatory prose quotes the same
+    # substring but always trails it with more text ("... EOF)"` is
+    # refused"), so anchoring on end-of-line distinguishes the two.
+    assert_count_at_most_regex "$mode_path" \
+      '"\$\(cat <<.?EOF.?$' 0 \
+      "${mode_file}.md no longer contains the refused heredoc --body shape"
+  fi
+done
+
+assert_contains "$reaped_path" "#979" \
+  "reaped-escape-hatch.md's incremental-posting example references issue #979"
+assert_contains "$reaped_path" "--body-file" \
+  "reaped-escape-hatch.md's incremental-posting example uses --body-file"
+# shellcheck disable=SC2016
+# Literal grep needle — the scratch path is matched verbatim, not expanded.
+assert_contains "$reaped_path" '$WORKTREE_PATH/.shipyard-scratch' \
+  "reaped-escape-hatch.md's incremental-posting example uses the worktree-root dotdir scratch location"
+assert_contains "$reaped_path" "rm -rf \"\$WORKTREE_PATH/.shipyard-scratch\"" \
+  "reaped-escape-hatch.md's incremental-posting example cleans up the scratch dir after use"
 
 echo
 if (( fail > 0 )); then

@@ -272,12 +272,18 @@ git commit -m "<conventional commit title referencing the issue>"
 # or not. ${REMOTE_BRANCH:-do-work/issue-<N>} degrades to the plain literal
 # if this variable somehow didn't survive from step 3.
 git push -u origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"
+```
 
-gh pr create --repo <owner/repo> \
-  --head "${REMOTE_BRANCH:-do-work/issue-<N>}" \
-  --label shipyard \
-  --title "<conventional commit title>" \
-  --body "$(cat <<'EOF'
+A multi-line `--body` fed via `$(cat <<EOF ... EOF)` command substitution is **refused** by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the body with the `Write` tool to a scratch file first, then pass `--body-file`, per `shipyard:worker-preamble` § "Multi-line `--body` payloads — use `--body-file`, never a heredoc command substitution":
+
+```bash
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
+
+Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/pr-body.md`:
+
+```
 Closes #<N>
 
 ## Summary
@@ -285,8 +291,17 @@ Closes #<N>
 
 ## Test plan
 - [ ] <how the acceptance criteria are verified>
-EOF
-)"
+```
+
+Then:
+
+```bash
+gh pr create --repo <owner/repo> \
+  --head "${REMOTE_BRANCH:-do-work/issue-<N>}" \
+  --label shipyard \
+  --title "<conventional commit title>" \
+  --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 The body **must** include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge. The `--label shipyard` is required by the worker-preamble skill — see that skill for the rationale. The explicit `--head` removes any ambiguity about which branch the PR is built from — load-bearing when `$LOCAL_BRANCH` (this worktree's checkout) diverges from `$REMOTE_BRANCH` (the pushed, canonical branch) per §3's collision fallback.
@@ -536,15 +551,25 @@ Read the verifier's single-line verdict and branch:
 
   ```bash
   gh pr edit <M> --repo <owner/repo> --add-label needs-human-review
+  WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+  mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+  ```
 
-  gh pr comment <M> --repo <owner/repo> --body "$(cat <<EOF
+  Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/verify-gate-comment.md` (a heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"):
+
+  ```
   Independent verification did not pass — this PR will not auto-merge until a maintainer reviews it.
 
   **Verifier verdict:** <the not-verified reason, verbatim>
 
-  This is the do-work adversarial-verify gate (\`verify_gate.enabled\`): an independent agent judged the change against the issue's acceptance criteria before merge and could not confirm it. A human should confirm or correct.
-  EOF
-  )"
+  This is the do-work adversarial-verify gate (`verify_gate.enabled`): an independent agent judged the change against the issue's acceptance criteria before merge and could not confirm it. A human should confirm or correct.
+  ```
+
+  Then:
+
+  ```bash
+  gh pr comment <M> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/verify-gate-comment.md"
+  rm -rf "$WORKTREE_PATH/.shipyard-scratch"
   ```
 
   Then return the step-8 blocked string: `blocked #<N> at verify: <the not-verified reason>`. The orchestrator's step-A reconcile classifies a `blocked … at verify:` return into `needs-human-review` per [#521](https://github.com/mattsears18/shipyard/issues/521), so no new reconcile branch is needed.
@@ -593,13 +618,23 @@ If this errors because auto-merge isn't enabled at the repo level, **don't try t
 
 ```bash
 gh pr edit <pr-num> --repo <owner/repo> --add-label needs-human-review
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
 
-gh pr comment <pr-num> --repo <owner/repo> --body "$(cat <<'EOF'
+Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/external-trust-comment.md` (a heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"):
+
+```
 Originating issue is from an external author; this PR will not auto-merge. A maintainer must review and merge manually.
 
 This is the dispatch-side auto-merge gate — defense in depth against external prompt-injection vectors riding auto-merge to `main`. The PR's contents have already been reviewed by the orchestrator's intake gates and the issue body was treated as untrusted input, but a human must still sign off on the merge.
-EOF
-)"
+```
+
+Then:
+
+```bash
+gh pr comment <pr-num> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/external-trust-comment.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 Do NOT call `gh pr merge --auto` in this branch — that's the exact gate this step exists to enforce. The PR sits with `needs-human-review` until a maintainer reviews and merges manually (or closes it).
@@ -637,16 +672,27 @@ You are here because this PR ships only the phase-1 code slice; issue `#<N>` its
 # from the dispatch prompt's Context block. <merge-state> is "merged" if the
 # post-arm snapshot (below, borrowed one-shot read from step 7) already shows
 # state MERGED, otherwise "auto-merge armed".
-gh issue comment <N> --repo <owner/repo> --body "$(cat <<EOF
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+```
+
+Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/split-disposition-comment.md` (a heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"):
+
+```
 ## Split disposition — code slice shipped, <operator|security> slice handed back
 
 **Shipped:** <phase_1_scope> via PR #<M> (<merge-state>).
 
 **Handed back:** <operator_residual>
 
-This issue is being labeled \`<needs-operator|needs-human-review>\` and left OPEN pending that action.
-EOF
-)"
+This issue is being labeled `<needs-operator|needs-human-review>` and left OPEN pending that action.
+```
+
+Then:
+
+```bash
+gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/split-disposition-comment.md"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 Choose the residual label from the dispatch prompt's `operator_residual_security_sensitive` framing (mirrored from `operate/02-execution-and-playbooks.md`'s [Claude-safe-vs-hand-back table](../../commands/do-work/operate/02-execution-and-playbooks.md#claude-safe-to-auto-drive-vs-hand-back-securityaccess-control) when you need to re-derive it): `needs-operator` for a plain browser/console action, `needs-human-review` when the residual is itself a security/access-control mutation (per [#848](https://github.com/mattsears18/shipyard/issues/848)'s relabel rule — see this repo's `CLAUDE.md` § `needs-operator`). Apply it **ensure-then-label-then-verify**, the same idiom scope-preflight's own label application uses — never a bare `--add-label` that silently depends on label-creation having landed:
@@ -672,24 +718,28 @@ If either the comment or the label call errors (rate limit, permission), log an 
 
 2. **Read the auditor's return.** It reports which criteria it exercised, a pass/fail verdict per criterion, and the numbers of any issues it filed. Treat this as the authoritative record — don't re-derive verdicts from your own reading of the surface.
 
-3. **Post a verification-status comment on `#<N>`** summarizing the run:
+3. **Post a verification-status comment on `#<N>`** summarizing the run. A heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"; write the content instead (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/verification-status-comment.md`:
 
-   ```bash
-   gh issue comment <N> --repo <owner/repo> --body "$(cat <<EOF
+   ```
    ## Verification status (shipyard)
 
-   Ran \`<auditor>\` against: <automatable surface, from verification_slice>
+   Ran `<auditor>` against: <automatable surface, from verification_slice>
 
    **Checked:**
    - <criterion 1>: <passed | failed — see #<bug-issue>>
    - <criterion 2>: <passed | failed — see #<bug-issue>>
 
    **Not automatable — still needs a human/device:** <verification_residual>
-   EOF
-   )"
    ```
 
-   Omit the "Not automatable" line entirely when `verification_residual` is absent (the whole surface was automatable).
+   Omit the "Not automatable" line entirely when `verification_residual` is absent (the whole surface was automatable). Then:
+
+   ```bash
+   WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+   mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+   gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/verification-status-comment.md"
+   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
+   ```
 
 4. **Disposition:**
    - **`verification_residual` is present (the common case)** — apply `needs-operator` (a plain device/browser recheck) or `needs-human-review` (a genuine human judgment call — e.g. a subjective design review) per whichever fits the residual's shape, and leave `#<N>` **OPEN**. Apply the label **ensure-then-label-then-verify**, the same idiom §6.5 uses:

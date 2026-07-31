@@ -58,10 +58,11 @@ The single highest-leverage action is: identify the root cause and ship the smal
    git commit -m "fix(ci): restore green main — <one-line root cause>"
    git push -u origin do-work/fix-main-ci-<short-sha>
 
-   gh pr create --repo <owner/repo> \
-     --label shipyard \
-     --title "fix(ci): restore green main — <one-line root cause>" \
-     --body "$(cat <<'EOF'
+   ```
+
+   A heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the content instead (with the `Write` tool, per `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/pr-body.md`:
+
+   ```
    Restores green CI on `<default-branch>`. Earliest unfixed red run: <earliest_red_run_url> at <earliest_red_sha>.
 
    ## Root cause
@@ -73,8 +74,18 @@ The single highest-leverage action is: identify the root cause and ship the smal
    ## Test plan
    - [ ] CI on this PR is green
    - [ ] Manual reproduction: <if applicable>
-   EOF
-   )"
+   ```
+
+   Then:
+
+   ```bash
+   WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+   mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+   gh pr create --repo <owner/repo> \
+     --label shipyard \
+     --title "fix(ci): restore green main — <one-line root cause>" \
+     --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
+   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
    ```
    No `Closes #N` line — this is a synthetic divert, not tied to an issue. The `--label shipyard` is required by the worker-preamble skill.
 
