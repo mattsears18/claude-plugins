@@ -425,103 +425,11 @@ This check runs **before** the [§5.7 phantom-merge guard's](#57-post-pr-create-
 
 ### 5.85 Post-PR-create non-close parent/epic leak verification
 
-Closes [#624](https://github.com/mattsears18/shipyard/issues/624) — the **silent-epic-close** failure mode, the inverse of §5.8's stuck-open. This guard is the *enforcement* of the bare-URL-phrasing guidance in [§5](#5-commit--push--pr); §5.8 asserts the dispatched issue `#<N>` *is* a closing reference, this step asserts a "do NOT close" issue `#<E>` is *not*.
+Closes [#624](https://github.com/mattsears18/shipyard/issues/624) — the **silent-epic-close** failure mode, the inverse of §5.8's stuck-open. **Load-bearing trigger — check before skipping.** This step applies whenever this PR must reference — but NOT close — some issue `#<E>` on merge. Three shapes trigger it: (1) a **parent/epic relationship** named in the dispatch prompt or issue body (phrasing like *"do NOT close #<E>"*, *"Part of #<E>"*, *"Parent epic #<E>"*); (2) **`#<E>` is the dispatched issue itself**, when you're opening a *secondary/auxiliary* PR that ships partial or adjacent value without resolving the dispatch; (3) **a scope-preflight operator-slice split dispatch** ([#851](https://github.com/mattsears18/shipyard/issues/851)) — the dispatch prompt's Context block carries an "Operator residual" paragraph. Shape (3) is a special case of shape (2): `#<N>` itself is the protected issue, because the code slice ships while an operator/security action remains on the SAME issue.
 
-**When this step applies.** Whenever this PR must reference — but NOT close — some issue `#<E>` on merge. Three shapes trigger it: (1) a **parent/epic relationship** named in the dispatch prompt or issue body — phrasing like *"do NOT close #<E>"*, *"reference but don't close #<E>"*, *"Part of #<E>"* / *"Parent epic #<E>"*; (2) **`#<E>` is the dispatched issue itself**, when you're opening a *secondary/auxiliary* PR that ships partial or adjacent value without resolving the dispatch — e.g. a `blocked`-shaped investigation outcome where you additionally shipped a valuable but non-resolving docs/runbook change (the [#893](https://github.com/mattsears18/shipyard/issues/893) repro); (3) **a scope-preflight operator-slice split dispatch** ([#851](https://github.com/mattsears18/shipyard/issues/851)) — the dispatch prompt's Context block carries an "Operator residual" paragraph (set when [scope-preflight's operator-slice carve-out](../../commands/do-work/setup/06b-scope-carveouts.md#operator-slice-carve-out--ship-the-code-slice-hand-back-only-the-operator-remainder-851) found a phase-1 code slice inside an otherwise-`needs-operator`/security-flavored `needs-human-review` candidate). Shape (3) is a special case of shape (2) — `#<N>`, the dispatched issue itself, is the protected issue, because this PR ships only the code slice and an operator/security action still remains on the SAME issue; treat it exactly like shape (2) below, then continue to [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851) after auto-merge is armed. Collect every such `#<E>` into a set of *protected issues*. If no non-close relationship is in scope (the common case — most PRs are the single resolving PR for their dispatched issue), **skip this step entirely**; it's a no-op. This step never applies to the dispatched issue's own *resolving* PR — that one is supposed to close `#<N>` via `Closes #<N>` per §5, and shape (3) is explicitly the exception: this PR is NOT that issue's resolving PR, even though it's dispatched against the same number.
+**If none of the three shapes apply — the common case, most PRs are the single resolving PR for their dispatched issue — skip this step entirely; it's a no-op.** This step never applies to the dispatched issue's own *resolving* PR (that one closes `#<N>` via `Closes #<N>` per §5; shape (3) is the documented exception).
 
-**Prevention — never name a protected-issue-referencing PR's branch `do-work/issue-<E>` (or any `issue-<E>`-shaped variant).** [#893](https://github.com/mattsears18/shipyard/issues/893) isolated a *branch-naming* hazard distinct from the body/commit-text hazard below: GitHub's own "Create a branch" UI auto-links a branch literally named `do-work/issue-<E>` to issue `#<E>`, and in the repro that link registered in `closingIssuesReferences` **independent of the PR body or commit-message text** — it survived a full body rewrite, a commit-message rewrite + force-push, and even a close+reopen, and only cleared once the PR was abandoned for a fresh, neutrally-named branch. If you already know before opening the PR that it must not close `#<E>`, don't give its branch an `issue-<E>`-shaped name even when `<E>` happens to be the number you were dispatched against — pick a neutral name instead (e.g. `docs/<short-topic>`), off the default branch. This sidesteps the remediation loop below entirely; it's cheaper than recovering from the leak.
-
-**The mechanism the remediation loop guards.** GitHub can promote a bare `#<E>` token (in the PR body, a squashed-commit message, or a CHANGELOG entry that rides the merge) into `closingIssuesReferences` even with no closing keyword — so the merge auto-closes the protected issue. The §5 prevention is to phrase the reference as a bare URL; this step verifies the prevention took and, if it leaked, escalates through three remediation tiers.
-
-**After `gh pr create` and before arming auto-merge in [§6](#6-enable-auto-merge-gated-on-originating_author_trust)**, for each protected issue `#<E>` assert it is absent from the PR's `closingIssuesReferences`. If it leaked, run the tiers below **in order and don't stop early** — the [#893](https://github.com/mattsears18/shipyard/issues/893) repro showed a leak surviving a single body-rewrite-and-reverify (what an earlier version of this step stopped at) as well as a follow-up commit-message rewrite, so a worker that re-verifies once and declares victory, or that gives up after one rewrite and jumps straight to `needs-human-review`, is not exercising the full documented recovery path:
-
-```bash
-# Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch".
-WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
-  LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
-  echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
-  exit 0
-fi
-
-# <E> is each protected issue number collected above. Run this block per issue.
-CURRENT_PR=<pr-num>
-LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-  --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
-
-# --- Tier 1: rewrite the PR body to bare-URL form. ---
-if [ "$LEAKED" = "true" ]; then
-  CURRENT_BODY=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json body --jq '.body')
-  # Replace bare #<E> tokens with the full-URL form (which does NOT auto-close).
-  PATCHED_BODY=$(printf '%s' "$CURRENT_BODY" \
-    | sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g")
-  gh pr edit "$CURRENT_PR" --repo <owner/repo> --body "$PATCHED_BODY"
-
-  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
-fi
-
-# --- Tier 2: also rewrite the HEAD commit message. A bare #<E> token riding
-# in a squashed-commit message is a SEPARATE vector from the body — a
-# body-only rewrite can leave this one untouched. ---
-if [ "$LEAKED" = "true" ]; then
-  CURRENT_MSG=$(git log -1 --format='%B')
-  if printf '%s' "$CURRENT_MSG" | grep -qE "#<E>([^0-9]|\$)"; then
-    PATCHED_MSG=$(printf '%s' "$CURRENT_MSG" \
-      | sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g")
-    git commit --amend -m "$PATCHED_MSG"
-    git push --force-with-lease origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"
-  fi
-
-  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
-fi
-
-# --- Tier 3: escape hatch — abandon this branch/PR and reopen from a NEUTRAL
-# branch name. If the leak survives tiers 1+2 with a CONFIRMED-clean body and
-# commit message, the branch name itself is the likely persistent trigger
-# (#893) — no further body/commit edit on THIS branch will clear it, so don't
-# loop tiers 1/2 again; move straight to a fresh branch. ---
-if [ "$LEAKED" = "true" ]; then
-  gh pr close "$CURRENT_PR" --repo <owner/repo> \
-    --comment "Closing — closingIssuesReferences kept registering #<E> even with a confirmed-clean body and commit message (#893). Reopening from a neutrally-named branch to clear the leaked link."
-
-  NEUTRAL_BRANCH="docs/issue-<N>-followup-$(date +%s)"
-  git checkout -B "$NEUTRAL_BRANCH" "origin/$DEFAULT_BRANCH"
-  git cherry-pick <original-commit-sha>   # or recreate the same file changes directly
-  git push -u origin "$NEUTRAL_BRANCH"
-
-  gh pr create --repo <owner/repo> --head "$NEUTRAL_BRANCH" --label shipyard \
-    --title "<same title>" --body "$PATCHED_BODY"
-
-  CURRENT_PR=$(gh pr list --repo <owner/repo> --head "$NEUTRAL_BRANCH" --json number --jq '.[0].number')
-  LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
-    --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
-fi
-
-# If the protected issue is already CLOSED (e.g. an admin ungated direct-merge
-# fired before this check ran, or an earlier tier's PR merged before you
-# closed it), reopen it — regardless of which tier finally cleared LEAKED.
-EPIC_STATE=$(gh issue view <E> --repo <owner/repo> --json state --jq '.state')
-if [ "$EPIC_STATE" = "CLOSED" ]; then
-  gh issue reopen <E> --repo <owner/repo> \
-    --comment "Reopened: a PR auto-closed this issue via a leaked closing reference (#624 / #893). It was meant to *reference* this issue, not close it."
-fi
-
-if [ "$LEAKED" = "true" ]; then
-  echo "blocked #<N> at parent-epic-leak-verify: even a fresh, neutrally-named branch still registers #<E> as a closing reference — manual triage required (PR: <url>)"
-  gh pr edit "$CURRENT_PR" --repo <owner/repo> --add-label needs-human-review || true
-  exit 0
-fi
-```
-
-**Why bare URL rather than deleting the mention.** The reference is *wanted* — the PR legitimately should link the protected issue for traceability; it just must not *close* it. The bare-URL form (`https://github.com/<owner>/<repo>/issues/<E>`) renders a clickable link that GitHub does NOT promote into `closingIssuesReferences`, so it keeps the traceability while dropping the closing semantics. Don't strip the reference entirely.
-
-**Why tier 3 (a fresh branch) can succeed when tiers 1–2 (rewriting the existing branch) don't.** Tiers 1 and 2 fix every *text*-based vector — the body and the commit message — but the [#893](https://github.com/mattsears18/shipyard/issues/893) repro's confirmed-clean body (`gh pr view --json body --jq '.body | test("#<E>")'` → `false`) and confirmed-clean commit message still left `closingIssuesReferences` populated, which points at the **branch name itself** as a third, independent vector not covered by rewriting either text field. Abandoning the branch — not just editing its content — is the only thing that cleared the link in the repro; a fourth or fifth rewrite attempt on the same branch is not expected to do better than the first two.
-
-**Why reopen on already-merged.** On a repo where an admin direct-merge can fire before this check runs (the `merged-direct-ungated` path), the merge may have already closed the protected issue by the time you verify — regardless of which tier you're in when that happens. Reopening `#<E>` restores it so it isn't orphaned and `/my-turn` keeps surfacing it if further review is needed. The body/branch remediation still matters even post-merge — it stops a *future* re-merge or backport from re-closing it.
-
-This step runs **after** §5.8 (the dispatched-issue closing-link verification) and **before** §6 arms auto-merge, so a protected issue can never ride an armed auto-merge to a silent close. It runs unconditionally regardless of `originating_author_trust` whenever a protected issue is in scope.
+**If any shape applies**, read [`issue-work-parent-epic-leak.md`](./issue-work-parent-epic-leak.md) now — after `gh pr create` and before arming auto-merge in §6 — and run its full verification-and-remediation procedure for each protected issue `#<E>` before continuing. Don't improvise a shorter version: it's a three-tier escalation (PR-body rewrite → commit-message rewrite → abandon-and-reopen-from-neutral-branch), and the [#893](https://github.com/mattsears18/shipyard/issues/893) repro showed a leak surviving a single body-rewrite alone.
 
 ### 5.9 Independent adversarial verification (opt-in gate)
 
@@ -529,52 +437,7 @@ This step runs **after** §5.8 (the dispatched-issue closing-link verification) 
 
 The PR is open and every mechanical guard (§5.7 / §5.8 / §5.85) has passed, but auto-merge is **not yet armed**. This is the "verify" in find → implement → **verify** → merge: before you arm the merge, an *independent* agent adversarially checks that your change actually and completely resolves the issue. You believe it does — that's exactly why the check has to come from a skeptic that isn't you.
 
-Dispatch the verifier as a nested subagent via the `Agent` tool. It is the one sanctioned nested dispatch in the do-work loop:
-
-- `subagent_type: "shipyard:verify-worker"` — pinned to **Opus 4.8** in its shim frontmatter (the strong, harder-to-fool tier this gate reserves for its highest-stakes judgment — [#784](https://github.com/mattsears18/shipyard/issues/784)). The tier is overridable per-role via `models.verify`: resolve it the same way the orchestrator resolves every dispatch's model, and pass it as the `Agent` call's `model` parameter (omit `model` when the resolution is empty so the Opus 4.8 frontmatter default applies). **Reuse the literal plugin-root value already resolved at `shipyard:worker-preamble`'s step-0 in place of `${CLAUDE_PLUGIN_ROOT}` below instead of re-deriving it here ([#965](https://github.com/mattsears18/shipyard/issues/965)):**
-
-  ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-  verify_model=$("${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh" verify 2>/dev/null)
-  # verify_model non-empty (opus/sonnet/haiku/fable) → set model: "<verify_model>" on the Agent call;
-  # empty → omit the model parameter so verify-worker.md's opus frontmatter default applies.
-  ```
-- `isolation: "worktree"` (**mandatory** — the isolation hook hard-fails the dispatch otherwise; the verifier reads the PR via `gh`, so an empty worktree is fine)
-- prompt naming `mode: verify` and carrying: the PR number `<M>`, the issue number `<N>`, `<owner/repo>`, and the acceptance criteria / reproduction summary you read in step 2.
-
-> **`mode: verify`** — Adversarially verify that PR #`<M>` in `<owner/repo>` correctly and completely resolves issue #`<N>` before it auto-merges. Acceptance criteria / reproduction to check the diff against: `<AC summary from step 2>`. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/verify.md`.** Return a single verdict line: `verified: <basis>` or `not-verified: <specific refutation>`.
-
-Read the verifier's single-line verdict and branch:
-
-- **Verdict starts with `verified:`** → the change cleared independent review. **Proceed to step 6** and arm auto-merge exactly as normal.
-- **Verdict starts with `not-verified:`** → do **NOT** arm auto-merge. Gate the PR for a human, carrying the verifier's reasoning verbatim so the maintainer sees *why*:
-
-  ```bash
-  gh pr edit <M> --repo <owner/repo> --add-label needs-human-review
-  WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-  mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
-  ```
-
-  Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/verify-gate-comment.md` (a heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"):
-
-  ```
-  Independent verification did not pass — this PR will not auto-merge until a maintainer reviews it.
-
-  **Verifier verdict:** <the not-verified reason, verbatim>
-
-  This is the do-work adversarial-verify gate (`verify_gate.enabled`): an independent agent judged the change against the issue's acceptance criteria before merge and could not confirm it. A human should confirm or correct.
-  ```
-
-  Then:
-
-  ```bash
-  gh pr comment <M> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/verify-gate-comment.md"
-  rm -rf "$WORKTREE_PATH/.shipyard-scratch"
-  ```
-
-  Then return the step-8 blocked string: `blocked #<N> at verify: <the not-verified reason>`. The orchestrator's step-A reconcile classifies a `blocked … at verify:` return into `needs-human-review` per [#521](https://github.com/mattsears18/shipyard/issues/521), so no new reconcile branch is needed.
-
-**Fail open — never let the gate strand a PR.** If the nested dispatch is *refused* by the harness (nested spawning is off by default: `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` must be `≥1` — see [`verify-worker.md`](../verify-worker.md) § "Nested-dispatch prerequisite"), or the verifier returns a `not-verified:` line whose reason is `verifier worktree reaped mid-run` (a non-verdict, not a real refutation), do **not** silently arm auto-merge as if verified, and do **not** hard-block the loop. Instead label `needs-human-review`, comment that the gate could not run (`Verify gate could not run: <reason>; a maintainer should review before merge`), and return `blocked #<N> at verify: gate could not run — <reason>`. This keeps the safety posture (unverified never auto-merges) without letting a misconfigured depth setting wedge the session — the operator fixes the env var and re-runs. A dispatch that *succeeds* but yields no parseable `verified:`/`not-verified:` prefix is treated the same way (non-verdict → human review).
+**When `verify_gate: on` is present**, read [`issue-work-adversarial-verification.md`](./issue-work-adversarial-verification.md) now and follow it in full: dispatch `shipyard:verify-worker` (`isolation: "worktree"`, pinned Opus 4.8, overridable via `models.verify`) as a nested subagent against the open PR, and branch on its single-line verdict — `verified:` → proceed to step 6 normally; `not-verified:` (or a failed/ambiguous dispatch — fail-open, never strand the PR unverified) → do NOT arm auto-merge, label `needs-human-review`, comment the verifier's reasoning, and return the step-8 `blocked #<N> at verify: <reason>` string.
 
 ### 6. Enable auto-merge (gated on `originating_author_trust`)
 
@@ -670,99 +533,13 @@ Then take the matching branch above using `$RESOLVED_TRUST` in place of the miss
 
 **Run this step only when the dispatch prompt's Context block carries an "Operator residual" paragraph** (set by [scope-preflight's operator-slice carve-out](../../commands/do-work/setup/06b-scope-carveouts.md#operator-slice-carve-out--ship-the-code-slice-hand-back-only-the-operator-remainder-851), or an explicit human-authored split instruction naming the residual directly). When absent — the common case — **skip directly to step 7**; nothing below applies and behavior is unchanged.
 
-You are here because this PR ships only the phase-1 code slice; issue `#<N>` itself is not resolved. §5.85's trigger shape (3) already required you to reference `#<N>` with a bare URL (never a closing keyword) and to run the leak-verification loop treating `#<N>` as the protected issue — confirm that ran and passed before continuing. Auto-merge is now armed (or the PR merged directly on the ungated path per §6.a) — post the disposition comment and apply the residual label:
-
-```bash
-# <M> = this PR's number. <phase_1_scope> / <operator_residual> come verbatim
-# from the dispatch prompt's Context block. <merge-state> is "merged" if the
-# post-arm snapshot (below, borrowed one-shot read from step 7) already shows
-# state MERGED, otherwise "auto-merge armed".
-WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
-```
-
-Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/split-disposition-comment.md` (a heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"):
-
-```
-## Split disposition — code slice shipped, <operator|security> slice handed back
-
-**Shipped:** <phase_1_scope> via PR #<M> (<merge-state>).
-
-**Handed back:** <operator_residual>
-
-This issue is being labeled `<needs-operator|needs-human-review>` and left OPEN pending that action.
-```
-
-Then:
-
-```bash
-gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/split-disposition-comment.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"
-```
-
-Choose the residual label from the dispatch prompt's `operator_residual_security_sensitive` framing (mirrored from `operate/02-execution-and-playbooks.md`'s [Claude-safe-vs-hand-back table](../../commands/do-work/operate/02-execution-and-playbooks.md#claude-safe-to-auto-drive-vs-hand-back-securityaccess-control) when you need to re-derive it): `needs-operator` for a plain browser/console action, `needs-human-review` when the residual is itself a security/access-control mutation (per [#848](https://github.com/mattsears18/shipyard/issues/848)'s relabel rule — see this repo's `CLAUDE.md` § `needs-operator`). Apply it **ensure-then-label-then-verify**, the same idiom scope-preflight's own label application uses — never a bare `--add-label` that silently depends on label-creation having landed:
-
-```bash
-GATE_LABEL="needs-operator"   # or "needs-human-review" per the choice above
-gh label create "$GATE_LABEL" --repo <owner/repo> \
-  --description "Operator/human review gate applied by a split-dispatch hand-back" 2>/dev/null || true
-gh issue edit <N> --repo <owner/repo> --add-label "$GATE_LABEL"
-```
-
-If either the comment or the label call errors (rate limit, permission), log an advisory and retry once; if it still fails, don't block your return on it — note the failure in your step-8 return string so the orchestrator can retry the labeling.
-
-**Do NOT apply `needs-human-review`/`needs-operator` to the PR** — only to the issue. The PR itself already merged or has auto-merge armed; the gate label belongs on the still-open issue that carries the unshipped residual.
+**When present**, this PR ships only the phase-1 code slice; issue `#<N>` itself is not resolved. Read [`issue-work-split-dispatch.md`](./issue-work-split-dispatch.md) now and follow it in full: confirm §5.85's leak-verification already ran treating `#<N>` as the protected issue, then post a disposition comment and apply the `needs-operator`/`needs-human-review` residual label to the *issue* (never the PR) before continuing to step 7 and returning via step 8's `partial` return shape.
 
 ### 6.6 Verification disposition: run the auditor, file bugs, disposition — without a PR ([#852](https://github.com/mattsears18/shipyard/issues/852))
 
 **Run this step only when the dispatch prompt's Context block carries a "Verification slice" paragraph** (set by [scope-preflight's QA-verification carve-out](../../commands/do-work/setup/06b-scope-carveouts.md#qa-verification-carve-out--run-the-automatable-audit-hand-back-only-the-manual-remainder-852)). When absent — the common case — this section does not apply and behavior is unchanged.
 
-**This dispatch is fundamentally different from every other path in this file: the deliverable is verification, not a code change.** After [step 1](#1-self-assign-soft-lock) (self-assign), skip steps 2–6.5 entirely — there is normally no issue body to implement against, no branch, no diff, and no resolving PR to open. Proceed directly:
-
-1. **Dispatch the named auditor.** The dispatch prompt's `verification_slice` names which auditor to run and against what surface (e.g. `functional-qa-auditor against https://test.example.com — sign-in, sign-up, and onboarding flow using the staged audit accounts`). Dispatch it via the `Agent` tool (`subagent_type` matching the named auditor, e.g. `shipyard:functional-qa-auditor`) against exactly that surface and the acceptance criteria it's meant to cover — do not widen the surface beyond what `verification_slice` describes, and do not re-implement the auditor's own filing logic: the auditor autonomously files `bug`-labeled GitHub issues for genuine findings per its own [`filing-github-issues`](../../skills/filing-github-issues/SKILL.md) skill. If the target surface requires authenticated access, follow [`auditing-authenticated-surfaces`](../../skills/auditing-authenticated-surfaces/SKILL.md) conventions (never echo secrets).
-
-2. **Read the auditor's return.** It reports which criteria it exercised, a pass/fail verdict per criterion, and the numbers of any issues it filed. Treat this as the authoritative record — don't re-derive verdicts from your own reading of the surface.
-
-3. **Post a verification-status comment on `#<N>`** summarizing the run. A heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"; write the content instead (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/verification-status-comment.md`:
-
-   ```
-   ## Verification status (shipyard)
-
-   Ran `<auditor>` against: <automatable surface, from verification_slice>
-
-   **Checked:**
-   - <criterion 1>: <passed | failed — see #<bug-issue>>
-   - <criterion 2>: <passed | failed — see #<bug-issue>>
-
-   **Not automatable — still needs a human/device:** <verification_residual>
-   ```
-
-   Omit the "Not automatable" line entirely when `verification_residual` is absent (the whole surface was automatable). Then:
-
-   ```bash
-   WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-   mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
-   gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/verification-status-comment.md"
-   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
-   ```
-
-4. **Disposition:**
-   - **`verification_residual` is present (the common case)** — apply `needs-operator` (a plain device/browser recheck) or `needs-human-review` (a genuine human judgment call — e.g. a subjective design review) per whichever fits the residual's shape, and leave `#<N>` **OPEN**. Apply the label **ensure-then-label-then-verify**, the same idiom §6.5 uses:
-     ```bash
-     GATE_LABEL="needs-operator"   # or "needs-human-review" — pick per the residual's shape
-     gh label create "$GATE_LABEL" --repo <owner/repo> \
-       --description "Operator/human review gate applied by a verification-disposition hand-back" 2>/dev/null || true
-     gh issue edit <N> --repo <owner/repo> --add-label "$GATE_LABEL"
-     ```
-   - **`verification_residual` is absent** (the entire surface named in `verification_slice` was automatable and the auditor completed its sweep) — close `#<N>` as completed, citing the verification comment:
-     ```bash
-     gh issue close <N> --repo <owner/repo> --reason "completed" \
-       --comment "Verification complete — see the status comment above. Closing as verified."
-     ```
-
-If the auditor dispatch itself fails to return (spawn error, tool denial), do not guess at a disposition — return `blocked #<N> at verification: auditor dispatch failed — <reason>` instead of step 5's blocked shape (same free-text vocabulary, just naming this step).
-
-**Never open a PR for the verification-only path itself** — there is no code slice to ship. If the audit surfaces something trivially fixable while you're at it, file it as a normal follow-up `bug` issue (the auditor already does this) rather than fixing it inline — fixing code is out of scope for a verification dispatch, exactly as scope-creep is out of scope on the code-worker path.
+**When present**, this dispatch is fundamentally different from every other path in this file: the deliverable is verification, not a code change. After step 1 (self-assign), skip steps 2–6.5 entirely and read [`issue-work-verification-dispatch.md`](./issue-work-verification-dispatch.md) now: dispatch the auditor named in `verification_slice` against exactly the surface it describes, post a verification-status comment on `#<N>`, and disposition the issue (close as verified when `verification_residual` is absent, or label `needs-operator`/`needs-human-review` and leave it open otherwise) before returning via step 8's `verified #<N>` return shape. Never open a PR on this path.
 
 ### 7. Snapshot check state + auto-merge state, then return — don't block on CI
 

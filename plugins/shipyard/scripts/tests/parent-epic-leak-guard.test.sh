@@ -24,6 +24,16 @@
 #   - Document the real trigger (bare `#N` tokens + commit/CHANGELOG mentions,
 #     NOT only closing keywords) and the bare-URL mitigation.
 #
+# Updated for issue #980: §5.85's full verification-and-remediation procedure
+# (the three-tier escalation, the branch-naming prevention, the reopen-on-
+# merge logic) now lives in an on-demand fragment,
+# `agents/issue-worker/issue-work-parent-epic-leak.md`, loaded only when the
+# trigger condition fires — issue-work.md itself keeps only the load-bearing
+# trigger condition and a pointer to the fragment (part of the thin-router
+# split that cut the always-loaded worker-spec floor). This suite now checks
+# the detailed procedure against the fragment and checks issue-work.md for
+# the trigger + pointer + section-ordering contract.
+#
 # This is the inverse of issue #481 (a resolving PR leaving its own issue stuck
 # OPEN); here a non-resolving mention silently CLOSES an epic it should only
 # reference.
@@ -65,6 +75,7 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 issue_work_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+fragment_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-parent-epic-leak.md"
 fix_checks_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
 fix_rebase_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
 fix_main_ci_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-main-ci.md"
@@ -154,26 +165,10 @@ if [[ -f "$issue_work_path" ]]; then
   assert_contains "$issue_work_path" "https://github.com/mattsears18/shipyard/issues/624" \
     "issue-work.md links to the originating issue #624"
 
-  # (3) The guard verifies closingIssuesReferences after PR create.
-  assert_contains "$issue_work_path" "closingIssuesReferences" \
-    "issue-work.md verifies closingIssuesReferences for the protected epic"
-
-  # (4) The guard remediates a leak: bare-URL body rewrite + reopen-if-merged.
-  assert_contains "$issue_work_path" "bare URL" \
-    "issue-work.md documents the bare-URL mitigation"
-  assert_contains "$issue_work_path" "gh issue reopen" \
-    "issue-work.md reopens the epic if the PR already merged and closed it"
-  assert_contains "$issue_work_path" "blocked #<N> at parent-epic-leak-verify:" \
-    "issue-work.md uses the blocked #<N> at parent-epic-leak-verify: return format"
-
-  # (5) The guidance names the REAL trigger — not only the closing keywords,
-  # but bare #N tokens + commit/CHANGELOG mentions.
-  assert_contains "$issue_work_path" "squashed-commit message" \
-    "issue-work.md names squashed-commit messages as a leak vector"
-  assert_contains "$issue_work_path" "CHANGELOG" \
-    "issue-work.md names CHANGELOG entries as a leak vector"
-  assert_contains "$issue_work_path" "even with NO closing keyword" \
-    "issue-work.md states the trigger is broader than closing keywords"
+  # (2.5) Issue #980: the full procedure now lives in an on-demand fragment;
+  # issue-work.md's §5.85 must be a stub that POINTS to it, not a dead end.
+  assert_contains "$issue_work_path" "issue-work-parent-epic-leak.md" \
+    "issue-work.md's §5.85 stub points to the on-demand fragment (issue #980)"
 
   # (6) The §5.85 check MUST be placed after §5.8 (dispatched-issue closing-link
   # verification) and before §6 (Enable auto-merge) so a protected epic can
@@ -187,33 +182,63 @@ if [[ -f "$issue_work_path" ]]; then
     "### 6. Enable auto-merge" \
     "§5.85 lands before §6 Enable auto-merge"
 
+  assert_contains "$issue_work_path" "even with NO closing keyword" \
+    "issue-work.md states the trigger is broader than closing keywords"
+fi
+
+# (2.6) Issue #980: the detailed procedure — verification, remediation tiers,
+# branch-naming prevention — now lives in the on-demand fragment. Check it
+# there rather than in issue-work.md, since that's where it correctly lives
+# once the trigger fires.
+assert_file_exists "$fragment_path" "agents/issue-worker/issue-work-parent-epic-leak.md exists (issue #980)"
+
+if [[ -f "$fragment_path" ]]; then
+  # (3) The guard verifies closingIssuesReferences after PR create.
+  assert_contains "$fragment_path" "closingIssuesReferences" \
+    "issue-work-parent-epic-leak.md verifies closingIssuesReferences for the protected epic"
+
+  # (4) The guard remediates a leak: bare-URL body rewrite + reopen-if-merged.
+  assert_contains "$fragment_path" "bare URL" \
+    "issue-work-parent-epic-leak.md documents the bare-URL mitigation"
+  assert_contains "$fragment_path" "gh issue reopen" \
+    "issue-work-parent-epic-leak.md reopens the epic if the PR already merged and closed it"
+  assert_contains "$fragment_path" "blocked #<N> at parent-epic-leak-verify:" \
+    "issue-work-parent-epic-leak.md uses the blocked #<N> at parent-epic-leak-verify: return format"
+
+  # (5) The guidance names the REAL trigger — not only the closing keywords,
+  # but bare #N tokens + commit/CHANGELOG mentions.
+  assert_contains "$fragment_path" "squashed-commit message" \
+    "issue-work-parent-epic-leak.md names squashed-commit messages as a leak vector"
+  assert_contains "$fragment_path" "CHANGELOG" \
+    "issue-work-parent-epic-leak.md names CHANGELOG entries as a leak vector"
+
   # (6.5) Issue #893: a single rewrite-and-reverify was not reliable in a live
-  # dispatch. §5.85 must now document a three-tier escalation and must not
+  # dispatch. The fragment must document a three-tier escalation and must not
   # imply a single body rewrite is the complete remediation.
-  assert_contains "$issue_work_path" "https://github.com/mattsears18/shipyard/issues/893" \
-    "issue-work.md links to the non-reliable-remediation follow-up #893"
-  assert_contains "$issue_work_path" "Tier 1: rewrite the PR body to bare-URL form" \
-    "issue-work.md names tier 1 of the escalation (body rewrite)"
-  assert_contains "$issue_work_path" "Tier 2: also rewrite the HEAD commit message" \
-    "issue-work.md names tier 2 of the escalation (commit-message rewrite)"
-  assert_contains "$issue_work_path" "Tier 3: escape hatch" \
-    "issue-work.md names tier 3 of the escalation (escape hatch)"
-  assert_contains "$issue_work_path" "don't stop early" \
-    "issue-work.md instructs running the tiers in order without stopping early"
-  assert_contains "$issue_work_path" "NEUTRAL_BRANCH=" \
-    "issue-work.md's tier-3 escape hatch reopens from a neutrally-named branch"
-  assert_not_contains "$issue_work_path" \
+  assert_contains "$fragment_path" "https://github.com/mattsears18/shipyard/issues/893" \
+    "issue-work-parent-epic-leak.md links to the non-reliable-remediation follow-up #893"
+  assert_contains "$fragment_path" "Tier 1: rewrite the PR body to bare-URL form" \
+    "issue-work-parent-epic-leak.md names tier 1 of the escalation (body rewrite)"
+  assert_contains "$fragment_path" "Tier 2: also rewrite the HEAD commit message" \
+    "issue-work-parent-epic-leak.md names tier 2 of the escalation (commit-message rewrite)"
+  assert_contains "$fragment_path" "Tier 3: escape hatch" \
+    "issue-work-parent-epic-leak.md names tier 3 of the escalation (escape hatch)"
+  assert_contains "$fragment_path" "don't stop early" \
+    "issue-work-parent-epic-leak.md instructs running the tiers in order without stopping early"
+  assert_contains "$fragment_path" "NEUTRAL_BRANCH=" \
+    "issue-work-parent-epic-leak.md's tier-3 escape hatch reopens from a neutrally-named branch"
+  assert_not_contains "$fragment_path" \
     "if it leaked, rewrite the PR body to reference the epic by bare URL (replacing any \`#<E>\` token), re-verify, and — if the PR has *already merged*" \
-    "issue-work.md no longer documents ONLY a single rewrite-and-reverify pass (issue #893)"
+    "issue-work-parent-epic-leak.md no longer documents ONLY a single rewrite-and-reverify pass (issue #893)"
 
   # (6.6) Issue #893: prevention guidance — never name a deliberately
   # non-closing PR's branch `do-work/issue-<E>`-shaped, since GitHub's
   # branch-to-issue auto-linking can register a closing reference
   # independent of the PR body or commit-message text.
-  assert_contains "$issue_work_path" "Prevention — never name a protected-issue-referencing PR's branch" \
-    "issue-work.md documents the branch-naming prevention (issue #893)"
-  assert_contains "$issue_work_path" "independent of the PR body or commit-message text" \
-    "issue-work.md names the branch-name vector as independent of body/commit text (issue #893)"
+  assert_contains "$fragment_path" "Prevention — never name a protected-issue-referencing PR's branch" \
+    "issue-work-parent-epic-leak.md documents the branch-naming prevention (issue #893)"
+  assert_contains "$fragment_path" "independent of the PR body or commit-message text" \
+    "issue-work-parent-epic-leak.md names the branch-name vector as independent of body/commit text (issue #893)"
 fi
 
 # (7) Scope guard — the other modes' specs MUST NOT contain the §5.85 guard.
