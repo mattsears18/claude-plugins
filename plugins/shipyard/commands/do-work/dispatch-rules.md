@@ -278,7 +278,7 @@ When filling a slot, walk this decision tree:
 
    > **`mode: fix-checks-only`** — Fix failing CI checks on PR #<M> in `<owner/repo>` (head branch `<headRefName>`). **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/fix-checks-only.md`.** Existing PR — do NOT open a new one, do NOT change scope, do NOT modify title/body/labels.
    >
-   > Return values: `green #<M>`, `noop: already green`, `flake #<M>: re-ran failed jobs (<signature>)` (infra flake — cancelled jobs / dev-server timeout / setup-job failure, local gates pass; re-ran instead of code-fixing, does not count toward the `blocked:ci` cap), or `blocked: <last failing check> — <last error excerpt>`.
+   > Return values: `green #<M> (rollup verified <ISO8601>: <n> passed, 0 pending, 0 failing)`, `noop: already green #<M> (rollup verified <ISO8601>: <n> passed, 0 pending, 0 failing)`, `pending #<M>: <n> check(s) still running (<names>)` (nothing failing, rollup hasn't settled yet — honest, does not count toward the `blocked:ci` cap, see [#985](https://github.com/mattsears18/shipyard/issues/985)/[#987](https://github.com/mattsears18/shipyard/issues/987)), `flake #<M>: re-ran failed jobs (<signature>)` (infra flake — cancelled jobs / dev-server timeout / setup-job failure, local gates pass; re-ran instead of code-fixing, does not count toward the `blocked:ci` cap), or `blocked: <last failing check> — <last error excerpt>`.
 
    **For `fix-rebase` dispatches (drain-phase only — see [end-of-session drain](./drain.md#end-of-session-drain)):** the same `failed_prs`-style branch-targeted dispatch shape, but a different prompt template and a different return contract. Use `mode: fix-rebase` (Sonnet-pinned per [#854](https://github.com/mattsears18/shipyard/issues/854)).
 
@@ -710,8 +710,9 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
    | `issue-work` / `investigate` / `spike` / `fix-*` | `{outcome:"blocked", issue:N, blocked_stage:"pre-push", blocked_reason:"local unit suite failing"}` | `blocked #N at pre-push: local unit suite failing` (issue-work-style) or `blocked <mode>: <reason>` (synthetic diverts — `issue` is null) |
    | any | `{outcome:"reaped", last_push:"a1b2c3d"}` | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: a1b2c3d)` |
    | any | `{outcome:"reaped", last_push:null}` | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: none)` |
-   | `fix-checks-only` | `{outcome:"green", pr:M, checks:"green"}` | `green #M` |
-   | `fix-checks-only` | `{outcome:"noop", pr:M, summary:"already green"}` | `noop: already green` |
+   | `fix-checks-only` | `{outcome:"green", pr:M, checks:"green", summary:"rollup verified <ISO8601>: <n> passed, 0 pending, 0 failing"}` | `green #M (rollup verified <ISO8601>: <n> passed, 0 pending, 0 failing)` |
+   | `fix-checks-only` | `{outcome:"noop", pr:M, summary:"already green (rollup verified <ISO8601>: <n> passed, 0 pending, 0 failing)"}` | `noop: already green #M (rollup verified <ISO8601>: <n> passed, 0 pending, 0 failing)` |
+   | `fix-checks-only` | `{outcome:"pending", pr:M, checks:"pending", summary:"<n> check(s) still running (<names>)"}` | `pending #M: <n> check(s) still running (<names>)` — the honest "nothing failing, rollup not yet settled" disposition ([#985](https://github.com/mattsears18/shipyard/issues/985)/[#987](https://github.com/mattsears18/shipyard/issues/987)); does not count toward the 3-attempt cap, no `blocked:ci` label |
    | `fix-checks-only` | `{outcome:"green", pr:M, checks:"pending", summary:"flake: re-ran failed jobs (<sig>)"}` | `flake #M: re-ran failed jobs (<sig>)` — the `"flake: "` summary prefix is the discriminator; there is no separate schema `outcome` value for the infra-flake re-run |
    | `fix-checks-only` | `{outcome:"blocked", pr:M, blocked_reason:"<check> — <excerpt>"}` | `blocked: <last failing check> — <last error excerpt>` |
    | `fix-rebase` | `{outcome:"rebased", pr:M}` | `rebased #M` |

@@ -120,10 +120,11 @@ assert_contains "$fix_checks_path" \
   "flake #<M>: re-ran failed jobs" \
   "documents the distinct flake return string"
 
-# The return contract advertises FOUR strings now, not three.
+# The return contract advertises FIVE strings now (green/noop/pending/flake/blocked) —
+# widened from four by #985/#987's `pending` disposition.
 assert_contains "$fix_checks_path" \
-  "one of the four strings below" \
-  "return contract widened from three to four terminal strings"
+  "one of the five strings below" \
+  "return contract widened from four to five terminal strings"
 
 # --- Step A: never bail 'logs unavailable' on an in-progress run ------------
 # Step A's heading and body were updated by issue #984 to scope the wait to
@@ -219,7 +220,7 @@ assert_contains "$steady_state_path" \
   "[fix-checks-flake]" \
   "reconcile logs a distinct [fix-checks-flake] advisory"
 assert_contains "$steady_state_path" \
-  "\`green\`, \`noop:\`, \`flake\`, or \`blocked\`" \
+  "\`green\`, \`noop:\`, \`pending\`, \`flake\`, or \`blocked\`" \
   "unrecognized-return path lists flake as a recognized prefix"
 
 # The reconcile must NOT label blocked:ci and must NOT push onto failed_prs.
