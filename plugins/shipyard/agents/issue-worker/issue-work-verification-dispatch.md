@@ -34,9 +34,9 @@ On-demand fragment of [`issue-work.md`](./issue-work.md). Loaded only when that 
    ```
 
 4. **Disposition:**
-   - **`verification_residual` is present (the common case)** — apply `needs-operator` (a plain device/browser recheck) or `needs-human-review` (a genuine human judgment call — e.g. a subjective design review) per whichever fits the residual's shape, and leave `#<N>` **OPEN**. Apply the label **ensure-then-label-then-verify**, the same idiom §6.5 uses:
+   - **`verification_residual` is present (the common case)** — apply `agent-console` (a plain device/browser recheck) or `needs-human-review` (a genuine human judgment call — e.g. a subjective design review) per whichever fits the residual's shape, and leave `#<N>` **OPEN**. Apply the label **ensure-then-label-then-verify**, the same idiom §6.5 uses:
      ```bash
-     GATE_LABEL="needs-operator"   # or "needs-human-review" — pick per the residual's shape
+     GATE_LABEL="agent-console"   # or "needs-human-review" — pick per the residual's shape
      gh label create "$GATE_LABEL" --repo <owner/repo> \
        --description "Operator/human review gate applied by a verification-disposition hand-back" 2>/dev/null || true
      gh issue edit <N> --repo <owner/repo> --add-label "$GATE_LABEL"

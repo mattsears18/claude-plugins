@@ -198,14 +198,14 @@ blocked: external provisioning required — <service>: <what the human must prov
 
 Example: `blocked: external provisioning required — Sentry: create a Sentry account, then set sentry_dsn in terraform.tfvars before this integration can deploy`.
 
-The orchestrator routes this bail to the **`needs-operator`** label (a browser/console operator action — see [steady-state.md's bail reason→class table](../../commands/do-work/steady-state.md#a-reconcile-the-return)), surfacing it to `/my-turn` as an actionable provisioning handoff and making it drainable by `/do-work`. This is the worker-side backstop for the same case [scope-preflight](../../commands/do-work/setup/06-scope-preflight.md#6-initial-scope-pre-flight) catches earlier via the `external-dependency` defer — both land on `needs-operator`.
+The orchestrator routes this bail to the **`agent-console`** label (a browser/console operator action — see [steady-state.md's bail reason→class table](../../commands/do-work/steady-state.md#a-reconcile-the-return)), surfacing it to `/my-turn` as an actionable provisioning handoff and making it drainable by `/do-work`. This is the worker-side backstop for the same case [scope-preflight](../../commands/do-work/setup/06-scope-preflight.md#6-initial-scope-pre-flight) catches earlier via the `external-dependency` defer — both land on `agent-console`.
 
 **Don't over-trigger — this guard is narrow.** It fires ONLY when you'd otherwise commit a *fabricated stand-in for a real secret/account that must exist for the change to work*. It does **not** fire when:
 - The change references an **already-provisioned** secret (an env var / CI secret / `*.tfvars` key that already exists) — that's functional config, ship it.
 - You add a **variable *declaration*** (e.g. a Terraform `variable "sentry_dsn" {}` with no default, or a `.env.example` placeholder) AND the change stays **inert until the value is supplied** (nothing deploys/activates with an empty value) AND you document in the PR body that the user must populate it. A declared-but-unset variable that can't deploy dead is fine; a hardcoded fake value that *will* deploy is not.
 - The work is pure code with no live-credential dependency.
 
-When in doubt between "inert declaration" and "dead config that will deploy", bail — a `needs-operator` handoff with a provisioning checklist is cheap and recoverable; an auto-merged dead deploy is the harm this exists to prevent.
+When in doubt between "inert declaration" and "dead config that will deploy", bail — an `agent-console` handoff with a provisioning checklist is cheap and recoverable; an auto-merged dead deploy is the harm this exists to prevent.
 
 ### 4.5 Pre-PR-create diff sanity check
 
@@ -537,13 +537,13 @@ Then take the matching branch above using `$RESOLVED_TRUST` in place of the miss
 
 **Run this step only when the dispatch prompt's Context block carries an "Operator residual" paragraph** (set by [scope-preflight's operator-slice carve-out](../../commands/do-work/setup/06b-scope-carveouts.md#operator-slice-carve-out--ship-the-code-slice-hand-back-only-the-operator-remainder-851), or an explicit human-authored split instruction naming the residual directly). When absent — the common case — **skip directly to step 7**; nothing below applies and behavior is unchanged.
 
-**When present**, this PR ships only the phase-1 code slice; issue `#<N>` itself is not resolved. Read [`issue-work-split-dispatch.md`](./issue-work-split-dispatch.md) now and follow it in full: confirm §5.85's leak-verification already ran treating `#<N>` as the protected issue, then post a disposition comment and apply the `needs-operator`/`needs-human-review` residual label to the *issue* (never the PR) before continuing to step 7 and returning via step 8's `partial` return shape.
+**When present**, this PR ships only the phase-1 code slice; issue `#<N>` itself is not resolved. Read [`issue-work-split-dispatch.md`](./issue-work-split-dispatch.md) now and follow it in full: confirm §5.85's leak-verification already ran treating `#<N>` as the protected issue, then post a disposition comment and apply the `agent-console`/`needs-human-review` residual label to the *issue* (never the PR) before continuing to step 7 and returning via step 8's `partial` return shape.
 
 ### 6.6 Verification disposition: run the auditor, file bugs, disposition — without a PR ([#852](https://github.com/mattsears18/shipyard/issues/852))
 
 **Run this step only when the dispatch prompt's Context block carries a "Verification slice" paragraph** (set by [scope-preflight's QA-verification carve-out](../../commands/do-work/setup/06b-scope-carveouts.md#qa-verification-carve-out--run-the-automatable-audit-hand-back-only-the-manual-remainder-852)). When absent — the common case — this section does not apply and behavior is unchanged.
 
-**When present**, this dispatch is fundamentally different from every other path in this file: the deliverable is verification, not a code change. After step 1 (self-assign), skip steps 2–6.5 entirely and read [`issue-work-verification-dispatch.md`](./issue-work-verification-dispatch.md) now: dispatch the auditor named in `verification_slice` against exactly the surface it describes, post a verification-status comment on `#<N>`, and disposition the issue (close as verified when `verification_residual` is absent, or label `needs-operator`/`needs-human-review` and leave it open otherwise) before returning via step 8's `verified #<N>` return shape. Never open a PR on this path.
+**When present**, this dispatch is fundamentally different from every other path in this file: the deliverable is verification, not a code change. After step 1 (self-assign), skip steps 2–6.5 entirely and read [`issue-work-verification-dispatch.md`](./issue-work-verification-dispatch.md) now: dispatch the auditor named in `verification_slice` against exactly the surface it describes, post a verification-status comment on `#<N>`, and disposition the issue (close as verified when `verification_residual` is absent, or label `agent-console`/`needs-human-review` and leave it open otherwise) before returning via step 8's `verified #<N>` return shape. Never open a PR on this path.
 
 ### 7. Snapshot check state + auto-merge state, then return — don't block on CI
 
@@ -632,13 +632,13 @@ When `originating_author_trust == "external"` and you intentionally skipped auto
 
 When [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851) ran (an operator-slice split dispatch — the issue does NOT close) → return, folding in the normal auto-merge/checks suffix from whichever branch above matched:
 
-> `shipped #<N> partial via PR #<M> (operator residual handed back: <needs-operator|needs-human-review>, auto-merge: <enabled|gated-manual|merged-direct|merged-direct-ungated|unavailable — needs manual merge>, checks: <green|pending|failing>)`
+> `shipped #<N> partial via PR #<M> (operator residual handed back: <agent-console|needs-human-review>, auto-merge: <enabled|gated-manual|merged-direct|merged-direct-ungated|unavailable — needs manual merge>, checks: <green|pending|failing>)`
 
 The `partial` marker is load-bearing — it tells the orchestrator's step-A reconcile that issue `#<N>` stays OPEN by design (the PR's own `closingIssuesReferences` will confirm this) rather than being an unexpected stuck-open case for [§5.8](#58-post-pr-create-closing-link-verification) to chase down.
 
 When [§6.6](#66-verification-disposition-run-the-auditor-file-bugs-disposition--without-a-pr-852) ran (a verification-slice dispatch — no PR was opened for `#<N>` itself) → return:
 
-> `verified #<N> (bugs filed: <count>, residual: <needs-operator|needs-human-review — issue left open|none — closed as verified>)`
+> `verified #<N> (bugs filed: <count>, residual: <agent-console|needs-human-review — issue left open|none — closed as verified>)`
 
 `<count>` is the number of `bug` issues the auditor filed this run (0 if none). The `residual:` token tells the orchestrator's step-A reconcile whether `#<N>` is still open (a gate label was applied — no auto-retry, `/my-turn` will surface it) or was closed as verified (no further action). This is a `disposition`-shaped outcome like `investigated+*` — no PR, no `session_prs` append.
 

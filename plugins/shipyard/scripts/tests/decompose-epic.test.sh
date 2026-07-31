@@ -163,7 +163,7 @@ if [[ -f "$do_work_setup_path" ]]; then
   # Step 6 applies the class-keyed gate label; the confirmed-non-shippable
   # epic handoff routes to needs-human-review via the GATE_LABEL default
   # branch (#608 introduced the operator/decision split — external-dependency
-  # → needs-operator, everything else → needs-human-review).
+  # → agent-console, everything else → needs-human-review).
   # shellcheck disable=SC2016  # literal needle — must NOT expand $GATE_LABEL
   assert_contains "$do_work_setup_path" 'gh issue edit <N> --repo <owner/repo> --add-label "$GATE_LABEL"' \
     "do-work/setup.md step 6 applies the class-keyed GATE_LABEL (#608)"

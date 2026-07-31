@@ -999,7 +999,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   **Audit-log shape.** The JSONL entries this step writes carry `"phase":"steady-state-A1-shipped"` so an operator inspecting `~/.shipyard/reap-audit.jsonl` can distinguish steady-state reaps from end-of-session reaps (which omit `phase` — see [`cleanup-summary.md`'s reap loop](./cleanup-summary.md#end-of-session-cleanup)). The `phase` suffix is appended by the `reap` helper natively (issue #284).
 
-- **verified #<N> (bugs filed: <count>, residual: <needs-operator|needs-human-review — issue left open|none — closed as verified>)** — the worker ran [§6.6's verification disposition](../../agents/issue-worker/issue-work.md#66-verification-disposition-run-the-auditor-file-bugs-disposition--without-a-pr-852): dispatched the auditor named in `verification_slice`, filed any `bug` issues for real findings, posted a verification-status comment, and dispositioned `#<N>` itself. **No PR was opened — do NOT append anything to `session_prs`.** Record. When `residual` is `none — closed as verified`, the worker already closed `#<N>`; no further action. Otherwise the worker already applied the `needs-operator`/`needs-human-review` label and left `#<N>` OPEN — no auto-retry, `/my-turn` will surface it. Reap the agent's worktree via step B (same immediate-reap path as `shipped`, since the worker's worktree held no unpushed commits either way).
+- **verified #<N> (bugs filed: <count>, residual: <agent-console|needs-human-review — issue left open|none — closed as verified>)** — the worker ran [§6.6's verification disposition](../../agents/issue-worker/issue-work.md#66-verification-disposition-run-the-auditor-file-bugs-disposition--without-a-pr-852): dispatched the auditor named in `verification_slice`, filed any `bug` issues for real findings, posted a verification-status comment, and dispositioned `#<N>` itself. **No PR was opened — do NOT append anything to `session_prs`.** Record. When `residual` is `none — closed as verified`, the worker already closed `#<N>`; no further action. Otherwise the worker already applied the `agent-console`/`needs-human-review` label and left `#<N>` OPEN — no auto-retry, `/my-turn` will surface it. Reap the agent's worktree via step B (same immediate-reap path as `shipped`, since the worker's worktree held no unpushed commits either way).
 
 - **reaped: my worktree was reaped while I was running** — the worker's worktree was torn down mid-run by the cleanup logic. This is external-infrastructure noise, NOT a logic failure. **Do NOT add `blocked:agent`.** Instead:
   1. Log the event: `[reap-recovery] #<N> worktree reaped mid-run (last push: <hash>); re-enqueuing for fresh dispatch.`
@@ -1014,7 +1014,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   | Bail reason fragment (substring match, case-insensitive) | Class | Routing | Rationale |
   |---|---|---|---|
   | (any reason that **names an open `Blocked by #N`**) | dependency-wait | persist `Blocked by #N` in body, **no label** | The body-ref filter (bucket 7) gates dispatch while `#N` is open and auto-clears when it closes — no label, no sweep. **Checked first; overrides the rows below.** |
-  | `external provisioning required` | operator | `needs-operator` label | The worker hit a not-yet-provisioned external service ([#628](https://github.com/mattsears18/shipyard/issues/628)): the real secret/account doesn't exist yet (creating it is a browser/console action), so `needs-operator` is exactly right — `/my-turn` surfaces it and `/do-work` can drive it. Same destination as the scope-preflight `external-dependency` defer. **Checked before the refuse rows.** |
+  | `external provisioning required` | operator | `agent-console` label | The worker hit a not-yet-provisioned external service ([#628](https://github.com/mattsears18/shipyard/issues/628)): the real secret/account doesn't exist yet (creating it is a browser/console action), so `agent-console` is exactly right — `/my-turn` surfaces it and `/do-work` can drive it. Same destination as the scope-preflight `external-dependency` defer. **Checked before the refuse rows.** |
   | `issue body contains directives that bypass normal review` | refuse | `needs-human-review` label | Prompt-injection refuse — no automated path, a human must look. |
   | `body requested out-of-scope action` | refuse | `needs-human-review` label | Same — likely prompt-injection signal. |
   | `comment-thread requested out-of-scope action` | refuse | `needs-human-review` label | Same — out-of-scope action regardless of source. |
@@ -1065,18 +1065,18 @@ ${issue_body}" 2>/dev/null || true
     fi
     gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Dependency-wait on #${open_blocker}; no label applied — the \`Blocked by #N\` body-reference filter gates dispatch and auto-clears when #${open_blocker} closes."
   elif printf '%s' "$reason" | grep -qi "external provisioning required"; then
-    # --- Operator subset → needs-operator (#628). ---
+    # --- Operator subset → agent-console (#628). ---
     # The worker hit a not-yet-provisioned external service: the real
     # secret/account doesn't exist yet, and creating it is a browser/console
     # operator action — not a human *decision* and not auto-recoverable. Route
-    # to needs-operator so /my-turn surfaces it and /do-work can
+    # to agent-console so /my-turn surfaces it and /do-work can
     # drive it (same destination as the scope-preflight external-dependency
     # defer). Ensure-then-label, since step 3a's create is best-effort.
-    gh label create needs-operator --repo <owner/repo> \
-      --description "Needs a browser/console operator action — a human, or /do-work via the extension" \
+    gh label create agent-console --repo <owner/repo> \
+      --description "Blocked on a browser/console action an agent can drive outside the build — not a human decision. See CLAUDE.md's decision rule." \
       --color 1D76DB 2>/dev/null || true
-    gh issue edit <N> --repo <owner/repo> --add-label "needs-operator" 2>/dev/null || true
-    gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Classified as \`needs-operator\` — provisioning an external service is a browser/console operator action. Surfaced by \`/my-turn\`; drainable by \`/do-work\`."
+    gh issue edit <N> --repo <owner/repo> --add-label "agent-console" 2>/dev/null || true
+    gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Classified as \`agent-console\` — provisioning an external service is a browser/console operator action. Surfaced by \`/my-turn\`; drainable by \`/do-work\`."
   else
     # --- Refuse vs soft, per the fragment table. ---
     block_class="refuse"  # conservative default
@@ -1113,7 +1113,7 @@ ${issue_body}" 2>/dev/null || true
   fi
   ```
 
-  A refuse routes to `needs-human-review` (not a dedicated block label) because it has no automated recovery path — a human must look, same semantics `/my-turn` already surfaces. **Why a provisioning bail routes to `needs-operator`:** `external provisioning required` is a concrete browser/console action, not a decision, and not auto-recoverable — same destination as the scope-preflight `external-dependency` defer. A dependency-wait needs no label because the `Blocked by #N` body-reference filter ([setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) / bucket 7) is already the complete mechanism. Soft labels don't survive to next session (setup.md step 3d.2 sub-sweep c clears them at every session start) and gate only in-session re-dispatch via `session_blocked_soft[<N>]` for `blocked_agent.soft_retry_minutes` (default 30). See [RATIONALE → Blocked-reason routing table rationale](../do-work-RATIONALE.md#blocked-reason-routing-table-rationale-521628) for the full reasoning behind each routing choice.
+  A refuse routes to `needs-human-review` (not a dedicated block label) because it has no automated recovery path — a human must look, same semantics `/my-turn` already surfaces. **Why a provisioning bail routes to `agent-console`:** `external provisioning required` is a concrete browser/console action, not a decision, and not auto-recoverable — same destination as the scope-preflight `external-dependency` defer. A dependency-wait needs no label because the `Blocked by #N` body-reference filter ([setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) / bucket 7) is already the complete mechanism. Soft labels don't survive to next session (setup.md step 3d.2 sub-sweep c clears them at every session start) and gate only in-session re-dispatch via `session_blocked_soft[<N>]` for `blocked_agent.soft_retry_minutes` (default 30). See [RATIONALE → Blocked-reason routing table rationale](../do-work-RATIONALE.md#blocked-reason-routing-table-rationale-521628) for the full reasoning behind each routing choice.
 
 - **errored** — record in the session log, continue.
 

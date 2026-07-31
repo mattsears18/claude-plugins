@@ -2069,7 +2069,7 @@ assert_contains "$dont_path" \
 #   - at most one re-attempt, and only to cite an explicit confirmation
 #     already on record — never to iterate wording against the classifier;
 #   - a second denial (or no confirmation to cite) degrades to a
-#     needs-operator hand-back, never a silent drop;
+#     agent-console hand-back, never a silent drop;
 #   - the content-integrity boundary: the classifier's reasoning never
 #     reaches a public GitHub artifact (matches #718/#341).
 assert_contains "$do_work_path" \
@@ -2330,11 +2330,11 @@ assert_contains "$setup_path" \
   "setup.md re-gate guard's rejection log line cites issue #962"
 
 # The guard must scope itself to the two needs-human-review-gating classes,
-# not external-dependency (which gates needs-operator instead).
+# not external-dependency (which gates agent-console instead).
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
 assert_contains "$setup_path" \
-  'external-dependency` gates with `needs-operator` instead and is out of scope here' \
+  'external-dependency` gates with `agent-console` instead and is out of scope here' \
   "setup.md re-gate guard scopes itself to human-decision-required / confirmed-non-shippable-as-single-PR (#962)"
 
 echo

@@ -214,7 +214,7 @@
     <text x="1294" y="732" fill="#f5f7fb" font-size="19" font-weight="700">Drives your real Chrome (#661)</text>
     <g fill="#cbd5e8" font-size="13" font-weight="400">
       <text x="1294" y="762">• claude-in-chrome — inherits your logged-in sessions, no setup</text>
-      <text x="1294" y="784">• needs-operator — paste a secret, toggle a console, close a PR</text>
+      <text x="1294" y="784">• agent-console — paste a secret, toggle a console, close a PR</text>
       <text x="1294" y="806">• --no-operate / --hands-off → code-only, dispatch-only run</text>
     </g>
   </g>
@@ -260,7 +260,7 @@
         <text x="1004" y="1057"><tspan fill="#f5f7fb" font-weight="600">Parent-epic leak guard</tspan><tspan fill="#9fb2d6"> — a "do NOT close" epic reference can't silently auto-close on merge </tspan><tspan fill="#a8d8b5" font-weight="600">(#624)</tspan></text>
 
         <circle cx="990" cy="1080" r="3" fill="#a8d8b5"/>
-        <text x="1004" y="1085"><tspan fill="#f5f7fb" font-weight="600">Operator vs. decision split</tspan><tspan fill="#9fb2d6"> — needs-operator (browser-completable) is distinct from needs-human-review </tspan><tspan fill="#a8d8b5" font-weight="600">(#608)</tspan></text>
+        <text x="1004" y="1085"><tspan fill="#f5f7fb" font-weight="600">Operator vs. decision split</tspan><tspan fill="#9fb2d6"> — agent-console (browser-completable) is distinct from needs-human-review </tspan><tspan fill="#a8d8b5" font-weight="600">(#608)</tspan></text>
 
         <circle cx="990" cy="1108" r="3" fill="#a8d8b5"/>
         <text x="1004" y="1113"><tspan fill="#f5f7fb" font-weight="600">Per-worker rolling pre-flight</tspan><tspan fill="#9fb2d6"> — first-dispatch latency cut by waiting on first scope agent rather than full batch </tspan><tspan fill="#a8d8b5" font-weight="600">(#233)</tspan></text>

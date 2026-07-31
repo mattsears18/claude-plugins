@@ -24,7 +24,7 @@ Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/
 
 **Handed back:** <operator_residual>
 
-This issue is being labeled `<needs-operator|needs-human-review>` and left OPEN pending that action.
+This issue is being labeled `<agent-console|needs-human-review>` and left OPEN pending that action.
 ```
 
 Then:
@@ -34,10 +34,10 @@ gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-s
 rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
-Choose the residual label from the dispatch prompt's `operator_residual_security_sensitive` framing (mirrored from `operate/02-execution-and-playbooks.md`'s [Claude-safe-vs-hand-back table](../../commands/do-work/operate/02-execution-and-playbooks.md#claude-safe-to-auto-drive-vs-hand-back-securityaccess-control) when you need to re-derive it): `needs-operator` for a plain browser/console action, `needs-human-review` when the residual is itself a security/access-control mutation (per [#848](https://github.com/mattsears18/shipyard/issues/848)'s relabel rule — see this repo's `CLAUDE.md` § `needs-operator`). Apply it **ensure-then-label-then-verify**, the same idiom scope-preflight's own label application uses — never a bare `--add-label` that silently depends on label-creation having landed:
+Choose the residual label from the dispatch prompt's `operator_residual_security_sensitive` framing (mirrored from `operate/02-execution-and-playbooks.md`'s [Claude-safe-vs-hand-back table](../../commands/do-work/operate/02-execution-and-playbooks.md#claude-safe-to-auto-drive-vs-hand-back-securityaccess-control) when you need to re-derive it): `agent-console` for a plain browser/console action, `needs-human-review` when the residual is itself a security/access-control mutation (per [#848](https://github.com/mattsears18/shipyard/issues/848)'s relabel rule — see this repo's `CLAUDE.md` § `agent-console`). Apply it **ensure-then-label-then-verify**, the same idiom scope-preflight's own label application uses — never a bare `--add-label` that silently depends on label-creation having landed:
 
 ```bash
-GATE_LABEL="needs-operator"   # or "needs-human-review" per the choice above
+GATE_LABEL="agent-console"   # or "needs-human-review" per the choice above
 gh label create "$GATE_LABEL" --repo <owner/repo> \
   --description "Operator/human review gate applied by a split-dispatch hand-back" 2>/dev/null || true
 gh issue edit <N> --repo <owner/repo> --add-label "$GATE_LABEL"
@@ -45,6 +45,6 @@ gh issue edit <N> --repo <owner/repo> --add-label "$GATE_LABEL"
 
 If either the comment or the label call errors (rate limit, permission), log an advisory and retry once; if it still fails, don't block your return on it — note the failure in your step-8 return string so the orchestrator can retry the labeling.
 
-**Do NOT apply `needs-human-review`/`needs-operator` to the PR** — only to the issue. The PR itself already merged or has auto-merge armed; the gate label belongs on the still-open issue that carries the unshipped residual.
+**Do NOT apply `needs-human-review`/`agent-console` to the PR** — only to the issue. The PR itself already merged or has auto-merge armed; the gate label belongs on the still-open issue that carries the unshipped residual.
 
 Once this fragment's disposition is applied, return to [`issue-work.md`](./issue-work.md) and continue at step 7, then return via step 8's `partial` return shape.
