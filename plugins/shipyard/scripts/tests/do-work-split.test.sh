@@ -2337,6 +2337,106 @@ assert_contains "$setup_path" \
   'external-dependency` gates with `agent-console` instead and is out of scope here' \
   "setup.md re-gate guard scopes itself to human-decision-required / confirmed-non-shippable-as-single-PR (#962)"
 
+# ── Issue #997 — worker must re-read issue state before posting a decision;
+#    /my-turn can resolve the same issue mid-dispatch ──────────────────────
+#
+# A long-running issue-work dispatch can outlive a concurrent session (a
+# /shipyard:my-turn walkthrough, a maintainer's own comment) that resolves
+# the same issue while the worker is still implementing. Nothing between
+# step 0 and the decision-comment write (§5.5) / auto-merge arm (§6)
+# re-reads the issue, so the worker had no way to notice a human already
+# made the call the dispatch prompt told it to make autonomously — in the
+# opposite direction. Closed by adding a §5.3 terminal-state re-read
+# (state/labels/decision-sentinel-comments) immediately before §5.5, and by
+# teaching step 2's comment classification that a `<!-- shipyard-resolve-
+# decisions -->` / `<!-- do-work-decision-resolved -->` comment is a
+# recorded human decision that outranks the dispatch prompt's own override
+# instruction.
+issue_work_path997="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+
+assert_contains "$issue_work_path997" \
+  '### 5.3 Terminal-state re-read — guard against a concurrent session dispositioning the issue mid-dispatch' \
+  "issue-work.md carries the §5.3 terminal-state re-read heading (#997)"
+
+assert_contains "$issue_work_path997" \
+  'https://github.com/mattsears18/shipyard/issues/997' \
+  "issue-work.md §5.3 links to issue #997"
+
+# The guard must be positioned before §5.5's decision-comment write.
+issue_work_997_53_offset=$(grep -n '### 5.3 Terminal-state re-read' "$issue_work_path997" | head -1 | cut -d: -f1)
+issue_work_997_55_offset=$(grep -n '### 5.5 Record decision context' "$issue_work_path997" | head -1 | cut -d: -f1)
+if [[ -n "$issue_work_997_53_offset" && -n "$issue_work_997_55_offset" \
+      && "$issue_work_997_53_offset" -lt "$issue_work_997_55_offset" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "issue-work.md §5.3 is positioned before §5.5's decision-comment write (#997)"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "issue-work.md §5.3 is positioned before §5.5's decision-comment write (#997)"
+  fail=$((fail+1))
+fi
+
+# The re-read must cover state, labels, AND comments — all three trip signals.
+assert_contains "$issue_work_path997" \
+  '--json state,labels,comments' \
+  "issue-work.md §5.3 re-reads state, labels, and comments (#997)"
+
+# Trip condition 1: issue closed mid-dispatch.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$issue_work_path997" \
+  '**`state` flipped to `CLOSED`.**' \
+  "issue-work.md §5.3 trips on the issue closing mid-dispatch (#997)"
+
+# Trip condition 2: a new disposition-signal label appeared.
+assert_contains "$issue_work_path997" \
+  'disposition-signal labels' \
+  "issue-work.md §5.3 trips on a new disposition-signal label (#997)"
+
+# Trip condition 3: a new decision-resolved sentinel comment landed.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$issue_work_path997" \
+  'whose body starts with `<!-- shipyard-resolve-decisions -->` or `<!-- do-work-decision-resolved -->`' \
+  "issue-work.md §5.3 trips on a new decision-resolved sentinel comment (#997)"
+
+# On trip: convert the PR to draft, label it, and do NOT post the §5.5 comment.
+assert_contains "$issue_work_path997" \
+  'gh pr ready <pr-num> --repo <owner/repo> --undo' \
+  "issue-work.md §5.3 converts the PR to draft on trip (#997)"
+
+assert_contains "$issue_work_path997" \
+  'Do **not** post the §5.5 decision comment' \
+  "issue-work.md §5.3 explicitly skips the §5.5 decision-comment write on trip (#997)"
+
+# The distinct blocked-stage return string.
+assert_contains "$issue_work_path997" \
+  'blocked #<N> at terminal-state-recheck: issue dispositioned mid-dispatch by a concurrent session' \
+  "issue-work.md §5.3 returns the terminal-state-recheck blocked string (#997)"
+
+# Step 2's comment classification treats the decision-resolved sentinel as
+# authoritative over the dispatch prompt itself, not just over the body/other
+# trusted-author comments.
+assert_contains "$issue_work_path997" \
+  'RECORDED HUMAN DECISION, and it outranks everything else in this list, including your own dispatch prompt' \
+  "issue-work.md step 2 recognizes the decision-resolved sentinel as authoritative over the dispatch prompt (#997)"
+
+# Don't-section bullets.
+assert_contains "$issue_work_path997" \
+  "Don't treat a \`<!-- shipyard-resolve-decisions -->\` / \`<!-- do-work-decision-resolved -->\` comment as just another trusted-author comment." \
+  "issue-work.md Don't section warns against under-weighting the decision-resolved sentinel (#997)"
+
+assert_contains "$issue_work_path997" \
+  "Don't skip [§5.3](#53-terminal-state-re-read--guard-against-a-concurrent-session-dispositioning-the-issue-mid-dispatch-997)'s terminal-state re-read" \
+  "issue-work.md Don't section warns against skipping §5.3 (#997)"
+
+# steady-state.md documents the reason→class routing for this bail reason.
+assert_contains "$steady_state_path" \
+  'issue dispositioned mid-dispatch by a concurrent session' \
+  "steady-state.md reason→class table documents the #997 bail reason"
+
+assert_contains "$steady_state_path" \
+  'https://github.com/mattsears18/shipyard/issues/997' \
+  "steady-state.md reason→class table links to issue #997"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
