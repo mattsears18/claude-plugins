@@ -43,6 +43,23 @@
 # what's left is the deliberate, reviewed growth this ceiling exists to
 # gate, not silent compounding.
 #
+# skills/worker-preamble/SKILL.md's ceiling was LOWERED 68000 -> 57000 by
+# #1012 (2026-07-31), the follow-on tail to #980/#1011: the same thin-core +
+# on-demand-fragments pattern applied to issue-work.md by #1011 was applied
+# to SKILL.md itself. Six rare/opt-in sections moved out to new or existing
+# fragments — Never `git stash`'s mechanism + unavoidable-stash procedure
+# (git-stash-prohibition.md), the broad-process-kill repro + host-detection
+# check (process-kill-detail.md), the step-0/mid-session cwd-check's
+# pre-#826 fallback form (consolidated once instead of duplicated twice,
+# assert-worktree-cwd-fallback.md), the harness's 600s auto-background
+# re-block pattern (folded into the existing ci-pitfalls.md, fixing a
+# cross-reference from fix-checks-only.md that already assumed it lived
+# there), and the background-process-cleanup mechanism table
+# (stop-background-processes.md) — with trigger-and-pointer stubs left
+# behind so no anchor reference broke and no rule lost reachability. Actual
+# size dropped 61394 -> ~51555 bytes (-16%); the new ceiling carries the
+# same ~10-12% headroom convention as every other row in this file.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/spec-size-budget.test.sh
 
@@ -92,7 +109,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  68000 \
+  57000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \

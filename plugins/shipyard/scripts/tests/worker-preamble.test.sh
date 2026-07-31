@@ -61,6 +61,16 @@ write_probe_path="$wp_dir/write-probe.md"
 # pointed at from SKILL.md's #829 section rather than inlined there (keeps
 # the always-loaded core under the #617 line-budget).
 compound_command_refusal_path="$wp_dir/compound-command-refusal.md"
+# Issue #1012 — the follow-on tail to #980/#1011: SKILL.md itself got the
+# same thin-core + on-demand-fragments treatment #1011 applied to
+# issue-work.md. Four new fragments; the #829 section moved into the
+# existing ci-pitfalls.md fragment rather than a fifth new file (fixing a
+# dangling fix-checks-only.md cross-reference that already assumed it lived
+# there).
+git_stash_prohibition_path="$wp_dir/git-stash-prohibition.md"
+process_kill_detail_path="$wp_dir/process-kill-detail.md"
+assert_worktree_cwd_fallback_path="$wp_dir/assert-worktree-cwd-fallback.md"
+stop_background_processes_path="$wp_dir/stop-background-processes.md"
 do_work_path="$repo_root/plugins/shipyard/commands/do-work.md"
 # The dispatch prompts live in the steady-state phase after the issue #154
 # split, and the divert/fix-checks/issue-work prompt templates moved again into
@@ -582,46 +592,60 @@ assert_contains "$skill_path" "(./write-probe.md)" \
   # and (4) note the optional pre-split caveat without treating runtime
   # estimation as reliable. Removing any of the four regresses the
   # sanctioned-re-block contract #829 exists to close.
+  #
+  # Issue #1012 moved the full section (heading and all) out of SKILL.md and
+  # into the existing ci-pitfalls.md fragment — the same full-move pattern
+  # #808 already used for classifier-denial.md / native-background-subagent.md
+  # — fixing a dangling cross-reference from fix-checks-only.md that already
+  # assumed the content lived in ci-pitfalls.md. SKILL.md keeps a short
+  # trigger-and-pointer stub (heading + the sanctioned-not-a-breach framing);
+  # the load-bearing detail below now lives in the fragment.
   assert_contains "$skill_path" \
     "## A foreground call the harness auto-backgrounds past 600s" \
-    "SKILL.md covers the harness-auto-backgrounded-600s-call section (issue #829)"
+    "SKILL.md covers the harness-auto-backgrounded-600s-call section heading (issue #829)"
   assert_contains "$skill_path" "sanctioned harness behavior, not a #529 breach" \
     "SKILL.md names the auto-backgrounded state as sanctioned, not a #529 breach (issue #829)"
+  assert_contains "$skill_path" "ci-pitfalls.md" \
+    "SKILL.md's #829 stub points at ci-pitfalls.md (issue #1012)"
+  assert_contains "$ci_pitfalls_path" \
+    "## A foreground call the harness auto-backgrounds past 600s" \
+    "ci-pitfalls.md covers the harness-auto-backgrounded-600s-call section (issue #1012)"
   # shellcheck disable=SC2016
   # Literal grep needle — the re-block pattern is matched verbatim, not expanded.
-  assert_contains "$skill_path" \
+  assert_contains "$ci_pitfalls_path" \
     'until [ -s "<output-file>" ]; do sleep 15; done; cat "<output-file>"' \
-    "SKILL.md prescribes the verbatim re-block until-loop pattern (issue #829)"
-  assert_contains "$skill_path" 'Do NOT return a narrative status ("tests are still running, I' \
-    "SKILL.md's anti-pattern list forbids a narrative status return (issue #829)"
-  assert_contains "$skill_path" "Do NOT re-run the command from scratch" \
-    "SKILL.md's anti-pattern list forbids re-running the command from scratch (issue #829)"
+    "ci-pitfalls.md prescribes the verbatim re-block until-loop pattern (issue #829)"
+  assert_contains "$ci_pitfalls_path" 'Do NOT return a narrative status ("tests are still running, I' \
+    "ci-pitfalls.md's anti-pattern list forbids a narrative status return (issue #829)"
+  assert_contains "$ci_pitfalls_path" "Do NOT re-run the command from scratch" \
+    "ci-pitfalls.md's anti-pattern list forbids re-running the command from scratch (issue #829)"
   # shellcheck disable=SC2016
   # Literal grep needle — the backtick-quoted `Monitor` is matched verbatim, not expanded.
-  assert_contains "$skill_path" 'Do NOT reach for `Monitor` merely because the harness' \
-    "SKILL.md's anti-pattern list forbids reaching for Monitor merely because the harness guard suggests it (issue #829)"
-  assert_contains "$skill_path" "host contention" \
-    "SKILL.md names host contention as the reason runtime is unpredictable (issue #829)"
-  assert_contains "$skill_path" "worker-side" \
-    "SKILL.md frames the #829 section as the worker-side half of the #829/#838 pair"
+  assert_contains "$ci_pitfalls_path" 'Do NOT reach for `Monitor` merely because the harness' \
+    "ci-pitfalls.md's anti-pattern list forbids reaching for Monitor merely because the harness guard suggests it (issue #829)"
+  assert_contains "$ci_pitfalls_path" "host contention" \
+    "ci-pitfalls.md names host contention as the reason runtime is unpredictable (issue #829)"
+  assert_contains "$ci_pitfalls_path" "worker-side" \
+    "ci-pitfalls.md frames the #829 section as the worker-side half of the #829/#838 pair"
 
   # Issue #981 — the #829 re-block loop (the `until [ -s ... ]` pattern above)
   # is itself a compound shell command, and Auto Mode's compound-command
   # classifier can refuse it in a worktree-isolated session even though it's
   # read-only — reproduced in three shapes against a live GitHub Actions
-  # polling loop in mattsears18/lightwork#3199. SKILL.md must point at the
-  # compound-command-refusal.md fragment (kept out of the always-loaded core
-  # to preserve the #617 line budget); the fragment itself must (1) name the
-  # refusal explicitly so a future worker doesn't spend turns rediscovering
-  # it, and (2) prescribe the actually-working fallback: arm a `Monitor` with
-  # the identical polling command, while still never ending the turn on its
-  # notification, preserving #529/#813/#753. Removing either half regresses
-  # the #981 fix: dropping (1) reintroduces the token-burning rediscovery the
-  # issue reported; dropping (2) leaves a worker with no working escape hatch
-  # once the classifier refuses the primary pattern.
-  assert_contains "$skill_path" \
+  # polling loop in mattsears18/lightwork#3199. ci-pitfalls.md (formerly
+  # SKILL.md, moved by #1012) must point at the compound-command-refusal.md
+  # fragment (kept out of the always-loaded core to preserve the #617 line
+  # budget); the fragment itself must (1) name the refusal explicitly so a
+  # future worker doesn't spend turns rediscovering it, and (2) prescribe the
+  # actually-working fallback: arm a `Monitor` with the identical polling
+  # command, while still never ending the turn on its notification,
+  # preserving #529/#813/#753. Removing either half regresses the #981 fix:
+  # dropping (1) reintroduces the token-burning rediscovery the issue
+  # reported; dropping (2) leaves a worker with no working escape hatch once
+  # the classifier refuses the primary pattern.
+  assert_contains "$ci_pitfalls_path" \
     "This exact loop can itself be refused by Auto Mode's compound-command classifier" \
-    "SKILL.md's #829 section points at the compound-command-refusal fallback (issue #981)"
+    "ci-pitfalls.md's #829 section points at the compound-command-refusal fallback (issue #981)"
   assert_contains "$compound_command_refusal_path" \
     "too complex to verify that it stays inside the worktree; break it into plain, separate commands" \
     "compound-command-refusal.md quotes the Auto Mode refusal message verbatim (issue #981)"
@@ -741,6 +765,11 @@ assert_contains "$skill_path" "(./write-probe.md)" \
   # (2) require the isolating push -m + apply-by-matched-ref shape and
   # forbid a bare pop, (3) give dirty-worktree guidance at step 0. Removing
   # any of the three regresses the cross-worker stash-collision contract.
+  # Issue #1012 split this section: the core prohibition + dirty-worktree
+  # guidance stay in SKILL.md (fires on every dispatch's step 0); the
+  # mechanism explanation and the one safe unavoidable-stash procedure moved
+  # to git-stash-prohibition.md (fires only if a worker is actually about to
+  # stash — rare, since the core rule alone is the correct default).
   assert_contains "$skill_path" \
     "## Never \`git stash\` — \`refs/stash\` is repo-global, not per-worktree" \
     "SKILL.md covers the Never git stash section (issue #845)"
@@ -750,20 +779,8 @@ assert_contains "$skill_path" "(./write-probe.md)" \
     "SKILL.md states git stash is forbidden by default for workers (issue #845)"
   assert_contains "$skill_path" "refs/stash" \
     "SKILL.md names refs/stash as the shared-storage mechanism (issue #845)"
-  assert_contains "$skill_path" "git-common-dir" \
-    "SKILL.md ties the git-stash rationale to the shared git-common-dir (issue #845)"
-  assert_contains "$skill_path" "one shared LIFO stack visible to and mutable by" \
-    "SKILL.md explains the stash stack is shared across every concurrent worker (issue #845)"
-  # shellcheck disable=SC2016
-  # Literal grep needle — the shell snippet is matched verbatim, not expanded.
-  assert_contains "$skill_path" 'git stash push -m "<agent-id-or-issue-N>: <reason>"' \
-    "SKILL.md prescribes the isolating git stash push -m form (issue #845)"
-  assert_contains "$skill_path" "A bare \`git stash pop\` always takes \`stash@{0}\`" \
-    "SKILL.md forbids bare git stash pop and names the stash@{0} mechanism (issue #845)"
-  assert_contains "$skill_path" "apply, not pop" \
-    "SKILL.md prescribes apply-then-drop by matched ref, not pop (issue #845)"
-  assert_contains "$skill_path" "\`apply\`-then-\`drop\` by matched ref is the only safe shape" \
-    "SKILL.md states apply-then-drop by matched ref is the only safe shape (issue #845)"
+  assert_contains "$skill_path" "git-stash-prohibition.md" \
+    "SKILL.md's git-stash section points at git-stash-prohibition.md (issue #1012)"
   assert_contains "$skill_path" "Dirty-worktree guidance at step 0" \
     "SKILL.md gives dirty-worktree guidance at step 0 (issue #845)"
   assert_contains "$skill_path" "may belong to a live peer" \
@@ -772,6 +789,66 @@ assert_contains "$skill_path" "(./write-probe.md)" \
     "SKILL.md forbids blanket stash/clean/restore of unexpected worktree state (issue #845)"
   assert_contains "$skill_path" "the \`git stash\` prohibition" \
     "SKILL.md's thin-core summary names the git-stash prohibition as an always-loaded rule (issue #845)"
+
+  assert_contains "$git_stash_prohibition_path" "git-common-dir" \
+    "git-stash-prohibition.md ties the git-stash rationale to the shared git-common-dir (issue #845)"
+  assert_contains "$git_stash_prohibition_path" "one shared LIFO stack visible to and mutable by" \
+    "git-stash-prohibition.md explains the stash stack is shared across every concurrent worker (issue #845)"
+  # shellcheck disable=SC2016
+  # Literal grep needle — the shell snippet is matched verbatim, not expanded.
+  assert_contains "$git_stash_prohibition_path" 'git stash push -m "<agent-id-or-issue-N>: <reason>"' \
+    "git-stash-prohibition.md prescribes the isolating git stash push -m form (issue #845)"
+  assert_contains "$git_stash_prohibition_path" "A bare \`git stash pop\` always takes \`stash@{0}\`" \
+    "git-stash-prohibition.md forbids bare git stash pop and names the stash@{0} mechanism (issue #845)"
+  assert_contains "$git_stash_prohibition_path" "apply, not pop" \
+    "git-stash-prohibition.md prescribes apply-then-drop by matched ref, not pop (issue #845)"
+  assert_contains "$git_stash_prohibition_path" "\`apply\`-then-\`drop\` by matched ref is the only safe shape" \
+    "git-stash-prohibition.md states apply-then-drop by matched ref is the only safe shape (issue #845)"
+
+  # Issue #751 — "Never run a broad process kill" split the same way: the
+  # core prohibition + PID-tracking rule + hook-enforcement note stay in
+  # SKILL.md; the reproduced repro narrative and the cheap CI-executor
+  # host-detection check moved to process-kill-detail.md.
+  assert_contains "$skill_path" \
+    "## Never run a broad process kill" \
+    "SKILL.md covers the broad-process-kill prohibition (issue #751)"
+  assert_contains "$skill_path" "Track the PID of any process you spawn yourself" \
+    "SKILL.md prescribes tracking your own spawned PIDs (issue #751)"
+  assert_contains "$skill_path" "process-kill-detail.md" \
+    "SKILL.md's process-kill section points at process-kill-detail.md (issue #1012)"
+  assert_contains "$process_kill_detail_path" \
+    "a worker ran \`pkill -9 -f \"playwright test\"\` during local cleanup" \
+    "process-kill-detail.md carries the reproduced repro (issue #751)"
+  assert_contains "$process_kill_detail_path" \
+    "actions-runner" \
+    "process-kill-detail.md carries the CI-executor host-detection check (issue #751)"
+
+  # Issue #1012 — the pre-#826 fallback for the step-0 / mid-session cwd
+  # checks (when scripts/assert-worktree-cwd.sh can't be located or run)
+  # was duplicated across both SKILL.md sections; consolidated into one
+  # fragment referenced from both.
+  assert_count_at_least "$skill_path" "assert-worktree-cwd-fallback.md" 2 \
+    "SKILL.md points at assert-worktree-cwd-fallback.md from both the step-0 and mid-session sections (issue #1012)"
+  assert_contains "$assert_worktree_cwd_fallback_path" \
+    'git rev-parse --git-common-dir' \
+    "assert-worktree-cwd-fallback.md carries the step-0 fallback form"
+  # shellcheck disable=SC2016
+  # Literal grep needle — $WORKTREE_PATH is matched verbatim, not expanded.
+  assert_contains "$assert_worktree_cwd_fallback_path" \
+    'git -C "$WORKTREE_PATH" rev-parse --git-common-dir' \
+    "assert-worktree-cwd-fallback.md carries the mid-session -C-anchored fallback form"
+
+  # Issue #297/#1012 — "Stop background processes before returning" full
+  # mechanism table moved to stop-background-processes.md; SKILL.md keeps a
+  # short stub naming the same load-bearing markers the pre-existing #297
+  # assertions above already check against skill_path (TaskStop, KillShell,
+  # run_in_background, Monitor all still present in the stub), plus a
+  # pointer to the fragment for the full per-tool-family table.
+  assert_contains "$skill_path" "stop-background-processes.md" \
+    "SKILL.md's background-process cleanup stub points at stop-background-processes.md (issue #1012)"
+  assert_contains "$stop_background_processes_path" \
+    "| \`Monitor\` sub-task (any subscription) | \`TaskStop\`" \
+    "stop-background-processes.md carries the per-tool-family stop mechanism table"
 fi
 
 # (1b) Each per-mode spec's return section must reference the #529
