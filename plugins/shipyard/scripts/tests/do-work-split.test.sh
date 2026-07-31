@@ -2437,6 +2437,97 @@ assert_contains "$steady_state_path" \
   'https://github.com/mattsears18/shipyard/issues/997' \
   "steady-state.md reason→class table links to issue #997"
 
+# ── Issue #986 — a dispatch-level, session-scoped file-ownership constraint
+#    (not issue-scope, not an operator action) has no documented return shape
+#    ────────────────────────────────────────────────────────────────────────
+#
+# A worker discovers mid-implementation that a dispatch prompt's Context
+# block named a session-scoped file off-limits ("another worker owns it this
+# session"), so part of the issue's acceptance criteria can't be shipped in
+# this PR. The deferred remainder needs no human/operator judgment — it's
+# ordinary follow-up code, blocked only by this session's transient
+# constraint. §6.5's operator-residual shape doesn't fit (it always gates the
+# residual behind a human/operator label); §6.6's verification shape doesn't
+# fit either (no PR at all). Closed by adding a new §6.7 fragment
+# (issue-work-deferred-slice-dispatch.md) that hands the residual to a fresh,
+# UNGATED follow-up issue instead of a gate label, mirroring PR #1028's
+# design choice not to add a new schema `outcome` value — this still rides
+# the existing `shipped` outcome, documented only in prose.
+issue_work_path986="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+deferred_slice_path986="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-deferred-slice-dispatch.md"
+
+assert_file_exists "$deferred_slice_path986" \
+  "issue-work-deferred-slice-dispatch.md fragment exists (#986)"
+
+assert_contains "$issue_work_path986" \
+  '### 6.7 Deferred-slice disposition: hand back an autonomously-workable residual to a new issue, keep the issue open' \
+  "issue-work.md carries the §6.7 deferred-slice disposition heading (#986)"
+
+assert_contains "$issue_work_path986" \
+  'https://github.com/mattsears18/shipyard/issues/986' \
+  "issue-work.md §6.7 links to issue #986"
+
+# The trigger must be worker-recognized, not a Context paragraph scope-preflight sets.
+assert_contains "$issue_work_path986" \
+  'Nothing sets a Context paragraph for this ahead of time' \
+  "issue-work.md §6.7 documents that nothing sets this Context paragraph proactively (#986)"
+
+# §6.7 must point at the new fragment file.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$issue_work_path986" \
+  '[`issue-work-deferred-slice-dispatch.md`](./issue-work-deferred-slice-dispatch.md)' \
+  "issue-work.md §6.7 references the deferred-slice-dispatch fragment (#986)"
+
+# The fragment's three-condition trigger.
+assert_contains "$deferred_slice_path986" \
+  'The deferred remainder is **autonomously workable**' \
+  "issue-work-deferred-slice-dispatch.md states the autonomously-workable trigger condition (#986)"
+
+# The distinguishing property vs §6.5: no gate label, a new issue instead.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$deferred_slice_path986" \
+  'Do NOT apply any gate label to `#<N>` or to `#<FOLLOWUP>`' \
+  "issue-work-deferred-slice-dispatch.md forbids gate labels on both issues (#986)"
+
+# The follow-up issue must carry the shipyard stamp but no gate label.
+assert_contains "$deferred_slice_path986" \
+  'apply **no gate label**' \
+  "issue-work-deferred-slice-dispatch.md forbids a gate label on the follow-up issue (#986)"
+
+# The step-8 return shape.
+assert_contains "$issue_work_path986" \
+  'shipped #<N> partial via PR #<M> (deferred to #<F>' \
+  "issue-work.md documents the deferred-to-#<F> partial return string (#986)"
+
+# Design note: no new schema outcome value — reuses the existing shipped outcome.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$issue_work_path986" \
+  'no new schema `outcome` value was added for this case' \
+  "issue-work.md step 8 documents the no-new-schema-value design decision (#986)"
+
+# §5's exception — bare-URL reference for #<N>, no closing keyword, folded
+# into the same paragraph as the #851 operator-slice exception.
+assert_contains "$issue_work_path986" \
+  'a worker-recognized deferred-slice split' \
+  "issue-work.md §5 carries the non-closing exception for #986"
+
+# §5.85 gains a fifth trigger shape.
+assert_contains "$issue_work_path986" \
+  'Five shapes trigger it' \
+  "issue-work.md §5.85 documents five trigger shapes, including #986's (#986)"
+
+assert_contains "$repo_root/plugins/shipyard/agents/issue-worker/issue-work-parent-epic-leak.md" \
+  'Five shapes trigger it' \
+  "issue-work-parent-epic-leak.md documents five trigger shapes, including #986's (#986)"
+
+# Don't-section bullet.
+assert_contains "$issue_work_path986" \
+  "Don't apply \`agent-console\`/\`needs-human-review\` to a deferred-slice residual that needs no human" \
+  "issue-work.md Don't section warns against over-gating a deferred-slice residual (#986)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

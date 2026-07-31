@@ -237,8 +237,8 @@ if [[ -f "$issue_work_path" ]]; then
   # Don't list must warn against trusting a single edit.
   assert_contains "$issue_work_path" "https://github.com/mattsears18/shipyard/issues/1001" \
     "issue-work.md links to the closing-link-retraction follow-up #1001"
-  assert_contains "$issue_work_path" "Four shapes trigger it" \
-    "issue-work.md's §5.85 stub widens from three to four trigger shapes (issue #1001)"
+  assert_contains "$issue_work_path" "Five shapes trigger it" \
+    "issue-work.md's §5.85 stub widens from three to four (now five, issue #986) trigger shapes (issue #1001)"
   assert_contains "$issue_work_path" "a disposition change on the SAME PR that opened as \`#<N>\`'s own resolving PR" \
     "issue-work.md's §5.85 stub names shape (4): retracting an already-live closing link (issue #1001)"
   assert_contains "$issue_work_path" "This step only adds a closing link — it has no remove path of its own" \
@@ -343,8 +343,8 @@ if [[ -f "$fragment_path" ]]; then
   # reliability, the commit-message vector, why tier 2 still matters).
   assert_contains "$fragment_path" "https://github.com/mattsears18/shipyard/issues/1001" \
     "issue-work-parent-epic-leak.md links to the closing-link-retraction follow-up #1001"
-  assert_contains "$fragment_path" "Four shapes trigger it" \
-    "issue-work-parent-epic-leak.md's applicability paragraph widens to four trigger shapes (issue #1001)"
+  assert_contains "$fragment_path" "Five shapes trigger it" \
+    "issue-work-parent-epic-leak.md's applicability paragraph widens to four (now five, issue #986) trigger shapes (issue #1001)"
   assert_contains "$fragment_path" "Shape (4) — retracting an already-live closing link" \
     "issue-work-parent-epic-leak.md documents shape (4): retraction, not prevention (issue #1001)"
   assert_contains "$fragment_path" "unlinkPullRequestFromIssue" \
