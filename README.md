@@ -169,6 +169,7 @@ An autonomous engineering loop for web + mobile app development. Three things it
 - `/audit data-lifecycle` — data-model mutation integrity: orphaned records after a parent delete, denormalized snapshots that drift on update, missing cascades / back-reference cleanup, ephemeral/counter collections with no GC/TTL
 - `/audit comprehension` — **generative, not assertive**: produces a "what this app actually does" document (feature inventory, state machines, data flows, cross-cutting invariants), proposed via a tracking issue for a later `/do-work` dispatch to commit at `docs/COMPREHENSION.md` so successive runs yield a reviewable diff. Only its "Surprises" section — behavior that looks unintentional or inconsistent — files GitHub issues; the descriptive sections never do.
 - `/audit all <url>` — every audit in parallel. **This is also the default** — running bare `/audit` (or `/audit <url>` with no type) dispatches `all` rather than prompting you to pick one.
+- [`/shipyard:audit-scheduled`](plugins/shipyard/commands/audit-scheduled.md) — run only the `/audit` dimensions whose configured cadence (`audits.schedule` in `shipyard.config.json`) is actually due, so an auditor like `testing` or `functional-qa` catches drift on a recurring basis instead of only when a maintainer already suspects a problem. A thin cadence gate in front of `/audit`'s own dispatch table — no new execution engine, and idempotent for free via the existing `audit-key` dedup. Composes with `/loop` (`/loop 1h /shipyard:audit-scheduled`) for cron-like cadence checking without wiring an external scheduler. `--dry-run` previews what would run. See the [Scheduled audits](#scheduled-audits-auditsschedule-config-block--issue-975) section below for a worked example.
 - `/refine-issues` — process refinement-candidate issues, detected live by source signal (user-feedback classify+rewrite, open-questions resolve-defaults, or fall-through to needs-human-review when no refiner rule matches).
 - [`/decompose-epic`](plugins/shipyard/commands/decompose-epic.md) — auto-decompose confirmed epics (issues carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker) into dispatch-ready GitHub sub-issues. `Multi-PR sequence:` / `Missing dependency:` evidence classes get sharded into an ordered `Blocked by #<sibling>` chain (so `/do-work` sequences them automatically); non-mechanical classes fall through to the existing human handoff. Explicit, human-invoked — mirrors `/refine-issues`' sentinel-keyed shape.
 - `/do-work` — burn down the issue backlog with a rolling pool of parallel workers. **Autonomous continuous loop — code work *plus* browser operation, operator-inclusive by default** ([#661](https://github.com/mattsears18/shipyard/issues/661)): it drives browser-completable operator actions in your real, logged-in Chrome and makes reasonable design/architecture decisions itself rather than round-tripping — security / access-control settings are the sole hand-back class. Pass `--no-operate` / `--hands-off` for a rare code-only, dispatch-only run. The operator layer is backend-agnostic — it prefers the first-party **Claude Chrome extension** (`claude-in-chrome`, which inherits your logged-in sessions with no setup), falls back to `chrome-devtools-mcp`, and drops to the code-only loop if neither is available — and runs a self-onboarding **preflight** at session start (diagnoses missing `gh` auth / extension / site permissions and walks you through fixing them; silent when already configured). `--dry-run` previews without acting; `--record` captures browser actions as GIFs.
@@ -215,6 +216,31 @@ Shipyard treats several label families as load-bearing — origin labels (`user-
 ### Observability — per-session token cost
 
 Every `/do-work` session writes per-session token-usage data to `~/.shipyard/sessions/<session-id>.json` and posts cost-tracking comments on the issues and PRs it touches, so you can see at a glance how much a given backlog burndown cost. End-of-session, each run flushes a rolled-up record to the persistent ledger at `~/.shipyard/cost-history.jsonl`; query historical spend with `/shipyard:cost report` (filterable by repo, mode, model, or issue — see [`CLAUDE.md`'s "Cost-tracking ledger" section](./CLAUDE.md#cost-tracking-ledger-shipyardcost-historyjsonl)). Useful for tuning `--concurrency`, deciding which audits are worth running on a cron, and spotting agents that are spending too many tokens for the work they ship.
+
+### Scheduled audits (`audits.schedule` config block — issue [#975](https://github.com/mattsears18/shipyard/issues/975))
+
+`shipyard:testing-auditor` and `shipyard:functional-qa-auditor` (and every other `/audit` dimension) are invoke-on-demand only — nothing runs them unless a human types `/audit <dimension>`. That means drift surfaces only once a maintainer already suspects a problem, which is exactly the case where an auditor adds the least value. `audits.schedule` in `shipyard.config.json` names dimensions + a recurring cadence; [`/shipyard:audit-scheduled`](plugins/shipyard/commands/audit-scheduled.md) reads it, checks a small last-run state file at `~/.shipyard/audit-schedule-state.json`, and dispatches only the dimensions actually due — reusing `/audit`'s own dispatch table and the `audit-key` fingerprint dedup already built into `filing-github-issues`, so a scheduled run that finds nothing new files nothing (no issue churn). The command composes with the existing `/loop` skill for the actual periodic trigger, the same pattern `/shipyard:eas-watch` already uses — `audits.schedule` decides *whether* a dimension is due; `/loop` decides *how often to check*.
+
+Worked example — weekly `testing` + `functional-qa`, daily `security`:
+
+```json
+{
+  "version": 1,
+  "audits": {
+    "schedule": [
+      { "dimension": "testing", "cadence": "7d" },
+      { "dimension": "functional-qa", "cadence": "7d", "url": "https://app.example.com" },
+      { "dimension": "security", "cadence": "24h" }
+    ]
+  }
+}
+```
+
+```bash
+/loop 1h /shipyard:audit-scheduled
+```
+
+The loop checks hourly; `security` actually dispatches daily, `testing`/`functional-qa` weekly — each only spending tokens/CI time on the day its cadence rolls over. `cadence` accepts `<int>m` / `<int>h` / `<int>d` / `<int>w` (minutes/hours/days/weeks). Set `"enabled": false` on an entry to keep it documented in config without running it. Run `/shipyard:audit-scheduled --dry-run` any time to preview what's due without dispatching anything.
 
 ### CI-minute discipline (`ci.*` config block — issue [#323](https://github.com/mattsears18/shipyard/issues/323))
 
