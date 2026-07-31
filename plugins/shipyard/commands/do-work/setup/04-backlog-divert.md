@@ -183,6 +183,63 @@ Cache `{ status, earliest_red_run_id, earliest_red_run_url, earliest_red_sha, ea
 
 **Never** report `main_ci.status = "green"` on the basis of a single successful workflow run. The status line must derive from the per-workflow aggregate above.
 
+#### Post-main-CI-fix branch-refresh — un-stick session PRs carrying a stale failing required check ([#993](https://github.com/mattsears18/shipyard/issues/993))
+
+GitHub does **not** re-run a PR's already-completed required check just because the PR's base branch went from red to green — without a new commit or an explicit branch update, a PR that recorded a `FAILURE` while `main` was broken keeps that stale conclusion forever, even though the underlying cause is now fixed and a fresh run would pass. Left unhandled, this permanently strands every `session_prs` entry that happened to run its required checks during the `main`-red window: `mergeStateStatus` reads `MERGEABLE` and auto-merge is armed, but the stale check will never re-run on its own, so the PR sits `BLOCKED` indefinitely — even though a `fix-main-ci` dispatch already landed the remedy and `main` is green again. See [RATIONALE → Stale-red vs genuinely-red](../../do-work-RATIONALE.md#stale-red-vs-genuinely-red-993) for the session repro that motivated this (a 7-PR merge train left `BLOCKED` forever after the diversion that unblocked it had already merged).
+
+**Fires immediately after the `main_ci.status == "green"` bullet above, and only on a genuine transition into green** — never on every green evaluation, because a PR carrying a check that's failing against the *current, already-fixed* `main` must NOT get a masking re-run. Before overwriting the cached `main_ci` object with this evaluation's result, capture its existing `.status` as `previous_main_ci_status` (an absent/first-run cache counts as non-green). The refresh below runs only when `previous_main_ci_status != "green"` AND the freshly-computed `main_ci.status == "green"`.
+
+```bash
+# Only fires on a red/pending/unknown → green transition.
+if [ "$previous_main_ci_status" != "green" ]; then
+  # The fix's merge commit — main's current HEAD, now that it's green.
+  fix_commit_sha=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.sha')
+  fix_commit_date=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.commit.committer.date')
+
+  for pr in $session_prs; do
+    pr_snapshot=$(gh pr view "$pr" --repo <owner/repo> --json state,mergeStateStatus,statusCheckRollup --jq '
+      {state, mergeStateStatus,
+       checks: [.statusCheckRollup | group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last) | .[]]}')
+    state=$(echo "$pr_snapshot" | jq -r '.state')
+    merge_state=$(echo "$pr_snapshot" | jq -r '.mergeStateStatus')
+
+    # Skip merged/closed PRs, and skip DIRTY — that's fix-rebase's territory,
+    # not this gate's (see the guard note below).
+    [ "$state" != "OPEN" ] && continue
+    [ "$merge_state" = "DIRTY" ] && continue
+
+    # Any latest-per-name check that's a hard failure AND completed BEFORE the
+    # fix landed is a stale-red carried over from the broken main — not a
+    # genuine failure against the current (fixed) base.
+    has_stale_red=$(echo "$pr_snapshot" | jq --arg cutoff "$fix_commit_date" '
+      [.checks[] | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
+                  | select((.completedAt // .startedAt // "9999") < $cutoff)] | length > 0')
+    [ "$has_stale_red" != "true" ] && continue
+
+    # Once per PR per fix, never in a loop — update-branch writes a merge
+    # commit, so repeated calls against the same fix churn history for
+    # nothing. stale_check_refresh_done persists for the rest of the session.
+    if [ "${stale_check_refresh_done[$pr]:-}" = "$fix_commit_sha" ]; then
+      continue
+    fi
+
+    gh pr update-branch "$pr" --repo <owner/repo> || true
+    stale_check_refresh_done[$pr]="$fix_commit_sha"
+    echo "[stale-check-refresh] PR #$pr carried a required-check FAILURE that predates <default-branch>'s fix commit $fix_commit_sha (fixed at $fix_commit_date) — ran gh pr update-branch to re-trigger checks against the fixed base (#993)"
+  done
+fi
+```
+
+**Guards, matching the issue's suggested fix exactly:**
+
+- **Only for PRs whose failing check predates the fix.** A PR whose latest failing run completed *after* `fix_commit_date` already ran against the fixed base and is genuinely red — running `gh pr update-branch` there would mask a real failure behind a fresh run rather than surface it. The `completedAt < fix_commit_date` comparison (latest-per-name, the same de-duplication convention used throughout [drain.md](../drain.md#drain-protocol) and [steady-state.md](../steady-state.md#a1-parse-the-return-string)) is what tells stale-red apart from genuinely-red.
+- **Once per PR per fix, never in a loop.** `stale_check_refresh_done[<pr>]` records the `main` SHA the refresh already ran against for that PR; it prevents a second re-poll from calling `update-branch` again for the same fix before the freshly-triggered check has had a chance to complete.
+- **Skip DIRTY PRs.** Those belong to `fix-rebase`, not this gate — `gh pr update-branch` rebases a DIRTY branch onto the new base as a side effect, which is a different, already-bookkept code path (`rebase_success_counts`, `rebase_blocked_prs` in [drain.md](../drain.md#drain-protocol)). Leaving DIRTY PRs to that existing mechanism avoids double-counting a rebase outside its owning bookkeeping.
+
+**Session-scoped state.** `stale_check_refresh_done` is a per-session map (`<pr-number> → <sha>`), initialized empty at session start alongside the other per-session structures ([the `do-work.md` orchestrator-state struct list](../../do-work.md#orchestrator-state)). It is never persisted across sessions — a fresh session re-evaluates from scratch, which is safe because the dedup only prevents redundant `update-branch` calls within a single continuous drive of the same fix.
+
+This mechanism is **evaluated at every call site that runs 4.5a** — session setup and [step D's periodic refresh](../steady-state.md#d-periodic-refresh) — so it fires automatically the first time either path observes the red→green transition; no separate wiring is needed at either call site. See [drain.md's post-main-CI-fix branch-refresh](../drain.md#post-main-ci-fix-branch-refresh-drain-phase-993) for the corresponding drain-phase health read — drain does not enqueue new `divert_queue` work, but it still needs to observe this same transition so a fix that lands *during* drain un-sticks the PRs it stranded, rather than leaving the whole merge train `BLOCKED` for the next session to discover.
+
 **4.5b — Failing-PR pileup.** Count open PRs across **all authors** whose check rollup contains a hard failure:
 
 ```bash
