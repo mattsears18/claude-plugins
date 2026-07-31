@@ -8,7 +8,9 @@ Closes [#624](https://github.com/mattsears18/shipyard/issues/624) — the **sile
 
 **Prevention — never name a protected-issue-referencing PR's branch `do-work/issue-<E>` (or any `issue-<E>`-shaped variant).** [#893](https://github.com/mattsears18/shipyard/issues/893) isolated a *branch-naming* hazard distinct from the body/commit-text hazard below: GitHub's own "Create a branch" UI auto-links a branch literally named `do-work/issue-<E>` to issue `#<E>`, and in the repro that link registered in `closingIssuesReferences` **independent of the PR body or commit-message text** — it survived a full body rewrite, a commit-message rewrite + force-push, and even a close+reopen, and only cleared once the PR was abandoned for a fresh, neutrally-named branch. If you already know before opening the PR that it must not close `#<E>`, don't give its branch an `issue-<E>`-shaped name even when `<E>` happens to be the number you were dispatched against — pick a neutral name instead (e.g. `docs/<short-topic>`), off the default branch. This sidesteps the remediation loop below entirely; it's cheaper than recovering from the leak.
 
-**The mechanism the remediation loop guards.** GitHub can promote a bare `#<E>` token (in the PR body, a squashed-commit message, or a CHANGELOG entry that rides the merge) into `closingIssuesReferences` even with no closing keyword — so the merge auto-closes the protected issue. The §5 prevention is to phrase the reference as a bare URL; this step verifies the prevention took and, if it leaked, escalates through three remediation tiers.
+**Prevention — never let a closing-keyword-shaped word share a line with the reference, even to negate it ([#990](https://github.com/mattsears18/shipyard/issues/990)).** The bare-URL form (§5's prevention, above) stops a `#<E>` *token* from auto-promoting, but it does NOT stop GitHub's parser from matching a closing-keyword-shaped word (`close(s|d)?`, `fix(es|ed)?`, `resolve(s|d)?`) that appears in the same sentence or line as the URL — including a sentence that's explicitly *negating* the close, like *"This PR does NOT close `<URL>`"*. The parser has no negation awareness: that sentence still registers `#<E>` as a closing reference. Don't write around this with careful phrasing — keep any closing-keyword-shaped word off the line that carries the reference entirely (a separate sentence, or a neutral synonym like "addresses"/"references"/"tracks"). This is a *different* leak vector from the bare-`#<E>`-token one the URL form fixes, so a body that's already "clean" in the token sense can still leak this way — treat the check below as covering both.
+
+**The mechanism the remediation loop guards.** GitHub can promote a bare `#<E>` token (in the PR body, a squashed-commit message, or a CHANGELOG entry that rides the merge) into `closingIssuesReferences` even with no closing keyword — so the merge auto-closes the protected issue. The same is true of a closing-keyword-shaped word sharing a line with an already-URL-form reference (above). The §5 prevention is to phrase the reference as a bare URL AND keep keyword-shaped words off its line; this step verifies the prevention took and, if it leaked, escalates through three remediation tiers.
 
 **After `gh pr create` and before arming auto-merge in [§6](./issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)**, for each protected issue `#<E>` assert it is absent from the PR's `closingIssuesReferences`. If it leaked, run the tiers below **in order and don't stop early** — the [#893](https://github.com/mattsears18/shipyard/issues/893) repro showed a leak surviving a single body-rewrite-and-reverify (what an earlier version of this step stopped at) as well as a follow-up commit-message rewrite, so a worker that re-verifies once and declares victory, or that gives up after one rewrite and jumps straight to `needs-human-review`, is not exercising the full documented recovery path:
 
@@ -26,12 +28,31 @@ CURRENT_PR=<pr-num>
 LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
   --jq "[.closingIssuesReferences[]?.number] | index(<E>) != null")
 
-# --- Tier 1: rewrite the PR body to bare-URL form. ---
+# --- Tier 1: rewrite the PR body to bare-URL form, AND strip any
+# closing-keyword-shaped word sharing a line with the reference (#990 —
+# GitHub's parser matches the keyword adjacent to a reference with no
+# negation awareness, so "does NOT close <URL>" still registers a closing
+# link; a body already using the URL form is not "clean" just because it
+# has no bare #<E> token). ---
 if [ "$LEAKED" = "true" ]; then
   CURRENT_BODY=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json body --jq '.body')
   # Replace bare #<E> tokens with the full-URL form (which does NOT auto-close).
   PATCHED_BODY=$(printf '%s' "$CURRENT_BODY" \
     | sed -E "s@#<E>@https://github.com/<owner>/<repo>/issues/<E>@g")
+
+  # Flag any line that carries the reference AND a closing-keyword-shaped
+  # word — including negated phrasing, which the parser treats identically
+  # to an unnegated one. This is a manual-rewrite trigger, not something to
+  # sed blindly: rewrite each flagged line by hand to drop the keyword
+  # entirely (move the caveat to a separate sentence, or use a neutral
+  # synonym like "addresses"/"references"/"tracks"), THEN re-run this tier's
+  # patch with the corrected body.
+  printf '%s\n' "$PATCHED_BODY" \
+    | grep -niE "(#<E>([^0-9]|\$)|issues/<E>([^0-9]|\$))" \
+    | grep -iE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b'
+  # ^ if this prints anything, hand-edit PATCHED_BODY to remove the
+  # keyword-shaped word from each flagged line before the `gh pr edit` below.
+
   gh pr edit "$CURRENT_PR" --repo <owner/repo> --body "$PATCHED_BODY"
 
   LEAKED=$(gh pr view "$CURRENT_PR" --repo <owner/repo> --json closingIssuesReferences \
@@ -55,9 +76,13 @@ if [ "$LEAKED" = "true" ]; then
 fi
 
 # --- Tier 3: escape hatch — abandon this branch/PR and reopen from a NEUTRAL
-# branch name. If the leak survives tiers 1+2 with a CONFIRMED-clean body and
-# commit message, the branch name itself is the likely persistent trigger
-# (#893) — no further body/commit edit on THIS branch will clear it, so don't
+# branch name. Before concluding the branch name is at fault, re-run tier 1's
+# keyword-adjacency grep (#990) against the current body — "confirmed-clean"
+# means BOTH no bare #<E> token AND no closing-keyword-shaped word (even
+# negated) sharing a line with the reference. If the leak survives tiers 1+2
+# with a body and commit message that are genuinely clean by BOTH tests, the
+# branch name is one known cause (#893) — not the only possible one — and no
+# further body/commit edit on THIS branch is expected to clear it, so don't
 # loop tiers 1/2 again; move straight to a fresh branch. ---
 if [ "$LEAKED" = "true" ]; then
   gh pr close "$CURRENT_PR" --repo <owner/repo> \
@@ -95,6 +120,8 @@ fi
 **Why bare URL rather than deleting the mention.** The reference is *wanted* — the PR legitimately should link the protected issue for traceability; it just must not *close* it. The bare-URL form (`https://github.com/<owner>/<repo>/issues/<E>`) renders a clickable link that GitHub does NOT promote into `closingIssuesReferences`, so it keeps the traceability while dropping the closing semantics. Don't strip the reference entirely.
 
 **Why tier 3 (a fresh branch) can succeed when tiers 1–2 (rewriting the existing branch) don't.** Tiers 1 and 2 fix every *text*-based vector — the body and the commit message — but the [#893](https://github.com/mattsears18/shipyard/issues/893) repro's confirmed-clean body (`gh pr view --json body --jq '.body | test("#<E>")'` → `false`) and confirmed-clean commit message still left `closingIssuesReferences` populated, which points at the **branch name itself** as a third, independent vector not covered by rewriting either text field. Abandoning the branch — not just editing its content — is the only thing that cleared the link in the repro; a fourth or fifth rewrite attempt on the same branch is not expected to do better than the first two.
+
+**Don't jump to the branch-name conclusion without first re-checking for the keyword-adjacency hazard ([#990](https://github.com/mattsears18/shipyard/issues/990)).** The `.body | test("#<E>")` check above only proves the bare-token vector is clean — it says nothing about a closing-keyword-shaped word sharing a line with an already-URL-form reference (a later repro found exactly this: a body reading *"This PR does NOT close `<URL>`"* kept leaking through a token-only "clean" check). Before attributing a surviving leak to the branch name and paying tier 3's cost, re-run tier 1's keyword-adjacency grep against the current body and commit message; only treat the body/commit message as genuinely clean, and the branch name as the likely cause, once both the token check AND the keyword-adjacency grep come back empty.
 
 **Why reopen on already-merged.** On a repo where an admin direct-merge can fire before this check runs (the `merged-direct-ungated` path), the merge may have already closed the protected issue by the time you verify — regardless of which tier you're in when that happens. Reopening `#<E>` restores it so it isn't orphaned and `/my-turn` keeps surfacing it if further review is needed. The body/branch remediation still matters even post-merge — it stops a *future* re-merge or backport from re-closing it.
 
