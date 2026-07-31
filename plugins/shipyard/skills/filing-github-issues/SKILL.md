@@ -44,7 +44,7 @@ gh issue view <N> --repo <owner/repo> --json labels --jq '[.labels[].name] | ind
 
 ## Agent-identifying label (REQUIRED)
 
-Every issue you file MUST also carry an `audit:<dimension>` label identifying which audit agent filed it. Your agent's system prompt tells you which one to apply.
+Every issue you file MUST also carry an `audit:<dimension>` label identifying which audit agent filed it. Your agent's system prompt tells you which one to apply. **Narrow exception:** `comprehension-auditor`'s living-doc tracking issue (its document artifact, proposed for a later `/shipyard:do-work` commit) does NOT carry `audit:comprehension` — that label is reserved for its "surprises" defect findings only. See `agents/comprehension-auditor.md` § "Artifact vs. issues" for why.
 
 | Agent | Required label | Color (if auto-creating) |
 |---|---|---|
@@ -62,6 +62,7 @@ Every issue you file MUST also carry an `audit:<dimension>` label identifying wh
 | `testing-auditor` | `audit:testing` | `c5def5` |
 | `dx-auditor` | `audit:dx` | `c5def5` |
 | `functional-qa-auditor` | `audit:functional-qa` | `c5def5` |
+| `comprehension-auditor` | `audit:comprehension` | `c5def5` |
 
 **Auto-create your audit:* label if it doesn't exist** — because the label is the agent's own metadata, not a repo-config decision. Do this once at the start of the run (alongside the `shipyard` ensure above):
 
