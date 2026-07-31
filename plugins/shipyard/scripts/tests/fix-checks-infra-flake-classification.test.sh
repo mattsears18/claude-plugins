@@ -120,11 +120,35 @@ assert_contains "$fix_checks_path" \
   "flake #<M>: re-ran failed jobs" \
   "documents the distinct flake return string"
 
-# The return contract advertises FIVE strings now (green/noop/pending/flake/blocked) —
-# widened from four by #985/#987's `pending` disposition.
+# The return contract advertises SIX strings now (green/noop/pending/dirty/flake/blocked) —
+# widened from five to six by #1015's `dirty` disposition.
 assert_contains "$fix_checks_path" \
-  "one of the five strings below" \
-  "return contract widened from four to five terminal strings"
+  "one of the six strings below" \
+  "return contract widened from five to six terminal strings"
+
+# --- The `dirty` disposition (#1015) ----------------------------------------
+
+assert_contains "$fix_checks_path" \
+  "## DIRTY-PR short-circuit" \
+  "DIRTY-PR short-circuit section heading present"
+assert_contains "$fix_checks_path" \
+  "github.com/mattsears18/shipyard/issues/1015" \
+  "links issue #1015 for provenance"
+assert_contains "$fix_checks_path" \
+  "dirty #<M>: PR conflicts with <default-branch>; no merge ref, so no checks will run" \
+  "documents the distinct dirty return string"
+assert_contains "$fix_checks_path" \
+  "Does **not** count toward the 3-attempt cap and does **not** earn" \
+  "return contract notes dirty does not burn a fix attempt or earn blocked:ci"
+
+assert_section_before "$fix_checks_path" \
+  "## DIRTY-PR short-circuit" \
+  "## Hard rules" \
+  "DIRTY-PR short-circuit precedes the Hard rules section (checked before any fix attempt)"
+assert_section_before "$fix_checks_path" \
+  "## DIRTY-PR short-circuit" \
+  "## Fix-loop" \
+  "DIRTY-PR short-circuit precedes the Fix-loop section"
 
 # --- Step A: never bail 'logs unavailable' on an in-progress run ------------
 # Step A's heading and body were updated by issue #984 to scope the wait to
@@ -220,8 +244,28 @@ assert_contains "$steady_state_path" \
   "[fix-checks-flake]" \
   "reconcile logs a distinct [fix-checks-flake] advisory"
 assert_contains "$steady_state_path" \
-  "\`green\`, \`noop:\`, \`pending\`, \`flake\`, or \`blocked\`" \
-  "unrecognized-return path lists flake as a recognized prefix"
+  "\`green\`, \`noop:\`, \`pending\`, \`dirty\`, \`flake\`, or \`blocked\`" \
+  "unrecognized-return path lists flake and dirty as recognized prefixes"
+
+# --- The `dirty` disposition reconcile branch (#1015) -----------------------
+
+assert_contains "$steady_state_path" \
+  "dirty #<M>: PR conflicts with" \
+  "steady-state reconcile has a dirty branch"
+assert_contains "$steady_state_path" \
+  "[fix-checks-dirty]" \
+  "reconcile logs a distinct [fix-checks-dirty] advisory"
+assert_contains "$steady_state_path" \
+  "mergeStateStatus == \"DIRTY\"" \
+  "unrecognized-return synthesis checks mergeStateStatus before the empty-rollup rule"
+
+# The dirty branch must NOT label blocked:ci and must NOT push onto failed_prs.
+if grep -A6 "dirty #<M>: PR conflicts with \`<default-branch>\`; no merge ref, so no checks will run\*\* (\[#1015\]" "$steady_state_path" 2>/dev/null \
+     | grep -q "do \*\*NOT\*\* label \`blocked:ci\`"; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "dirty branch does not label blocked:ci"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "dirty branch does not label blocked:ci"; fail=$((fail+1))
+fi
 
 # The reconcile must NOT label blocked:ci and must NOT push onto failed_prs.
 if grep -A6 "flake #<M>: re-ran failed jobs\*\* (\[#654\]" "$steady_state_path" 2>/dev/null \
@@ -236,6 +280,25 @@ fi
 assert_contains "$dispatch_rules_path" \
   "flake #<M>: re-ran failed jobs" \
   "fix-checks-only dispatch prompt advertises the flake return value"
+
+# --- Dispatch prompt advertises the dirty return value (#1015) -------------
+
+assert_contains "$dispatch_rules_path" \
+  "dirty #<M>: PR conflicts with <default-branch>; no merge ref, so no checks will run" \
+  "fix-checks-only dispatch prompt advertises the dirty return value"
+
+# --- Structured-return schema recognizes the dirty outcome (#1015) ---------
+
+schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
+core_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.core.js"
+workflow_js_path="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
+prompt_template_path="$repo_root/plugins/shipyard/workflows/prompt-templates/fix-checks-only.mjs"
+
+assert_contains "$schema_path" '"dirty"' "canonical schema outcome enum includes dirty"
+assert_contains "$core_js_path" "'dirty'" "do-work-dispatch.core.js workerReturnSchema literal includes dirty"
+assert_contains "$workflow_js_path" "'dirty'" "regenerated do-work-dispatch.workflow.js includes dirty"
+assert_contains "$prompt_template_path" '"outcome": "dirty"' \
+  "fix-checks-only.mjs prompt template documents the dirty structured-return example"
 
 echo
 if (( fail > 0 )); then

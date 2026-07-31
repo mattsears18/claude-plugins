@@ -22,8 +22,8 @@
     },
     "outcome": {
       "type": "string",
-      "enum": ["shipped", "green", "pending", "rebased", "noop", "blocked", "reaped", "disposition"],
-      "description": "Terminal outcome class, mapping onto the free-text return-string leading token. `shipped` — issue-work opened a PR (see auto_merge). `green` — fix-checks-only drove an existing PR's checks green (checks must be \"green\" with an evidence-clause summary — see #985/#987). `pending` — fix-checks-only found nothing failing but the rollup hasn't fully settled (checks:\"pending\"); an honest, non-overclaiming exit distinct from `green` — does not count toward the 3-attempt cap, no `blocked:ci` label (#985/#987). `rebased` — fix-rebase rebased a DIRTY PR onto the default branch. `noop` — a fix mode found nothing to do (e.g. the failing run resolved itself between dispatch and read). `blocked` — a real blocker was hit before completion (see blocked_reason); the orchestrator's step-A reconcile classifies it into needs-human-review / blocked:agent-soft / no-label per #521. `reaped` — the worktree was reaped mid-run; RETRYABLE, re-enqueued with no block label (distinct from `blocked`). `disposition` — investigate/spike mode dispositioned the issue without a PR (see disposition)."
+      "enum": ["shipped", "green", "pending", "dirty", "rebased", "noop", "blocked", "reaped", "disposition"],
+      "description": "Terminal outcome class, mapping onto the free-text return-string leading token. `shipped` — issue-work opened a PR (see auto_merge). `green` — fix-checks-only drove an existing PR's checks green (checks must be \"green\" with an evidence-clause summary — see #985/#987). `pending` — fix-checks-only found nothing failing but the rollup hasn't fully settled (checks:\"pending\"); an honest, non-overclaiming exit distinct from `green` — does not count toward the 3-attempt cap, no `blocked:ci` label (#985/#987). `dirty` — fix-checks-only found the PR's `mergeStateStatus` is DIRTY (conflicts with the default branch) before any checks could queue at all — GitHub can't compute a merge ref, so `pull_request`-triggered workflows never run; not a CI failure, so it does not count toward the 3-attempt cap and does not earn `blocked:ci` — the orchestrator routes it to the drain's `fix-rebase` path instead (#1015). `rebased` — fix-rebase rebased a DIRTY PR onto the default branch. `noop` — a fix mode found nothing to do (e.g. the failing run resolved itself between dispatch and read). `blocked` — a real blocker was hit before completion (see blocked_reason); the orchestrator's step-A reconcile classifies it into needs-human-review / blocked:agent-soft / no-label per #521. `reaped` — the worktree was reaped mid-run; RETRYABLE, re-enqueued with no block label (distinct from `blocked`). `disposition` — investigate/spike mode dispositioned the issue without a PR (see disposition)."
     },
     "issue": {
       "type": ["integer", "null"],
@@ -33,7 +33,7 @@
     "pr": {
       "type": ["integer", "null"],
       "minimum": 1,
-      "description": "The PR number this dispatch opened or acted on (#M). Present on `shipped` / `green` / `rebased`; null on `noop` / `blocked` / `reaped` / a no-PR `disposition`."
+      "description": "The PR number this dispatch opened or acted on (#M). Present on `shipped` / `green` / `pending` / `dirty` / `rebased`; null on `noop` / `blocked` / `reaped` / a no-PR `disposition`."
     },
     "auto_merge": {
       "type": ["string", "null"],
