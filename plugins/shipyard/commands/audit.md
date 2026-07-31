@@ -11,7 +11,7 @@ Run an autonomous audit and file GitHub issues for every finding. No approval ga
 
 `$ARGUMENTS` may include:
 
-- **Audit type** (optional, first positional — **defaults to `all` when omitted**): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `functional-qa`, `security`, `a11y`, `seo`, `marketing`, `privacy`, `release-readiness`, `pwa`, `tech-debt`, `testing`, `dx`, `docs`, `observability`, `api`, `data-lifecycle`, or `all`. When `/audit` is run with no audit-type argument, proceed straight to `all` — do **not** prompt via `AskUserQuestion` to pick a type.
+- **Audit type** (optional, first positional — **defaults to `all` when omitted**): one of `lighthouse`, `web-ux`, `mobile-ux`, `ux` (= web-ux + mobile-ux), `functional-qa`, `security`, `a11y`, `seo`, `marketing`, `privacy`, `release-readiness`, `pwa`, `tech-debt`, `testing`, `dx`, `docs`, `observability`, `api`, `data-lifecycle`, `comprehension`, or `all`. When `/audit` is run with no audit-type argument, proceed straight to `all` — do **not** prompt via `AskUserQuestion` to pick a type. **`comprehension` is unusual — its output is a generative document, not a list of defects.** See its row in the dispatch table below and `shipyard:comprehension-auditor`'s own "Artifact vs. issues" section before dispatching it; the rest of this file's "file first, summarize after" framing still applies, but only to its small "surprises" issue output, never to the document itself.
 - **URL** (optional, second positional, web audits only): the page to audit. If omitted and the audit needs a URL, ask via `AskUserQuestion`.
 - **--repo owner/repo** (optional): target GitHub repo. If omitted, auto-detect via `gh repo view --json nameWithOwner -q .nameWithOwner`. If that fails (not in a repo), ask via `AskUserQuestion`.
 
@@ -44,11 +44,12 @@ Resolve the target repo *once* in the main session and pass it to every agent. T
 | `observability` | `shipyard:observability-auditor` | no |
 | `api` | `shipyard:api-auditor` | no |
 | `data-lifecycle` | `shipyard:data-lifecycle-auditor` | no |
+| `comprehension` | `shipyard:comprehension-auditor` | no |
 | `all` | every agent above (parallel) | yes |
 
 When dispatching multiple agents, send them as multiple `Agent` tool calls in a single message so they run concurrently.
 
-Every agent applies its own `audit:<dimension>` label to issues it files — that gives the tracker a single filter dimension to find issues by audit source (e.g. `is:open label:audit:lighthouse`).
+Every agent applies its own `audit:<dimension>` label to issues it files — that gives the tracker a single filter dimension to find issues by audit source (e.g. `is:open label:audit:lighthouse`). **Exception: `comprehension`'s primary output is a document, not issues** — it files a single non-labeled "living-doc" tracking issue proposing the document for a later `/shipyard:do-work` dispatch to commit, and applies `audit:comprehension` only to its much smaller "surprises" issue output. See `shipyard:comprehension-auditor`'s "Artifact vs. issues" section.
 
 ## Generate the audit run id (once, before dispatch)
 
