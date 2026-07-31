@@ -267,7 +267,7 @@ assert_equals "$out" "" "due: empty-array schedule config produces empty output"
 
 # stdin (-) input works identically to a file path.
 via_file=$(SHIPYARD_HOME="$tmphome" bash "$helper" due --repo "yet-another/repo" --schedule-json "$schedule_file")
-via_stdin=$(cat "$schedule_file" | SHIPYARD_HOME="$tmphome" bash "$helper" due --repo "yet-another/repo" --schedule-json -)
+via_stdin=$(SHIPYARD_HOME="$tmphome" bash "$helper" due --repo "yet-another/repo" --schedule-json - < "$schedule_file")
 assert_equals "$via_stdin" "$via_file" "due: stdin (-) input matches file-path input"
 
 # Missing --schedule-json file -> exit 5.
