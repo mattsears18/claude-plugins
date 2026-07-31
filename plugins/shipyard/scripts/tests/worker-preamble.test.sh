@@ -965,6 +965,31 @@ assert_contains "$reaped_path" '$WORKTREE_PATH/.shipyard-scratch' \
 assert_contains "$reaped_path" "rm -rf \"\$WORKTREE_PATH/.shipyard-scratch\"" \
   "reaped-escape-hatch.md's incremental-posting example cleans up the scratch dir after use"
 
+# Issue #1004 — the same heredoc-in-command-substitution shape #979 fixed
+# across the mode-shim worker files also existed in three standalone,
+# human-invoked slash commands (not worker dispatches, but not guaranteed to
+# run outside a worktree-isolated cwd either — e.g. /my-turn reuses
+# resolve-decisions.md's flow inline in the same session as an active
+# /shipyard:do-work run). Converted to the same --body-file + scratch-file
+# pattern; guard against regression the same way the mode-file loop above does.
+for cmd_file in file-issue resolve-decisions eas-watch; do
+  cmd_path="$repo_root/plugins/shipyard/commands/${cmd_file}.md"
+  if [[ -f "$cmd_path" ]]; then
+    assert_contains "$cmd_path" "#1004" \
+      "${cmd_file}.md references issue #1004's --body-file fix"
+    assert_contains "$cmd_path" "--body-file" \
+      "${cmd_file}.md prescribes --body-file instead of a heredoc"
+    assert_contains "$cmd_path" ".shipyard-scratch" \
+      "${cmd_file}.md uses a .shipyard-scratch scratch location"
+    assert_contains "$cmd_path" "rm -rf" \
+      "${cmd_file}.md cleans up the scratch dir after use"
+    # Same real-heredoc-opener regression guard as the mode-file loop above.
+    assert_count_at_most_regex "$cmd_path" \
+      '"\$\(cat <<.?EOF.?$' 0 \
+      "${cmd_file}.md no longer contains the refused heredoc --body shape"
+  fi
+done
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

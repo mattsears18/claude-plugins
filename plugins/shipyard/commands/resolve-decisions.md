@@ -90,10 +90,18 @@ After the last decision is answered (or the walkthrough is halted), record the o
 
 ### When every blocking decision was answered
 
-1. **Post a structured decisions comment** to the issue. The comment records each decision + the maintainer's answer + a one-line rationale, plus an **additive implementation outline** that translates the locked decisions into concrete acceptance criteria the eventual `/do-work` worker can implement against. Lead the comment with the idempotency sentinel on its own first line:
+1. **Post a structured decisions comment** to the issue. The comment records each decision + the maintainer's answer + a one-line rationale, plus an **additive implementation outline** that translates the locked decisions into concrete acceptance criteria the eventual `/do-work` worker can implement against. Lead the comment with the idempotency sentinel on its own first line.
+
+   **A multi-line `--body` fed via `$(cat <<EOF ... EOF)` command substitution is refused by the worktree-isolation `Bash` guard when this command happens to run from a worktree-isolated cwd** — e.g. `/my-turn` reusing this flow inline in the same session as an active `/shipyard:do-work` run, which relocates into its own `orchestrator-<session-id>` worktree (issue [#1004](https://github.com/mattsears18/shipyard/issues/1004), following [#979](https://github.com/mattsears18/shipyard/issues/979)'s fix for the `/shipyard:do-work` worker specs). Write the body with the `Write` tool to a scratch file first, then pass `--body-file`, per `shipyard:worker-preamble` § "Multi-line `--body` payloads — use `--body-file`, never a heredoc command substitution":
 
    ```bash
-   gh issue comment <N> --repo <owner/repo> --body "$(cat <<'EOF'
+   SCRATCH_ROOT="$(git rev-parse --show-toplevel)"
+   mkdir -p "$SCRATCH_ROOT/.shipyard-scratch"
+   ```
+
+   Write this content (with the `Write` tool) to `$SCRATCH_ROOT/.shipyard-scratch/decisions-comment.md`:
+
+   ```
    <!-- shipyard-resolve-decisions -->
    ## Decisions resolved (via /resolve-decisions)
 
@@ -106,8 +114,13 @@ After the last decision is answered (or the walkthrough is halted), record the o
    - <criterion …>
 
    These decisions are now locked; the gating label has been removed so /shipyard:do-work can pick this up.
-   EOF
-   )"
+   ```
+
+   Then:
+
+   ```bash
+   gh issue comment <N> --repo <owner/repo> --body-file "$SCRATCH_ROOT/.shipyard-scratch/decisions-comment.md"
+   rm -rf "$SCRATCH_ROOT/.shipyard-scratch"
    ```
 
 2. **Remove the gating label** so `/do-work` re-admits the issue to dispatch:

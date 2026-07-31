@@ -126,22 +126,26 @@ The default goal is an issue `/shipyard:do-work` can pick up **as-is**. Before f
 
 ### 8. File the issue
 
-Ensure the `shipyard` provenance label exists first (idempotent — never errors if already present), then file using the HEREDOC pattern from the filing skill with `--label shipyard` included:
+Ensure the `shipyard` provenance label exists first (idempotent — never errors if already present):
 
 ```bash
 # Ensure the shipyard provenance label exists before filing.
 gh label create shipyard --repo "$REPO" \
   --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
+```
 
-Include any gate label from step 7 (`--label needs-human-review` / `--label needs-triage`) **only** in the exception case where the research showed the issue can't be made dispatch-ready — otherwise omit gate labels so the issue stays dispatchable:
+Include any gate label from step 7 (`--label needs-human-review` / `--label needs-triage`) **only** in the exception case where the research showed the issue can't be made dispatch-ready — otherwise omit gate labels so the issue stays dispatchable.
+
+**A multi-line `--body` fed via `$(cat <<EOF ... EOF)` command substitution is refused by the worktree-isolation `Bash` guard when this command happens to run from a worktree-isolated cwd** (issue [#1004](https://github.com/mattsears18/shipyard/issues/1004), following [#979](https://github.com/mattsears18/shipyard/issues/979)'s fix for the `/shipyard:do-work` worker specs) — write the body with the `Write` tool to a scratch file first, then pass `--body-file`, per `shipyard:worker-preamble` § "Multi-line `--body` payloads — use `--body-file`, never a heredoc command substitution":
 
 ```bash
-issue_url=$(gh issue create --repo "$REPO" \
-  --label shipyard \
-  --label "<P0|P1|P2>" \
-  --label "<other applicable labels from gh label list>" \
-  --title "<conventional-commit title>" \
-  --body "$(cat <<'EOF'
+SCRATCH_ROOT="$(git rev-parse --show-toplevel)"
+mkdir -p "$SCRATCH_ROOT/.shipyard-scratch"
+```
+
+Write this content (with the `Write` tool) to `$SCRATCH_ROOT/.shipyard-scratch/issue-body.md`:
+
+```
 ## Finding
 
 <the problem, with concrete evidence from the research pass — file paths, current behavior>
@@ -158,8 +162,18 @@ issue_url=$(gh issue create --repo "$REPO" \
 
 - [ ] <verifiable outcome>
 - [ ] <regression guard for adjacent behavior, if the research flagged any>
-EOF
-)")
+```
+
+Then:
+
+```bash
+issue_url=$(gh issue create --repo "$REPO" \
+  --label shipyard \
+  --label "<P0|P1|P2>" \
+  --label "<other applicable labels from gh label list>" \
+  --title "<conventional-commit title>" \
+  --body-file "$SCRATCH_ROOT/.shipyard-scratch/issue-body.md")
+rm -rf "$SCRATCH_ROOT/.shipyard-scratch"
 ```
 
 ### 9. Return the issue URL
