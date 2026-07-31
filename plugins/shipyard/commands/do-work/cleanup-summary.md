@@ -401,7 +401,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 
 ⚠️  Model/mode mismatch(es) (#978): <mismatch_count> of <total_invocations> dispatch(es) this session were billed against a model whose family disagrees with what models.<mode> resolves to for that mode — cost attribution may be wrong for these: <mode1> (<count1>), <mode2> (<count2>), ... . This does NOT confirm which model a dispatch actually ran on (the harness exposes no such signal) — it flags a self-reported model that disagrees with configured policy. Check `/shipyard:status` while a session is running (MODEL column) or the per-slot `.in_flight[<slot>].model` this session recorded at dispatch time.
 
-⚠️  Auto-merge unavailable — gh token lacks `workflow` scope (#812): <workflow_scope_count> PR(s) touch .github/workflows/ and cannot auto-merge until you run this once: `gh auth refresh -h github.com -s workflow`. Affected: #<pr1>, #<pr2>, ... — every workflow-touching PR this session hit the identical block; re-arm each with `gh pr merge <M> --auto --merge` after refreshing the token.
+⚠️  Auto-merge unavailable — gh token lacks `workflow` scope (#812): <workflow_scope_count> PR(s) touch .github/workflows/ and cannot auto-merge until you run this once: `gh auth refresh -h github.com -s workflow`. Affected: #<pr1>, #<pr2>, ... — every workflow-touching PR this session hit the identical block; re-arm each with `gh pr merge <M> --auto --<configured auto_merge.method, default squash>` after refreshing the token — never hardcode `--merge` (issue #989).
 ```
 
 **End-of-session bucket-table rules** (match step 2's modes with one addition):

@@ -119,6 +119,11 @@ assert_contains "$out" '"session_stamp": "shipyard"'    "load emits default labe
 assert_contains "$out" '"issue_work": "claude-sonnet-5"' "load emits default models.issue_work"
 
 assert_equals "$("$helper" get auto_merge.policy)" "trusted-only" "get auto_merge.policy returns default"
+# auto_merge.method (issue #989) — merge method is repo policy, not worker
+# choice; default squash so a repo that never sets this still gets a sane,
+# CHANGELOG-friendly merge shape rather than a worker-guessed one.
+assert_contains "$out" '"method": "squash"' "load emits default auto_merge.method (#989)"
+assert_equals "$("$helper" get auto_merge.method)" "squash" "get auto_merge.method returns default squash (#989)"
 assert_equals "$("$helper" get models.issue_work)" "claude-sonnet-5" "get models.issue_work returns default"
 assert_equals "$("$helper" get models.verify)" "claude-opus-4-8" "get models.verify returns the Opus 4.8 verify-gate default (#784)"
 
@@ -169,6 +174,17 @@ assert_contains "$out" "wrote auto_merge.policy" "set --repo emits write line"
 assert_file_exists "$repo/shipyard.config.json" "shipyard.config.json created"
 assert_equals "$("$helper" get auto_merge.policy)" "always" "get reflects the new value"
 assert_equals "$("$helper" get auto_merge.policy --with-source | cut -f2)" "repo" "source is repo"
+
+# auto_merge.method (issue #989) — same set/get/validate contract as .policy.
+out=$("$helper" set auto_merge.method rebase --repo 2>&1)
+assert_contains "$out" "wrote auto_merge.method" "set --repo emits write line for auto_merge.method (#989)"
+assert_equals "$("$helper" get auto_merge.method)" "rebase" "get auto_merge.method reflects the new value (#989)"
+out=$("$helper" set auto_merge.method bogus --repo 2>&1)
+assert_exit_code "$?" 70 "set auto_merge.method rejects a value outside the enum (#989)"
+assert_contains "$out" "not in enum" "set auto_merge.method error names the enum violation (#989)"
+assert_equals "$("$helper" get auto_merge.method)" "rebase" "invalid set --repo did not overwrite auto_merge.method (#989)"
+# Restore to squash so the rest of this repo-state block's fixtures are unaffected.
+"$helper" set auto_merge.method squash --repo >/dev/null 2>&1
 
 # exists now returns 0
 "$helper" exists

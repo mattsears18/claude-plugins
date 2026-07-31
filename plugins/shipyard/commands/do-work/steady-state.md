@@ -300,7 +300,7 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
    ```
    Log success or failure. If the push fails (network still down, permissions issue, the branch is already on origin ahead of this commit), continue to step 3 rather than reaping silently — a failed push still leaves the local commit recoverable by a human inspection of the worktree before it's removed.
 3. After a successful push, check whether an open PR already exists for the branch. If no PR exists, create one using the normal issue-work PR template (`Closes #<N>` keyword, `--label shipyard`, `--auto`). If a PR already exists (the worker pushed but crashed before creating the PR), create the PR against the existing branch. If PR creation fails, log it and proceed to the reap anyway — the commit is now on origin and the branch is recoverable via the GitHub UI.
-4. Append the recovered PR number to `session_prs` so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR. Then arm auto-merge **behind the ungated-merge pre-check** ([#720](https://github.com/mattsears18/shipyard/issues/720)) — the same [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust) gate, routed through the one executable detector rather than restated: run [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh); on `gated` call `gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch`, and on `ungated` **leave the PR OPEN and unarmed** so [drain's deferred-merge lander](./drain.md#deferred-merge-lander-merge-unarmed-green-session-prs--720) merges it on the first poll its checks are green (the `session_prs` append above is what hands it to the lander). Snapshot `state` and `autoMergeRequest` exactly as step 7 of issue-work.md directs; emit a `[reconcile-A.0.5-recovery] #<N> crash-recovered via PR #<M> (auto-merge: <...>, checks: <...>)` log line. **The `gated` branch's `--auto` call captures stderr rather than discarding it ([#850](https://github.com/mattsears18/shipyard/issues/850))** — when it matches the missing-`workflow`-OAuth-scope signature (`worker-preamble § "Auto-merge + snapshot-and-return pattern"` step 1.1, fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md), issue [#812](https://github.com/mattsears18/shipyard/issues/812)) it logs `[reconcile-A.0.5-recovery] PR #<M> auto-merge arm blocked — gh token lacks workflow scope` — append `<M>` to the session-local [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) list on that line exactly as [step A.1's `shipped` handler](#a1-parse-the-return-string) already does from a worker's return string, so a crash-recovered PR's arm failure reaches the same end-of-session banner instead of vanishing into the `2>/dev/null` this branch used before.
+4. Append the recovered PR number to `session_prs` so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR. Then arm auto-merge **behind the ungated-merge pre-check** ([#720](https://github.com/mattsears18/shipyard/issues/720)) — the same [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust) gate, routed through the one executable detector rather than restated: run [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh); resolve `auto_merge.method` (default `squash` — never hardcode `--merge`, issue [#989](https://github.com/mattsears18/shipyard/issues/989)) via `"${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method`, falling back to `squash` on an empty/invalid read; on `gated` call `gh pr merge <M> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch`, and on `ungated` **leave the PR OPEN and unarmed** so [drain's deferred-merge lander](./drain.md#deferred-merge-lander-merge-unarmed-green-session-prs--720) merges it on the first poll its checks are green (the `session_prs` append above is what hands it to the lander). Snapshot `state` and `autoMergeRequest` exactly as step 7 of issue-work.md directs; emit a `[reconcile-A.0.5-recovery] #<N> crash-recovered via PR #<M> (auto-merge: <...>, checks: <...>)` log line. **The `gated` branch's `--auto` call captures stderr rather than discarding it ([#850](https://github.com/mattsears18/shipyard/issues/850))** — when it matches the missing-`workflow`-OAuth-scope signature (`worker-preamble § "Auto-merge + snapshot-and-return pattern"` step 1.1, fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md), issue [#812](https://github.com/mattsears18/shipyard/issues/812)) it logs `[reconcile-A.0.5-recovery] PR #<M> auto-merge arm blocked — gh token lacks workflow scope` — append `<M>` to the session-local [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) list on that line exactly as [step A.1's `shipped` handler](#a1-parse-the-return-string) already does from a worker's return string, so a crash-recovered PR's arm failure reaches the same end-of-session banner instead of vanishing into the `2>/dev/null` this branch used before.
 
    **Why this site must gate, and why it must not block.** A crash-recovered PR is the **least-validated diff in the system** — the dirty-worktree path auto-commits with `--no-verify` (the pre-commit gate may be exactly what hung the worker), so CI is quite literally the only thing that ever inspects it. Arming `--auto` on an ungated repo lands that unvalidated diff on the default branch immediately, and because every recovery step is fire-and-forget (`2>/dev/null || true`) it does so **silently**. But this runs on the orchestrator's reconcile hot path, so the worker-style blocking `gh pr checks --watch` is not available — a multi-minute block here stalls every in-flight dispatch. Deferring to drain's lander gates the merge on green without blocking anything.
 5. Then proceed to the reap. The recovery does not skip the reap — the worktree is still a crashed agent's directory and needs to be cleaned up.
@@ -588,13 +588,17 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
             # `ungated` (defer), never to an immediate merge.
             verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
               <owner/repo> 2>/dev/null || echo ungated)
+            # Resolve the merge method from config — never hardcode --merge
+            # (#989). Repo policy, not a literal to copy verbatim.
+            auto_merge_method=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+            case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
             if [ "$verdict" = "gated" ]; then
               # Capture stderr instead of discarding it (#850) — the same
               # missing-`workflow`-OAuth-scope block a worker's own arm can
               # hit (worker-preamble auto-merge.md step 1.1, #812) can hit
               # this reconcile-turn arm too, and `2>/dev/null || true` was
               # previously swallowing it with zero visibility.
-              merge_arm_err=$(gh pr merge "$recovered_pr" --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+              merge_arm_err=$(gh pr merge "$recovered_pr" --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
               if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
                 echo "[reconcile-A.0.5-recovery] PR #${recovered_pr} auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
               fi
@@ -788,6 +792,44 @@ Once A.0.6 has run, proceed to A.1.
 For **issue work** (`shipped` / `blocked` / `errored`):
 
 - **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. **Append `<M>` to `session_prs`** (the set the [end-of-session drain](./drain.md#end-of-session-drain) watches). Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.
+
+  **Verify the armed merge method — don't trust the worker's own claim ([#989](https://github.com/mattsears18/shipyard/issues/989)).** A worker can arm auto-merge with the wrong method (`--merge` instead of the configured `--squash`, or vice versa) despite every per-mode spec resolving `auto_merge.method` before its own `gh pr merge` call — the #989 repro shows this is **intermittent**: two workers in the same session both mis-armed `mergeMethod: MERGE` while every sibling PR that session correctly armed `SQUASH`. The worker's return string never carries the armed method, so there's nothing to parse here — re-read the PR directly and correct it before moving on. Skip this check entirely for a `disposition:`/`verified:` return (no PR) and for `auto-merge: gated — external-author origin` (never armed) or `auto-merge: unavailable*` (nothing armed to check).
+
+  ```bash
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+  EXPECTED_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+  case "$EXPECTED_METHOD" in squash|merge|rebase) ;; *) EXPECTED_METHOD=squash ;; esac
+
+  PR_SNAPSHOT=$(gh pr view <M> --repo <owner/repo> --json state,autoMergeRequest \
+    --jq '{state: .state, method: (.autoMergeRequest.mergeMethod // empty)}' 2>/dev/null || echo '{}')
+  PR_STATE=$(printf '%s' "$PR_SNAPSHOT" | jq -r '.state // empty')
+  ACTUAL_METHOD=$(printf '%s' "$PR_SNAPSHOT" | jq -r '.method // empty' | tr '[:upper:]' '[:lower:]')
+
+  if [ "$PR_STATE" = "OPEN" ] && [ -n "$ACTUAL_METHOD" ] && [ "$ACTUAL_METHOD" != "$EXPECTED_METHOD" ]; then
+    echo "[merge-method-drift] PR #<M> armed with mergeMethod=${ACTUAL_METHOD} (expected ${EXPECTED_METHOD}) — correcting (#989)"
+    # `gh pr merge --auto --<method>` against an ALREADY-ARMED PR is a SILENT
+    # no-op (exits 0, changes nothing) — must disable the queue first, then
+    # re-arm with the correct method. This is the exact disable-then-rearm
+    # dance #989's repro documents; skipping the disable leaves the wrong
+    # method in place with no error to signal it.
+    gh pr merge <M> --repo <owner/repo> --disable-auto 2>/dev/null || true
+    gh pr merge <M> --repo <owner/repo> --auto --${EXPECTED_METHOD} --delete-branch 2>/dev/null || true
+    CORRECTED=$(gh pr view <M> --repo <owner/repo> --json autoMergeRequest \
+      --jq '.autoMergeRequest.mergeMethod // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    if [ "$CORRECTED" = "$EXPECTED_METHOD" ]; then
+      echo "[merge-method-drift] PR #<M> corrected to mergeMethod=${EXPECTED_METHOD}"
+    else
+      echo "[merge-method-drift] PR #<M> correction did NOT take (now reads '${CORRECTED}') — flagging for manual check"
+      gh pr comment <M> --repo <owner/repo> --body "Auto-merge method drift detected (mergeMethod=${ACTUAL_METHOD}, expected ${EXPECTED_METHOD}) and the automatic disable-then-rearm correction did not take. Please verify the armed merge method manually before this PR lands (#989)." 2>/dev/null || true
+    fi
+  elif [ "$PR_STATE" = "MERGED" ] && [ -n "$ACTUAL_METHOD" ]; then
+    : # Already landed via the ungated-admin-direct path or a manual gated-manual
+      # merge — mergeMethod on a merged PR reflects the merge that already
+      # fired, and there's nothing left to correct post-hoc. Silent no-op.
+  fi
+  ```
+
+  This check runs unconditionally on every `shipped` reconcile, not just the ones whose return string looked suspicious — the whole point is that the worker's own return gives no signal either way, so the only reliable source is GitHub's own state.
 
   **`auto-merge: unavailable — gh token lacks workflow scope` suffix ([#812](https://github.com/mattsears18/shipyard/issues/812)) — append to `workflow_scope_blocked_prs`, don't post a per-PR advisory.** When the reconciled return carries this exact suffix (distinct from the generic `auto-merge: unavailable — needs manual merge`), append `<M>` to the session-local [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) list in addition to the normal `session_prs` append above — everything else about the `shipped` handling (cost-tracking comment, immediate worktree reap) proceeds unchanged. Do NOT post a comment on the PR explaining the cause, and do NOT treat it as a per-PR failure needing its own remediation note — the cause is a deterministic, session-wide token precondition, so the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) surfaces it exactly once for the whole list rather than repeating the same explanation on every workflow-touching PR. The PR stays OPEN and unarmed in `session_prs`; the drain phase watches it exactly like any other unarmed-but-otherwise-normal PR (it will sit pending-merge until a human runs `gh auth refresh -h github.com -s workflow` and re-arms it — this is expected, not a drain bug).
 

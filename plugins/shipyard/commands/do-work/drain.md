@@ -599,14 +599,19 @@ Never infer "release PR" from a version bump *inside a feature PR* — on this r
 **Arming.** For a trusted release PR not already armed this session, branch on the drain-entry `merge_gating` verdict ([#720](https://github.com/mattsears18/shipyard/issues/720) — read once at drain entry per the [deferred-merge lander](#deferred-merge-lander-merge-unarmed-green-session-prs--720) below; do NOT re-probe per poll):
 
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+# Resolve the merge method from config — never hardcode --merge (#989).
+auto_merge_method=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
+
 if [ "$merge_gating" = "gated" ]; then
-  # `--auto` genuinely queues behind CI. Arm it with the repo's release merge
-  # method (release-please repos typically squash; a plain release-bump PR merges).
+  # `--auto` genuinely queues behind CI. Arm it with the repo's configured
+  # release merge method (auto_merge.method, resolved above — default squash).
   # Capture stderr instead of discarding it (#850) — the same missing-
   # `workflow`-OAuth-scope block a worker's own arm can hit (worker-preamble
   # auto-merge.md step 1.1, #812) can hit this release-train arm too, and a
   # release-please PR routinely touches .github/workflows/ version pins.
-  merge_arm_err=$(gh pr merge <M> --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+  merge_arm_err=$(gh pr merge <M> --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
   if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
     echo "[release-train] PR #<M> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
   fi
@@ -690,7 +695,7 @@ The action is a **no-op when `merge_gating == "gated"`** (GitHub's real auto-mer
 
 **Per-poll action (runs last, after the per-poll actions, the merge-gate action, and the release-train sweep).** When `merge_gating == "ungated"`, for each candidate:
 
-- Rollup **green** (all `SUCCESS`/`SKIPPED`/`NEUTRAL`, or no checks configured) → **merge it now**: `gh pr merge <M> --repo <owner/repo> --merge --delete-branch` (repo's configured merge method). Log `[drain] PR #<M> unarmed + green on ungated repo → direct-merged by deferred-merge lander (#720)`. The PR leaves `O` on the next snapshot and settles normally.
+- Rollup **green** (all `SUCCESS`/`SKIPPED`/`NEUTRAL`, or no checks configured) → **merge it now**: `gh pr merge <M> --repo <owner/repo> --${auto_merge_method:-squash} --delete-branch` (resolve `auto_merge.method` — default `squash` — the same way the release-train arm above does; never hardcode `--merge`, issue [#989](https://github.com/mattsears18/shipyard/issues/989)). Log `[drain] PR #<M> unarmed + green on ungated repo → direct-merged by deferred-merge lander (#720)`. The PR leaves `O` on the next snapshot and settles normally.
 - Rollup **failing** → do nothing here. The PR is already in `R_new` / `P_failing` and per-poll action 1 dispatches fix-checks against it; the lander picks it up on a later poll once it goes green.
 - Rollup **pending** → do nothing. Wait for a later poll. This is the queue behaving as a queue.
 

@@ -120,7 +120,8 @@ EOF
 DEFAULTS_JQ='{
   "version": 1,
   "auto_merge": {
-    "policy": "trusted-only"
+    "policy": "trusted-only",
+    "method": "squash"
   },
   "trust": {
     "authors": []

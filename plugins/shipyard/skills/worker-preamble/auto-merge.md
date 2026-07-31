@@ -80,23 +80,33 @@ After `gh pr create` returns:
    fi
    ```
 
-   When the two-shape test holds — this is the ungated admin-direct path. Do NOT fire `gh pr merge --auto --merge` (it would direct-merge immediately, ungated). Instead **block on the PR's own checks to settle, then merge only when green** — this is the one issue-work case where you DO `--watch`, because the merge gate the repo lacks must be re-created by the worker:
+   When the two-shape test holds — this is the ungated admin-direct path. Do NOT fire `gh pr merge --auto` in any form (it would direct-merge immediately, ungated). Instead **block on the PR's own checks to settle, then merge only when green** — this is the one issue-work case where you DO `--watch`, because the merge gate the repo lacks must be re-created by the worker:
 
    ```bash
    # Block until the PR's checks settle (self-heartbeats on every interval tick — watchdog-safe).
    gh pr checks <pr-num> --repo <owner/repo> --watch --interval 30
    ```
 
-   - If the checks settle **green**, merge now (the PR is gated by its own CI even though the repo's ruleset isn't): `gh pr merge <pr-num> --repo <owner/repo> --squash --delete-branch` (use the repo's configured merge method — `--merge`/`--squash`/`--rebase`; default to `--squash` only if the repo doesn't constrain it). **Report this outcome as `auto-merge: gated-manual` — never `merged-direct`** ([#734](https://github.com/mattsears18/shipyard/issues/734); see the callout immediately below step 1.5 for why the two tokens must not collapse into one). This merge never called `--auto`, so there is nothing for step 1 / step 1.5 to arm or categorize: skip both entirely and go straight to step 2's check-rollup snapshot (it will read `checks: green`, since the `--watch` above already confirmed it) and the step-3 return.
+   - If the checks settle **green**, merge now (the PR is gated by its own CI even though the repo's ruleset isn't): `gh pr merge <pr-num> --repo <owner/repo> --${AUTO_MERGE_METHOD:-squash} --delete-branch` (resolve `$AUTO_MERGE_METHOD` per step 0.9 below — never hardcode a method here). **Report this outcome as `auto-merge: gated-manual` — never `merged-direct`** ([#734](https://github.com/mattsears18/shipyard/issues/734); see the callout immediately below step 1.5 for why the two tokens must not collapse into one). This merge never called `--auto`, so there is nothing for step 1 / step 1.5 to arm or categorize: skip both entirely and go straight to step 2's check-rollup snapshot (it will read `checks: green`, since the `--watch` above already confirmed it) and the step-3 return.
    - If the checks settle **red**, this is exactly the case the fix-checks loop exists for: do NOT merge a red PR. Hand it back via the mode's normal return (`shipped #<N> via PR #<M> (auto-merge: unavailable — needs manual merge, checks: failing)` for issue-work) so the orchestrator's reconcile dispatches a fresh fix-checks-only worker against it. Do NOT run the fix-loop inline — that's mode-switching, which the per-mode files forbid.
 
    When the two-shape test does NOT hold, skip this wait entirely and arm auto-merge normally (step 1 below). Concretely, the skip is correct only when **required status checks ARE configured** (`REQUIRED_CHECKS > 0`, so gh blocks the direct merge until they pass) **OR** the dispatcher lacks `ADMIN`/`MAINTAIN` (so the direct-merge fall-through isn't permitted and `gh pr merge --auto` queues normally). In those configurations `gh pr merge --auto` is genuinely gated — and if a real auto-merge queue forms after arming (`autoMergeRequest != null` in step 1.5's snapshot), it waits for green by design. Do NOT skip on `ALLOW_AUTO_MERGE == true` alone: an admin dispatcher on a repo with zero required checks is the #465 shape-2 ungated path even when auto-merge is enabled, so `allow_auto_merge: true` is *not* on its own sufficient to make the merge gated. The proactive wait fires on both ungated shapes it's meant to close.
 
    **`gated-manual` is the routine, correct outcome on this branch — not an anomaly.** Every PR that reaches this bullet gets `gated-manual`, exactly as every PR that reaches step 1 with a genuine queue gets `enabled`. Don't read the name as "something unusual happened"; it names *how* the merge was gated (the worker watched and merged by hand) rather than *whether* it was gated (it was).
 
+0.9. **Resolve the merge method from config — never hardcode `--merge` ([#989](https://github.com/mattsears18/shipyard/issues/989)).** The merge method is **repo policy, not worker choice**. Read `auto_merge.method` (default `squash`) and use the resolved value in every `gh pr merge` call below — both the `--auto` arm in step 1 and the manual green-checks merge in step 0.5 above:
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+   case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
+   ```
+
+   **Why this step exists as a named, separate step rather than a parenthetical.** Every merge-command code block in this fragment (and in every per-mode file that mirrors it) used to show the literal `--merge` flag as a stand-in for "whatever the repo's configured method is" — but a worker reading the block as a copy-pasteable command has no reason to substitute anything, so it faithfully armed `--merge` regardless of the surrounding prose. That's the exact repro in issue [#989](https://github.com/mattsears18/shipyard/issues/989): two consecutive workers in the same session both armed `mergeMethod: MERGE` when every sibling PR that session correctly landed as `SQUASH`. Resolving `$AUTO_MERGE_METHOD` once, here, and substituting it into every command below closes the gap between the prose and the literal code the worker actually runs.
+
 1. Arm auto-merge (when the step-0.5 ungated-path check did NOT fire). Capture stderr into a local variable — step 1.1 below needs the text, not just the exit status:
    ```bash
-   MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+   MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch 2>&1 1>/dev/null) || true
    ```
    If the call errors because auto-merge isn't enabled at the repo level, **don't try to enable it** — that's a repo-config decision. Capture the error to a local variable but proceed to step 1.5 below — the call's exit status alone is NOT a reliable signal of the actual merge outcome (see issue [#340](https://github.com/mattsears18/shipyard/issues/340)).
 

@@ -105,6 +105,9 @@ Same as the worker-dispatched path's [issue-work step 6](../../agents/issue-work
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+# Resolve the merge method from config — never hardcode --merge (#989).
+AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
 
 if [ "$VERDICT" = "gated" ]; then
   # `--auto` genuinely queues behind CI. Arm it and move on. Capture stderr —
@@ -113,7 +116,7 @@ if [ "$VERDICT" = "gated" ]; then
   # step 1.1, issue #812) can hit this inline-path call too, and this call
   # site previously threw the error away unread, so an inline-shipped
   # workflow-touching PR failed to arm with zero visibility (#850).
-  MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+  MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch 2>&1 1>/dev/null) || true
   if printf '%s' "$MERGE_ARM_ERR" | grep -qi "without .workflow. scope"; then
     echo "[inline-trivial] PR #<pr-num> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
   fi

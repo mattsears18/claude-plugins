@@ -172,9 +172,11 @@ assert_contains "$steady_state_path" \
 assert_contains "$steady_state_path" \
   "gh pr merge" \
   "A.0.5 recovery arms auto-merge on the recovered PR"
+# shellcheck disable=SC2016
+# Literal grep needle — ${auto_merge_method} is matched verbatim in the spec, not expanded.
 assert_contains "$steady_state_path" \
-  "--auto --merge --delete-branch" \
-  "A.0.5 recovery uses --auto --merge --delete-branch"
+  '--auto --${auto_merge_method}' \
+  "A.0.5 recovery arms with the config-resolved merge method, not a hardcoded --merge (#989)"
 
 # 10) The recovered PR is appended to session_prs so drain/summary see it.
 # shellcheck disable=SC2016

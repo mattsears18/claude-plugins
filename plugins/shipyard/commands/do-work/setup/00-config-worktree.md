@@ -653,13 +653,16 @@ EOF
         if [ -n "$pr_num" ]; then
           verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
             <owner/repo> 2>/dev/null || echo ungated)
+          # Resolve the merge method from config — never hardcode --merge (#989).
+          auto_merge_method=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+          case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
           if [ "$verdict" = "gated" ]; then
             # Capture stderr instead of discarding it (#850) — the same
             # missing-`workflow`-OAuth-scope block a worker's own arm can hit
             # (worker-preamble auto-merge.md step 1.1, #812) can hit this
             # setup-3c orphan-recovery arm too; `2>/dev/null || true` was
             # previously swallowing it with zero visibility.
-            merge_arm_err=$(gh pr merge "$pr_num" --repo <owner/repo> --auto --merge --delete-branch 2>&1 1>/dev/null) || true
+            merge_arm_err=$(gh pr merge "$pr_num" --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
             if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
               echo "[setup-3c] PR #${pr_num} auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
             fi

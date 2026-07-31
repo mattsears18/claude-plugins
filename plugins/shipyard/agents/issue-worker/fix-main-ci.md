@@ -96,6 +96,10 @@ The single highest-leverage action is: identify the root cause and ship the smal
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
    VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+   # Resolve the merge method from config — never hardcode --merge (#989).
+   # Repo policy, not worker choice; used in every gh pr merge call below.
+   AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+   case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
    ```
 
    - **`VERDICT == "ungated"`** → **do NOT run `gh pr merge --auto`.** Re-create the missing merge gate by hand: block on the PR's own checks, then merge only if they settle green. This is the one case where this mode DOES `--watch` (it self-heartbeats on every tick, so it's watchdog-safe), and the block is affordable precisely because you own a dispatch slot — the orchestrator's loop is not waiting on your turn:
@@ -104,7 +108,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
      gh pr checks <pr-num> --repo <owner/repo> --watch --interval 30
      ```
 
-     - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --merge --delete-branch` (use the repo's configured merge method). **Report this in step 8 as `auto-merge: gated-manual` — never `merged-direct`** ([#734](https://github.com/mattsears18/shipyard/issues/734)); `merged-direct` names a different event (7.b's `--auto` call falling through unexpectedly) and this branch never calls `--auto`. Skip 7.b's categorization entirely — go straight to the step-8 return with `checks: green` (already confirmed by the `--watch` above).
+     - Checks settle **green** → merge now: `gh pr merge <pr-num> --repo <owner/repo> --${AUTO_MERGE_METHOD} --delete-branch` (the value resolved above — never the literal `--merge`). **Report this in step 8 as `auto-merge: gated-manual` — never `merged-direct`** ([#734](https://github.com/mattsears18/shipyard/issues/734)); `merged-direct` names a different event (7.b's `--auto` call falling through unexpectedly) and this branch never calls `--auto`. Skip 7.b's categorization entirely — go straight to the step-8 return with `checks: green` (already confirmed by the `--watch` above).
      - Checks settle **red** → do NOT merge. Your fix did not work. Return the step-8 string with `checks: failing` so the orchestrator's triage dispatches a fix-checks-only worker against the PR. Do NOT run the fix-loop inline — that's mode-switching, which this file forbids.
 
    - **`VERDICT == "gated"`** → `--auto` genuinely queues behind CI. Arm it normally (7.b).
@@ -112,7 +116,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
    **7.b — Arm auto-merge (only when 7.a returned `gated`), then snapshot:**
 
    ```bash
-   gh pr merge <pr-num> --repo <owner/repo> --auto --merge --delete-branch
+   gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch
    gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
    ```
 
