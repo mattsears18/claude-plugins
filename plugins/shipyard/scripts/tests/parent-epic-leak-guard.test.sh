@@ -73,6 +73,22 @@
 # a few seconds apart, to agree before trusting an empty result — every
 # LEAKED= check in the verification/remediation script routes through it.
 #
+# Extended for issue #1001: §5.8 has a complete add-and-verify path for the
+# dispatched issue's own closing link, but no remove path — and the naive
+# fix (edit the body) is not reliably one-way. A fourth trigger shape,
+# "retracting an already-live closing link," was added for the case where a
+# later dispatch finding (e.g. a post-open validation/landing-gate check)
+# disproves the disposition after §5.8 already confirmed the link. Live
+# testing on this repo confirmed: (a) no direct GraphQL mutation exists to
+# unlink a PR from an issue — closingIssuesReferences is derived, not a
+# mutable edge; (b) a clean bare-URL body rewrite usually clears the link
+# within seconds, but GitHub does not contractually bound the recompute
+# window, so a worker must always re-verify via check_closing_ref rather
+# than trust a single edit; (c) a closing keyword confined to a commit
+# message (absent from the PR body) did not register in the pre-merge
+# closingIssuesReferences read, but tier 2 remains necessary defense-in-depth
+# for non-squash merge strategies the pre-merge check can't validate.
+#
 # Pure bash, no external dependencies. Run with:
 #
 #   bash plugins/shipyard/scripts/tests/parent-epic-leak-guard.test.sh
@@ -212,6 +228,25 @@ if [[ -f "$issue_work_path" ]]; then
     "issue-work.md links to the negation-blind-parser follow-up #990"
   assert_contains "$issue_work_path" "GitHub's parser doesn't understand negation" \
     "issue-work.md's §5 prevention note names the negation-blind-parser hazard (issue #990)"
+
+  # (2.8) Issue #1001: a closing link that already registered via §5.8's
+  # normal flow can need RETRACTION (not just prevention) when a later
+  # dispatch finding disproves the disposition. §5.85's stub must widen from
+  # three to four trigger shapes, §5.8 must point forward to shape (4) rather
+  # than leaving the worker to improvise an untested body edit, and the
+  # Don't list must warn against trusting a single edit.
+  assert_contains "$issue_work_path" "https://github.com/mattsears18/shipyard/issues/1001" \
+    "issue-work.md links to the closing-link-retraction follow-up #1001"
+  assert_contains "$issue_work_path" "Four shapes trigger it" \
+    "issue-work.md's §5.85 stub widens from three to four trigger shapes (issue #1001)"
+  assert_contains "$issue_work_path" "a disposition change on the SAME PR that opened as \`#<N>\`'s own resolving PR" \
+    "issue-work.md's §5.85 stub names shape (4): retracting an already-live closing link (issue #1001)"
+  assert_contains "$issue_work_path" "This step only adds a closing link — it has no remove path of its own" \
+    "issue-work.md's §5.8 points forward to §5.85 shape (4) for retraction (issue #1001)"
+  assert_contains "$issue_work_path" "Don't assume editing the PR body to remove a closing keyword reliably retracts an already-registered closing link" \
+    "issue-work.md's Don't list warns against trusting a single untested retraction edit (issue #1001)"
+  assert_contains "$issue_work_path" "unlinkPullRequestFromIssue" \
+    "issue-work.md's Don't list names the (nonexistent) unlinkPullRequestFromIssue mutation (issue #1001)"
 fi
 
 # (2.6) Issue #980: the detailed procedure — verification, remediation tiers,
@@ -299,6 +334,27 @@ if [[ -f "$fragment_path" ]]; then
     "issue-work-parent-epic-leak.md's helper queries closingIssuesReferences directly via gh api graphql (issue #982)"
   assert_contains "$fragment_path" "false negative" \
     "issue-work-parent-epic-leak.md names the stale-read failure as a false negative (issue #982)"
+
+  # (6.95) Issue #1001: §5.8 can add a closing link but had no documented
+  # remove path, and the naive fix (edit the body) is not reliable — verified
+  # empirically. The fragment must widen to a fourth trigger shape
+  # (retraction, not just prevention), state that no direct GraphQL unlink
+  # mutation exists, and document the empirical findings (body-rewrite
+  # reliability, the commit-message vector, why tier 2 still matters).
+  assert_contains "$fragment_path" "https://github.com/mattsears18/shipyard/issues/1001" \
+    "issue-work-parent-epic-leak.md links to the closing-link-retraction follow-up #1001"
+  assert_contains "$fragment_path" "Four shapes trigger it" \
+    "issue-work-parent-epic-leak.md's applicability paragraph widens to four trigger shapes (issue #1001)"
+  assert_contains "$fragment_path" "Shape (4) — retracting an already-live closing link" \
+    "issue-work-parent-epic-leak.md documents shape (4): retraction, not prevention (issue #1001)"
+  assert_contains "$fragment_path" "unlinkPullRequestFromIssue" \
+    "issue-work-parent-epic-leak.md confirms no direct GraphQL unlink mutation exists (issue #1001)"
+  assert_contains "$fragment_path" "There is no direct mutation to unlink a PR from an issue" \
+    "issue-work-parent-epic-leak.md states the escalation ladder IS the API, not a workaround (issue #1001)"
+  assert_contains "$fragment_path" "usually — not reliably — clears the link within seconds" \
+    "issue-work-parent-epic-leak.md documents the empirical body-rewrite reliability finding (issue #1001)"
+  assert_contains "$fragment_path" "A closing keyword confined to a commit message" \
+    "issue-work-parent-epic-leak.md documents the commit-message-vector empirical finding (issue #1001)"
 
   # (6.9) Every LEAKED= assignment in the verification script must call the
   # check_closing_ref helper — none should fall back to a bare `gh pr view
