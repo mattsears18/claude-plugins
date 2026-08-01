@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.4.32 — 2026-08-01
+
+`session-state.sh`'s `usage()` heredoc always ends with the full exit-code legend, whose own last row describes exit 66 (the #365 cross-repo write refusal) — the most alarming-sounding entry in the table. A caller that reads a failed invocation's stderr through `tail` (a normal thing to do against a chatty helper) saw that legend tail and misread a plain exit-64 usage error as a cross-repo contamination refusal — the exact misdiagnosis a real `/shipyard:do-work` session hit on 2026-08-01 when an `update` call with the wrong flags was read through `tail -2` and diagnosed as a #365 refusal, costing two follow-up investigation calls before the actual exit code (64, not 66) was noticed. Added a `usage_error` helper that prints the usage block and then a final, unambiguous stderr line naming the real outcome — `session-state.sh: <subcommand>: usage error (exit 64)` — on every usage-error exit path, so the last line of a `tail`'d read is always meaningful (closes #1039).
+
+- `plugins/shipyard/scripts/session-state.sh` — new `usage_error [<subcommand>]` helper (calls `usage()`, then emits the named trailing line, then `exit 64`); every one of the 21 `usage; exit 64` call sites across `init`/`read`/`update`/`bump-tokens`/`read-tokens`/`set-progress`/`is-active`/`cleanup` and the top-level dispatcher now routes through it. The `-h|--help|help` path (exit 0) is untouched — it still ends on the plain exit-code legend, since it isn't an error.
+- `plugins/shipyard/scripts/tests/session-state.test.sh` — new "usage-error tail line names the actual outcome" section asserting the last stderr line on several usage-error paths (unknown subcommand, missing required flag, unknown flag, no subcommand at all) names the exit-64 outcome and never reads like the exit-66 legend row, plus a regression check that `--help` is unaffected.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.4.31` → `4.4.32`.
+
 ### 4.4.31 — 2026-08-01
 
 The thin entry `commands/do-work.md`'s "Session state file" section states its own inclusion criterion — stay reachable inline only when consulted on the reconcile hot path every turn — and inlined the `bump-tokens` call shape on that basis, but left `session-state.sh update`'s call shape out, reachable only from the on-demand `session-state-file.md`. By the entry's own criterion `update` belongs inline too: every reconcile turn writes `.in_flight` (slot release) and `.session_prs` (shipped-return append) at the same frequency as `bump-tokens`. A session repro (`do-work-20260801T1015`, `--concurrency 1`) hit exactly this gap: with only the inlined `bump-tokens` shape in context, the orchestrator pattern-matched `update`'s flags from `read`'s `--path`/`--json` shape and got a usage-error (exit 64) on a turn whose entire job was a state mirror (closes #1038).

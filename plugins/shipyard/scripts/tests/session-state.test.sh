@@ -461,6 +461,58 @@ rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=64" "update without --set exits 64"
 
 # --------------------------------------------------------------------------
+echo "== usage-error tail line names the actual outcome (issue #1039)"
+# --------------------------------------------------------------------------
+# usage()'s own heredoc unconditionally ends with the exit-code legend, whose
+# own last row describes exit 66 (the #365 cross-repo write refusal) — the
+# most alarming-sounding entry in the table. A caller that reads a failed
+# invocation's stderr through `tail` (a normal thing to do against a chatty
+# helper) would misread that legend tail as the actual result: a plain exit
+# 64 usage error looking exactly like a cross-repo contamination refusal.
+# Assert the LAST stderr line of every usage-error path names the true exit
+# 64 outcome instead of the legend, and that it never contains the exit-66
+# legend text — the regression this issue's fix (usage_error()) closes.
+
+# Unknown top-level subcommand.
+err_last=$(bash "$helper" frobnicate 2>&1 1>/dev/null | tail -1)
+assert_equals "$err_last" "session-state.sh: frobnicate: usage error (exit 64)" \
+  "unknown subcommand: last stderr line names the usage error, not the exit-code legend"
+
+# Missing required flag on a subcommand (init --session-id).
+err_last=$(bash "$helper" init 2>&1 1>/dev/null | tail -1)
+assert_equals "$err_last" "session-state.sh: init: usage error (exit 64)" \
+  "init without --session-id: last stderr line names the usage error, not the exit-code legend"
+
+# Unknown flag on a subcommand.
+err_last=$(bash "$helper" init --bogus 2>&1 1>/dev/null | tail -1)
+assert_equals "$err_last" "session-state.sh: init: usage error (exit 64)" \
+  "init with unknown flag: last stderr line names the usage error, not the exit-code legend"
+
+# No subcommand at all — no subcommand name is known yet, so the generic form applies.
+err_last=$(bash "$helper" 2>&1 1>/dev/null | tail -1)
+assert_equals "$err_last" "session-state.sh: usage error (exit 64)" \
+  "no subcommand: last stderr line names the usage error, not the exit-code legend"
+
+# The exit-66 legend text must never be the trailing line on any exit-64 path.
+err_last=$(bash "$helper" read 2>&1 1>/dev/null | tail -1)
+assert_contains "$err_last" "usage error (exit 64)" \
+  "read without --session-id: last stderr line names the usage error"
+if [[ "$err_last" == *"cross-repo write refused"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "usage-error tail line must never read like the #365 cross-repo refusal"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "usage-error tail line must never read like the #365 cross-repo refusal"
+  pass=$((pass+1))
+fi
+
+# --help (exit 0, not an error) must NOT gain the new trailing line — the
+# fix is scoped to usage-error paths only; --help still exits via the bare
+# usage() dump with the legend as the last line, unchanged.
+err_last=$(bash "$helper" --help 2>&1 1>/dev/null | tail -1)
+assert_contains "$err_last" "cross-repo write refused" \
+  "--help is unaffected: still ends on the plain exit-code legend, not usage_error's trailing line"
+
+# --------------------------------------------------------------------------
 echo "== init writes the tokens field"
 # --------------------------------------------------------------------------
 # The session-state schema includes a `.tokens` block for per-session token
