@@ -51,7 +51,7 @@ When a slot opens, the dispatch order is always: `divert_queue` first, then `fai
 
 The orchestrator mirrors every [orchestrator-state](#orchestrator-state) structure into a small JSON file at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`) — the durable record of the session, written through whenever state changes and removed at end-of-session by the cleanup step. The LLM's per-turn working memory still drives dispatch decisions; the file is the mirror, not the algorithm. The full JSON schema, the `session-state.sh` helper's complete subcommand reference, the 15-row write-through site table, the write-through failure mode, and the cost-tracking write-through rules (schema consumed once at `init`; the site table is a lookup pointing back into the phase files that perform each write) live in [`do-work/session-state-file.md`](./do-work/session-state-file.md) — load it on demand, not every turn. See [RATIONALE → Session state file](./do-work-RATIONALE.md#session-state-file--why-a-file-at-all) for the design discussion.
 
-Two pieces stay reachable here because they're consulted on the reconcile hot path every turn that bumps tokens ([step A.0](./do-work/steady-state.md#a0-attribute-the-dispatchs-token-usage-mandatory--before-any-return-string-parsing)):
+Three pieces stay reachable here because they're consulted on the reconcile hot path every turn — the two writes below (token attribution, plus state mirroring — `.in_flight` slot release and `.session_prs` shipped-return append fire on literally every reconcile turn) and the exit-code list they share ([step A.0](./do-work/steady-state.md#a0-attribute-the-dispatchs-token-usage-mandatory--before-any-return-string-parsing) and [step A reconcile](./do-work/steady-state.md#a-reconcile-the-return)):
 
 ```bash
 # Bump token-usage counts after an Agent dispatch returns. --issue / --pr
@@ -63,6 +63,14 @@ plugins/shipyard/scripts/session-state.sh bump-tokens \
   --mode <mode> --model <model-id> --allow-degraded-init --degraded-init-repo "<owner/repo>"
 # Degraded path (#279 — <usage> total-only): REPLACE the four breakdown flags
 # with `--input <total_tokens> --degraded-total-only` (mutually exclusive; #320).
+
+# Mirror a state change (slot release, session_prs append, etc.). --set takes a
+# jq expression, NOT a --path/--json pair (that's `read`'s shape, not update's).
+plugins/shipyard/scripts/session-state.sh update \
+  --session-id "<session-id>" --expected-repo "<owner/repo>" \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" \
+  --set '.in_flight = {}' \
+  --set '.session_prs = ((.session_prs // []) + [<M>] | unique)'
 ```
 
 `session-state.sh` exit codes (every subcommand, not just `bump-tokens`):
@@ -77,7 +85,7 @@ plugins/shipyard/scripts/session-state.sh bump-tokens \
 
 ## Phase routing
 
-This file is the **thin entry**: it carries the [args](#args), the **hot** [orchestrator-state struct list](#orchestrator-state) (twelve structures + refresh tracker — read or written most turns), a short pointer into the [session state file](#session-state-file) (plus the two per-turn-hot pieces — the `bump-tokens` call shape and the `session-state.sh` exit codes), and the routing table below. The **cold** long-tail reference material — eight orchestrator-state structures each owned by exactly one other phase file, and the session-state JSON schema / full helper subcommand reference / write-through site table / cost-tracking attribution rules — lives in [`do-work/orchestrator-state-reference.md`](./do-work/orchestrator-state-reference.md) and [`do-work/session-state-file.md`](./do-work/session-state-file.md) respectively, split out under [#808](https://github.com/mattsears18/shipyard/issues/808) so this entry stays small enough to read on every turn. The actual phase semantics live in [`commands/do-work/`](./do-work/) — load **only** the file(s) you need for the current invocation.
+This file is the **thin entry**: it carries the [args](#args), the **hot** [orchestrator-state struct list](#orchestrator-state) (twelve structures + refresh tracker — read or written most turns), a short pointer into the [session state file](#session-state-file) (plus the three per-turn-hot pieces — the `bump-tokens` call shape, the `update --set` call shape, and the `session-state.sh` exit codes), and the routing table below. The **cold** long-tail reference material — eight orchestrator-state structures each owned by exactly one other phase file, and the session-state JSON schema / full helper subcommand reference / write-through site table / cost-tracking attribution rules — lives in [`do-work/orchestrator-state-reference.md`](./do-work/orchestrator-state-reference.md) and [`do-work/session-state-file.md`](./do-work/session-state-file.md) respectively, split out under [#808](https://github.com/mattsears18/shipyard/issues/808) so this entry stays small enough to read on every turn. The actual phase semantics live in [`commands/do-work/`](./do-work/) — load **only** the file(s) you need for the current invocation.
 
 | Phase file | Owns | When to load |
 |---|---|---|
