@@ -88,6 +88,28 @@ TOTALS
   Fix: add them to PRICING_JQ in scripts/session-state.sh (issue #728).
 ```
 
+## Degraded cost attribution — when the totals are UNRELIABLE, not a bound ([#1035](https://github.com/mattsears18/shipyard/issues/1035))
+
+Some Claude Code harness versions emit a sub-agent `<usage>` block with only `total_tokens` — no input/output/cache-read/cache-creation breakdown (issue [#279](https://github.com/mattsears18/shipyard/issues/279)). When that happens, `bump-tokens --degraded-total-only` still records the dispatch's cost rather than silently dropping it (some signal beats zero signal) — but it has to fold the whole `total_tokens` figure into the `--input` bucket, un-split.
+
+**This is a different failure shape than the unpriced-models case above, and it gets a different label.** An unpriced model's tokens are still split correctly across input/output/cache — only the per-token *price* is unknown — so LOWER BOUND is accurate (booking at $0.00 can only ever under-report). A degraded bump instead prices the *entire* total at the input rate: any real cache-read tokens folded into that total are priced far above their true (cheap) rate, which inflates the estimate, while any real output tokens folded in are priced far below their true (several-times-input) rate, which deflates it. The two errors don't cancel predictably — the result isn't reliable as a floor or a ceiling, so degraded sessions are tagged **UNRELIABLE** instead:
+
+```
+TOTALS
+  ...
+  Spend:           $12.40 (avg $6.20/session)  [UNRELIABLE]
+
+⚠  DEGRADED COST ATTRIBUTION — affected spend is UNRELIABLE, not a bound
+  2 session(s), 5 dispatch(es) total, used --degraded-total-only because the harness
+  <usage> block lacked an input/output/cache breakdown — the whole
+  total_tokens figure was folded into the input bucket un-split. This
+  does NOT reliably over- or under-count: it depends on the real
+  input/output/cache mix, which is exactly what is missing. Treat
+  the affected estimated_usd as UNRELIABLE, not an estimate (issue #1035).
+```
+
+The `.tokens.degraded_attribution_count` counter (and the per-invocation `degraded: true` marker) is written by `session-state.sh bump-tokens` and persisted into the cross-session ledger by `cost-history.sh flush`, so `/shipyard:cost report` re-surfaces the same advisory long after the session file is reaped — same durability pattern as the unpriced-models set above. A session can carry both tags at once (a model that's both degraded-attributed and unpriced) since the two conditions are independent.
+
 **`--show-setup`** adds a `SETUP PHASE TIMING` section that aggregates per-phase wall-clock data across sessions. Only sessions recorded after the #238 instrumentation landed contribute — older sessions don't have a `setup` block. Once ≥ 3 instrumented sessions exist, the per-phase means become actionable for prioritizing the perf work in #235 (#231, #232, #233).
 
 The deeper flags compose:
