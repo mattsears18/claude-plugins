@@ -398,6 +398,13 @@ merge_session_records() {
         },
         estimated_usd: ([($e.estimated_usd // 0), ($n.estimated_usd // 0)] | max),
         unpriced_models: (($e.unpriced_models // []) + ($n.unpriced_models // []) | unique),
+        # degraded_attribution_count (issue #1035) is a cumulative per-session
+        # counter, same shape as every other tokens.* counter above — max is
+        # the correct merge operator for the same reason: the fresh
+        # projection is a superset in the ordinary case, and a
+        # degraded/corrupted re-projection at reconcile time must not zero
+        # out a real count already in the ledger.
+        degraded_attribution_count: ([($e.degraded_attribution_count // 0), ($n.degraded_attribution_count // 0)] | max),
         by_model: merge_bucket(($e.by_model // {} | to_entries); ($n.by_model // {} | to_entries)),
         by_mode:  merge_bucket(($e.by_mode  // {} | to_entries); ($n.by_mode  // {} | to_entries)),
         setup: ($n.setup // $e.setup // null)
@@ -598,6 +605,18 @@ cmd_flush() {
           # session file is gone — without it the ledger row is
           # indistinguishable from a genuinely cheap session.
           unpriced_models: ($s.tokens.unpriced_models // []),
+          # Count of per-invocation bumps this session that landed via
+          # `bump-tokens --degraded-total-only` (issue #1035) — the harness
+          # <usage> block lacked the input/output/cache breakdown, so the
+          # whole total_tokens figure was folded into `.tokens.input`
+          # un-split. Persisting the count (not just leaving it implicit in
+          # `.input`) is what lets `cost report` distinguish an UNRELIABLE
+          # estimated_usd (this session used the degraded path) from a
+          # session that genuinely had a clean input-heavy, zero-output
+          # profile, long after the session file is gone — see issue #1035
+          # for why folding total_tokens into --input with no marker
+          # produces a confidently-wrong number.
+          degraded_attribution_count: ($s.tokens.degraded_attribution_count // 0),
           by_model: (
             [ $s.tokens.per_invocation[]? | select(.model != null) ]
             | group_by(.model)
@@ -958,6 +977,16 @@ cmd_report() {
         # `estimated_usd` total above under-reports actual spend.
         unpriced_models: ([$sessions[].unpriced_models[]?] | unique),
         unpriced_sessions: ([$sessions[] | select((.unpriced_models // []) | length > 0)] | length),
+        # Degraded-attribution rollup (issue #1035): how many dispatches
+        # across the window landed via --degraded-total-only, and how many
+        # session records were touched by at least one. Non-zero here means
+        # part of `estimated_usd` above is UNRELIABLE — not a bound in
+        # either direction, unlike the unpriced-model LOWER BOUND case,
+        # because folding a total into --input both overstates (vs. cheaper
+        # cache reads it may have included) and understates (vs. pricier
+        # output tokens it may have included) in unpredictable proportion.
+        degraded_attribution_count: ([$sessions[].degraded_attribution_count // 0] | add // 0),
+        degraded_sessions: ([$sessions[] | select((.degraded_attribution_count // 0) > 0)] | length),
         by_model: (
           [ $sessions[].by_model // {} | to_entries[]? ]
           | group_by(.key)
@@ -1170,7 +1199,8 @@ render_markdown_report() {
       (if .sessions > 0
         then " (avg $" + ((.estimated_usd / .sessions) | . * 100 | round / 100 | tostring) + "/session)"
         else "" end) +
-      (if ((.unpriced_models // []) | length) > 0 then "  [LOWER BOUND]" else "" end)
+      (if ((.unpriced_models // []) | length) > 0 then "  [LOWER BOUND]" else "" end) +
+      (if (.degraded_attribution_count // 0) > 0 then "  [UNRELIABLE]" else "" end)
   '
   printf '\n'
 
@@ -1189,6 +1219,33 @@ render_markdown_report() {
       "  recorded but their USD cost is booked as $0.00:\n" +
       ((.unpriced_models // []) | map("    - " + .) | join("\n")) + "\n" +
       "  Fix: add them to PRICING_JQ in scripts/session-state.sh (issue #728).\n"
+    '
+  fi
+
+  # Degraded-attribution advisory (issue #1035). Distinct from the
+  # unpriced-model case above: unpriced tokens are still split correctly
+  # across input/output/cache and merely priced at $0, so LOWER BOUND is a
+  # genuine, directional bound. A degraded bump instead folds an entire
+  # dispatch's total_tokens into the input bucket un-split — pricing the
+  # whole thing at the input rate both overstates it (real cache-read
+  # tokens are far cheaper than input) and understates it (real output
+  # tokens are several times pricier than input). The two errors don't
+  # cancel predictably, so the affected sessions' estimated_usd is neither
+  # a floor nor a ceiling — flag it as UNRELIABLE rather than mislabel it
+  # LOWER BOUND.
+  local degraded_count
+  degraded_count=$(printf '%s' "$rollup" | jq -r '.degraded_attribution_count // 0')
+  if [[ "$degraded_count" != "0" ]]; then
+    printf '%s' "$rollup" | jq -r '
+      "\n⚠  DEGRADED COST ATTRIBUTION — affected spend is UNRELIABLE, not a bound\n" +
+      "  " + ((.degraded_sessions // 0) | tostring) + " session(s), " +
+      ((.degraded_attribution_count // 0) | tostring) +
+      " dispatch(es) total, used --degraded-total-only because the harness\n" +
+      "  <usage> block lacked an input/output/cache breakdown — the whole\n" +
+      "  total_tokens figure was folded into the input bucket un-split. This\n" +
+      "  does NOT reliably over- or under-count: it depends on the real\n" +
+      "  input/output/cache mix, which is exactly what is missing. Treat\n" +
+      "  the affected estimated_usd as UNRELIABLE, not an estimate (issue #1035).\n"
     '
   fi
 

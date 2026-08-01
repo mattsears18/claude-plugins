@@ -1050,6 +1050,144 @@ assert_equals "$leftover_lock" "" \
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== flush — propagates degraded_attribution_count into the session record (#1035)"
+# --------------------------------------------------------------------------
+# A session that used bump-tokens --degraded-total-only marks the affected
+# invocation(s) `degraded: true` and increments the session-level
+# .tokens.degraded_attribution_count counter. Before #1035 that counter
+# never made it past the session-state file — cost-history.sh flush
+# projected a session record with no field for it at all, so
+# /shipyard:cost report (which only ever reads the persistent ledger, never
+# the transient per-session file) had no way to know the ledger's
+# estimated_usd for that session was unreliable.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "deg1" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "deg1" --issue 5 \
+  --input 40000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "deg1" --issue 5 \
+  --input 10000 --output 2000 --cache-read 1000 \
+  --mode issue-work --model claude-sonnet-5 >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "deg1" >/dev/null
+
+content=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$content" '"degraded_attribution_count":1' \
+  "session record carries degraded_attribution_count from the one degraded bump"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== flush — a session with no degraded bumps carries degraded_attribution_count:0 (#1035)"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+seed_session "$tmphome" "clean1"
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "clean1" >/dev/null
+
+content=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$content" '"degraded_attribution_count":0' \
+  "session record with no degraded bumps carries degraded_attribution_count:0, not a missing field"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== flush --reconcile — merges degraded_attribution_count by max, not sum (#1035)"
+# --------------------------------------------------------------------------
+# Same merge-safety contract as every other tokens.* counter (#745): a
+# --reconcile re-flush against a session whose file already reflects both
+# bumps must not double-count by summing the existing ledger row's count
+# against the fresh projection's count.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "deg2" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "deg2" --issue 5 \
+  --input 40000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "deg2" >/dev/null
+
+# A second degraded bump lands in the SAME session file (simulating a
+# re-entrant dispatch after a mid-session flush), then --reconcile merges.
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "deg2" --issue 5 \
+  --input 5000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "deg2" --reconcile >/dev/null
+
+lines=$(wc -l < "$tmphome/cost-history.jsonl" | tr -d ' ')
+assert_equals "$lines" "1" "reconcile still writes exactly one session record"
+
+content=$(cat "$tmphome/cost-history.jsonl")
+assert_contains "$content" '"degraded_attribution_count":2' \
+  "reconcile merge carries forward both degraded bumps (fresh projection is a superset, so max == 2, not sum == 3+)"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== report — degraded session tags Spend [UNRELIABLE] and prints the advisory (#1035)"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "deg-rpt" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "deg-rpt" --issue 5 \
+  --input 40000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "deg-rpt" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all)
+assert_contains "$out" "[UNRELIABLE]" \
+  "report markdown tags the Spend line [UNRELIABLE] when a degraded session is in range"
+assert_contains "$out" "DEGRADED COST ATTRIBUTION" \
+  "report markdown prints the DEGRADED COST ATTRIBUTION advisory block"
+assert_contains "$out" "1 session(s), 1 dispatch(es)" \
+  "advisory names the degraded session/dispatch counts"
+
+out_json=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format json)
+degraded_count=$(printf '%s' "$out_json" | jq -r '.rollup.degraded_attribution_count')
+degraded_sessions=$(printf '%s' "$out_json" | jq -r '.rollup.degraded_sessions')
+assert_equals "$degraded_count" "1" "report json rollup carries degraded_attribution_count"
+assert_equals "$degraded_sessions" "1" "report json rollup carries degraded_sessions"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== report — a clean (non-degraded) window prints no UNRELIABLE tag or advisory (#1035)"
+# --------------------------------------------------------------------------
+# Silence-is-the-default check, same posture as the unpriced-models banner:
+# a session that never used --degraded-total-only must not trigger either
+# the [UNRELIABLE] tag or the advisory block.
+
+tmphome=$(mktmphome)
+seed_session "$tmphome" "clean-rpt"
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "clean-rpt" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all)
+if [[ "$out" == *"[UNRELIABLE]"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "clean session does NOT tag Spend [UNRELIABLE]"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "clean session does NOT tag Spend [UNRELIABLE]"
+  pass=$((pass+1))
+fi
+if [[ "$out" == *"DEGRADED COST ATTRIBUTION"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "clean session does NOT print the DEGRADED COST ATTRIBUTION advisory"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "clean session does NOT print the DEGRADED COST ATTRIBUTION advisory"
+  pass=$((pass+1))
+fi
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo
 echo "== Summary"
 echo "  $pass passed, $fail failed"
