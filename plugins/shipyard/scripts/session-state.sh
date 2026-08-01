@@ -252,6 +252,34 @@ Exit codes:
 EOF
 }
 
+# usage_error [<subcommand>]
+#
+# Print the usage block, then emit ONE more line naming the actual outcome,
+# then exit 64. Why: usage()'s heredoc unconditionally ends with the
+# exit-code legend above, and that legend's own last row describes exit 66
+# (the #365 cross-repo write refusal) — the most alarming-sounding entry in
+# the table. A caller that reads a failed invocation's stderr through
+# `tail` (a normal thing to do against a chatty helper) sees those two
+# legend lines as if they were the actual result, misreading a plain exit-64
+# usage error as a cross-repo contamination refusal (issue #1039). Emitting
+# a named final line on every usage-error path fixes that for `tail -N`
+# reads of any N that still includes this line, mirroring the distinct
+# per-call header check_repo_match() already prints ahead of its own exit
+# 66. Call this in place of the previous bare `usage; exit 64` (or
+# `usage` on its own line followed by `exit 64`) at every usage-error site;
+# any subcommand-specific reason should already have been echoed to stderr
+# by the caller before this runs.
+usage_error() {
+  local subcommand="${1:-}"
+  usage
+  if [[ -n "$subcommand" ]]; then
+    echo "session-state.sh: ${subcommand}: usage error (exit 64)" >&2
+  else
+    echo "session-state.sh: usage error (exit 64)" >&2
+  fi
+  exit 64
+}
+
 # --------------------------------------------------------------------------
 # Pricing table — USD per 1M tokens, current as of 2026-07-13. Update
 # alongside Anthropic's pricing page whenever pricing changes OR a new model
@@ -438,19 +466,17 @@ cmd_init() {
       --pid) pid="${2:-}"; shift 2 ;;
       --degraded-recovery) degraded_recovery=1; shift ;;
       --force) force=1; shift ;;
-      *) echo "init: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "init: unknown arg $1" >&2; usage_error "init" ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "init: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "init"
   fi
   if [[ -z "$repo" ]]; then
     echo "init: --repo is required" >&2
-    usage
-    exit 64
+    usage_error "init"
   fi
   if ! [[ "$pid" =~ ^[0-9]+$ ]]; then
     echo "init: --pid must be a non-negative integer (got: $pid)" >&2
@@ -536,14 +562,13 @@ cmd_read() {
     case "$1" in
       --session-id) session_id="${2:-}"; shift 2 ;;
       --path) path="${2:-}"; shift 2 ;;
-      *) echo "read: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "read: unknown arg $1" >&2; usage_error "read" ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "read: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "read"
   fi
 
   local target
@@ -613,19 +638,17 @@ cmd_update() {
       --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
       --expected-repo) expected_repo="${2:-}"; shift 2 ;;
       --skip-repo-check) skip_repo_check=1; shift ;;
-      *) echo "update: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "update: unknown arg $1" >&2; usage_error "update" ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "update: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "update"
   fi
   if [[ ${#sets[@]} -eq 0 ]]; then
     echo "update: at least one --set <jq-expr> is required" >&2
-    usage
-    exit 64
+    usage_error "update"
   fi
 
   local target
@@ -805,7 +828,7 @@ cmd_bump_tokens() {
       --degraded-total-only) degraded_total_only=1; shift ;;
       --expected-repo) expected_repo="${2:-}"; shift 2 ;;
       --skip-repo-check) skip_repo_check=1; shift ;;
-      *) echo "bump-tokens: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "bump-tokens: unknown arg $1" >&2; usage_error "bump-tokens" ;;
     esac
   done
 
@@ -836,8 +859,7 @@ cmd_bump_tokens() {
 
   if [[ -z "$session_id" ]]; then
     echo "bump-tokens: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "bump-tokens"
   fi
 
   local target
@@ -1071,14 +1093,13 @@ cmd_read_tokens() {
       --issue) issue="${2:-}"; shift 2 ;;
       --pr) pr="${2:-}"; shift 2 ;;
       --format) format="${2:-json}"; shift 2 ;;
-      *) echo "read-tokens: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "read-tokens: unknown arg $1" >&2; usage_error "read-tokens" ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "read-tokens: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "read-tokens"
   fi
 
   if [[ "$format" != "json" && "$format" != "comment" ]]; then
@@ -1227,19 +1248,17 @@ cmd_set_progress() {
       --slot) slot="${2:-}"; shift 2 ;;
       --current) current="${2:-}"; current_set=1; shift 2 ;;
       --total) total="${2:-}"; total_set=1; shift 2 ;;
-      *) echo "set-progress: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "set-progress: unknown arg $1" >&2; usage_error "set-progress" ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "set-progress: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "set-progress"
   fi
   if [[ -z "$slot" ]]; then
     echo "set-progress: --slot is required" >&2
-    usage
-    exit 64
+    usage_error "set-progress"
   fi
 
   # Neither flag set → no-op success. Callers can pass `set-progress
@@ -1348,14 +1367,13 @@ cmd_is_active() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --session-id) session_id="${2:-}"; shift 2 ;;
-      *) echo "is-active: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "is-active: unknown arg $1" >&2; usage_error "is-active" ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "is-active: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "is-active"
   fi
 
   local target
@@ -1423,14 +1441,13 @@ cmd_cleanup() {
       --reaper-pid) reaper_pid="${2:-}"; shift 2 ;;
       --reason) reason="${2:-}"; shift 2 ;;
       --phase) phase="${2:-}"; shift 2 ;;
-      *) echo "cleanup: unknown arg $1" >&2; usage; exit 64 ;;
+      *) echo "cleanup: unknown arg $1" >&2; usage_error "cleanup" ;;
     esac
   done
 
   if [[ -z "$session_id" ]]; then
     echo "cleanup: --session-id is required" >&2
-    usage
-    exit 64
+    usage_error "cleanup"
   fi
 
   # --reap-audit requires --reaper-session-id so the audit-log line
@@ -1527,8 +1544,7 @@ cmd_cleanup() {
 # --------------------------------------------------------------------------
 
 if [[ $# -lt 1 ]]; then
-  usage
-  exit 64
+  usage_error
 fi
 
 subcmd="$1"
@@ -1549,7 +1565,6 @@ case "$subcmd" in
     ;;
   *)
     echo "session-state.sh: unknown subcommand $subcmd" >&2
-    usage
-    exit 64
+    usage_error "$subcmd"
     ;;
 esac
