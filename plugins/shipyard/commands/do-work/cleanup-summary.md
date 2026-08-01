@@ -199,14 +199,20 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    while IFS= read -r leftover_path; do
      [ -z "$leftover_path" ] && continue
      unreaped_worktrees=$((unreaped_worktrees + 1))
+     printf 'unreaped-leftover: %s\n' "$leftover_path"
    done < <(
      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" report-unreaped \
        --repo-root "$(git rev-parse --show-toplevel)" \
        --current-session-id "<session-id>"
    )
+   echo "unreaped-worktrees: ${unreaped_worktrees}"
    ```
 
+   **The final `echo` is load-bearing, not decorative.** Every path piped through the `while ... done < <(...)` process substitution above is consumed entirely by the loop — none of it reaches this Bash call's own stdout on its own. Without an explicit `echo` of the tally (and, for diagnosability, each leftover path as it's counted), this step computes `$unreaped_worktrees` correctly inside the subprocess and then discards it: a shell variable set in one Bash tool call does not survive into the next one, and nothing else in this block ever prints the number anywhere the orchestrator can read it back for the summary. Skipping the `echo` is indistinguishable, from the orchestrator's side, from an empty result — the exact "line never appears even when worktrees are stranded" symptom [#1042](https://github.com/mattsears18/shipyard/issues/1042) reports. Read the printed `unreaped-worktrees: <N>` line back into `<unreaped_worktrees>` for the summary render below, rather than trusting the in-process shell variable to have persisted.
+
    `report-unreaped` excludes this session's own `orchestrator-<session-id>` worktree (still live — it's reaped last, in step 6) and the `*.reap-dead-*` scratch dirs the [#664](https://github.com/mattsears18/shipyard/issues/664) fast path has already renamed aside (registration pruned, branch freed, background unlink in flight). Everything else it emits is a genuine leftover.
+
+   **Fold in a setup-time whole-group classifier denial, if one was recorded.** When [`setup_reap_sweep_denial`](./orchestrator-state-reference.md) is non-null — [00b-parallelization-cache.md's background-group launch](./setup/00b-parallelization-cache.md#classifier-denial-fallback--the-background-groups-own-bash-tool-call-can-be-refused-outright-1042) was itself refused outright at session start, before any of steps 1.6 / 1.6.5 / 3a / 3b / 3c ran — take `unreaped_worktrees = max(unreaped_worktrees, setup_reap_sweep_denial.unreaped_count)`. This directory scan is already the authoritative end-state check (it re-derives from disk, not from either sweep's own bookkeeping), so in the ordinary case the two numbers agree or this scan's own count is the larger one (this session's later reap attempts found more to legitimately fail on); the `max` only matters as a floor for the degenerate case where every worktree the setup-time denial saw was cleared by some *other* mechanism in between (a different session, a manual `/clean_gone`) but the fold would otherwise under-report a denial that genuinely happened this session and is worth surfacing regardless of whether it's still visible on disk this instant.
 
    **When `unreaped_worktrees > 0`, say so and say what to do about it.** Add the advisory line to the [End-of-session summary](#end-of-session-summary) — the count alone is a mystery; the count plus the one command that fixes it is actionable:
 

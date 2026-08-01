@@ -359,6 +359,27 @@ SETUP_BACKGROUND_PID=$!
 
 The background group handles steps 1.6, 1.6.5, 3a, 3b, and 3c. The parallel batch (steps 1 → 5) and the foreground-serial steps (1.7, 3.5, 4 → 7) all proceed without waiting on `$SETUP_BACKGROUND_PID`. End-of-session cleanup's step 7 (`cost-history.sh flush`) must `wait $SETUP_BACKGROUND_PID` before flushing to ensure the 1.6 orphan sweep has completed — the flush and the sweep both write to `cost-history.jsonl`, and both are idempotent, but the `wait` prevents a double-flush race on the same session file.
 
+### Classifier-denial fallback — the background group's own Bash tool call can be refused outright ([#1042](https://github.com/mattsears18/shipyard/issues/1042))
+
+The `(...) &` block above is submitted as **one** Bash tool call. The permission classifier evaluates that whole compound text before any of it executes — a destructive verb anywhere inside it (step 3b's `reap-stale` invocation escalating to `git worktree remove --force`, step 3c's `git branch -D`) can trip a denial for the **entire** call, not just the risky line. When that happens, `SETUP_BACKGROUND_PID=$!` never runs — none of 1.6 / 1.6.5 / 3a / 3b / 3c executed, including the `⚠️ worktree backlog:` warning inside step 3b and `reap-stale`'s own internal `unreaped:` accounting. This is precisely the "sweep denied, denial invisible" failure [`dont.md`](../dont.md)'s "Don't swallow a failed or denied reap" rule ([#712](https://github.com/mattsears18/shipyard/issues/712)) already prohibits — but #712's existing wiring ([cleanup-summary.md step 5.5's `report-unreaped` scan](../cleanup-summary.md#end-of-session-cleanup)) only runs at **end of session**, and nothing today re-checks the setup-time denial specifically, so a whole-group refusal at session **start** went unreported end to end in the [#1042](https://github.com/mattsears18/shipyard/issues/1042) repro (29 worktrees stranded across multiple prior sessions, zero visibility in any summary).
+
+**Detect the denial directly from the Bash tool's own result for the call above** — a permission denial returns as the tool result for that specific call (e.g. `Permission for this action was denied by the Claude Code auto mode classifier`), not as stdout the shell script's own `2>/dev/null || true` could have swallowed. When the background-group launch returns that instead of a normal background-launch result:
+
+1. **Don't retry the same compound command.** Per `shipyard:worker-preamble` § "After a classifier denial" and [`dont.md`](../dont.md)'s "Don't iterate prompt wording against the permission classifier" rule, re-submitting the identical destructive-operation text (or a cosmetically-reworded version of it) is not the fix.
+2. **Run the read-only verification immediately, as its own separate foreground call.** `report-unreaped` only enumerates directories — it removes nothing — so it is not a plausible denial candidate on its own, and it doesn't need to wait for anything else to finish (nothing else ran):
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   setup_reap_denial_unreaped=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" report-unreaped \
+     --repo-root "$(git rev-parse --show-toplevel)" \
+     --current-session-id "<session-id>" | wc -l | tr -d ' ')
+   echo "setup-background-group-denied: unreaped=${setup_reap_denial_unreaped}"
+   ```
+
+   The final `echo` is load-bearing, not decorative — it's what makes the count visible in this Bash call's own tool result rather than trapped in a shell variable the process discards on exit (a shell variable set in one Bash tool call never survives to the next one).
+3. **Record `setup_reap_sweep_denial`** (session-local orchestrator state — see [`orchestrator-state-reference.md`](../orchestrator-state-reference.md)) with the denial text and `setup_reap_denial_unreaped`, so [cleanup-summary.md step 5.5](../cleanup-summary.md#end-of-session-cleanup) folds it into the end-of-session `Cleanup:` line even if this session's own later reap attempts happen to succeed on unrelated worktrees and would otherwise report a clean `unreaped_worktrees == 0`.
+4. **Proceed with the rest of setup unaffected.** Steps 1 → 5's parallel batch and the foreground-serial steps do not depend on the background group. A denied background group costs cleanup visibility, not dispatch correctness — do NOT fall back to running 1.6 / 1.6.5 / 3a / 3b / 3c inline on the orchestrator's own foreground thread; that reintroduces the blocking-on-cleanup cost the background group exists to avoid, for work whose entire value proposition is "best-effort, not required for this session's dispatch to proceed."
+
 **The full execution model after this change:**
 
 ```
