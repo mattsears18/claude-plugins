@@ -14,6 +14,7 @@ Creates `shipyard.config.json` at the repo root (committed) and seeds `.gitignor
    - Default `/do-work` concurrency (default `1`). The interactive prompt MUST explain the tradeoff so the human can make an informed choice: most repos that follow shipyard's "always cut a release when a PR merges" convention (or any release-please-style flow) bump a manifest like `plugin.json` or append to `CHANGELOG.md`'s top row on every PR — both treated as HARD paths by the [steady-state dispatch rules](./do-work/dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c), so a second in-flight worker hard-collides on that manifest and the second slot parks for the rest of the session. The default is therefore `1`; only set `2+` if you've confirmed your repo's PRs don't claim a shared manifest path (e.g. a feature backlog against a service with no per-PR version bump). See issue [#268](https://github.com/mattsears18/shipyard/issues/268) for the dogfooding rationale.
    - **Primary-checkout guard (default `off`).** Offer (opt-in) to install a Claude Code `PreToolUse` hook that fires when an `Edit` / `Write` / `git commit` runs in the repo's **primary checkout** rather than a linked git worktree — forcing each editing session into its own `git worktree`. This protects a user's *interactive* sessions from colliding in one shared working tree (the native `worktree.bgIsolation: "worktree"` setting only isolates *background* sessions; this extends the same protection to interactive ones). See [step 9.5 below](#95-optionally-install-the-primary-checkout-guard) for the full prompt + install logic. Issue [#482](https://github.com/mattsears18/shipyard/issues/482).
    - **Worktree-reap allowlist (default `off`).** Offer (opt-in) to append the worktree-reap commands to `settings.json`'s `permissions.allow`, so `/do-work`'s end-of-session worktree cleanup is pre-authorized rather than depending on Claude Code's auto-mode classifier permitting it each time. See [step 9.6 below](#96-optionally-pre-authorize-the-worktree-reap-commands) for the full prompt + install logic. Issue [#714](https://github.com/mattsears18/shipyard/issues/714).
+   - **Adding-dependencies `CLAUDE.md` rule (default `off`).** Offer (opt-in) to append a short "look up the current stable version before introducing a new dependency" rule to the target repo's own `CLAUDE.md`, so a plain interactive Claude Code session on that repo — one with no shipyard skills loaded — inherits the same convention a `/shipyard:do-work` worker dispatch already gets from the `shipyard:adding-dependencies` skill. See [step 9.7 below](#97-optionally-append-the-adding-dependencies-rule-to-claudemd) for the full prompt + install logic. Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048).
 4. **Write `shipyard.config.json`** at the repo root using the atomic-write helper in `plugins/shipyard/scripts/shipyard-config.sh`. Validates against the JSON schema before writing.
 5. **Append `.shipyard/` to `.gitignore`** if not already present. Creates `.gitignore` if it doesn't exist. **Never** modifies any other line — the addition is appended, with a leading newline if the file doesn't end in one.
 6. **Create `.shipyard/`** as an empty directory (for session state, gh-cache, etc. — the helper scripts create subdirectories on demand).
@@ -39,6 +40,8 @@ Flags:
 - `--primary-guard-scope <global|repo>` — where the guard hook + paired CLAUDE.md rule are written: `global` (`~/.claude/settings.json` + `~/.claude/CLAUDE.md`) or `repo` (`.claude/settings.json` + repo `CLAUDE.md`). Default `repo`. Only consulted when `--primary-guard` is `warn` or `block`.
 - `--reap-allowlist <on|off>` — appends the worktree-reap `permissions.allow` rules to `settings.json` so the end-of-session worktree reap is pre-authorized (issue [#714](https://github.com/mattsears18/shipyard/issues/714)). Default `off` (nothing written). See [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands).
 - `--reap-allowlist-scope <global|repo>` — where the allow rules are written: `global` (`~/.claude/settings.json`) or `repo` (`.claude/settings.json`). Default `repo`. Only consulted when `--reap-allowlist on`.
+- `--dep-rule <off|pointer|inline>` — appends (or skips) the adding-dependencies convention to `CLAUDE.md` (issue [#1048](https://github.com/mattsears18/shipyard/issues/1048)). Default `off` (nothing written). `pointer` emits a one-liner pointing at the `shipyard:adding-dependencies` skill; `inline` emits a self-contained ~6-line summary for a repo without shipyard installed. See [step 9.7](#97-optionally-append-the-adding-dependencies-rule-to-claudemd).
+- `--dep-rule-scope <global|repo>` — where the `CLAUDE.md` rule is written: `global` (`~/.claude/CLAUDE.md`) or `repo` (repo `CLAUDE.md`). Default `repo`. Only consulted when `--dep-rule` is `pointer` or `inline`.
 - `--force` — overwrite an existing `shipyard.config.json`. Without this, the command refuses to clobber.
 - `--dry-run` — print the resolved config to stdout and exit; don't touch the filesystem.
 - `--non-interactive` — never prompt. Use defaults for any field a flag didn't supply.
@@ -246,6 +249,57 @@ That second point is load-bearing and worth re-checking if this ever stops worki
 
 **Don't** write the rules without explicit consent — an `allow` entry is a permission-surface change, and silently widening a user's permission surface is exactly what the permission system exists to prevent; **never write the allow rules without explicit consent**, and never infer consent from the mere presence of `--reap-allowlist-scope`. Don't broaden the rules beyond the three worktree verbs (a blanket `Bash(git:*)` or `Bash(rm:*)` is emphatically not the ask). Don't ever **touch** the `permissions.deny` block — it carries the `--no-verify` / hook-bypass prohibitions, and this step only ever *appends to `allow`*. And don't register these in the plugin's own `plugin.json` permissions — like the #482 guard hook, this is a per-user opt-in that belongs in *their* `settings.json`.
 
+### 9.7 Optionally append the adding-dependencies rule to CLAUDE.md
+
+Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048), a follow-up to [#1045](https://github.com/mattsears18/shipyard/issues/1045). #1045 shipped the `shipyard:adding-dependencies` skill (`plugins/shipyard/skills/adding-dependencies/SKILL.md`) — the "look up the current stable version before introducing a new dependency" rule, made reachable from any session that loads it. But nothing yet emits that convention into a **consuming repo's own `CLAUDE.md`**, so a plain interactive Claude Code session on that repo — one with no shipyard skills loaded — never inherits it. This is **opt-in, default off** — do nothing unless the user picks `pointer` or `inline` (interactively, or via `--dep-rule`). When `--dep-rule off` (the default) or the user declines the prompt, skip this entire step.
+
+**The prompt (interactive).** Explain the tradeoff before asking:
+
+> shipyard ships a `shipyard:adding-dependencies` skill covering "look up the current stable version before introducing a new dependency" — but a plain interactive Claude Code session on this repo (no shipyard skills loaded) never sees it unless it's also in `CLAUDE.md`. I can append a short rule. Pick a mode:
+>   - **off** (default) — don't append anything.
+>   - **pointer** — a one-line pointer telling a session to load `Skill("shipyard:adding-dependencies")`. Only useful when shipyard is installed in that session.
+>   - **inline** — a self-contained ~6-line summary of the rule, for a repo whose `CLAUDE.md` should stand alone even without shipyard installed.
+>
+> And a scope: **repo** (this repo's `CLAUDE.md`) or **global** (`~/.claude/CLAUDE.md`, every repo).
+
+**Install logic** (only when mode is `pointer` or `inline`). Reuses [step 9.5](#95-optionally-install-the-primary-checkout-guard)'s repo-vs-global scope resolution and its "create if absent, never rewrite existing user content" discipline for the target file itself:
+
+1. **Resolve scope path.** For `repo` scope: `$REPO_ROOT/CLAUDE.md`. For `global` scope: `~/.claude/CLAUDE.md`. Create the file if absent; never rewrite content outside the sentinel-bounded block below.
+
+2. **Idempotency via a sentinel comment pair — this is a NEW convention step 9.7 introduces, which step 9.5 does NOT already have.** Step 9.5 only tracks idempotency on the `settings.json` hook entry (an `env.SHIPYARD_PRIMARY_GUARD` field it updates in place) — it has no mechanism for idempotently editing the CLAUDE.md prose it appends, because that append only ever happens once per file in practice. Step 9.7 needs a real markdown-level idempotency mechanism, because re-running `/shipyard:init --dep-rule ...` (or switching `pointer` → `inline`) must **replace in place**, not append a second copy. The block is wrapped in:
+
+   ```
+   <!-- shipyard:adding-dependencies:start -->
+   ...rule content...
+   <!-- shipyard:adding-dependencies:end -->
+   ```
+
+   Before writing, search the target file for an existing `<!-- shipyard:adding-dependencies:start -->` … `<!-- shipyard:adding-dependencies:end -->` pair. If found, replace everything between the sentinels (inclusive) with the new content — a read-modify-atomic-write, not an in-place `sed`, to avoid a partial write on interruption. If absent, append the block (with a leading blank line if the file doesn't already end in one), under a `## Adding dependencies` heading.
+
+3. **Pointer-mode content:**
+
+   ```
+   <!-- shipyard:adding-dependencies:start -->
+   ## Adding dependencies
+
+   **Before introducing a NEW dependency, load `Skill("shipyard:adding-dependencies")`** — look up the current stable version from the authoritative registry first; never write down a version remembered from training data. (Appended by `/shipyard:init --dep-rule pointer`.)
+   <!-- shipyard:adding-dependencies:end -->
+   ```
+
+4. **Inline-mode content** (self-contained — no shipyard dependency):
+
+   ```
+   <!-- shipyard:adding-dependencies:start -->
+   ## Adding dependencies
+
+   **When introducing a NEW dependency** (a new `package.json`/`requirements.txt`/`go.mod`/`Cargo.toml`/`Gemfile` line, a GitHub Actions `uses:` pin, a Dockerfile `FROM` tag, a `.nvmrc` entry, etc.), **look up the current stable version from the authoritative registry first** (e.g. `npm view <pkg> version`, `gh api repos/<owner>/<action>/releases/latest --jq .tag_name`) — never write down a version remembered from training data. Record the resolved version in the PR/commit description. Exception: a package whose version is dictated by a framework/SDK peer set (e.g. `react` pinned to what `react-native` bundles) uses the framework-required version, not "latest". Scope: introduction only — this doesn't apply to upgrading a dependency the repo already has. (Appended by `/shipyard:init --dep-rule inline`.)
+   <!-- shipyard:adding-dependencies:end -->
+   ```
+
+5. **Print a confirmation** naming the file touched and how to remove it later (delete the sentinel-bounded block by hand, or switch modes with a fresh `/shipyard:init --dep-rule <mode>` — note that `--dep-rule off` only skips *future* writes, it does not retroactively remove an existing block).
+
+**Don't** hand-roll a different removal/migration path outside this step — the replace-in-place logic in point 2 is what makes a re-run (including a `pointer` ↔ `inline` mode switch) safe; don't bypass it with an ad hoc edit. Don't write the block without the sentinel pair — an unbounded append is exactly what makes a second `/shipyard:init` run duplicate the rule.
+
 ## Don't
 
 - **Don't write committed config without schema validation.** Every `shipyard-config.sh set --repo` call validates before the atomic-write completes. Skipping that creates a footgun (typos in `auto_merge.policy`, etc.) that surfaces as a silent dispatch-time failure later.
@@ -260,7 +314,9 @@ That second point is load-bearing and worth re-checking if this ever stops worki
 - Issue [#165](https://github.com/mattsears18/shipyard/issues/165) — the config-system spec this command implements.
 - Issue [#482](https://github.com/mattsears18/shipyard/issues/482) — the primary-checkout guard offered in [step 9.5](#95-optionally-install-the-primary-checkout-guard).
 - Issue [#714](https://github.com/mattsears18/shipyard/issues/714) — the worktree-reap allowlist offered in [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands); follows [#712](https://github.com/mattsears18/shipyard/issues/712) / [#713](https://github.com/mattsears18/shipyard/issues/713), which made the reap non-force-first and made a denial visible.
+- Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048) — the adding-dependencies `CLAUDE.md` rule offered in [step 9.7](#97-optionally-append-the-adding-dependencies-rule-to-claudemd); follows [#1045](https://github.com/mattsears18/shipyard/issues/1045), which shipped the underlying `shipyard:adding-dependencies` skill.
 - [`plugins/shipyard/scripts/worktree-reap.sh`](../scripts/worktree-reap.sh) — the reap helper whose commands [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands) pre-authorizes.
+- [`plugins/shipyard/skills/adding-dependencies/SKILL.md`](../skills/adding-dependencies/SKILL.md) — the skill [step 9.7](#97-optionally-append-the-adding-dependencies-rule-to-claudemd) points a `pointer`-mode `CLAUDE.md` rule at.
 - [`plugins/shipyard/hooks/guard-primary-checkout.sh`](../hooks/guard-primary-checkout.sh) — the guard hook (`off`/`warn`/`block` via `SHIPYARD_PRIMARY_GUARD`). Registered in the plugin's own `hooks.json` (default `warn`, issue [#741](https://github.com/mattsears18/shipyard/issues/741)); this init step additionally wires it into the user's `settings.json` via `${CLAUDE_PLUGIN_ROOT}` to let a user pin a stricter mode.
 - [`/shipyard:config`](./config.md) — show / get / set / edit subcommands for managing the config post-init.
 - [`plugins/shipyard/scripts/shipyard-config.sh`](../scripts/shipyard-config.sh) — the underlying loader / validator / writer.

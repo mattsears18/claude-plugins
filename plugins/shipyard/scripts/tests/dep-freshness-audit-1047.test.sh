@@ -174,9 +174,12 @@ assert_contains "$auditor_path" "### 6. Outdated direct dependencies" \
 assert_file_exists "$skill_path" "plugins/shipyard/skills/adding-dependencies/SKILL.md exists"
 assert_not_contains "$skill_path" "A \`tech-debt-auditor\` sub-check that flags dependencies already sitting ≥1 major behind." \
   "adding-dependencies skill's out-of-scope list no longer names the tech-debt-auditor sub-check (now implemented)"
-# The other out-of-scope bullets (unrelated to this issue) must survive untouched.
-assert_contains "$skill_path" "Emitting this convention into a *consuming* repo's own" \
-  "adding-dependencies skill still names the CLAUDE.md-emission follow-up (#1048, untouched by this issue)"
+# The CLAUDE.md-emission bullet was unrelated to *this* issue (#1047) and was
+# left untouched by it — but #1048 (a sibling issue against the same shared
+# file) has since shipped that follow-up and removed its own out-of-scope
+# bullet in the process, so its absence here is expected, not a regression.
+assert_not_contains "$skill_path" "Emitting this convention into a *consuming* repo's own" \
+  "adding-dependencies skill no longer names the CLAUDE.md-emission follow-up (shipped by #1048)"
 
 # --- No new audit dimension: tech-debt is already registered in commands/audit.md ---
 assert_file_exists "$audit_command_path" "plugins/shipyard/commands/audit.md exists"

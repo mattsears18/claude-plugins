@@ -97,7 +97,6 @@ This latest-stable default is configurable per-repo via `dependencies.new_dep_ve
 
 This skill covers the *rule* (steps 1–3) and the mechanical pre-PR-create verification of it (step 4). It deliberately does not include:
 
-- Emitting this convention into a *consuming* repo's own `CLAUDE.md` / `.claude/rules/` during `/shipyard:init` (so non-shipyard sessions on that repo inherit it too).
 - Registry-comparison (rather than the step-4 offline PR-body-record check) for pip, Go, Cargo, Gemfile, Gradle, CocoaPods, Dockerfile `FROM`, and `.nvmrc`/`.tool-versions` — filed as a follow-up from [#1046](https://github.com/mattsears18/shipyard/issues/1046).
 
 See issue [#1045](https://github.com/mattsears18/shipyard/issues/1045) for the follow-up issues tracking each of these.
