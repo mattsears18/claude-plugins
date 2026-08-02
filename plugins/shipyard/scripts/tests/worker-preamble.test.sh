@@ -43,6 +43,12 @@ wp_dir="$repo_root/plugins/shipyard/skills/worker-preamble"
 auto_merge_path="$wp_dir/auto-merge.md"
 reaped_path="$wp_dir/reaped-escape-hatch.md"
 node_bootstrap_path="$wp_dir/node-bootstrap.md"
+# Issue #1045 — the "Adding a NEW dependency" rule moved out of node-bootstrap.md
+# into a standalone, non-worker-preamble skill (reachable outside worker
+# dispatch, broadened past package-manager manifests). It lives at
+# plugins/shipyard/skills/adding-dependencies/SKILL.md, a sibling of
+# worker-preamble, not a fragment inside wp_dir.
+adding_dependencies_path="$repo_root/plugins/shipyard/skills/adding-dependencies/SKILL.md"
 ci_pitfalls_path="$wp_dir/ci-pitfalls.md"
 commit_hygiene_path="$wp_dir/commit-hygiene.md"
 # Issue #808 (Finding 2) — three more rarely-hit sections moved out of
@@ -334,29 +340,35 @@ assert_contains "$skill_path" "(./write-probe.md)" \
   assert_contains "$node_bootstrap_path" "cannot bootstrap node_modules" \
     "node-bootstrap.md names the blocked: bail string for the fail-both-paths case"
 
-  # Issue #694 — introduce a NEW dependency at the latest stable version, with
-  # the peer/SDK carve-out. A worker that adds a package pinned to a
-  # training-data-remembered stale version starts the dep behind and it only
-  # drifts further (the observed multi-major debt + shipped native crash on
-  # lightwork). The section establishes latest-stable-by-default, the
-  # unconditional peer/SDK carve-out (framework-required version instead), the
-  # expo install preference for Expo repos, recording the version in the PR
-  # body, and introduction-only scope. Removing any of these regresses the
-  # introduction-time-version-debt contract.
-  assert_contains "$node_bootstrap_path" "## Adding a NEW dependency — default to the latest stable version" \
-    "node-bootstrap.md covers introducing a new dependency at latest stable (issue #694)"
-  assert_contains "$node_bootstrap_path" "npm install <pkg>@latest" \
-    "node-bootstrap.md names the latest-stable installer for a new dep (issue #694)"
-  assert_contains "$node_bootstrap_path" "Record the resolved version in the PR body" \
-    "node-bootstrap.md requires recording the resolved version in the PR body (issue #694)"
-  assert_contains "$node_bootstrap_path" "load-bearing carve-out" \
-    "node-bootstrap.md names the peer/SDK load-bearing carve-out (issue #694)"
-  assert_contains "$node_bootstrap_path" "npx expo install <pkg>" \
-    "node-bootstrap.md prefers expo install for Expo repos (issue #694)"
-  assert_contains "$node_bootstrap_path" "new_dep_version" \
-    "node-bootstrap.md references the dependencies.new_dep_version config knob (issue #694)"
-  assert_contains "$node_bootstrap_path" "introduction only" \
-    "node-bootstrap.md scopes the rule to dependency introduction, not upgrades (issue #694)"
+  # Issue #694 / #1045 — introduce a NEW dependency at the latest stable
+  # version, with the peer/SDK carve-out. A worker that adds a package pinned
+  # to a training-data-remembered stale version starts the dep behind and it
+  # only drifts further (the observed multi-major debt + shipped native crash
+  # on lightwork, and the #1045 recurrence — 30 more major-version Dependabot
+  # PRs after #694 landed, including manifest classes the original rule never
+  # covered). As of #1045 this rule lives in the standalone
+  # `shipyard:adding-dependencies` skill, not node-bootstrap.md — assert
+  # against that file instead. The skill must establish latest-stable-by-
+  # default, the unconditional peer/SDK carve-out (framework-required version
+  # instead), the expo install preference for Expo repos, recording the
+  # version in the PR body, and introduction-only scope. Removing any of
+  # these regresses the introduction-time-version-debt contract.
+  assert_contains "$adding_dependencies_path" "# Adding a NEW dependency — research the current version first" \
+    "adding-dependencies/SKILL.md covers introducing a new dependency at latest stable (issue #694 / #1045)"
+  assert_contains "$adding_dependencies_path" "npm install <pkg>@latest" \
+    "adding-dependencies/SKILL.md names the latest-stable installer for a new dep (issue #694)"
+  assert_contains "$adding_dependencies_path" "Record the resolved version in the PR body" \
+    "adding-dependencies/SKILL.md requires recording the resolved version in the PR body (issue #694)"
+  assert_contains "$adding_dependencies_path" "load-bearing carve-out" \
+    "adding-dependencies/SKILL.md names the peer/SDK load-bearing carve-out (issue #694)"
+  assert_contains "$adding_dependencies_path" "npx expo install <pkg>" \
+    "adding-dependencies/SKILL.md prefers expo install for Expo repos (issue #694)"
+  assert_contains "$adding_dependencies_path" "new_dep_version" \
+    "adding-dependencies/SKILL.md references the dependencies.new_dep_version config knob (issue #694)"
+  assert_contains "$adding_dependencies_path" "introduction only" \
+    "adding-dependencies/SKILL.md scopes the rule to dependency introduction, not upgrades (issue #694)"
+  assert_contains "$node_bootstrap_path" "shipyard:adding-dependencies" \
+    "node-bootstrap.md keeps a short hot-path pointer to the relocated skill (issue #1045)"
 
   # Issue #708 — "Nested non-hoisted packages need their own install before
   # their gates" section. The section exists because the documented root + app

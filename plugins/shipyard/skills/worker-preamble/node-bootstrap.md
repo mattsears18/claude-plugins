@@ -1,6 +1,6 @@
 # Worker-preamble fragment — Node dependency bootstrap + hook/test silent-pass gates
 
-On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode runs the **target repo's** local tests / pre-push hooks before pushing — primarily against Node-based or self-hosting target repos. It carries the silent-quality-gate-bypass guards — missing `node_modules` (#316), non-executable husky hooks (#459), and a test runner that ignores the worktree path (#369) — plus the non-workspace-monorepo root-hook bootstrap gap that rejects a commit and leaves an empty pushed branch (#680). The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "Dependency-bootstrap check for Node-based target repos"`, `§ "Adding a NEW dependency — default to the latest stable version"`, `§ "Husky / core.hooksPath hooks silently skipped on a missing exec bit"`, `§ "Test-runner silent-pass when the target repo ignores worktree paths"`, `§ "Root-owned commit hooks in a non-workspace monorepo"`).
+On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./SKILL.md)). Load this when a worker mode runs the **target repo's** local tests / pre-push hooks before pushing — primarily against Node-based or self-hosting target repos. It carries the silent-quality-gate-bypass guards — missing `node_modules` (#316), non-executable husky hooks (#459), and a test runner that ignores the worktree path (#369) — plus the non-workspace-monorepo root-hook bootstrap gap that rejects a commit and leaves an empty pushed branch (#680). The per-mode specs under `agents/issue-worker/` point here by name (`worker-preamble § "Dependency-bootstrap check for Node-based target repos"`, `§ "Husky / core.hooksPath hooks silently skipped on a missing exec bit"`, `§ "Test-runner silent-pass when the target repo ignores worktree paths"`, `§ "Root-owned commit hooks in a non-workspace monorepo"`). **The "adding a NEW dependency" rule itself moved to the standalone `shipyard:adding-dependencies` skill ([#1045](https://github.com/mattsears18/shipyard/issues/1045))** — this fragment keeps only a short pointer to it.
 
 **Why these live in a worker-preamble fragment and not per-mode.** Every dispatched worker (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate) eventually runs `git push` against the target repo, and the silent-test-skip failure modes are identical across modes. One fragment beats six copy-pasted recipes. The shipyard repo itself is shell-test-driven with no `package.json` deps to bootstrap and no husky setup, so a worker dispatched against `mattsears18/shipyard` skips these checks — they guard the *target-repo* tooling (lightwork, mattsears18.com, etc.).
 
@@ -123,41 +123,11 @@ done
 
 **Don't hardcode a specific repo's paths.** `functions/` is the common Firebase case, but the rule is generic: *any* nested dir with its own `package.json` + a test/build script whose deps aren't hoisted. Other monorepo service dirs (`services/<svc>/`, out-of-workspace `packages/<pkg>/`) have the same shape — key on the structural signal (own `package.json`, non-hoisted deps, your diff touches it), never on a literal path.
 
-## Adding a NEW dependency — default to the latest stable version ([#694](https://github.com/mattsears18/shipyard/issues/694))
+## Adding a NEW dependency — see `shipyard:adding-dependencies` ([#1045](https://github.com/mattsears18/shipyard/issues/1045))
 
-When your implementation **introduces a package the repo did not already depend on** — a brand-new entry in `package.json` (or the ecosystem equivalent: `requirements.txt` / `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`) — install the **latest stable version by default**, not an arbitrary version remembered from training data or copied from an unrelated example. A dependency introduced at a stale version starts behind and only drifts further; an agent writing code is a frequent introducer, so introduction time is the cheapest place to prevent version debt. The failure mode this closes is concrete ([#694](https://github.com/mattsears18/shipyard/issues/694)): a two-month-old consumer repo (`mattsears18/lightwork`) accumulated *multi-major* dependency debt, several packages caught only because they surfaced as CI failures or a shipped native crash (a `react` / `react-native-renderer` version skew).
+Introducing a package the repo did not already depend on — a brand-new entry in `package.json`, or any other manifest an agent can introduce a dependency through — is governed by a dedicated, standalone skill, not this Node-only fragment: **load `shipyard:adding-dependencies`** before installing anything. That skill's first step is an explicit, ecosystem-independent "look up the current stable version from the authoritative registry first" — and it covers every manifest class this fragment doesn't reach: GitHub Actions `uses:` pins, Dockerfile `FROM` tags, `.nvmrc` / `.tool-versions`, Gradle coordinates, CocoaPods pods, and inline `npx <tool>@<version>` invocations, alongside the `package.json` / `requirements.txt` / `go.mod` / `Cargo.toml` / `Gemfile` path this fragment already bootstraps test/build tooling for. The load-bearing peer/SDK carve-out (React / React Native, `@react-native-firebase/*`, `expo-*` — framework-required version, never "latest") and the `dependencies.new_dep_version` config knob live there now, unchanged.
 
-**The default:**
-
-```bash
-# Node — install the current latest stable, then RECORD the resolved version.
-npm install <pkg>@latest        # or: yarn add <pkg> / pnpm add <pkg> (both resolve latest stable)
-node -p "require('./package.json').dependencies['<pkg>'] || require('./package.json').devDependencies['<pkg>']"
-```
-
-Do NOT hand-write a version string into `package.json` from memory. Resolve `@latest` and let the installer write the real number. The ecosystem equivalents: `pip install <pkg>` (latest stable) then pin what resolved; `go get <pkg>@latest`; `cargo add <pkg>`; `bundle add <pkg>`.
-
-**Record the resolved version in the PR body.** State the exact version each newly-added dependency resolved to (e.g. `Added \`zod@3.24.1\` (latest stable).`) so a reviewer can see — without checking out the branch — that the dep started current and confirm the peer/SDK carve-out below was applied when it was.
-
-### The load-bearing carve-out — peer/SDK-constrained packages use the framework-required version, NOT "latest"
-
-"Latest on the registry" is **wrong** for a package whose version is dictated by a framework or SDK peer set. Installing `@latest` for such a package is exactly what produced the #694 native crash. Before choosing a version for a new dependency, **check whether it is peer/SDK-constrained** and, if it is, use the version the framework requires instead:
-
-- **React / React Native:** `react` must equal the version `react-native` (or the installed Expo SDK) bundles — a `react` ≠ `react-native-renderer` skew is a native crash on launch, not a warning. `react-dom` follows `react`.
-- **`@react-native-firebase/*`:** every `@react-native-firebase/<module>` must share **one** version, matched to the RN version — bumping one at a time (as Dependabot does) breaks the coordinated peer set into an un-mergeable `ERESOLVE`.
-- **`expo-*` / many `react-native-*`:** the installed **Expo SDK** pins these, not "latest on npm".
-
-**Detect the constraint before installing:** inspect the target package's `peerDependencies` (`npm view <pkg> peerDependencies`) against what's already installed, and treat a package that peer-depends on `react` / `react-native` / `expo` — or that shares a scope with a coordinated set already in the tree (`@react-native-firebase/*`) — as framework-constrained.
-
-**For Expo repos, prefer the framework-aligned installer.** `npx expo install <pkg>` resolves the SDK-correct version for the installed Expo SDK instead of the registry's latest, so it is the correct default on any repo with `expo` in its dependency tree. Use it in place of `npm install <pkg>@latest` there; fall back to `npm install <pkg>@latest` only for packages Expo doesn't manage.
-
-When you install a framework-required (non-latest) version because of this carve-out, **say so in the PR body** — name the constraint (e.g. `Installed \`react@19.1.0\` to match the Expo SDK 53 peer set, not latest.`) so the non-latest choice reads as deliberate, not stale.
-
-### Policy knob + scope
-
-This latest-stable default is configurable per-repo via `dependencies.new_dep_version` in `shipyard.config.json` (default `"latest-stable"`; set `"conservative"` for a repo that wants introductions pinned to a documented older baseline — e.g. a repo deliberately trailing the ecosystem). The peer/SDK carve-out is **unconditional** and is NOT disabled by `"conservative"` — a framework-constrained package always uses the framework-required version regardless of this knob, because installing an SDK-mismatched version is a correctness bug, not a policy preference.
-
-**Scope — introduction only.** This rule governs *adding* a dependency, not upgrading existing ones. Do NOT run a repo-wide "update everything", and do NOT bump a package the repo already depends on — that's Dependabot's / a separate audit dimension's job. The rule fires only when your diff adds a dependency line that wasn't there before.
+This pointer exists so a worker already mid-way through this fragment's dependency-bootstrap checks doesn't have to guess where the new-dependency rule went — it moved out of this Node-only fragment because the rule was never Node-specific, and because a fragment reachable only from `/shipyard:do-work` worker dispatch couldn't hold a line that's mostly crossed in interactive sessions and other non-worker paths. See [issue #1045](https://github.com/mattsears18/shipyard/issues/1045) for the gap analysis that motivated the move (a follow-up to [#694](https://github.com/mattsears18/shipyard/issues/694), which established the rule in its original, narrower form).
 
 ## Root-owned commit hooks in a non-workspace monorepo
 
