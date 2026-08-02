@@ -69,6 +69,24 @@ When you install a framework-required (non-latest) version because of this carve
 
 A repo that sets a supply-chain cooldown (e.g. an `.npmrc` with `min-release-age=7`, mirroring a `dependabot.yml` `cooldown.default-days: 7`) will have `@latest` — or the equivalent registry lookup — resolve to the latest **eligible** version, not the newest published one. That's correct and intended: the cooldown exists to let a freshly-published release accumulate a few days of real-world signal before anything in the repo depends on it. It's exactly why step 3's "record the resolved version" matters — without it, a reviewer can't tell a cooldown-trimmed pin (expected, current-as-of-eligibility) from a genuinely stale one (introduction-time debt). State the resolved version either way; if it looks older than "latest" because of a cooldown, that's worth a one-line note too.
 
+## Step 4 — run the automated pre-PR-create check
+
+Closes the verification gap issue [#1046](https://github.com/mattsears18/shipyard/issues/1046) left after [#1045](https://github.com/mattsears18/shipyard/issues/1045) shipped this skill: steps 1–3 above are a rule plus a PR-body convention — nothing verified the claim, so a worker that silently wrote a stale/remembered version produced a PR indistinguishable from a compliant one.
+
+**Before `gh pr create`, run `plugins/shipyard/scripts/verify-new-dep-versions.sh`** against your diff. It re-parses the same diff for newly-added dependency lines and cross-checks the version you wrote in step 1 against the authoritative registry — a mechanical backstop for the lookup-first rule above, not a replacement for actually doing the lookup:
+
+```bash
+bash plugins/shipyard/scripts/verify-new-dep-versions.sh "origin/${DEFAULT_BRANCH}" --pr-body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
+```
+
+Pass the same scratch PR-body file `issue-work.md` step 5 already writes before `gh pr create` — the script reads it for two things: the offline fallback (below) and the cooldown/carve-out-note explanation for an otherwise-unexplained gap.
+
+**Two ecosystems get a hard, online, registry-comparison check** — npm/npx (`package.json` entries, inline `npx <tool>@<version>` / `pnpm dlx` / `yarn dlx` invocations) via `npm view <pkg> version`, and GitHub Actions `uses:` pins via `gh api repos/<owner>/<action>/releases/latest`. A newly-added dependency in either class that's ≥1 major behind the registry's current stable, with no peer/SDK carve-out and no PR-body explanation, is a hard failure (exit 1) — fix the version (or add the explanation) before opening the PR.
+
+**Every other manifest class this skill names — pip, Go, Cargo, Gemfile, Gradle, CocoaPods, Dockerfile `FROM`, `.nvmrc`/`.tool-versions` — falls back to the OFFLINE check**, as does the npm/Actions path itself when the `npm`/`gh` CLI or network isn't available: does the PR body record a resolved version for that dependency, per step 3? That fallback only skip-with-notes; it never hard-fails. Registry comparison for those remaining ecosystems is phase 2, tracked as a follow-up from #1046.
+
+The check honors the peer/SDK carve-out (react, react-native, `@react-native-firebase/*`, `expo-*`) and a cooldown/carve-out note in the PR body as valid explanations for an otherwise-unexplained gap — the same two escape hatches steps 2 and the cooldown section above already document.
+
 ## Policy knob + scope
 
 This latest-stable default is configurable per-repo via `dependencies.new_dep_version` in `shipyard.config.json` (default `"latest-stable"`; set `"conservative"` for a repo that wants introductions pinned to a documented older baseline — e.g. a repo deliberately trailing the ecosystem). The peer/SDK carve-out is **unconditional** and is NOT disabled by `"conservative"` — a framework-constrained package always uses the framework-required version regardless of this knob, because installing an SDK-mismatched version is a correctness bug, not a policy preference.
@@ -77,10 +95,10 @@ This latest-stable default is configurable per-repo via `dependencies.new_dep_ve
 
 ## Out of scope for this skill (filed as follow-ups)
 
-This skill covers the *rule* — look up the version, apply the carve-out, record what you found. It deliberately does not include:
+This skill covers the *rule* (steps 1–3) and the mechanical pre-PR-create verification of it (step 4). It deliberately does not include:
 
-- A pre-PR automated check that diffs the written version against the registry and fails/annotates on an unexplained major-version gap.
 - A `tech-debt-auditor` sub-check that flags dependencies already sitting ≥1 major behind.
 - Emitting this convention into a *consuming* repo's own `CLAUDE.md` / `.claude/rules/` during `/shipyard:init` (so non-shipyard sessions on that repo inherit it too).
+- Registry-comparison (rather than the step-4 offline PR-body-record check) for pip, Go, Cargo, Gemfile, Gradle, CocoaPods, Dockerfile `FROM`, and `.nvmrc`/`.tool-versions` — filed as a follow-up from [#1046](https://github.com/mattsears18/shipyard/issues/1046).
 
 See issue [#1045](https://github.com/mattsears18/shipyard/issues/1045) for the follow-up issues tracking each of these.
