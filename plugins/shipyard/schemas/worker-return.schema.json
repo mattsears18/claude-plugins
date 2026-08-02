@@ -35,6 +35,11 @@
       "minimum": 1,
       "description": "The PR number this dispatch opened or acted on (#M). Present on `shipped` / `green` / `pending` / `dirty` / `rebased`; null on `noop` / `blocked` / `reaped` / a no-PR `disposition`."
     },
+    "incidental_pr": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "Optional. For a `disposition: \"verified\"` outcome only (issue-work §6.6, the QA-verification carve-out): the PR number of a small, non-closing incidental test-coverage fix opened via issue-work-verification-dispatch.md's narrow step-3 exception (#1044) — a `Refs #<N>` reference, never a closing keyword, so it has no bearing on the verified issue's own disposition. Distinct from `pr`, which stays null on this outcome (there is still no *resolving* PR for the dispatched issue). Unlike the null-`pr` case, a non-null `incidental_pr` IS appended to `session_prs` by the orchestrator's reconcile — it's a real PR with its own checks/merge lifecycle. Null when no such PR was opened (the common case)."
+    },
     "auto_merge": {
       "type": ["string", "null"],
       "enum": [

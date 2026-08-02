@@ -10,7 +10,15 @@ On-demand fragment of [`issue-work.md`](./issue-work.md). Loaded only when that 
 
 2. **Read the auditor's return.** It reports which criteria it exercised, a pass/fail verdict per criterion, and the numbers of any issues it filed. Treat this as the authoritative record — don't re-derive verdicts from your own reading of the surface.
 
-3. **Post a verification-status comment on `#<N>`** summarizing the run. A heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"; write the content instead (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/verification-status-comment.md`:
+3. **Incidental test-coverage-only fix — narrow exception ([#1044](https://github.com/mattsears18/shipyard/issues/1044)).** The default (below, in "Never open a PR…") is still correct: a verification dispatch does not ship code. This step carves out exactly one shape where landing a small PR anyway is sanctioned, because it's the maintainer's own repeated real-world pattern (issue #1044's #3329/PR #3374 precedent) — not an invitation to widen scope.
+
+   - **In scope, narrowly:** while running the audit or reading the code under test, you (or the auditor) find that the exercised path has **zero test coverage that the code itself already acknowledges** (e.g. a docstring or comment admitting the gap) — a mechanically-verifiable, trivially-fixable hole, not a design question. The fix is "add the missing test(s)," nothing more.
+   - **Out of scope — always a follow-up `bug` issue, never fixed inline:** any actual behavioral bug, however small. If the finding is "this does the wrong thing" rather than "this has no test," it goes through the normal follow-up-issue path in the "Never open a PR…" paragraph below, not this exception.
+   - **Reference, never close.** The PR body must carry a **bare reference** to the verification issue — `Refs #<N>` — never a closing keyword (`Closes`/`Fixes`/`Resolves #<N>`). This PR does not resolve `#<N>`; step 5's disposition (below) is what closes or gate-labels the verification issue, independent of whether this incidental PR exists.
+   - **Otherwise the normal issue-work PR lifecycle applies.** Branch, implement (test-first, scoped to the coverage gap only — no drive-by changes), and commit per [`issue-work.md`](./issue-work.md) §§3–5, including the [§4.6](./issue-work.md#46-pre-push-local-unit-test-gate-658) pre-push unit-test gate. `gh pr create` with `Refs #<N>` in the body and `--label shipyard`. Gate auto-merge on `originating_author_trust` exactly per [§6](./issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust) — an incidental PR opened from a verification dispatch is not exempt from the trust gate.
+   - **No coverage gap found — the common case.** Skip this step entirely and continue to step 4 with no PR involved.
+
+4. **Post a verification-status comment on `#<N>`** summarizing the run. A heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"; write the content instead (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/verification-status-comment.md`:
 
    ```
    ## Verification status (shipyard)
@@ -21,10 +29,12 @@ On-demand fragment of [`issue-work.md`](./issue-work.md). Loaded only when that 
    - <criterion 1>: <passed | failed — see #<bug-issue>>
    - <criterion 2>: <passed | failed — see #<bug-issue>>
 
+   **Incidental fix:** landed missing test coverage in #<incidental-PR> (Refs #<N>, no closing keyword)
+
    **Not automatable — still needs a human/device:** <verification_residual>
    ```
 
-   Omit the "Not automatable" line entirely when `verification_residual` is absent (the whole surface was automatable). Then:
+   Omit the "Incidental fix" line entirely when step 3 didn't fire. Omit the "Not automatable" line entirely when `verification_residual` is absent (the whole surface was automatable). Then:
 
    ```bash
    WORKTREE_PATH="$(git rev-parse --show-toplevel)"
@@ -33,7 +43,7 @@ On-demand fragment of [`issue-work.md`](./issue-work.md). Loaded only when that 
    rm -rf "$WORKTREE_PATH/.shipyard-scratch"
    ```
 
-4. **Disposition:**
+5. **Disposition:**
    - **`verification_residual` is present (the common case)** — apply `agent-console` (a plain device/browser recheck) or `needs-human-review` (a genuine human judgment call — e.g. a subjective design review) per whichever fits the residual's shape, and leave `#<N>` **OPEN**. Apply the label **ensure-then-label-then-verify**, the same idiom §6.5 uses:
      ```bash
      GATE_LABEL="agent-console"   # or "needs-human-review" — pick per the residual's shape
@@ -49,6 +59,6 @@ On-demand fragment of [`issue-work.md`](./issue-work.md). Loaded only when that 
 
 If the auditor dispatch itself fails to return (spawn error, tool denial), do not guess at a disposition — return `blocked #<N> at verification: auditor dispatch failed — <reason>` instead of step 5's blocked shape (same free-text vocabulary, just naming this step).
 
-**Never open a PR for the verification-only path itself** — there is no code slice to ship. If the audit surfaces something trivially fixable while you're at it, file it as a normal follow-up `bug` issue (the auditor already does this) rather than fixing it inline — fixing code is out of scope for a verification dispatch, exactly as scope-creep is out of scope on the code-worker path.
+**Never open a PR for the verification-only path itself, beyond the narrow step 3 exception above** — there is no code slice to ship. If the audit surfaces a real bug (a behavior issue, not a coverage gap) while you're at it, file it as a normal follow-up `bug` issue (the auditor already does this) rather than fixing it inline — fixing a behavioral bug is out of scope for a verification dispatch, exactly as scope-creep is out of scope on the code-worker path. Step 3's coverage-only carve-out is the sole exception, and it stays narrow on purpose: widening it to "any trivially-fixable thing" is exactly the scope-creep this rule exists to prevent.
 
-Once this fragment's disposition is applied, return to [`issue-work.md`](./issue-work.md) step 8 and return via the `verified #<N>` return shape.
+Once this fragment's disposition is applied, return to [`issue-work.md`](./issue-work.md) step 8 and return via the `verified #<N>` return shape — if step 3 opened an incidental coverage PR, include its number via step 8's optional `incidental PR: #<M>` suffix so the orchestrator appends it to `session_prs` and drains it like any other PR.

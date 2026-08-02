@@ -399,6 +399,7 @@ const workerReturnSchema = {
     },
     issue: { type: ['integer', 'null'], minimum: 1 },
     pr: { type: ['integer', 'null'], minimum: 1 },
+    incidental_pr: { type: ['integer', 'null'], minimum: 1 },
     auto_merge: {
       type: ['string', 'null'],
       enum: [
