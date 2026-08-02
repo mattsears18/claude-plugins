@@ -134,15 +134,44 @@ Don't include calls in tests *of the deprecated thing itself* — those are inte
 
 ### 6. Outdated direct dependencies
 
+**Detect drift across every manifest class `shipyard:adding-dependencies` covers, not just `package.json`.** That skill's introduction-time rule (look up the current stable version before adding a dependency) only catches drift at the moment a dependency is introduced — it can't catch drift that accumulates afterward, or predates the rule entirely. This pass is the drift-detection counterpart: reuse the same skill's own per-ecosystem lookup commands (load `shipyard:adding-dependencies` § "Step 1" for the authoritative table) so a package measured "current" at introduction and a package audited later for drift are measured the same way:
+
 ```bash
+# npm / yarn / pnpm — direct deps only (package.json's dependencies + devDependencies)
 npm outdated --json 2>/dev/null || pnpm outdated --json 2>/dev/null || yarn outdated --json 2>/dev/null
+
+# Python — compare requirements.txt / pyproject.toml pins against:
+pip index versions <pkg>   # or https://pypi.org/pypi/<pkg>/json
+
+# Go — compare go.mod against:
+go list -m -versions <pkg>
+
+# Rust — compare Cargo.toml against:
+cargo search <pkg>   # or https://crates.io/api/v1/crates/<pkg>
+
+# Ruby — compare Gemfile against:
+gem list -r -e <pkg>   # or https://rubygems.org/api/v1/versions/<pkg>.json
+
+# GitHub Actions `uses:` pins — compare .github/workflows/*.yml against:
+gh api repos/<owner>/<action>/releases/latest --jq .tag_name
+
+# Dockerfile FROM base images — compare against:
+gh api repos/<owner>/<image-repo>/tags --jq '.[0].name'   # or the registry's tags listing
+
+# .nvmrc / .tool-versions — compare the pinned runtime against:
+gh api repos/nodejs/node/releases/latest --jq .tag_name   # or the equivalent releases feed
+
+# Gradle (build.gradle[.kts]) — check the coordinate's Maven Central / Gradle Plugin Portal listing
+
+# CocoaPods (Podfile) — compare against:
+pod trunk info <pod>
 ```
 
-Filter to *direct* deps (`package.json`'s `dependencies` + `devDependencies`):
+Filter to *direct* deps only, across every manifest class above.
 
 **Findings:**
 
-- A direct dep ≥ 2 major versions behind → P2 (one issue per dep, or grouped if related family — e.g. all `@react-native-firebase/*`)
+- A direct dep ≥ 1 major version behind the registry's current stable → P2 (one issue per dep, or grouped if related family — e.g. all `@react-native-firebase/*`)
 - A direct dep on a deprecated/unmaintained package (npm registry shows deprecated) → P1
 
 **Don't file:**
@@ -150,6 +179,9 @@ Filter to *direct* deps (`package.json`'s `dependencies` + `devDependencies`):
 - Patch / minor drift (noise — Renovate / Dependabot handle this).
 - Transitive-only outdated deps (those are owned by their parents).
 - Anything `npm audit`-style — that's `security-auditor`'s territory.
+- **Peer/SDK-constrained packages sitting "behind" registry latest by design.** `react`/`react-native` (and the installed Expo SDK), the coordinated `@react-native-firebase/*` set, and every `expo-*` package take the framework-required version, never the registry's latest — a gap there is correct, not debt. See `shipyard:adding-dependencies` § "Step 2" for the detection method (inspect `peerDependencies`, or membership in a coordinated scope already in the tree).
+- **A repo with `dependencies.new_dep_version: "conservative"`** set in `shipyard.config.json`. That repo deliberately opted into pinning introductions to a documented older baseline, so drift from registry-latest is the intended state, not debt — don't nag it.
+- **A gap fully explained by a supply-chain cooldown** — an `.npmrc` `min-release-age`, or a `dependabot.yml` `cooldown.default-days`. The pin is intentionally trimmed to the latest *eligible* release rather than the newest published one; that's expected, not stale (see `shipyard:adding-dependencies` § "Supply-chain-cooldown interaction").
 
 ### 7. Long-lived branches (advisory)
 
@@ -195,7 +227,7 @@ Skipped tests: <N skipped, M > 6mo old>
 Suppressions: <N total, dominant rule: <rule>>
 Dead flags: <N | n/a>
 Deprecated-API internal calls: <N symbols, M call sites>
-Outdated direct deps: <N >= 2 major behind>
+Outdated direct deps: <N >= 1 major behind, across <ecosystems checked>>
 Long-lived branches: <N > 90 days>
 
 Out of scope:
