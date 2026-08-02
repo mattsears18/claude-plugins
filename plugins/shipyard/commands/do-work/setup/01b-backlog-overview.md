@@ -9,12 +9,14 @@
 > ```bash
 > # These five run in parallel as part of the parallelization batch even under --fast.
 > # Refinement-candidate count is by source-signal scan (no needs-refinement label since #520):
-> # user-feedback label, OR an "## Open questions" heading, OR a bot author; minus issues already
-> # in the human queue (needs-human-review / needs-triage).
+> # user-feedback label AND a body that still looks like raw feedback (the raw-feedback fenced
+> # block — #1055, since the label alone is permanent origin provenance, not a live refinement
+> # flag), OR an "## Open questions" heading, OR a bot author; minus issues already in the human
+> # queue (needs-human-review / needs-triage).
 > gh issue list --repo <owner/repo> --state open --limit 200 --json number,labels,body,author \
 >   --jq '[ .[]
 >           | select([.labels[].name] | any(. == "needs-human-review" or . == "needs-triage") | not)
->           | select((.labels | any(.name == "user-feedback"))
+>           | select(((.labels | any(.name == "user-feedback")) and ((.body // "") | test("(?m)^```user-feedback")))
 >                    or ((.body // "") | test("(?m)^## Open [qQ]uestions[[:space:]]*$"))
 >                    or ((.author.type // "") == "Bot")) ] | length'
 > gh pr list --repo <owner/repo> --state open --label blocked:ci --json number --jq 'length'
@@ -55,7 +57,7 @@ Bucket each issue into exactly one category. Apply in order — first match wins
 | 3 | **Won't fix** | carries `wontfix` |
 | 4 | **Discussion** | carries `discussion` |
 | 5 | **Needs triage** | carries `needs-triage`. **Design-gated issues** (formerly `needs-design`) and **epic-decomposition handoffs** (formerly `needs-decomposition` / `tracking`) now carry `needs-human-review` and land in bucket 5.5 — [#515](https://github.com/mattsears18/shipyard/issues/515) folded `needs-design` into `needs-human-review`, and [#519](https://github.com/mattsears18/shipyard/issues/519) folded the `needs-decomposition` / `tracking` epic-decomposition pair into `needs-human-review` (the epic handoff is distinguished by the `<!-- do-work-needs-decomposition -->` body marker that [`/decompose-epic`](../../decompose-epic.md) consumes — see [#498](https://github.com/mattsears18/shipyard/issues/498) / [#501](https://github.com/mattsears18/shipyard/issues/501)). |
-| 5.4 | **Awaiting refinement** | matches a refinement **source signal** and NOT `needs-human-review`/`needs-triage` — `user-feedback` label, OR an `## Open questions` heading, OR a bot author. No persisted `needs-refinement` label anymore ([#520](https://github.com/mattsears18/shipyard/issues/520)); `/refine-issues` recomputes candidacy live and branches by signal (user-feedback classify+rewrite, open-questions resolve-defaults, no-pattern fall-through). |
+| 5.4 | **Awaiting refinement** | matches a refinement **source signal** and NOT `needs-human-review`/`needs-triage` — `user-feedback` label **AND** a body that still looks like raw feedback (the raw-feedback fenced block; the label alone is permanent origin provenance, not a live refinement flag — [#1055](https://github.com/mattsears18/shipyard/issues/1055)), OR an `## Open questions` heading, OR a bot author. No persisted `needs-refinement` label anymore ([#520](https://github.com/mattsears18/shipyard/issues/520)); `/refine-issues` recomputes candidacy live and branches by signal (user-feedback classify+rewrite, open-questions resolve-defaults, no-pattern fall-through). |
 | 5.5 | **Awaiting human review** | carries `needs-human-review`. Subsumes the former `needs-design` design-gate ([#515](https://github.com/mattsears18/shipyard/issues/515)) and the former `needs-decomposition` / `tracking` epic-decomposition handoffs ([#519](https://github.com/mattsears18/shipyard/issues/519) — an epic handoff additionally carries the `<!-- do-work-needs-decomposition -->` body marker so `/decompose-epic` can find it). As of [#520](https://github.com/mattsears18/shipyard/issues/520) it's also the fall-through home for refinement candidates with no automated path. |
 | 6 | **Blocked (soft label)** | carries `blocked:agent-soft` ([#300](https://github.com/mattsears18/shipyard/issues/300)) — auto-cleared at next session, so the bucket exists for visibility only; the soft-blocked issue is **NOT excluded** from step 4's workable fetch. Surfaces here so the user sees that a prior worker bailed for a subjective reason (cannot-reproduce / ambiguous / scope-judgment) and may want to clarify the issue before re-dispatch picks it up. (The former bucket 6a "Blocked (hard label)" was removed in [#521](https://github.com/mattsears18/shipyard/issues/521) — `blocked:agent-hard` was eliminated: refuses now carry `needs-human-review` and land in bucket 5.5; dependency-waits carry no label and land in bucket 7.) |
 | 7 | **Blocked (body reference)** | body matches `Blocked by #(\d+)` where that issue is still open (`gh issue view <N> --json state -q .state` returns `OPEN`) |
