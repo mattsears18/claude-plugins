@@ -95,6 +95,17 @@ echo "resolved CLAUDE_PLUGIN_ROOT commit=$SHIPYARD_PLUGIN_ROOT_SHA" >&2
 
 cd "$(git rev-parse --show-toplevel)"
 
+# Capture the PRIMARY checkout's own root now, while cwd is still there
+# (issue #1059). Step 0.5 relocates the session into a fresh orchestrator
+# worktree checked out from origin/<default-branch> — which, by construction,
+# cannot contain gitignored files like .shipyard/config.local.json. Echoing
+# (not just computing) this path is what lets it survive as a literal value
+# the orchestrator carries into step 0.5's SHIPYARD_REPO_ROOT pin, the same
+# way the CLAUDE_PLUGIN_ROOT resolution above is echoed once and reused as a
+# literal rather than a shell variable that can't survive the next Bash call.
+SHIPYARD_PRIMARY_CHECKOUT_ROOT="$(pwd)"
+echo "resolved SHIPYARD_PRIMARY_CHECKOUT_ROOT=$SHIPYARD_PRIMARY_CHECKOUT_ROOT" >&2
+
 # Dogfooding staleness check (issue #907): when CLAUDE_PLUGIN_ROOT resolved
 # REPO-LOCAL (layer 1 above — this repo IS the plugin source, the
 # do-work-orchestrating-shipyard's-own-repo case), the resolved copy is
@@ -360,6 +371,41 @@ The `REPO_ROOT` derived from `git rev-parse --show-toplevel` here only feeds the
 **Defense in depth — `session-state.sh` enforces a cross-repo write guard.** Even if the orchestrator's id-stash mechanism is bypassed or corrupted, `session-state.sh update` and `session-state.sh bump-tokens` accept an `--expected-repo <owner/repo>` flag (also accepted via `SHIPYARD_EXPECTED_REPO=<owner/repo>` env var). When the flag is set and the resolved session file's `.repo` field doesn't match, the call exits 66 with a loud stderr log naming both repos — refusing the write rather than silently corrupting another session's state. The orchestrator SHOULD pass `--expected-repo <owner/repo>` on every `update` and `bump-tokens` call; the `--skip-repo-check` flag is reserved for the rare legitimate cross-repo helper (e.g., the orphan-sweep at step 1.6, which intentionally operates on session files belonging to other repos). See [session-state.sh's cross-repo guard](../../../scripts/session-state.sh) for the exit-code contract.
 
 **Don't reach for option 2 from #365** ("skip the file entirely, compute the session id from the worktree path"). The compute-from-worktree-path approach is appealing in theory but invasive in practice — the orchestrator's many Bash tool calls would all need to walk `git worktree list` to find their worktree, parse the orchestrator-<id> suffix, and handle the edge cases where the cwd isn't inside an orchestrator worktree (foreground vs. background subshells, the user's primary-checkout invocation, etc.). The per-worktree stash file is the minimum-surgery shim that addresses the race without redesigning the lookup pattern. Reserve compute-from-worktree-path for a follow-up issue if the stash-file approach ever becomes load-bearing in a way that warrants the larger change.
+
+### 0.56 Pin `SHIPYARD_REPO_ROOT` to the primary checkout ([#1059](https://github.com/mattsears18/shipyard/issues/1059))
+
+**Every config read after step 0.5's relocation silently loses the `.shipyard/config.local.json` layer.** `shipyard-config.sh`'s `repo_root()` resolves via `git rev-parse --show-toplevel` from cwd unless `SHIPYARD_REPO_ROOT` overrides it. [Step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson)'s `EFFECTIVE_CONFIG` is unaffected (it runs pre-relocation), but every OTHER config read this session — a fresh `shipyard-config.sh get`, or a helper like `resolve-dispatch-model.sh` / `flake-enforce.sh` — resolves against cwd at call time, which post-relocation is the orchestrator worktree: a fresh `origin/<default-branch>` checkout with no gitignored files. `.shipyard/config.local.json` silently drops out with no warning — and not just for `models.*`: `trust.authors`, `auto_merge.policy`, `concurrency.*`, `cost_tracking.*`, `ci.*`, `flake_registry.*` all revert too.
+
+**Pin it here, reusing [step 0.55](#055-session-id-storage-per-worktree-not-tmp)'s stash-file pattern.** `$SHIPYARD_PRIMARY_CHECKOUT_ROOT` is the literal captured at [step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson):
+
+```bash
+printf '%s\n' "$SHIPYARD_PRIMARY_CHECKOUT_ROOT" > "$ORCH_WT/.shipyard-primary-root"
+export SHIPYARD_REPO_ROOT="$SHIPYARD_PRIMARY_CHECKOUT_ROOT"
+```
+
+**Every subsequent orchestrator Bash block calling `shipyard-config.sh` (directly or via `resolve-dispatch-model.sh` / `flake-enforce.sh`) should re-derive and export it from the stash** — hermetic Bash-tool calls don't carry shell state forward (see [step 0.3](#03-claude_plugin_root-re-export-preamble-every-bash-tool-call)):
+
+```bash
+SHIPYARD_REPO_ROOT=$(cat "$ORCH_WT/.shipyard-primary-root" 2>/dev/null)
+export SHIPYARD_REPO_ROOT
+```
+
+**Scope: orchestrator session only — never propagate into a dispatched worker.** `SHIPYARD_REPO_ROOT` redirects the whole repo config layer. A worker's own `agent-*` worktree must resolve its own config against its own cwd; inheriting this pin would silently misdirect it. Never add `SHIPYARD_REPO_ROOT` to a dispatch prompt.
+
+**Phase-1 slice — wires the pin at its origin plus the one known-affected consumer** ([step 5.8's flake-registry enforcement](04-backlog-divert.md#58-enforce-the-flake-registry-chronic-flake-escalation)). Sweeping every other post-relocation call site across `steady-state.md` / `dispatch-rules.md` (the per-dispatch model resolution the issue's repro named) is a separate follow-up.
+
+**Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer both exists and changes the merged result:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+if [ -f "$SHIPYARD_PRIMARY_CHECKOUT_ROOT/.shipyard/config.local.json" ]; then
+  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$ORCH_WT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
+  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$SHIPYARD_PRIMARY_CHECKOUT_ROOT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
+  if [ "$UNPINNED_CONFIG" != "$PINNED_CONFIG" ]; then
+    echo "warning: .shipyard/config.local.json in the primary checkout changes the effective config (issue #1059). SHIPYARD_REPO_ROOT is pinned for THIS session, but a call site that skips re-exporting it (see above) will still read the un-pinned config. Verify trust/auto-merge/model behavior this session." >&2
+  fi
+fi
+```
 
 ### 0.7 Setup parallelization contract (fire-once-batch)
 

@@ -352,8 +352,15 @@ if [ "$FLAKE_ENABLED" = "true" ]; then
   # a deduped tracking issue per crossed flake, writes the crossed key to
   # <repo-root>/.shipyard/flake-suspects.txt, and labels affected PRs blocked:ci
   # — each action idempotent so re-running across sessions doesn't duplicate
-  # side effects. --repo-root is the orchestrator worktree (where the
-  # per-repo flake-suspects file lives, alongside .shipyard/config.local.json).
+  # side effects. --repo-root MUST be the PRIMARY checkout, not the
+  # orchestrator worktree (issue #1059) — .shipyard/flake-suspects.txt is
+  # gitignored, so a fresh orchestrator worktree checked out from
+  # origin/<default-branch> never contains a suspects file a prior session
+  # wrote; pointing this call at the orchestrator worktree would silently
+  # restart flake tracking from empty every session instead of accumulating
+  # across them. Use the SHIPYARD_REPO_ROOT pin stashed in step 0.56, not
+  # `git rev-parse --show-toplevel` (which resolves to wherever cwd
+  # currently is — the orchestrator worktree, post-relocation).
   #
   # --prune-window-days (issue #863): flake-registry.sh has always shipped a
   # `prune` subcommand, but nothing ever called it — with flake_registry
@@ -366,9 +373,15 @@ if [ "$FLAKE_ENABLED" = "true" ]; then
   # prune_window_days (default 90 — generous; the registry is cheap to keep).
   PRUNE_WINDOW_DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
   case "$PRUNE_WINDOW_DAYS" in ''|*[!0-9]*) PRUNE_WINDOW_DAYS=90 ;; esac
+  # Re-derive the SHIPYARD_REPO_ROOT pin from the step-0.56 stash rather than
+  # `git rev-parse --show-toplevel` (issue #1059) — the latter resolves to
+  # the orchestrator worktree post-relocation, not the primary checkout
+  # where the gitignored flake-suspects.txt persists across sessions.
+  FLAKE_REPO_ROOT=$(cat "$ORCH_WT/.shipyard-primary-root" 2>/dev/null)
+  [ -z "$FLAKE_REPO_ROOT" ] && FLAKE_REPO_ROOT="$(git rev-parse --show-toplevel)"
   "${CLAUDE_PLUGIN_ROOT}/scripts/flake-enforce.sh" enforce \
     --repo "<owner/repo>" \
-    --repo-root "$(git rev-parse --show-toplevel)" \
+    --repo-root "$FLAKE_REPO_ROOT" \
     --prune-window-days "$PRUNE_WINDOW_DAYS" \
     2>&1 | sed 's/^/[flake-enforce] /' || echo "[flake-enforce] advisory: enforce pass errored; continuing setup"
 fi
