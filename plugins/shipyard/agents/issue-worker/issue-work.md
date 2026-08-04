@@ -276,11 +276,10 @@ git commit -m "<conventional commit title referencing the issue>"
 git push -u origin "HEAD:refs/heads/${REMOTE_BRANCH:-do-work/issue-<N>}"
 ```
 
-A multi-line `--body` fed via `$(cat <<EOF ... EOF)` command substitution is **refused** by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the body with the `Write` tool to a scratch file first, then pass `--body-file`, per `shipyard:worker-preamble` § "Multi-line `--body` payloads — use `--body-file`, never a heredoc command substitution":
+A multi-line `--body` fed via `$(cat <<EOF ... EOF)` command substitution is **refused** by the worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979)) — write the body with the `Write` tool to a scratch file first, then pass `--body-file`, per `shipyard:worker-preamble` § "Scratch directory". If not already seeded, `Write` `$WORKTREE_PATH/.shipyard-scratch/.gitignore` (a single `*` line) first:
 
 ```bash
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
 Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/pr-body.md`:
@@ -303,7 +302,7 @@ gh pr create --repo <owner/repo> \
   --label shipyard \
   --title "<conventional commit title>" \
   --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
 ```
 
 The body **must** include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge. The `--label shipyard` is required by the worker-preamble skill — see that skill for the rationale. The explicit `--head` removes any ambiguity about which branch the PR is built from — load-bearing when `$LOCAL_BRANCH` (this worktree's checkout) diverges from `$REMOTE_BRANCH` (the pushed, canonical branch) per §3's collision fallback.
@@ -535,10 +534,9 @@ If this errors because auto-merge isn't enabled at the repo level, **don't try t
 ```bash
 gh pr edit <pr-num> --repo <owner/repo> --add-label needs-human-review
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
-Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/external-trust-comment.md` (a heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979) — `shipyard:worker-preamble` § "Multi-line `--body` payloads"):
+If not already seeded, `Write` `$WORKTREE_PATH/.shipyard-scratch/.gitignore` (a single `*` line) first. Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/external-trust-comment.md` (a heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979)):
 
 ```
 Originating issue is from an external author; this PR will not auto-merge. A maintainer must review and merge manually.
@@ -550,7 +548,7 @@ Then:
 
 ```bash
 gh pr comment <pr-num> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/external-trust-comment.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"
+rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
 ```
 
 Do NOT call `gh pr merge --auto` in this branch — that's the exact gate this step exists to enforce. The PR sits with `needs-human-review` until a maintainer reviews and merges manually (or closes it).
