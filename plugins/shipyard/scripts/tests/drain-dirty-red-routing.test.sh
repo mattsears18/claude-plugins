@@ -1,26 +1,49 @@
 #!/usr/bin/env bash
-# Test: DIRTY-AND-red PRs are routed to fix-checks, not fix-rebase, during drain.
+# Test: DIRTY-AND-red PRs are routed to fix-rebase, not fix-checks, during drain.
 #
-# Background — issue #577: the end-of-session drain dispatched fix-rebase on any
-# PR whose mergeStateStatus == DIRTY, without checking the rollup. A DIRTY PR
-# with a hard-failing check would cause fix-rebase to bail immediately
-# ("blocked rebase: PR has failing checks — needs fix-checks, not rebase"),
-# wasting a Haiku dispatch plus an extra orchestrator round-trip before the
-# correct fix-checks routing fired.
+# Background — issue #1060, superseding #577: the end-of-session drain used
+# to route a DIRTY-and-red PR (D_dirty_red) to fix-checks, on the theory that
+# fix-checks would rebase the branch as part of getting it green. Issue #1015
+# added a DIRTY-PR short-circuit to fix-checks-only that made it bail
+# immediately (`dirty #<M>`) instead of ever attempting a fix — which quietly
+# invalidated #577's premise. Meanwhile fix-rebase.md's own precondition bail
+# ("PR has failing checks — needs fix-checks, not rebase") fired on ANY hard
+# failure, DIRTY or not. The result: a PR that was both DIRTY and red got
+# bounced between fix-checks (bails `dirty`, routes to fix-rebase) and
+# fix-rebase (bails on the failing check, routes to fix-checks) forever, with
+# no worker ever able to act on it — and it counted as "settled" the whole
+# time via rebase_blocked_prs membership, so a session could report it done
+# when it was actually wedged.
 #
-# The fix introduces an explicit D_dirty_red set (DIRTY + hard-failure rollup)
-# that is routed to fix-checks in per-poll action 1, and adds explicit
-# "never classify from mergeStateStatus alone" guards to D_dirty and the
-# open-PR query description.
+# The fix (#1060) inverts both ends of the #577 rule in the same change:
+#   - fix-rebase.md step 2's hard-failure bail is now gated on
+#     mergeStateStatus != "DIRTY" — a DIRTY PR skips the bail and rebases
+#     regardless of check state, because a red check on a DIRTY PR is a
+#     frozen fossil (no merge ref exists, so nothing can refresh it).
+#   - drain.md's D_dirty_red set is no longer a distinct dispatch target
+#     routed to fix-checks — it's an informational subset of D_dirty (same
+#     membership plus a hard-failure check), dispatched to fix-rebase exactly
+#     like any other D_dirty member. R_new (which DOES route to fix-checks)
+#     gained an explicit mergeStateStatus != "DIRTY" exclusion so a
+#     DIRTY-and-red PR is never double-counted into it.
 #
-# This regression guard asserts that:
-#   1. D_dirty_red is defined in drain.md and references #577.
-#   2. D_dirty explicitly excludes D_dirty_red members.
-#   3. Per-poll action 1 routes D_dirty_red to fix-checks.
-#   4. The drain log emits a visible routing decision for D_dirty_red.
-#   5. The "never classify from mergeStateStatus alone" prohibition exists.
-#   6. The drain status line includes the dirty_red= token.
-#   7. The latest-per-name semantics section covers D_dirty_red.
+# This regression guard asserts the fix:
+#   1. drain.md's D_dirty_red is defined as an informational subset of
+#      D_dirty and references #1060.
+#   2. drain.md's D_dirty does NOT exclude D_dirty_red members (D_dirty_red
+#      is a subset, not a disjoint set).
+#   3. drain.md's R_new explicitly excludes DIRTY PRs.
+#   4. Per-poll action 1 (fix-checks) does NOT dispatch D_dirty_red.
+#   5. Per-poll action 2 (fix-rebase) routes D_dirty (including D_dirty_red)
+#      to fix-rebase, and the drain log names the DIRTY+failing routing as
+#      "fix-rebase (not fix-checks)".
+#   6. The drain status line still includes the dirty_red= token (now purely
+#      informational).
+#   7. fix-rebase.md's hard-failure bail is gated on mergeStateStatus !=
+#      "DIRTY", and explicitly skips the bail while DIRTY.
+#   8. The old #577-only routing language ("fix-checks (not fix-rebase)" for
+#      D_dirty_red, and the "Never dispatch a fix-rebase worker against a PR
+#      in D_dirty_red" prohibition) is gone.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -43,6 +66,7 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
+fix_rebase_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
 
 pass=0
 fail=0
@@ -89,122 +113,100 @@ assert_not_contains() {
 }
 
 echo ""
-echo "Test: drain DIRTY-AND-red routing to fix-checks (#577 regression guard)"
+echo "Test: drain DIRTY-AND-red routing to fix-rebase (#1060 regression guard, supersedes #577)"
 echo ""
 
 assert_file_exists "$drain_path" "drain.md exists"
+assert_file_exists "$fix_rebase_path" "fix-rebase.md exists"
 
 echo ""
-echo "D_dirty_red set — defined and referenced"
+echo "D_dirty_red set — informational subset of D_dirty, references #1060"
 echo ""
 
-# D_dirty_red must be defined in the per-poll bookkeeping section.
 assert_contains "$drain_path" \
   "D_dirty_red" \
   "drain.md defines D_dirty_red set"
 
-# D_dirty_red must reference the issue that introduced it.
 assert_contains "$drain_path" \
-  "#577" \
-  "drain.md D_dirty_red definition references issue #577"
+  "#1060" \
+  "drain.md D_dirty_red definition references issue #1060"
 
-# D_dirty_red definition must describe DIRTY + hard-failure as the population.
 assert_contains "$drain_path" \
-  "DIRTY" \
-  "drain.md D_dirty_red description mentions DIRTY"
-
-# D_dirty_red must say fix-checks is the correct route (not fix-rebase).
-assert_contains "$drain_path" \
-  "fix-checks" \
-  "drain.md D_dirty_red routes to fix-checks"
+  "informational subset" \
+  "drain.md describes D_dirty_red as an informational subset of D_dirty"
 
 echo ""
-echo "D_dirty set — explicitly excludes D_dirty_red and prohibits mergeStateStatus-only classification"
+echo "D_dirty set — does NOT exclude D_dirty_red members; R_new excludes DIRTY"
 echo ""
 
-# D_dirty must explicitly guard against D_dirty_red membership.
-assert_contains "$drain_path" \
+# D_dirty must NOT explicitly exclude D_dirty_red members anymore — the old
+# "AND are NOT in D_dirty_red" guard was the #577-era disjoint-set shape.
+assert_not_contains "$drain_path" \
   "NOT in \`D_dirty_red\`" \
-  "drain.md D_dirty excludes D_dirty_red members"
+  "drain.md D_dirty no longer excludes D_dirty_red members (they're a subset now)"
 
-# D_dirty (or the accompanying note) must prohibit classifying based on mergeStateStatus alone.
+# R_new must explicitly exclude DIRTY PRs so a DIRTY-and-red PR is never
+# double-counted into the fix-checks routing.
 assert_contains "$drain_path" \
-  "never classify a PR as fix-rebase-eligible based on" \
-  "drain.md D_dirty prohibits mergeStateStatus-alone classification"
-
-# The prohibition must name mergeStateStatus as the forbidden shortcut.
-assert_contains "$drain_path" \
-  "\`mergeStateStatus\` alone" \
-  "drain.md prohibition names mergeStateStatus alone as the forbidden shortcut"
+  "mergeStateStatus != \"DIRTY\"" \
+  "drain.md R_new excludes mergeStateStatus == DIRTY"
 
 echo ""
-echo "Per-poll action 1 — routes D_dirty_red to fix-checks alongside R_new"
+echo "Per-poll actions — D_dirty_red routes to fix-rebase, not fix-checks"
 echo ""
 
-# Per-poll action 1 must mention D_dirty_red alongside R_new.
+# Action 1 (fix-checks) must explicitly say D_dirty_red is NOT dispatched here.
 assert_contains "$drain_path" \
-  "D_dirty_red" \
-  "drain.md per-poll action 1 references D_dirty_red"
+  "D_dirty_red\` PRs are NOT dispatched here" \
+  "drain.md action 1 explicitly excludes D_dirty_red from fix-checks dispatch"
 
-# Action 1 must say DIRTY-AND-red PRs are routed to fix-checks, not fix-rebase.
+# Action 2 (fix-rebase) must say D_dirty includes D_dirty_red members.
 assert_contains "$drain_path" \
-  "DIRTY-AND-red" \
-  "drain.md action 1 names the DIRTY-AND-red population"
+  "D_dirty\` includes every \`D_dirty_red\` member" \
+  "drain.md action 2 confirms D_dirty includes D_dirty_red"
 
-# Action 1 must explain WHY fix-rebase would be wrong (guaranteed-bail reason).
+# The drain log line must now route D_dirty_red to fix-rebase, not fix-checks.
 assert_contains "$drain_path" \
-  "wasted" \
-  "drain.md action 1 explains the wasted-dispatch cost of routing to fix-rebase"
+  "fix-rebase (not fix-checks); routing via D_dirty_red (#1060, supersedes #577)" \
+  "drain.md log line routes D_dirty_red to fix-rebase, citing #1060 supersedes #577"
 
 echo ""
-echo "Drain log — routing decision is surfaced"
+echo "Drain status line — dirty_red= token still present (now purely informational)"
 echo ""
 
-# A log line must be emitted for each D_dirty_red routing decision.
-assert_contains "$drain_path" \
-  "DIRTY+failing" \
-  "drain.md emits a log line naming the DIRTY+failing classification"
-
-# The log line must identify the routing direction.
-assert_contains "$drain_path" \
-  "fix-checks (not fix-rebase)" \
-  "drain.md log line clarifies the routing direction"
-
-echo ""
-echo "Drain status line — dirty_red= token"
-echo ""
-
-# The status line template must include the dirty_red= counter.
 assert_contains "$drain_path" \
   "dirty_red=<D_dirty_red>" \
   "drain.md status line includes dirty_red= token"
 
 echo ""
-echo "Latest-per-name section — updated to cover D_dirty_red"
+echo "fix-rebase.md — hard-failure bail gated on mergeStateStatus != DIRTY"
 echo ""
 
-# The latest-per-name semantics section heading must mention D_dirty_red.
-assert_contains "$drain_path" \
-  "D_dirty_red" \
-  "drain.md latest-per-name section covers D_dirty_red (already verified above, sanity check)"
+assert_contains "$fix_rebase_path" \
+  'mergeStateStatus != "DIRTY"' \
+  "fix-rebase.md hard-failure bail description names mergeStateStatus != DIRTY"
 
-# The bash snippet comment must mention D_dirty_red.
-assert_contains "$drain_path" \
-  "D_dirty_red (>0 AND DIRTY" \
-  "drain.md bash snippet comment explains D_dirty_red classification"
+assert_contains "$fix_rebase_path" \
+  'skip the failing-check bail entirely' \
+  "fix-rebase.md documents skipping the failing-check bail while DIRTY"
+
+assert_contains "$fix_rebase_path" \
+  "#1060" \
+  "fix-rebase.md references issue #1060"
 
 echo ""
-echo "Negative assertions — old single-classification language removed / updated"
+echo "Negative assertions — old #577-only single-direction routing language is gone"
 echo ""
 
-# The old open-PR query note said "mergeStateStatus == DIRTY is the signal
-# that a PR is stale relative to current main but otherwise healthy". That
-# phrasing is dangerously incomplete — the fix should have updated it to
-# require the rollup split. Assert the old "but otherwise healthy" shortcut
-# wording is gone.
+# The old rule said D_dirty_red routes to fix-checks and must NEVER go to
+# fix-rebase. Both framings are now backwards and must not survive.
 assert_not_contains "$drain_path" \
-  "but otherwise healthy" \
-  "drain.md open-PR query note no longer calls DIRTY 'otherwise healthy' without a rollup check"
+  "Never dispatch a fix-rebase worker against a PR in \`D_dirty_red\`" \
+  "drain.md no longer forbids dispatching fix-rebase against D_dirty_red"
+
+assert_not_contains "$drain_path" \
+  "fix-checks rebases as part of getting green" \
+  "drain.md no longer claims fix-checks rebases as part of getting green"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

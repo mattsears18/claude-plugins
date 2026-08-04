@@ -34,6 +34,8 @@ MERGE_STATE=$(gh pr view <M> --repo <owner/repo> --json mergeStateStatus --jq '.
 
 **If `MERGE_STATE == "DIRTY"`, stop here — do NOT enter the fix-loop, do NOT call `gh pr checks --watch`, and do NOT poll.** A DIRTY PR conflicts with the default branch: GitHub cannot compute a merge ref for it, so `pull_request`-triggered workflows never queue any checks at all — not "haven't started yet," not "still initializing." `gh pr checks <M>` reporting `no checks reported on the '<branch>' branch` from a DIRTY PR is indistinguishable, from inside this mode, from a genuine startup delay — but it isn't one, and waiting (or re-polling) cannot produce a different outcome. The fix belongs to `fix-rebase`, not this mode.
 
+**As of [#1060](https://github.com/mattsears18/shipyard/issues/1060), the drain's own per-poll scan never dispatches this mode against a DIRTY PR in the first place** — a DIRTY-and-red PR (`D_dirty_red`) routes to `fix-rebase`, not here, regardless of check state (see [drain.md](../../commands/do-work/drain.md#drain-protocol)). This short-circuit is still load-bearing, though: this mode can be dispatched mid-session (via the normal dispatch loop, against a red PR that isn't yet DIRTY) and discover the PR went DIRTY between dispatch and the worker starting, from an unrelated sibling merge — the short-circuit above is the defensive net for that race, not the primary DIRTY-detection path anymore.
+
 Return immediately:
 
 > `dirty #<M>: PR conflicts with <default-branch>; no merge ref, so no checks will run`
