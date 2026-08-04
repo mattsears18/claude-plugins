@@ -1,6 +1,6 @@
 # Fix-rebase mode (drain-phase stale-base PR)
 
-The orchestrator dispatches this when the end-of-session [drain](../../commands/do-work/drain.md#end-of-session-drain) finds an `@me` PR in `mergeStateStatus: DIRTY` with **no failing checks** — the PR is green-or-pending but its base is stale relative to the freshly-advanced default branch, so auto-merge won't fire until it's rebased onto current default.
+The orchestrator dispatches this when the end-of-session [drain](../../commands/do-work/drain.md#end-of-session-drain) finds an `@me` PR in `mergeStateStatus: DIRTY` — its base is stale relative to the freshly-advanced default branch, so auto-merge won't fire until it's rebased onto current default. **As of [#1060](https://github.com/mattsears18/shipyard/issues/1060), this includes a DIRTY PR that is ALSO carrying a failing check** — while DIRTY, GitHub cannot compute a merge ref, so no check can queue or refresh; a red check on a DIRTY PR is a frozen fossil of the last base the PR could still build against, not live evidence about the PR's current health. Only a non-DIRTY PR with a genuinely failing check routes to `fix-checks-only` instead (see [step 2](#process) below).
 
 This is intentionally a **light-touch** mode. You are NOT fixing failing tests. You are NOT modifying the PR's scope. You are NOT touching the PR title / description / linked issue. The single goal is to take the PR's branch, rebase it onto current default, push, and return — letting CI re-run on the rebased head and auto-merge land it.
 
@@ -27,24 +27,26 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
 
 2. **Pre-flight: confirm DIRTY is still the state.** State drifts between dispatch and you starting — another merge train tick may have already auto-merged this PR, or someone may have pushed a fix that resolved the dirty state, or new check failures may have appeared:
    ```bash
-   gh pr view <M> --repo <owner/repo> --json mergeStateStatus,statusCheckRollup,state
+   preflight=$(gh pr view <M> --repo <owner/repo> --json mergeStateStatus,statusCheckRollup,state)
+   MERGE_STATE=$(echo "$preflight" | jq -r '.mergeStateStatus')
+   PR_STATE=$(echo "$preflight" | jq -r '.state')
    ```
    Bail before touching anything if:
    - `state != "OPEN"` → return `noop: PR #<M> already closed/merged`.
    - `mergeStateStatus in {"CLEAN", "HAS_HOOKS", "UNSTABLE", "BLOCKED"}` and not `DIRTY` → return `noop: not dirty (mergeStateStatus=<X>)`. Auto-merge will figure it out — don't churn the branch unnecessarily.
-   - **The PR has a hard check failure on the latest run of any check name** → return `blocked rebase #<M>: PR has failing checks — needs fix-checks, not rebase`. The drain will route this through the normal fix-checks dispatcher.
+   - **`mergeStateStatus != "DIRTY"` AND the PR has a hard check failure on the latest run of any check name** → return `blocked rebase #<M>: PR has failing checks — needs fix-checks, not rebase`. The drain will route this through the normal fix-checks dispatcher.
 
      **CRITICAL — use the latest-per-name projection, not the raw rollup walk** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). `gh pr view --json statusCheckRollup` returns the **union** of every check run for the PR's head SHA, including stale superseded runs. A naïve `.statusCheckRollup[] | select(.conclusion == "FAILURE")` walk false-positives whenever a check ran, failed, was re-triggered, and passed — the first FAILURE entry trips the bail even though the latest run is SUCCESS. De-duplicate by `name` and take the most recent entry per check (by `completedAt`, fallback `startedAt`) BEFORE checking for hard failures:
 
      ```bash
-     fails=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup --jq '
+     fails=$(echo "$preflight" | jq '
        [.statusCheckRollup
         | group_by(.name)
         | map(sort_by(.completedAt // .startedAt // "") | last)
         | .[]
         | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
        | length')
-     if [ "${fails:-0}" -gt 0 ]; then
+     if [ "$MERGE_STATE" != "DIRTY" ] && [ "${fails:-0}" -gt 0 ]; then
        echo "blocked rebase #<M>: PR has failing checks — needs fix-checks, not rebase"
        exit 0
      fi
@@ -52,7 +54,9 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
 
      The `group_by(.name) | map(... | last)` reduction is the load-bearing piece — it collapses N entries per check name to 1 (the most recent), so a stale FAILURE entry that's been superseded by a later SUCCESS is correctly filtered out. The `// .startedAt // ""` fallback handles in-progress checks where `completedAt` is null; the empty-string default keeps the sort stable when both timestamps are absent. Test `(.conclusion // .status)` so the predicate works for both completed runs (carry `conclusion`) and in-progress check-runs (carry only `status`).
 
-   Only proceed when `mergeStateStatus == "DIRTY"` and there are no hard check failures **on the latest run per check name**.
+   **When `mergeStateStatus == "DIRTY"`, skip the failing-check bail entirely regardless of what the rollup shows, and proceed with the rebase ([#1060](https://github.com/mattsears18/shipyard/issues/1060)).** A red check on a DIRTY PR carries no live information: DIRTY means GitHub cannot compute a merge ref, so no `pull_request`-triggered check can be queued or refreshed until the rebase restores one. The failure is a frozen fossil of the last base the PR could still build a merge ref against — it is not evidence the rebase should be skipped in favor of fix-checks, which cannot even attempt a fix while DIRTY (fix-checks-only's own [DIRTY-PR short-circuit](../../agents/issue-worker/fix-checks-only.md#dirty-pr-short-circuit-check-before-treating-an-empty-rollup-as-not-started-yet--1015) bails immediately on exactly this state, wasting the dispatch). This inverts the pre-#1060 rule ([#577](https://github.com/mattsears18/shipyard/issues/577)), which routed a DIRTY-and-red PR to fix-checks instead — correct back when fix-checks-only rebased as part of getting green, but left standing (and provably wrong) after [#1015](https://github.com/mattsears18/shipyard/issues/1015)'s short-circuit removed that assumption. See [RATIONALE → #1060 supersedes #577](../../commands/do-work-RATIONALE.md#1060-supersedes-577--dirty-and-red-routes-to-fix-rebase-not-fix-checks) for the full history.
+
+   Only proceed when `mergeStateStatus == "DIRTY"` (regardless of check state) — the hard-failure bail above only fires for a non-DIRTY PR, which this mode should never actually see (drain only dispatches fix-rebase against DIRTY PRs), but the check stays in place as defense-in-depth against a stale dispatch or a state transition between drain's snapshot and this worker starting.
 
 3. **Fetch + rebase onto current default branch:**
    ```bash

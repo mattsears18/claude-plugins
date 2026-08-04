@@ -2528,6 +2528,92 @@ assert_contains "$issue_work_path986" \
   "Don't apply \`agent-console\`/\`needs-human-review\` to a deferred-slice residual that needs no human" \
   "issue-work.md Don't section warns against over-gating a deferred-slice residual (#986)"
 
+# ── Issue #1060 — a PR that is both DIRTY and red deadlocks fix-checks-only
+#    and fix-rebase, each bailing to the other; the drain settles it as
+#    "done" the whole time via rebase_blocked_prs membership
+#    ────────────────────────────────────────────────────────────────────────
+#
+# fix-rebase.md's own hard-failure bail didn't distinguish DIRTY from
+# non-DIRTY, and drain.md's #577-era D_dirty_red set routed a DIRTY-and-red
+# PR to fix-checks — which, after #1015's DIRTY short-circuit, could only
+# bail straight back with `dirty #<M>` without attempting anything. Neither
+# mode could make progress. #1060 inverts both ends of the #577 rule in one
+# PR: fix-rebase's bail is gated on mergeStateStatus != DIRTY, and drain's
+# D_dirty_red becomes an informational subset of D_dirty (still routed to
+# fix-rebase, never fix-checks). It also adds a deadlock-signature tracker
+# (dirty_fix_checks_prs / deadlocked_prs) so a PR that DID return both
+# `dirty` and `blocked rebase` this session is surfaced distinctly in the
+# end-of-session summary rather than folded into an undifferentiated
+# rebase_blocked_prs entry. See scripts/tests/drain-dirty-red-routing.test.sh
+# for the dedicated D_dirty_red routing regression guard — the assertions
+# here cover the surrounding session-state plumbing (steady-state.md's
+# reconcile, drain.md's initial snapshot, cleanup-summary.md's summary line)
+# that guard doesn't touch.
+fix_rebase_path1060="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
+
+assert_contains "$fix_rebase_path1060" \
+  '#1060' \
+  "fix-rebase.md references issue #1060"
+
+# drain.md's initial snapshot must declare the two new deadlock-tracking
+# structures alongside the existing three.
+assert_contains "$drain_path" \
+  'dirty_fix_checks_prs = {}' \
+  "drain.md initializes dirty_fix_checks_prs (#1060)"
+
+assert_contains "$drain_path" \
+  'deadlocked_prs = {}' \
+  "drain.md initializes deadlocked_prs (#1060)"
+
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$drain_path" \
+  'deadlocked_prs` is a **subset** of `rebase_blocked_prs`' \
+  "drain.md documents deadlocked_prs as a subset of rebase_blocked_prs, not a disjoint gate (#1060)"
+
+# steady-state.md's fix-checks reconcile must write dirty_fix_checks_prs on
+# every path that produces a `dirty` disposition (explicit return, narrative
+# synthesis, and the green→dirty trust-but-verify downgrade).
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'Add `<M>` to `dirty_fix_checks_prs`' \
+  "steady-state.md fix-checks reconcile writes dirty_fix_checks_prs (#1060)"
+
+# steady-state.md's blocked-rebase reconcile must check dirty_fix_checks_prs
+# membership and write deadlocked_prs when the deadlock signature fires.
+assert_contains "$steady_state_path" \
+  'Deadlock-signature check' \
+  "steady-state.md blocked-rebase reconcile runs the deadlock-signature check (#1060)"
+
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'also add it to `deadlocked_prs`' \
+  "steady-state.md blocked-rebase reconcile writes deadlocked_prs on the deadlock signature (#1060)"
+
+# cleanup-summary.md must surface deadlocked_prs distinctly in the
+# Drain-phase rebases summary line, not folded into the generic blocked count.
+assert_contains "$cleanup_path" \
+  'deadlocked' \
+  "cleanup-summary.md Drain-phase rebases line names a distinct deadlocked bucket (#1060)"
+
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$cleanup_path" \
+  'not double-counted into the generic `blocked` bucket' \
+  "cleanup-summary.md documents deadlocked PRs are not double-counted into the blocked bucket (#1060)"
+
+# dont.md must carry the inverted routing rule, explicitly superseding #577.
+assert_contains "$dont_path" \
+  'supersedes' \
+  "dont.md fix-rebase-vs-DIRTY+red rule cites #1060 superseding #577"
+
+# RATIONALE.md must carry the full history of the #577 → #1060 inversion.
+assert_contains "$rationale_path" \
+  '#1060 supersedes #577' \
+  "do-work-RATIONALE.md carries the #1060 supersedes #577 section"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
