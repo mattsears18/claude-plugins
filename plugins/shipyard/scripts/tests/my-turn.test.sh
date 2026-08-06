@@ -18,10 +18,19 @@
 # loop + browser operation (operator-inclusive by default);
 # /my-turn = human-only interactive walkthrough.
 #
+# Issue #1070 reshaped it again, this time splitting WHEN the work happens:
+# the #635 loop interleaved collecting a decision with acting on it, so the
+# maintainer waited on a GitHub round-trip between every answer. The default
+# run is now three phases — collect every decision with no mutation, commit
+# them all in one batch, then walk the remaining non-decision items. The
+# no-agent rule narrowed to "no MUTATING agents" so Phase 1's read-only bulk
+# context pass may fan out readers.
+#
 # This test is the regression guard: if anyone deletes the command, removes
 # the priority tiers, drops a required input source, reverts the looping
-# walkthrough back to a stop-after-one-item render, or stops filtering
-# browser-completable work out of the human-only queue, the test fails.
+# walkthrough back to a stop-after-one-item render, re-interleaves recording
+# with collecting, or stops filtering browser-completable work out of the
+# human-only queue, the test fails.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -141,8 +150,18 @@ if [[ -f "$cmd_path" ]]; then
     "command declares it stays human-facing (#635)"
   assert_contains "$cmd_path" "non-autonomous" \
     "command declares it is non-autonomous (#635)"
-  assert_contains "$cmd_path" "dispatches no agents" \
-    "command does not dispatch agents or share /do-work's worker machinery (#635)"
+  # #1070 narrowed this from "no agents" to "no MUTATING agents": Phase 1's
+  # bulk context pass may fan out READ-ONLY readers to prepare the questions,
+  # which is where the remaining wait lives once mutations move to Phase 2.
+  # The non-autonomous contract is unchanged in substance — no code workers,
+  # no PRs, no browser — so assert the narrowed phrasing AND that the
+  # read-only carve-out is scoped to reading, not loosened to "agents are fine".
+  assert_contains "$cmd_path" "dispatches no *mutating* agents" \
+    "command does not dispatch mutating agents or share /do-work's worker machinery (#635, narrowed by #1070)"
+  assert_contains "$cmd_path" "Read-only research agents are permitted" \
+    "read-only research agents are explicitly permitted in Phase 1 (#1070)"
+  assert_contains "$cmd_path" "never spawns a code worker" \
+    "the non-autonomous contract still forbids code workers (#635)"
 
   # Don't section is a common convention across shipyard commands — keeps
   # non-goals explicit.
@@ -191,6 +210,40 @@ if [[ -f "$cmd_path" ]]; then
   # walkthrough-complete confirmation when the queue drains.
   assert_contains "$cmd_path" "Nothing on your plate" \
     "command keeps the unchanged empty-state one-liner"
+
+  # Phased collect → commit → walk run (issue #1070). The pre-#1070 loop
+  # interleaved collecting a decision with acting on it, so the maintainer
+  # waited on a GitHub round-trip between every answer. The default run now
+  # asks EVERY decision first (no mutation), commits them in ONE batch, then
+  # walks the remaining non-decision items. These assertions guard that the
+  # three phases exist, that Phase 1 is mutation-free, that answers are
+  # journaled for crash safety, and that the two invariants the batching could
+  # plausibly have broken — carry-forward ordering and the partial-run rule —
+  # are still stated. A revert to per-item recording fails here.
+  assert_contains "$cmd_path" "Phase 1 — Collect (no mutation, no work)" \
+    "command documents the mutation-free collect phase (#1070)"
+  assert_contains "$cmd_path" "Phase 2 — Commit (all mutation, batched)" \
+    "command documents the batched commit phase (#1070)"
+  assert_contains "$cmd_path" "Phase 3 — Walk the rest" \
+    "command documents the walk phase for non-decision items (#1070)"
+  assert_contains "$cmd_path" "No GitHub mutation fires during Phase 1" \
+    "Phase 1 is explicitly mutation-free (#1070)"
+  assert_contains "$cmd_path" "my-turn-<repo-slug>.json" \
+    "answers are journaled to a local file for crash safety (#1070)"
+  assert_contains "$cmd_path" "Don't interleave collecting with acting" \
+    "command forbids re-interleaving collect with act (#1070)"
+  assert_contains "$cmd_path" "mutually independent" \
+    "only mutually independent decisions are batched into one question (#1070)"
+  assert_contains "$cmd_path" "deferred firing mode" \
+    "command runs resolve-decisions' record step in deferred mode (#1070)"
+  assert_contains "$cmd_path" "#1070" \
+    "command cites issue #1070 for the phased collect/commit split"
+
+  # The commit phase must STOP, not chain into /do-work. Auto-chaining would
+  # make /my-turn autonomous and start burning tokens the maintainer didn't
+  # ask for — the explicit decision recorded on #1070.
+  assert_contains "$cmd_path" "Don't chain into" \
+    "command does not auto-chain into /do-work after committing (#1070)"
 
   # Agent-refuse surfacing (issues #500 → #521). #500 originally split the
   # blocked:agent-hard signal by whether it was auto-clearable. #521
