@@ -41,11 +41,12 @@
 #
 # This is a STRUCTURAL check, not a full semantic-equivalence check — it
 # does not compare prose descriptions of a bucket's disposition word for
-# word (bucket 5's `01b`-vs-`04` wording mismatch is intentionally left to
-# issue #1077; see backlog-ownership.md's own notes on that row). Structural
-# drift (a missing bucket, a missing owner, an unmentioned label) is exactly
-# the failure mode a mechanical check can catch cheaply and reliably; deep
-# semantic reconciliation of routing prose is a judgment call for #1077.
+# word. Bucket 5's `01b`-vs-`04` wording mismatch was exactly that kind of
+# gap — issue #1077 reconciled it by hand (see backlog-ownership.md's own
+# notes on that row). Structural drift (a missing bucket, a missing owner,
+# an unmentioned label) is exactly the failure mode a mechanical check can
+# catch cheaply and reliably; deep semantic reconciliation of routing prose
+# stays a judgment call outside this suite's scope.
 #
 # Run with:
 #
