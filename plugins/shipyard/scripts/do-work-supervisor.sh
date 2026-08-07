@@ -106,6 +106,11 @@ PERMISSION_MODE="${SHIPYARD_SUPERVISOR_PERMISSION_MODE:-auto}"
 
 CLAUDE_BIN="${SHIPYARD_SUPERVISOR_CLAUDE_BIN:-claude}"
 GH_BIN="${SHIPYARD_SUPERVISOR_GH_BIN:-gh}"
+# Injectable the same way, so a test never registers a real job in the
+# developer's launchd domain (#1097 — install/uninstall previously called
+# `launchctl` directly, and a fake $HOME only redirects the plist *file*,
+# not launchd itself).
+LAUNCHCTL_BIN="${SHIPYARD_SUPERVISOR_LAUNCHCTL_BIN:-launchctl}"
 EXTRA_ARGS="${SHIPYARD_SUPERVISOR_EXTRA_ARGS:-}"
 
 # Labels that make an open issue NOT dispatch-eligible, for the work-exists
@@ -139,6 +144,7 @@ Environment:
   SHIPYARD_SUPERVISOR_PERMISSION_MODE      claude --permission-mode (auto)
   SHIPYARD_SUPERVISOR_CLAUDE_BIN           claude binary (claude)
   SHIPYARD_SUPERVISOR_GH_BIN               gh binary (gh)
+  SHIPYARD_SUPERVISOR_LAUNCHCTL_BIN        launchctl binary (launchctl)
   SHIPYARD_SUPERVISOR_EXTRA_ARGS           extra args appended to claude
   SHIPYARD_SUPERVISOR_GATE_LABELS          labels that make an issue ineligible
   SHIPYARD_HOME                            state base dir ($HOME/.shipyard)
@@ -820,8 +826,8 @@ cmd_install() {
 PLIST
 
   mkdir -p "$(supervisor_dir)"
-  launchctl unload "$plist" 2>/dev/null || true
-  if launchctl load "$plist" 2>/dev/null; then
+  "$LAUNCHCTL_BIN" unload "$plist" 2>/dev/null || true
+  if "$LAUNCHCTL_BIN" load "$plist" 2>/dev/null; then
     echo "Installed and loaded $label (every ${interval}s)."
   else
     echo "Wrote $plist but 'launchctl load' failed — load it by hand." >&2
@@ -843,7 +849,7 @@ cmd_uninstall() {
 
   local plist
   plist=$(plist_file "$repo")
-  launchctl unload "$plist" 2>/dev/null || true
+  "$LAUNCHCTL_BIN" unload "$plist" 2>/dev/null || true
   rm -f "$plist"
   echo "Uninstalled $(plist_label "$repo")."
 }

@@ -28,6 +28,21 @@ pass=0
 fail=0
 GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
 
+# Regression guard (#1097): assert real launchd STATE is untouched by this
+# suite, not merely that the plist files we wrote look right. Every
+# install/uninstall test below stubs `launchctl` via
+# SHIPYARD_SUPERVISOR_LAUNCHCTL_BIN — but a future change that reintroduces
+# a hardcoded `launchctl` call (bypassing the injectable binary) would still
+# pass every plist-content assertion while registering a real job on the
+# host, exactly the way the original defect went unnoticed. Snapshot the
+# count of com.shipyard.do-work-supervisor.* labels in the REAL launchd
+# domain now, before any test runs, and compare it again at the very end.
+if command -v launchctl >/dev/null 2>&1; then
+  launchd_before=$(launchctl list 2>/dev/null | grep -c 'com\.shipyard\.do-work-supervisor' || true)
+else
+  launchd_before=""
+fi
+
 assert_equals() {
   local actual="$1" expected="$2" label="$3"
   if [[ "$actual" == "$expected" ]]; then
@@ -95,8 +110,22 @@ exit 0
 CLAUDE
   chmod +x "$TMP/bin/claude"
 
+  # Stub launchctl: records invocations to a file instead of touching the
+  # real launchd domain (#1097). A fake $HOME only redirects the plist
+  # *file* install/uninstall write — `launchctl` itself is not scoped by
+  # $HOME and talks to the developer's real launchd domain regardless, so
+  # this stub (injected via SHIPYARD_SUPERVISOR_LAUNCHCTL_BIN) is what
+  # actually keeps the suite from registering a real job.
+  cat > "$TMP/bin/launchctl" <<LAUNCHCTL
+#!/usr/bin/env bash
+echo "\$@" >> "$TMP/launchctl-invocations"
+exit 0
+LAUNCHCTL
+  chmod +x "$TMP/bin/launchctl"
+
   export SHIPYARD_SUPERVISOR_GH_BIN="$TMP/bin/gh"
   export SHIPYARD_SUPERVISOR_CLAUDE_BIN="$TMP/bin/claude"
+  export SHIPYARD_SUPERVISOR_LAUNCHCTL_BIN="$TMP/bin/launchctl"
 
   # Default: plenty of work available.
   echo '[{"number":1,"labels":[]},{"number":2,"labels":[]}]' > "$TMP/issues.json"
@@ -451,6 +480,36 @@ assert_contains "$plist_body" "<key>AbandonProcessGroup</key>" \
 assert_contains "$plist_body" "<integer>900</integer>" "plist honours --interval"
 assert_contains "$plist_body" "tick" "plist invokes the tick subcommand"
 assert_contains "$plist_body" "$REPO" "plist pins the repo"
+
+# State assertion, not just file contents (#1097) — the plist-body checks
+# above would stay green even if `launchctl load` silently registered a
+# real job, because they only ever inspect what was WRITTEN to disk. Assert
+# on the stubbed launchctl's recorded invocation instead, so this test would
+# fail if install ever fell through to the real binary.
+launchctl_calls=$(cat "$TMP/launchctl-invocations" 2>/dev/null || true)
+assert_contains "$launchctl_calls" "unload $plist" \
+  "install calls launchctl unload first, to clear any stale prior registration"
+assert_contains "$launchctl_calls" "load $plist" \
+  "install calls launchctl load with the written plist path"
+teardown_env
+
+# ==========================================================================
+echo "== uninstall removes the plist and calls launchctl unload"
+# ==========================================================================
+setup_env
+fake_home="$TMP/fakehome"
+mkdir -p "$fake_home"
+HOME="$fake_home" bash "$script" install --repo "$REPO" \
+  --workdir "$TMP/workdir" >/dev/null 2>&1
+plist="$fake_home/Library/LaunchAgents/com.shipyard.do-work-supervisor.${SLUG}.plist"
+rm -f "$TMP/launchctl-invocations"
+out=$(HOME="$fake_home" bash "$script" uninstall --repo "$REPO" 2>&1)
+assert_contains "$out" "Uninstalled" "uninstall reports success"
+assert_equals "$([[ -f "$plist" ]] && echo yes || echo no)" "no" \
+  "uninstall removes the plist file"
+launchctl_calls=$(cat "$TMP/launchctl-invocations" 2>/dev/null || true)
+assert_contains "$launchctl_calls" "unload $plist" \
+  "uninstall calls launchctl unload with the plist path (via the stub, never the real launchd domain)"
 teardown_env
 
 # ==========================================================================
@@ -465,6 +524,17 @@ assert_equals "$rc" "64" "usage error exits 64 (EX_USAGE)"
 out=$(bash "$script" bogus 2>&1); rc=$?
 assert_equals "$rc" "64" "unknown subcommand exits 64"
 teardown_env
+
+# ==========================================================================
+echo "== real launchd domain is untouched by this suite (#1097)"
+# ==========================================================================
+if [[ -n "$launchd_before" ]]; then
+  launchd_after=$(launchctl list 2>/dev/null | grep -c 'com\.shipyard\.do-work-supervisor' || true)
+  assert_equals "$launchd_after" "$launchd_before" \
+    "no com.shipyard.do-work-supervisor.* job was registered in the real launchd domain by this suite"
+else
+  echo "  SKIP  launchctl not available on this host — cannot assert real launchd state"
+fi
 
 # ==========================================================================
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
