@@ -87,6 +87,22 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local needle="$2"
+  local label="$3"
+  # Case-sensitive, unlike assert_contains: this is used to guard against a
+  # specific stale phrase reappearing verbatim, not to fuzz-match a concept.
+  if grep -qF -- "$needle" "$file" 2>/dev/null; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
+    printf '    expected NOT to find in %s:\n    %s\n' "$file" "$needle"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  fi
+}
+
 echo "my-turn command regression tests (issue #142)"
 echo
 
@@ -473,6 +489,43 @@ if [[ -f "$cmd_path" ]]; then
     "command explicitly grandfathers the two pre-#1091 bespoke markers rather than renaming them (#1091)"
   assert_contains "$cmd_path" "#1091" \
     "command cites issue #1091 for the needs-human-review provenance-marker convention"
+
+  # --chrome-prompt filter inversion (issue #1092). Before this fix,
+  # chrome-prompt mode ran the exact same Human-only queue filter as the
+  # walkthrough/list-snapshot modes — so it EXCLUDED the browser-completable
+  # (agent-console) items an extension could actually act on and INCLUDED
+  # human decisions/judgment calls it couldn't. These assertions guard: a
+  # dedicated Chrome-completable queue filter exists and is documented as the
+  # inverse of the Human-only queue filter; agent-console items (not human
+  # decisions) populate the prompt body; genuinely human-only items route to
+  # the "can't be automated" section instead of the prompt; a
+  # credential/account-creation-shaped agent-console item (paste-secret /
+  # external-provisioning shaped, #991) is excluded from the prompt even
+  # though it carries agent-console; the relationship to /do-work's
+  # MCP-driven operator phase (same item set, different driver) is stated;
+  # and the specific inversion bug's shape (chrome-prompt sharing the
+  # Human-only queue filter verbatim) does not reappear.
+  assert_contains "$cmd_path" "Chrome-completable queue filter" \
+    "command documents a dedicated Chrome-completable queue filter for chrome-prompt mode (#1092)"
+  assert_contains "$cmd_path" "queue filter is inverted, not shared" \
+    "command states chrome-prompt inverts the human-only filter (#1092)"
+  assert_contains "$cmd_path" "Include in the prompt body" \
+    "command builds the chrome-prompt body from browser-completable (agent-console) items (#1092)"
+  assert_contains "$cmd_path" "survives the ordinary" \
+    "command routes ordinary human-only-queue survivors out of the prompt body (#1092)"
+  assert_contains "$cmd_path" "Populated by every item the" \
+    "command routes excluded items into the can't-be-automated section, not the prompt body (#1092)"
+  assert_contains "$cmd_path" "credential- or account-creation-shaped" \
+    "command excludes credential/account-creation-shaped agent-console items from the prompt (#1092)"
+  assert_contains "$cmd_path" "#991" \
+    "command cites issue #991 for the harness-level credential/account-creation prohibition binding the extension (#1092)"
+  assert_contains "$cmd_path" "Both target the identical" \
+    "command states the same-item-set/different-driver relationship to /do-work's operator phase (#1092)"
+  assert_contains "$cmd_path" "#1092" \
+    "command cites issue #1092 for the chrome-prompt filter-inversion fix"
+  assert_not_contains "$cmd_path" \
+    "the queue is filtered to human-only items" \
+    "the pre-#1092 buggy phrasing (chrome-prompt sharing the Human-only queue filter verbatim) does not reappear"
 fi
 
 echo
