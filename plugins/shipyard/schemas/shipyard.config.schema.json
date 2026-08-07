@@ -475,6 +475,11 @@
           "default": 1,
           "description": "Per-item investigation ceiling (issue #1073): the maximum number of extra `gh` reads /my-turn may spend, beyond the survey projection, deriving a single item's rendered action — never CI-log reads, run-job drill-downs, or any other root-cause investigation, which are always out of scope regardless of this value. Default 1: at most one extra read (e.g. a single `gh pr view` for a field the list projection omitted). Set to 0 to require the rendered action come from the survey projection alone, falling back to the degraded render (known signal + URL + owning command) for anything more. Raise only as an explicit opt-in to deeper per-item grounding on a repo where that tradeoff is wanted."
         },
+        "disposition_call_detection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Disposition-call detection toggle (issue #1074): whether /my-turn's Phase 1 recognizes a needs-human-review issue (or draft PR) whose gated work is already complete or all-but-complete as a batchable disposition call (close as done / keep open / close and split), derived entirely from the already-fetched survey projection (labels, updatedAt, last-3-comments, closingIssuesReferences) with no extra gh round-trip. Default true. Set false to disable the heuristic entirely and fall back to the pre-#1074 behavior (such an issue is treated as a plain needs-human-review item, walked in Phase 3) — e.g. if the completion-assertion phrase matching produces false positives on a repo's comment conventions."
+        },
         "_comment": { "type": "string" }
       }
     }
