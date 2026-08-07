@@ -4,6 +4,22 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.10.1 — 2026-08-07
+
+`do-work-supervisor.sh` shipped in 4.10.0 at mode `100644`, so the command the README documents fails on a fresh install:
+
+```
+$ plugins/shipyard/scripts/do-work-supervisor.sh reap
+permission denied
+```
+
+Nothing in the pipeline could have caught it. shellcheck lints content, not permissions; CI and every documented workflow invoke suites as `bash <file>`, which works regardless of the exec bit; and the 113-suite run was green. The break surfaced only when a human followed the README's own instructions on the installed plugin. A sweep for the same shape found a second, older instance — `verify-new-dep-versions.sh`, documented for direct invocation in the `adding-dependencies` skill and committed `644` since #1046 — which is what makes this a class worth guarding rather than a one-off slip. Both are now `100755`, and a new test sweeps every production script under `plugins/shipyard/scripts/` for both halves of the "directly invocable" contract: committed-executable **and** carrying a shebang. `tests/` is deliberately out of scope — suites are genuinely mixed between `755` and `644` in this repo because nothing ever runs them by path, so there is no convention there to enforce (closes #1094).
+
+- `plugins/shipyard/scripts/do-work-supervisor.sh` — mode `100644` → `100755`.
+- `plugins/shipyard/scripts/verify-new-dep-versions.sh` — mode `100644` → `100755`; same defect, predates 4.10.0.
+- `plugins/shipyard/scripts/tests/script-exec-bits.test.sh` — new. Asserts no production script under `scripts/` is committed non-executable, pins the two files that motivated the guard, and checks every one starts with a shebang. Carries a non-vacuity assertion (the sweep must match >20 files) so a broken glob fails loudly instead of passing green against nothing — the same failure shape the repo's rules warn about for narrowed sweeps. Verified to fail against the reverted mode before being trusted.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.10.0` → `4.10.1`.
+
 ### 4.10.0 — 2026-08-06
 
 `/do-work` is specified as a terminating batch job but used as a continuous burndown loop, and nothing bridged the gap — when a session ended the backlog simply stalled until a human typed the command again. Months of hardening had gone into `drain.md`'s termination assertion on the theory that the orchestrator rationalizes premature exits; the session tombstones say otherwise. A clean termination runs `cleanup-summary.md`'s cleanup step, which **retires the session state file**, so a session file that still exists is by construction a session that died before cleanup — and four of the five files found in `~/.shipyard/sessions/` when #1083 was filed had `in_flight > 0` at their last write. Those sessions did not decide to stop; they died mid-flight with workers still dispatched, and the drain never ran at all. No amount of "don't stop early" prose fixes a session that runs out of context. The spec already assumes a next run exists — #662's bounded-exit concessions are "surfaced for the next run", setup step 3c triages orphan worktrees, and setup step 5.7 / #373 seeds inherited DIRTY PRs as an explicit cross-session hand-off — so restart-and-resume was already designed and built. The only missing piece was the thing that starts the next run.
