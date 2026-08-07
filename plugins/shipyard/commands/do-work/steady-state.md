@@ -1142,17 +1142,28 @@ ${issue_body}" 2>/dev/null || true
       # 30 — see ~/.claude/plugins/cache/shipyard/.../scripts/shipyard-config.sh).
       now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       session_blocked_soft[<N>]="$now"
+      comment_body="Worker returned blocked: <reason>. Classified as \`$label\`."
     else
       # Refuse → needs-human-review. No automated path; a human must look.
       label="needs-human-review"
+      # <!-- do-work-agent-refuse --> is a provenance TRIGGER marker (persists
+      # for the issue's lifetime, distinct from a dedupe/idempotency sentinel
+      # like <!-- do-work-refinement-agent -->) — it's what lets /my-turn
+      # distinguish an agent-refuse needs-human-review from the other seven
+      # provenances that land on the same label, per #1091. Must be the
+      # literal first line of the comment body.
+      comment_body="<!-- do-work-agent-refuse -->
+Worker returned blocked: <reason>. Classified as \`$label\`."
     fi
 
     gh issue edit <N> --repo <owner/repo> --add-label "$label" 2>/dev/null || true
-    gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Classified as \`$label\`."
+    gh issue comment <N> --repo <owner/repo> --body "$comment_body"
   fi
   ```
 
   A refuse routes to `needs-human-review` (not a dedicated block label) because it has no automated recovery path — a human must look, same semantics `/my-turn` already surfaces. **Why a provisioning bail routes to `agent-console`:** `external provisioning required` is a concrete browser/console action, not a decision, and not auto-recoverable — same destination as the scope-preflight `external-dependency` defer. A dependency-wait needs no label because the `Blocked by #N` body-reference filter ([setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) / bucket 7) is already the complete mechanism. Soft labels don't survive to next session (setup.md step 3d.2 sub-sweep c clears them at every session start) and gate only in-session re-dispatch via `session_blocked_soft[<N>]` for `blocked_agent.soft_retry_minutes` (default 30). See [RATIONALE → Blocked-reason routing table rationale](../do-work-RATIONALE.md#blocked-reason-routing-table-rationale-521628) for the full reasoning behind each routing choice.
+
+  **The `<!-- do-work-agent-refuse -->` marker on the refuse comment is a provenance discriminator for `/my-turn`** (issue [#1091](https://github.com/mattsears18/shipyard/issues/1091)) — it lets the human-review render cite the actual bail reason without re-deriving it from prose. It is NOT applied to the soft-block comment (that lands on `blocked:agent-soft`, not `needs-human-review`, and auto-clears every session — no marker needed).
 
 - **errored** — record in the session log, continue.
 

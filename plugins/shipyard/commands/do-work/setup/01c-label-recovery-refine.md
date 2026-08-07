@@ -304,7 +304,12 @@ for n in $(jq -r '.[].number' /tmp/do-work-legacy-needs-design.json); do
   # Add the current label first so the issue is never unlabelled mid-transition.
   gh issue edit "$n" --repo <owner/repo> --add-label needs-human-review 2>/dev/null || true
   gh issue edit "$n" --repo <owner/repo> --remove-label needs-design 2>/dev/null || true
-  gh issue comment "$n" --repo <owner/repo> --body "Migrated legacy \`needs-design\` → \`needs-human-review\` per [#537](https://github.com/mattsears18/shipyard/issues/537). The \`needs-design\` label was folded into \`needs-human-review\` in [#515](https://github.com/mattsears18/shipyard/issues/515) — \`/do-work\` now excludes \`needs-human-review\` issues from dispatch, so this issue remains gated until a human reviews and removes the label." 2>/dev/null || true
+  # <!-- do-work-legacy-needs-design --> is a provenance TRIGGER marker (persists
+  # for the issue's lifetime) — it's what lets /my-turn distinguish a
+  # design-gated needs-human-review from the other seven provenances that
+  # land on the same label, per #1091.
+  gh issue comment "$n" --repo <owner/repo> --body "<!-- do-work-legacy-needs-design -->
+Migrated legacy \`needs-design\` → \`needs-human-review\` per [#537](https://github.com/mattsears18/shipyard/issues/537). The \`needs-design\` label was folded into \`needs-human-review\` in [#515](https://github.com/mattsears18/shipyard/issues/515) — \`/do-work\` now excludes \`needs-human-review\` issues from dispatch, so this issue remains gated until a human reviews and removes the label." 2>/dev/null || true
   migrated_needs_design=$((migrated_needs_design + 1))
   migrated_needs_design_numbers+=("$n")
 done

@@ -97,9 +97,10 @@ WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
 ```
 
-Write this content (with the `Write` tool — a heredoc `--body` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979), `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/needs-human-review-comment.md`:
+Write this content (with the `Write` tool — a heredoc `--body` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979), `shipyard:worker-preamble` § "Multi-line `--body` payloads") to `$WORKTREE_PATH/.shipyard-scratch/needs-human-review-comment.md`. The first line is the `<!-- do-work-investigation-disposition -->` provenance TRIGGER marker — shared with investigate-mode's structurally identical [4b](./investigate.md#4b-genuinely-needs-a-human--apply-needs-human-review-return-blocked-style-the-investigatedneeds-human-review-path), and load-bearing: it's what lets `/my-turn` distinguish an investigation-mode disposition from the other seven provenances that land on `needs-human-review` (issue [#1091](https://github.com/mattsears18/shipyard/issues/1091)):
 
 ```
+<!-- do-work-investigation-disposition -->
 Spike investigated by shipyard. Findings so far: <summary>.
 
 Resolution needs a human: <one-line reason — product/business/legal call, access the worker lacks, or the question is unresolvable without info not discoverable in-repo>.
