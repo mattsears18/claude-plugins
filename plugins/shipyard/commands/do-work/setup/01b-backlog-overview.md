@@ -89,6 +89,7 @@ Compute candidates for the following buckets:
 - **Bucket 5 (Needs triage / decomposition) — `likely-triageable` candidates, computed only when `triage.investigate_dispatch == "false"`.** Under the default (`true`), every trusted-author bucket-5 issue is already routed to `investigate_candidates` and dispatched via investigate mode this session — no human review step exists for it, so recommending "review then remove `needs-triage`" would be actively wrong (an investigate worker is already taking it). **Read the config value once** (same call the client-side filter in [`04`](./04-backlog-divert.md#4-fetch--rank-the-backlog) already makes — reuse its result rather than re-querying):
 
   ```bash
+  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
   investigate_dispatch=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
   ```
 
