@@ -123,7 +123,15 @@ session deaths.
   status    --repo owner/name
             Show breaker state, launch counts, and recent ledger events.
   install   --repo owner/name --workdir PATH [--interval SECONDS]
+            [--use-api-key] [--force-oauth-unverified]
             Write and load the launchd agent (default interval: 600s).
+            Requires --use-api-key (with ANTHROPIC_API_KEY set) unless
+            --force-oauth-unverified is passed — see issue #1096: a
+            launchd LaunchAgent cannot read the OAuth Keychain credential
+            `claude` normally authenticates with, verified empirically
+            (SessionCreate + `launchctl bootstrap gui/<uid>`, both tried,
+            both insufficient), so every OAuth-mode launch fails
+            immediately with "Not logged in".
   uninstall --repo owner/name
   reset     --repo owner/name
             Clear a tripped circuit breaker.
@@ -758,13 +766,22 @@ plist_file() {
   printf '%s/Library/LaunchAgents/%s.plist\n' "$HOME" "$(plist_label "$1")"
 }
 
+# gui/<uid> — the launchd domain a real login session's LaunchAgents run in.
+# `launchctl bootstrap`/`bootout` are domain-scoped and are the modern
+# replacement for the deprecated, domain-ambiguous `load`/`unload` (#1096).
+gui_domain() {
+  printf 'gui/%s\n' "$(id -u)"
+}
+
 cmd_install() {
-  local repo="" workdir="" interval=600
+  local repo="" workdir="" interval=600 use_api_key=0 force_oauth=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo) repo="${2:-}"; shift 2 ;;
       --workdir) workdir="${2:-}"; shift 2 ;;
       --interval) interval="${2:-}"; shift 2 ;;
+      --use-api-key) use_api_key=1; shift ;;
+      --force-oauth-unverified) force_oauth=1; shift ;;
       *) die "install: unknown arg '$1'" ;;
     esac
   done
@@ -772,15 +789,44 @@ cmd_install() {
   [[ -n "$workdir" ]] || die "install: --workdir PATH is required"
   [[ -d "$workdir" ]] || die "install: workdir '$workdir' does not exist"
 
+  # #1096: a launchd LaunchAgent cannot read the OAuth credential `claude`
+  # normally authenticates with — it lives in the macOS Keychain, and every
+  # documented remedy (SessionCreate, `launchctl bootstrap gui/<uid>`, both
+  # together) was tried against a real launch and both left the session
+  # logging "Not logged in · Please run /login" and exiting immediately. The
+  # verified-working unattended path is ANTHROPIC_API_KEY — a different
+  # billing/auth model, so it must be requested explicitly, never defaulted
+  # to silently. Refuse to install a supervisor that can only ever produce
+  # dead launches unless the caller either opts into that working path or
+  # explicitly acknowledges the broken one (e.g. to re-test a future macOS
+  # fix).
+  if [[ "$use_api_key" != "1" && "$force_oauth" != "1" ]]; then
+    die "install: refusing — launchd cannot read OAuth/Keychain credentials (verified in issue #1096; SessionCreate + 'launchctl bootstrap gui/\$(id -u)' both tested, both insufficient). Every launch would exit immediately with 'Not logged in'. Re-run with --use-api-key (with ANTHROPIC_API_KEY exported in this shell) for the verified-working unattended auth path — note this switches billing from your Claude subscription to API-key billing. To install the unverified OAuth path anyway (e.g. to re-test a future macOS fix), pass --force-oauth-unverified."
+  fi
+  if [[ "$use_api_key" == "1" ]]; then
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] || die "install: --use-api-key requires ANTHROPIC_API_KEY to be set in this shell's environment"
+  fi
+
   local script_abs label plist
   script_abs="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
   label=$(plist_label "$repo")
   plist=$(plist_file "$repo")
   mkdir -p "$(dirname "$plist")"
 
+  local api_key_xml=""
+  if [[ "$use_api_key" == "1" ]]; then
+    api_key_xml="        <key>ANTHROPIC_API_KEY</key>
+        <string>${ANTHROPIC_API_KEY}</string>
+"
+  fi
+
   # AbandonProcessGroup is load-bearing: without it launchd reaps the whole
   # process group when the tick exits, killing the `claude` session seconds
-  # after it launches.
+  # after it launches. SessionCreate is kept even though #1096 verified it
+  # is NOT sufficient on its own to unlock Keychain-backed OAuth — it is
+  # harmless, is the standard remedy launchd docs cite for a LaunchAgent
+  # needing a real security session, and may matter on other macOS
+  # versions or credential types.
   cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -804,13 +850,15 @@ cmd_install() {
     <true/>
     <key>AbandonProcessGroup</key>
     <true/>
+    <key>SessionCreate</key>
+    <true/>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>${PATH}</string>
         <key>HOME</key>
         <string>${HOME}</string>
-    </dict>
+${api_key_xml}    </dict>
     <key>StandardOutPath</key>
     <string>$(supervisor_dir)/launchd-$(repo_slug "$repo").out.log</string>
     <key>StandardErrorPath</key>
@@ -819,12 +867,21 @@ cmd_install() {
 </plist>
 PLIST
 
+  # The plist now carries a real secret when --use-api-key was used — lock
+  # it down to the owner, same posture as any other local credential file.
+  if [[ "$use_api_key" == "1" ]]; then
+    chmod 600 "$plist"
+  fi
+
   mkdir -p "$(supervisor_dir)"
-  launchctl unload "$plist" 2>/dev/null || true
-  if launchctl load "$plist" 2>/dev/null; then
+  launchctl bootout "$(gui_domain)/${label}" 2>/dev/null || true
+  if launchctl bootstrap "$(gui_domain)" "$plist" 2>/dev/null; then
     echo "Installed and loaded $label (every ${interval}s)."
   else
-    echo "Wrote $plist but 'launchctl load' failed — load it by hand." >&2
+    echo "Wrote $plist but 'launchctl bootstrap' failed — load it by hand." >&2
+  fi
+  if [[ "$force_oauth" == "1" ]]; then
+    echo "WARNING: installed with --force-oauth-unverified — per #1096 every launch is expected to fail with 'Not logged in' unless something about this environment differs from the verified-broken case. Watch the first launch's log before trusting this." >&2
   fi
   echo "  plist:   $plist"
   echo "  status:  $SCRIPT_NAME status --repo $repo"
@@ -841,8 +898,10 @@ cmd_uninstall() {
   done
   [[ -n "$repo" ]] || die "uninstall: --repo owner/name is required"
 
-  local plist
+  local plist label
   plist=$(plist_file "$repo")
+  label=$(plist_label "$repo")
+  launchctl bootout "$(gui_domain)/${label}" 2>/dev/null || true
   launchctl unload "$plist" 2>/dev/null || true
   rm -f "$plist"
   echo "Uninstalled $(plist_label "$repo")."

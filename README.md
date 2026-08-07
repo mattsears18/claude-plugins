@@ -344,12 +344,14 @@ Browse the [repo tree](https://github.com/mattsears18/shipyard/tree/main/plugins
 
 ```bash
 # Install a supervisor for one repo (ticks every 10 minutes by default).
-plugins/shipyard/scripts/do-work-supervisor.sh install \
-  --repo owner/name --workdir /path/to/checkout --interval 600
+ANTHROPIC_API_KEY=sk-ant-... plugins/shipyard/scripts/do-work-supervisor.sh install \
+  --repo owner/name --workdir /path/to/checkout --interval 600 --use-api-key
 
 plugins/shipyard/scripts/do-work-supervisor.sh status    --repo owner/name
 plugins/shipyard/scripts/do-work-supervisor.sh uninstall --repo owner/name
 ```
+
+> ⚠️ **Auth ([#1096](https://github.com/mattsears18/shipyard/issues/1096)).** `claude` normally authenticates via an OAuth credential in the macOS Keychain, and a launchd `LaunchAgent` cannot read it — every documented remedy was tried empirically (`SessionCreate`, `launchctl bootstrap gui/<uid>`, both together) and every launched session still failed immediately with `Not logged in`. `install` therefore **refuses by default** and requires `--use-api-key` (with `ANTHROPIC_API_KEY` exported in the installing shell) — the verified-working unattended path, embedded into the plist and locked to `600`. This switches billing from your Claude subscription to API-key billing, so it is never defaulted silently. To install anyway against a future macOS fix, pass `--force-oauth-unverified` and watch the first launch's log before trusting it.
 
 Try a tick by hand first — `tick --dry-run` runs every guard and prints the verdict without launching anything:
 

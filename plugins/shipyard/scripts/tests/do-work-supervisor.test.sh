@@ -436,21 +436,72 @@ assert_contains "$out" "breaker:" "status reports breaker state"
 teardown_env
 
 # ==========================================================================
-echo "== install writes a correct launchd plist"
+echo "== install refuses by default (#1096: OAuth cannot be read under launchd)"
 # ==========================================================================
 setup_env
 fake_home="$TMP/fakehome"
 mkdir -p "$fake_home"
 out=$(HOME="$fake_home" bash "$script" install --repo "$REPO" \
-        --workdir "$TMP/workdir" --interval 900 2>&1)
+        --workdir "$TMP/workdir" --interval 900 2>&1); rc=$?
+assert_equals "$rc" "64" "install without --use-api-key/--force-oauth-unverified exits 64"
+assert_contains "$out" "1096" "refusal cites issue #1096"
+assert_contains "$out" "--use-api-key" "refusal names the working path"
+plist="$fake_home/Library/LaunchAgents/com.shipyard.do-work-supervisor.${SLUG}.plist"
+assert_equals "$([[ -f "$plist" ]] && echo yes || echo no)" "no" \
+  "no plist is written when install refuses"
+teardown_env
+
+# ==========================================================================
+echo "== install --use-api-key requires ANTHROPIC_API_KEY"
+# ==========================================================================
+setup_env
+fake_home="$TMP/fakehome"
+mkdir -p "$fake_home"
+out=$(HOME="$fake_home" env -u ANTHROPIC_API_KEY bash "$script" install --repo "$REPO" \
+        --workdir "$TMP/workdir" --use-api-key 2>&1); rc=$?
+assert_equals "$rc" "64" "--use-api-key without ANTHROPIC_API_KEY exits 64"
+assert_contains "$out" "ANTHROPIC_API_KEY" "error names the missing env var"
+teardown_env
+
+# ==========================================================================
+echo "== install --use-api-key writes a correct, locked-down launchd plist"
+# ==========================================================================
+setup_env
+fake_home="$TMP/fakehome"
+mkdir -p "$fake_home"
+out=$(HOME="$fake_home" ANTHROPIC_API_KEY="NOT-A-REAL-SECRET-TEST-FIXTURE-VALUE-0000" \
+        bash "$script" install --repo "$REPO" \
+        --workdir "$TMP/workdir" --interval 900 --use-api-key 2>&1)
 plist="$fake_home/Library/LaunchAgents/com.shipyard.do-work-supervisor.${SLUG}.plist"
 assert_equals "$([[ -f "$plist" ]] && echo yes || echo no)" "yes" "plist is written"
 plist_body=$(cat "$plist" 2>/dev/null || true)
 assert_contains "$plist_body" "<key>AbandonProcessGroup</key>" \
   "plist sets AbandonProcessGroup (without it launchd reaps the session on tick exit)"
+assert_contains "$plist_body" "<key>SessionCreate</key>" \
+  "plist sets SessionCreate (harmless, standard launchd Keychain-session remedy)"
 assert_contains "$plist_body" "<integer>900</integer>" "plist honours --interval"
 assert_contains "$plist_body" "tick" "plist invokes the tick subcommand"
 assert_contains "$plist_body" "$REPO" "plist pins the repo"
+assert_contains "$plist_body" "NOT-A-REAL-SECRET-TEST-FIXTURE-VALUE-0000" \
+  "plist embeds ANTHROPIC_API_KEY — the verified-working unattended auth path"
+perm=$(stat -f %Lp "$plist" 2>/dev/null || stat -c %a "$plist" 2>/dev/null || echo "")
+assert_equals "$perm" "600" "plist carrying a secret is locked down to the owner"
+teardown_env
+
+# ==========================================================================
+echo "== install --force-oauth-unverified writes a plist without a key"
+# ==========================================================================
+setup_env
+fake_home="$TMP/fakehome"
+mkdir -p "$fake_home"
+out=$(HOME="$fake_home" bash "$script" install --repo "$REPO" \
+        --workdir "$TMP/workdir" --force-oauth-unverified 2>&1)
+plist="$fake_home/Library/LaunchAgents/com.shipyard.do-work-supervisor.${SLUG}.plist"
+assert_equals "$([[ -f "$plist" ]] && echo yes || echo no)" "yes" \
+  "--force-oauth-unverified writes a plist despite the unverified auth path"
+assert_not_contains "$(cat "$plist" 2>/dev/null)" "ANTHROPIC_API_KEY" \
+  "plist carries no API key on the forced-OAuth path"
+assert_contains "$out" "1096" "forced-OAuth install still warns, citing #1096"
 teardown_env
 
 # ==========================================================================
