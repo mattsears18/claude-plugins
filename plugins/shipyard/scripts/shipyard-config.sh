@@ -218,6 +218,9 @@ DEFAULTS_JQ='{
   "worktree_reap": {
     "max_per_session": 10,
     "warn_threshold": 20
+  },
+  "my_turn": {
+    "stale_undispatched_days": 7
   }
 }'
 
