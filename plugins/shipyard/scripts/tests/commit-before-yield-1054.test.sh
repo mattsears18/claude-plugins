@@ -155,9 +155,14 @@ assert_contains "$issue_work_path" "Return synchronously — never arm a backgro
 assert_contains "$issue_work_path" "Your terminal state was reached at \"local gates green, PR opened, auto-merge armed\"" \
   "issue-work.md still carries its own #707 cross-reference"
 
-# --- Both always-loaded files stay under their spec-size-budget.test.sh ceilings ---
-assert_under "$skill_path" 57000 "SKILL.md stays under its 57000-byte ceiling"
-assert_under "$issue_work_path" 116000 "issue-work.md stays under its 116000-byte ceiling"
+# --- Both always-loaded files stay under their spec-size-budget.test.sh
+#     ceilings. These literals mirror spec-size-budget.test.sh's own
+#     assert_under_budget calls — that file is the canonical source for the
+#     ceiling values and their raise history; keep these two in sync with it
+#     whenever a ceiling changes there (most recently 57000 -> 58000 and
+#     116000 -> 120000 by #1088). ---
+assert_under "$skill_path" 58000 "SKILL.md stays under its 58000-byte ceiling"
+assert_under "$issue_work_path" 120000 "issue-work.md stays under its 120000-byte ceiling"
 
 # --- Orchestrator-side canned resume-message template (item 4, optional) ---
 assert_contains "$steady_state_path" "Canned resume-message template" \

@@ -1140,6 +1140,45 @@ for cmd_file in file-issue resolve-decisions eas-watch; do
   fi
 done
 
+# Issue #1088 — never disable a committed security/supply-chain control to
+# make a red check pass, and never arm auto-merge on a PR that did anyway.
+# The prohibition lives in the always-loaded SKILL.md core (reaches all seven
+# modes); the pre-arm backstop lives in the shared auto-merge.md fragment;
+# issue-work.md carries the implementation-time self-check (§4.45), the
+# step-6 pointer, the step-8 return line, and a "Don't" bullet.
+issue_work_path="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
+
+assert_contains "$skill_path" "## Never disable a committed security or supply-chain control" \
+  "SKILL.md carries the #1088 prohibition as an always-loaded core section"
+assert_contains "$skill_path" "min-release-age" \
+  "SKILL.md's #1088 prohibition names the .npmrc min-release-age instance from the repro"
+assert_contains "$skill_path" "must NOT arm auto-merge" \
+  "SKILL.md's #1088 prohibition states the no-arm backstop"
+
+assert_contains "$auto_merge_path" "0.3." \
+  "auto-merge.md carries the #1088 pre-arm policy-override check as step 0.3"
+assert_contains "$auto_merge_path" "unarmed-policy-override" \
+  "auto-merge.md's pre-arm check names the structured auto_merge value"
+assert_contains "$auto_merge_path" "needs-human-review" \
+  "auto-merge.md's pre-arm check labels the PR needs-human-review"
+
+assert_contains "$issue_work_path" "### 4.45 Never disable a committed security or supply-chain control" \
+  "issue-work.md carries the §4.45 implementation-time self-check"
+assert_contains "$issue_work_path" "blocked #<N> at implement:" \
+  "issue-work.md's §4.45 documents the blocked-return shape"
+assert_contains "$issue_work_path" "run the policy-override check" \
+  "issue-work.md step 6 points at the auto-merge.md pre-arm check before either trust branch"
+assert_contains "$issue_work_path" "auto-merge: unarmed — policy-override: <control>" \
+  "issue-work.md step 8 documents the policy-override return line"
+assert_contains "$issue_work_path" "Don't disable a committed security/supply-chain control" \
+  "issue-work.md's Don't section warns against the #1088 failure mode"
+
+assert_contains "$schema_path" "unarmed-policy-override" \
+  "worker-return.schema.json's auto_merge enum carries unarmed-policy-override"
+assert_contains "$schema_path" '"policy_override"' \
+  "worker-return.schema.json declares the policy_override field"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

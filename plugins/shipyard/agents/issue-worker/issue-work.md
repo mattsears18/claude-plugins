@@ -209,6 +209,10 @@ The orchestrator routes this bail to the **`agent-console`** label (a browser/co
 
 When in doubt between "inert declaration" and "dead config that will deploy", bail — an `agent-console` handoff with a provisioning checklist is cheap and recoverable; an auto-merged dead deploy is the harm this exists to prevent.
 
+### 4.45 Never disable a committed security or supply-chain control to make CI pass ([#1088](https://github.com/mattsears18/shipyard/issues/1088))
+
+See `shipyard:worker-preamble` § "Never disable a committed security or supply-chain control" (cross-mode prohibition) and [RATIONALE → Policy-override guard repro](issue-work-RATIONALE.md#policy-override-guard-repro-1088) (the concrete failure mode). Before any commit: does resolving the failing check require disabling a control the repo has *committed* to enforce, rather than fixing what it tests for? If yes: `blocked #<N> at implement: <control> blocks the fix — <what a human would run>`. A rare genuinely-in-scope override (see RATIONALE) still must not arm auto-merge — `auto-merge.md` step 0.3 enforces this.
+
 ### 4.5 Pre-PR-create diff sanity check
 
 Closes [#356](https://github.com/mattsears18/shipyard/issues/356) — the **phantom-merge** failure mode. A worker can reach the end of step 4 with `git status` clean (no working-tree edits, no staged changes) yet still proceed to step 5 and open a PR whose body claims substantial scope. The PR merges, the body's `Closes #N` keyword closes the linked issue, and the backlog claims work shipped — but nothing landed. See [RATIONALE → Phantom-merge repro](issue-work-RATIONALE.md#phantom-merge-repro-356) for the concrete repro that motivated this guard.
@@ -490,6 +494,8 @@ The PR is open and every mechanical guard (§5.7 / §5.8 / §5.85) has passed, b
 
 Branch on the `originating_author_trust` field the orchestrator put in your dispatch prompt. (When step 5.9 ran and returned `verified`, continue here as normal; when it returned `not-verified` you already gated the PR and returned in step 5.9 — you never reach this step.)
 
+**First — run the policy-override check.** `auto-merge.md` step 0.3 checks whether this PR required overriding a committed security control ([§4.45](#445-never-disable-a-committed-security-or-supply-chain-control-to-make-ci-pass-1088) is the ordinary-case bail; this is the backstop). If it trips: `needs-human-review`, skip straight to [step 8](#8-return)'s `unarmed — policy-override` line, regardless of `originating_author_trust`.
+
 **When `originating_author_trust == "trusted"`:**
 
 #### 6.a Run the ungated-admin-direct-merge pre-check FIRST — before any merge call ([#598](https://github.com/mattsears18/shipyard/issues/598) / [#602](https://github.com/mattsears18/shipyard/issues/602) / [#716](https://github.com/mattsears18/shipyard/issues/716))
@@ -678,6 +684,12 @@ When `originating_author_trust == "external"` and you intentionally skipped auto
 
 > `shipped #<N> via PR #<M> (auto-merge: gated — external-author origin, needs-human-review label applied, checks: <green|pending|failing>)`
 
+When `auto-merge.md` step 0.3 tripped ([#1088](https://github.com/mattsears18/shipyard/issues/1088)) → return (priority over either trust branch above):
+
+> `shipped #<N> via PR #<M> (auto-merge: unarmed — policy-override: <control>, needs-human-review label applied, checks: <green|pending|failing>)`
+
+`<control>` names the overridden control, e.g. `.npmrc min-release-age=7`.
+
 When [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851) ran (an operator-slice split dispatch — the issue does NOT close) → return, folding in the normal auto-merge/checks suffix from whichever branch above matched:
 
 > `shipped #<N> partial via PR #<M> (operator residual handed back: <agent-console|needs-human-review>, auto-merge: <enabled|gated-manual|merged-direct|merged-direct-ungated|unavailable — needs manual merge>, checks: <green|pending|failing>)`
@@ -716,6 +728,7 @@ When blocked → return:
 - **Don't close the dispatched issue when the dispatch prompt names an operator residual ([#851](https://github.com/mattsears18/shipyard/issues/851)).** An "Operator residual" Context paragraph means this PR ships only a phase-1 slice — the issue stays open for the handed-back operator/security action. Use a bare-URL reference, never `Closes`/`Fixes`/`Resolves #<N>`, and run [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851) rather than treating this as a normal resolving PR.
 - **Don't open a resolving PR, and don't implement anything beyond the narrow coverage-only exception, on a verification-slice dispatch ([#852](https://github.com/mattsears18/shipyard/issues/852), [#1044](https://github.com/mattsears18/shipyard/issues/1044)).** Run [§6.6](#66-verification-disposition-run-the-auditor-file-bugs-disposition--without-a-pr-852) instead of steps 2–6.5. Real bugs still go to a follow-up issue, never fixed inline. The sole exception (fragment step 3): a small, non-closing (`Refs #<N>`) coverage-gap PR — never a bug fix.
 - **Don't apply `agent-console`/`needs-human-review` to a deferred-slice residual that needs no human, and don't write `Closes #<N>` when a session-scoped Context-block restriction blocked part of the AC ([#986](https://github.com/mattsears18/shipyard/issues/986)).** Run [§6.7](#67-deferred-slice-disposition-hand-back-an-autonomously-workable-residual-to-a-new-issue-keep-the-issue-open-986) instead: file an ungated follow-up issue, leave `#<N>` open, no new gate label.
+- **Don't disable a committed security/supply-chain control to pass CI, and don't arm auto-merge on a PR that did anyway ([#1088](https://github.com/mattsears18/shipyard/issues/1088), [§4.45](#445-never-disable-a-committed-security-or-supply-chain-control-to-make-ci-pass-1088)).** `auto-merge.md` step 0.3 is the backstop — `needs-human-review`, never armed.
 - **Don't arm auto-merge when `originating_author_trust == "external"`.** That field is the dispatch-side auto-merge gate — defense in depth against external prompt-injection vectors riding `gh pr merge --auto` to `main` when both principal gates (author allowlist, intake auto-label) have failed simultaneously. The external branch in step 6 explicitly does NOT call `gh pr merge --auto`; it labels the PR `needs-human-review` and comments. If you see `external` and reflexively type `gh pr merge --auto` anyway because that's what you do in trusted mode, you've defeated the gate. When the dispatch prompt's trust field is missing or unparseable, do NOT blanket-default to either value — resolve the author's collaborator permission live per [step 6](#6-enable-auto-merge-gated-on-originating_author_trust) (push-capable role ⇒ trusted, non-collaborator / API failure ⇒ external). A blanket `trusted` default would auto-merge a stranger's PR; a blanket `external` default reintroduces the owner-authored false positive from [#599](https://github.com/mattsears18/shipyard/issues/599).
 - Don't force-push to a shared/main branch. Force-pushing your own feature branch is OK only if necessary (e.g., a rebase).
 - Don't disable a failing test to make checks pass. If the test is genuinely broken (not the code), comment on the PR with the evidence and return `blocked`.

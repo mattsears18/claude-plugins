@@ -175,6 +175,12 @@ You are forbidden from passing `--no-verify`, `--no-gpg-sign`, `--no-commit-hook
 
 Same rule for `git push --no-verify`. Same rule for any hook-bypass flag. The plugin's `permissions.deny` block in `plugin.json` enforces this at the harness level, but the rule applies even if the deny pattern is somehow bypassed.
 
+## Never disable a committed security or supply-chain control ([#1088](https://github.com/mattsears18/shipyard/issues/1088))
+
+`--no-verify` above is one instance of a broader class: **never disable, bypass, or override a security or supply-chain control the target repo commits**, even to clear a red required check — an `.npmrc` `min-release-age`/cooldown, an `npm audit --audit-level` gate, a lockfile-integrity setting, a git hook, `CODEOWNERS`, a required status check, or an ecosystem equivalent. A committed control blocking your fix is a `blocked:` return naming the control and what a human would run — not something to work around, even if low-risk or documented in the PR body.
+
+**A PR whose production involved such an override anyway must NOT arm auto-merge**, regardless of your own judgment. `auto-merge.md`'s pre-arm check + the `auto-merge: unarmed — policy-override: <control>` suffix route this to a human deterministically, not an out-of-band harness warning.
+
 ## `gh` JSON discipline
 
 Every `gh` call whose output you'll read MUST scope the response to the fields you actually consume — the default output is ~30 fields per issue / ~50 fields per PR, most of which the worker never reads, and each unused field is wasted tool-result tokens that ride in your context for the rest of the session. See [`gh-json-discipline.md`](./gh-json-discipline.md) for the field-scoping cookbook — which subcommands take `--json`/`--jq`, the two-pattern terseness spectrum, the common-projections table, and the default-mode / piping anti-patterns.

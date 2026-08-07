@@ -43,6 +43,20 @@
 # what's left is the deliberate, reviewed growth this ceiling exists to
 # gate, not silent compounding.
 #
+# issue-work.md's ceiling was raised 116000 -> 120000 by #1088 (2026-08-07):
+# a new mandatory (not opt-in-gated) §4.45 self-check — never disable a
+# committed security/supply-chain control to make CI pass — needed
+# touchpoints at four spots: the §4.45 section itself, a step-6 pointer run
+# before either trust branch, a step-8 return line for the new
+# `auto-merge: unarmed — policy-override` outcome, and a Don't bullet.
+# Because the check applies on every dispatch (unlike §6.5/§6.6/§6.7, which
+# open with "skip unless this Context paragraph is present"), it couldn't be
+# reduced to a trigger-and-pointer stub the way those were — the rule itself
+# has to be inline for a worker to internalize it during implementation, not
+# just discoverable when a rare condition fires. The repro and the narrow
+# override carve-out moved to issue-work-RATIONALE.md (uncapped); what's
+# left here is already trimmed to the terseness of the #851/#852/#986 stubs.
+#
 # skills/worker-preamble/SKILL.md's ceiling was LOWERED 68000 -> 57000 by
 # #1012 (2026-07-31), the follow-on tail to #980/#1011: the same thin-core +
 # on-demand-fragments pattern applied to issue-work.md by #1011 was applied
@@ -59,6 +73,16 @@
 # behind so no anchor reference broke and no rule lost reachability. Actual
 # size dropped 61394 -> ~51555 bytes (-16%); the new ceiling carries the
 # same ~10-12% headroom convention as every other row in this file.
+#
+# skills/worker-preamble/SKILL.md's ceiling was raised 57000 -> 58000 by
+# #1088 (2026-08-07): a new "Never disable a committed security or
+# supply-chain control" prohibition, always-loaded so it reaches all seven
+# worker modes per the originating issue's own ask — the reason it can't be
+# pushed to an on-demand fragment the way most growth here is. Trimmed twice
+# (once to the terseness of the "Never `--no-verify`" section immediately
+# above it, once more after that still didn't fit) before touching this
+# ceiling at all; the repro and full mechanism live in auto-merge.md and
+# issue-work-RATIONALE.md (both uncapped), not duplicated here.
 #
 # Run with:
 #   bash plugins/shipyard/scripts/tests/spec-size-budget.test.sh
@@ -104,12 +128,12 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  116000 \
+  120000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  57000 \
+  58000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
