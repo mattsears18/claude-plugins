@@ -34,7 +34,7 @@ Pairs with [`/shipyard:do-work`](./do-work.md) — that one is the agent-driven 
 - **--repo owner/repo** (optional, default: cwd's repo via `gh repo view --json nameWithOwner -q .nameWithOwner`). If not in a repo, ask via `AskUserQuestion`.
 - **--all** (optional, default off): render the **full ranked list** as a static, non-interactive snapshot instead of walking the queue. Without this flag (and without an explicit `--limit N > 1`), the command runs the **interactive advancing walkthrough** — it walks you through the human-only queue one item at a time, advancing until it's empty (see [Walkthrough mode](#walkthrough-mode-default)). Use `--all` when you want to *see* the whole human-blocked backlog at a glance without being walked through it. In `--chrome-prompt` mode, mirrors this same single-vs-all behavior: without `--all`, the prompt covers only the #1 action; with `--all`, the prompt covers all human-blocked actions batched into a single extension prompt.
 - **--limit N** (optional, default `25` *when the list renders*): cap the printed list at N items. Only meaningful in list mode — i.e. when `--all` is passed, or when `--limit N` is given with `N > 1` (which itself opts into list-snapshot mode). `--limit 1` surfaces only the top-ranked item as a one-shot snapshot (no advancing walkthrough). Items beyond the cap are summarized as `… and <K> more (rerun with --limit <K+N> to see all)`. In `--chrome-prompt` mode, `--limit` caps the number of actions included in the batched prompt when combined with `--all`.
-- **--chrome-prompt** (optional, default off): switch into **chrome-prompt mode** — the entire visible output is a single copy-paste-ready prompt block suitable for the Claude for Chrome browser extension. The output is prompt-only: no walkthrough, no ranked list, no preamble. The copy region is marked with unmistakable dividers. After the prompt block, a clearly-separated section lists anything that cannot be done by the extension or by Claude (manual/external steps, things needing maintainer auth, judgment calls the user must make personally); this section is omitted entirely when empty. See [Chrome-prompt mode](#chrome-prompt-mode---chrome-prompt) for the full render spec. **Composes with `--all`**: without `--all`, the prompt is built from the #1-ranked action only; with `--all`, all human-blocked actions are batched into one prompt.
+- **--chrome-prompt** (optional, default off): switch into **chrome-prompt mode** — the entire visible output is a single copy-paste-ready prompt block suitable for the Claude for Chrome browser extension. Unlike every other mode, chrome-prompt mode's queue is the **[Chrome-completable queue filter](#chrome-completable-queue-filter)**, not the [Human-only queue filter](#human-only-queue-filter) — its consumer is a browser extension, not a human at a terminal, so it draws from `agent-console` / browser-completable items rather than human decisions ([#1092](https://github.com/mattsears18/shipyard/issues/1092)). The output is prompt-only: no walkthrough, no ranked list, no preamble. The copy region is marked with unmistakable dividers. After the prompt block, a clearly-separated section lists anything that cannot be done by the extension — manual/external steps, things needing maintainer auth, and every genuine human-only decision item the queue itself excludes from the prompt; this section is omitted entirely when empty. See [Chrome-prompt mode](#chrome-prompt-mode---chrome-prompt) for the full render spec. **Composes with `--all`**: without `--all`, the prompt is built from the #1-ranked *browser-completable* action only; with `--all`, all browser-completable actions are batched into one prompt (human-only items still populate the trailing "can't be automated" section either way).
 
 **Mode resolution.** The command runs in one of three modes:
 
@@ -42,7 +42,7 @@ Pairs with [`/shipyard:do-work`](./do-work.md) — that one is the agent-driven 
 - **List-snapshot mode** — `--all` is present, OR `--limit N` is given with `N > 1`, AND `--chrome-prompt` is NOT present. Print the full ranked list as a static snapshot (capped at `--limit`, default `25`), no walkthrough. `--all` with no `--limit` shows every item. Use this to *eyeball* the human-blocked backlog without being walked through it.
 - **Chrome-prompt mode** — `--chrome-prompt` is present. The entire output is a single copy-paste-ready prompt block (see [Chrome-prompt mode](#chrome-prompt-mode---chrome-prompt)). `--all` and `--limit` still govern how many actions are included in the prompt, but the outer render is always prompt-only.
 
-`--all` and `--limit` compose within list-snapshot and chrome-prompt modes: `--chrome-prompt --all --limit 10` builds a batched chrome-prompt covering the top 10 human-blocked actions. In `--limit 1` snapshot mode and chrome-prompt-without-`--all` mode, `--limit` has no effect (only one item is surfaced).
+`--all` and `--limit` compose within list-snapshot and chrome-prompt modes: `--all --limit 10` (list-snapshot) builds a static top-10 human-blocked list; `--chrome-prompt --all --limit 10` builds a batched chrome-prompt covering the top 10 *browser-completable* actions (per the [Chrome-completable queue filter](#chrome-completable-queue-filter) — a different queue than list-snapshot's). In `--limit 1` snapshot mode and chrome-prompt-without-`--all` mode, `--limit` has no effect (only one item is surfaced).
 
 ## Setup
 
@@ -419,7 +419,18 @@ This pointer is the *only* trace of operator items in `/my-turn` output. It rend
 
 When `--chrome-prompt` is present, the **entire visible output** is a single copy-paste-ready prompt block. Nothing appears above the opening divider line and nothing appears below the closing divider line except the optional "can't be automated" section. The user highlights from the first divider line to the last, pastes the whole thing into the Claude for Chrome browser extension, and the extension acts — no further reading or interpretation required.
 
-**Survey, the [Human-only queue filter](#human-only-queue-filter), and ranking run identically.** The same passes A–C run, the queue is filtered to human-only items, the same priority tiers and leverage scores apply, and `--all` / `--limit` govern which actions are included (top-1 without `--all`; all ranked items with `--all`, capped at `--limit`). The only difference is the render — chrome-prompt mode emits a one-shot prompt, not an advancing walkthrough.
+**Survey and ranking run identically; the queue filter is inverted, not shared** ([#1092](https://github.com/mattsears18/shipyard/issues/1092)). The same passes A–C run, and the same priority tiers and leverage scores compute over the results — but chrome-prompt mode's *consumer* is not a human at a terminal, it's the Claude for Chrome browser extension pasted into a live session. The [Human-only queue filter](#human-only-queue-filter) exists to hand a human only the items *they* must decide or judge — it deliberately drops everything `/do-work`'s browser-completable operator layer can drive (`agent-console` items, per the [Pass B bucket](#pass-b--open-issues)). That's exactly backwards for an audience that IS a browser extension: an `agent-console` item (close a superseded PR, flip a non-security console toggle, take a `console-action`) is precisely what the extension can navigate, click, and type its way through; a `needs-human-review` decision is precisely what it cannot. So chrome-prompt mode runs the **[Chrome-completable queue filter](#chrome-completable-queue-filter)** below in place of the Human-only queue filter — everything else (survey, ranking, `--all` / `--limit` governing how many actions are included: top-1 without `--all`; all ranked browser-completable items with `--all`, capped at `--limit`) is unchanged. See "Distinction from `/do-work`" below for how this composes with the agent-driven operator phase that does the equivalent work directly.
+
+#### Chrome-completable queue filter
+
+The inverse of the [Human-only queue filter](#human-only-queue-filter), applied only in chrome-prompt mode:
+
+- **Include in the prompt body** — issues carrying the `agent-console` label (or the legacy `needs-operator` name, recognized identically during the [#995](https://github.com/mattsears18/shipyard/issues/995) migration window) whose action is a mechanical navigate/click/type step: close a superseded PR, merge a ready PR, flip a non-security console toggle, take a `console-action`, post an unambiguous reply. These are the same items `/do-work`'s operator layer would drive itself via MCP ([`operate.md`](./do-work/operate.md)); the extension drives the identical class of action through the user's own live browser session instead.
+- **Exclude — route to the ["can't be automated" section](#chrome-prompt-mode---chrome-prompt) instead** — two disjoint classes, neither belongs in the pasted prompt:
+  1. **Every item that survives the ordinary [Human-only queue filter](#human-only-queue-filter) unchanged** — `needs-human-review` decisions, disposition calls, PRs awaiting `$ME`'s review, `blocked:ci`, unanswered questions, and the housekeeping signals. These need the user's own judgment; an extension acting on the user's behalf can't supply that.
+  2. **A credential- or account-creation-shaped `agent-console` item.** Detect it from the same Pass B `comments` projection already fetched (zero extra `gh` calls): the newest trimmed comment contains the `<!-- do-work-external-dependency -->` marker, or the substring "provisioning" (case-insensitive) — the two shapes [`issue-work.md` §4.4](../agents/issue-worker/issue-work.md#44-external-provisioning-guard--dont-commit-dead-config-for-an-unprovisioned-service-628)'s worker-side bail and the scope-preflight `external-dependency` defer both produce for "a real secret/account doesn't exist yet." Typing or pasting a real credential value, or creating a new account, is a harness-level prohibition that binds the extension exactly as it binds `/do-work`'s own MCP-driven operator phase ([#991](https://github.com/mattsears18/shipyard/issues/991); see this repo's `CLAUDE.md` § "Standing grant for authenticated browser work" for the same absolute limits — never a password, never a secret value, never a new account). Carrying the `agent-console` label is necessary but not sufficient for inclusion — this narrower check runs first and wins.
+
+On a repo where every human-blocked item is a decision and every operator item is a plain `agent-console` action (none provisioning-shaped), the prompt body is non-empty — it's built entirely from that operator set.
 
 **Prompt construction.** The body of the pasted prompt is self-contained instructions telling the extension what to do — concrete enough that the extension can act without re-deriving anything:
 
@@ -446,28 +457,44 @@ Rules for each layout element:
 
 - **Divider lines.** Use exactly `──────────────── COPY THE PROMPT BELOW ────────────────` and `──────────────── COPY THE PROMPT ABOVE ────────────────` (em-dashes `─`, U+2500, repeated). The labels are capitalised; the dashes form a full-width visual rule. One blank line on each interior side of the dividers.
 - **Prompt body.** Self-contained, complete instructions. No meta-commentary ("here is what you should do"), no output-format instructions to the reader — write to the extension as if it were receiving the instructions directly. Use the present-tense imperative ("Go to ...", "Open ...", "Click ...", "Review ..."). Include all URLs. For decision-gated items, enumerate the specific decisions to make and any context the extension needs to recommend or resolve them.
-- **"Can't be automated" section.** Appears after the closing divider, separated by one blank line. The `⚠️  Can't be automated (do these yourself):` header is followed by a bullet list of items that are out of reach for the browser extension: actions requiring physical device access, external-service credentials the extension doesn't have, real-world coordination with a third party, or judgment calls explicitly flagged as needing the user's personal decision. **Omit the section entirely** (header and all) when there are no such items — do not emit an empty section or a "none" bullet. The classification heuristic: an action is browser-doable if it consists of navigation + clicking + typing in a browser tab using the user's session; it is NOT browser-doable if it requires out-of-browser credentials, a native device (TestFlight, on-device build), a third party's manual action, or a purely personal judgment the user must own.
-- **Empty state in chrome-prompt mode.** When passes A–C return zero items, emit the same empty-state text as normal mode but wrap it in the dividers so the output shape is consistent:
+- **"Can't be automated" section.** Appears after the closing divider, separated by one blank line. Populated by every item the [Chrome-completable queue filter](#chrome-completable-queue-filter) excluded from the prompt body: the ordinary human-only queue (decisions, disposition calls, PR review, `blocked:ci`, unanswered questions, housekeeping) plus any credential-/account-creation-shaped `agent-console` item. Render one bullet per item using the same imperative-action + URL shape as [list-snapshot rows](#rendering-rules), capped at `--limit` (default 25) with the same `… and <K> more (rerun with --limit <K+N> to see all)` overflow line list-snapshot mode uses when the cap is exceeded. The `⚠️  Can't be automated (do these yourself):` header introduces it. **Omit the section entirely** (header and all) when there are no such items — do not emit an empty section or a "none" bullet. The classification heuristic restates the filter's exclusion rule: an action is browser-doable if it consists of navigation + clicking + typing in a browser tab using the user's session; it is NOT browser-doable if it requires out-of-browser credentials, a native device (TestFlight, on-device build), a third party's manual action, or a purely personal judgment the user must own.
+- **Empty state in chrome-prompt mode.** Two distinct cases, since the [Chrome-completable queue filter](#chrome-completable-queue-filter) can be empty while the ordinary human-only queue isn't (or vice versa):
 
-  ```
-                                                 (one blank line)
-  ──────────────── COPY THE PROMPT BELOW ────────────────
-                                                 (one blank line)
-  Nothing on your plate — backlog is clean. No actions for the Chrome extension right now.
-                                                 (one blank line)
-  ──────────────── COPY THE PROMPT ABOVE ────────────────
-  ```
+  - **Nothing at all** — both the Chrome-completable set and the ordinary human-only queue are empty. Emit the same empty-state text as normal mode, wrapped in the dividers so the output shape is consistent:
+
+    ```
+                                                   (one blank line)
+    ──────────────── COPY THE PROMPT BELOW ────────────────
+                                                   (one blank line)
+    Nothing on your plate — backlog is clean. No actions for the Chrome extension right now.
+                                                   (one blank line)
+    ──────────────── COPY THE PROMPT ABOVE ────────────────
+    ```
+
+  - **Nothing browser-completable, but human-only items remain** — the prompt body says so explicitly instead of emitting a divider block with nothing for the extension to act on, and the "can't be automated" section carries the real items:
+
+    ```
+                                                   (one blank line)
+    ──────────────── COPY THE PROMPT BELOW ────────────────
+                                                   (one blank line)
+    Nothing for the Chrome extension to do right now — every open item needs your own judgment. Run /my-turn (without --chrome-prompt) to walk them.
+                                                   (one blank line)
+    ──────────────── COPY THE PROMPT ABOVE ────────────────
+
+    ⚠️  Can't be automated (do these yourself):
+    - <item>
+    ```
 
 **What chrome-prompt mode does NOT emit:**
 
 - No `→ Now:` prefix or directive, and no interactive walkthrough — chrome-prompt mode is a one-shot text emission, not the phased run.
 - No ranked numbered list above or outside the dividers.
 - No tier headers, signal labels, or remainder footer.
-- No operator pointer line (`agent-console` items are filtered out before the prompt is built; the chrome-prompt output is for the extension to act on, not a terminal nudge).
+- No operator pointer line. Under the [Chrome-completable queue filter](#chrome-completable-queue-filter), `agent-console` items are the prompt's primary payload, not something filtered out — the [operator pointer line](#operator-pointer-line) is a walkthrough-mode / list-snapshot-mode-only affordance for a human reader; it has no role in a prompt the extension consumes directly.
 - No inline decision walkthrough (the `/shipyard:resolve-decisions` flow is a terminal-interactive affordance; the chrome-prompt output goes to the extension, not into an interactive session).
 - No structural footer line (`<N> blocked:ci PRs`).
 
-**Distinction from `/do-work`.** The `--chrome-prompt` flag is text-emission only: Claude emits a prompt string and stops. No `chrome-devtools-mcp` calls, no browser automation, no MCP connection. The Claude for Chrome extension is a separate agent that receives the text and operates independently. `/do-work` (operator-inclusive by default) covers the complementary mode where Claude Code itself drives the browser via MCP — do not conflate the two.
+**Distinction from `/do-work`.** The `--chrome-prompt` flag is text-emission only: Claude emits a prompt string and stops. No `chrome-devtools-mcp` calls, no browser automation, no MCP connection. The Claude for Chrome extension is a separate agent that receives the text and operates independently. `/do-work` (operator-inclusive by default) covers the complementary mode where Claude Code itself drives the browser via MCP — do not conflate the two. **Both target the identical [Chrome-completable set](#chrome-completable-queue-filter)** — the same `agent-console` items `/do-work`'s proactive sweep would enqueue and drive directly are what `--chrome-prompt` hands to the extension as text; the only difference is *who* drives the browser (Claude Code itself vs. the user pasting into the extension), never *which* items are in scope. This is the coherent story the [Chrome-completable queue filter](#chrome-completable-queue-filter) buys: before this fix, the two commands nominally overlapped on the same class of work while `--chrome-prompt` silently targeted the opposite queue.
 
 ### Termination contract
 
