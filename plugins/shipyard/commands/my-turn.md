@@ -132,23 +132,14 @@ gh api repos/<owner/repo>/pulls/<M>/comments --jq '.[] | {id, user: .user.login,
 
 Surface the PR if there's an unresolved review comment thread where the last comment is from a non-`$ME` author. (v1 heuristic — GitHub's API doesn't expose the `resolved` flag on classic review comments; "last commenter not `$ME`" is a reasonable proxy.)
 
-### Pass D — Recent failed CI runs on the default branch
-
-```bash
-DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-gh run list --repo <owner/repo> --branch "$DEFAULT_BRANCH" --status completed --limit 5 \
-  --json conclusion,databaseId,url,createdAt,headSha,workflowName
-```
-
-If the most recent completed run on default branch is `failure` / `cancelled` / `timed_out` AND no `/shipyard:do-work` `fix-main-ci` divert has landed a PR for it yet (check open PRs for `fix-main-ci-<short-sha>` branch name), surface as a P0 item. The orchestrator should have caught this on its next refresh, but a long-idle repo may have a red main that's sitting unaddressed.
-
 ## Human-only queue filter
 
 After the passes collect candidates and **before** ranking, drop everything that isn't genuinely blocked on a *human* — anything `/shipyard:do-work` can complete on its own ([#635](https://github.com/mattsears18/shipyard/issues/635)). This is the filter that makes `/my-turn`'s queue mean *"only what needs you, the person"* rather than *"everything not yet done."* Under the three-command division of labor:
 
 - **`/do-work` owns code work** — issues an autonomous code worker can implement. These never enter `/my-turn`'s queue in the first place (a workable, ungated issue is `/do-work`'s; the passes above already only collect human-blocked signals), and the [Don't](#dont) rules keep them out.
 - **`/do-work` owns browser-completable operator actions** — `agent-console` items, and any item whose next step is a mechanical browser/console action Claude can drive in the user's real Chrome (close a superseded PR, paste a CI secret, toggle a non-security console setting, post an unambiguous reply). **Exclude these from the walkthrough queue.** They are surfaced — if any exist — only as a single one-line pointer (see [the operator pointer](#operator-pointer-line) in Output), never walked.
-- **`/my-turn` owns genuine human-required items** — and *only* these survive into the ranked queue: a `needs-human-review` decision/judgment call (design call, product/schema decision, epic-decomposition handoff a human must do by hand, an agent-refuse a human must adjudicate, external-author trust review), a `needs-triage` issue **only when `triage.investigate_dispatch: false`** (under the default it's `/do-work`'s, dispatched via investigate mode — see the Pass B bucket above and [#1077](https://github.com/mattsears18/shipyard/issues/1077)), a PR awaiting `$ME`'s review, an unanswered question / `@$ME` ping, a `blocked:ci` PR needing human eyes, red main with no auto-fix in flight, and the housekeeping signals (stale draft, DIRTY PR, `CHANGES_REQUESTED`, stale assigned-to-other issues, stale never-claimed-by-`/do-work` own-authored issues). These are the things no automation can finish for the user.
+- **`/do-work` owns CI recovery on the default branch** — a dedicated `fix-main-ci` worker mode exists exactly for red main / failing CI with no fix-main-ci PR open. That's `/do-work`'s condition to catch on its own; it never enters `/my-turn`'s queue.
+- **`/my-turn` owns genuine human-required items** — and *only* these survive into the ranked queue: a `needs-human-review` decision/judgment call (design call, product/schema decision, epic-decomposition handoff a human must do by hand, an agent-refuse a human must adjudicate, external-author trust review), a `needs-triage` issue **only when `triage.investigate_dispatch: false`** (under the default it's `/do-work`'s, dispatched via investigate mode — see the Pass B bucket above and [#1077](https://github.com/mattsears18/shipyard/issues/1077)), a PR awaiting `$ME`'s review, an unanswered question / `@$ME` ping, a `blocked:ci` PR needing human eyes, and the housekeeping signals (stale draft, DIRTY PR, `CHANGES_REQUESTED`, stale assigned-to-other issues, stale never-claimed-by-`/do-work` own-authored issues). These are the things no automation can finish for the user.
 
 **The discriminator is "can `/do-work` complete it without a human decision?"** If yes → it's the operator layer's, filtered out (pointer only). If it needs a person to *decide* or *judge* something no automation can — it stays. A `needs-human-review` item that is *also* a security/access-control console toggle (which the operator layer hands back rather than drives, per [#626](https://github.com/mattsears18/shipyard/issues/626)) still needs the human, so it stays in the queue.
 
@@ -166,7 +157,6 @@ Ranking runs over the **human-only candidates that survive the [Human-only queue
   - PRs awaiting `$ME`'s review (any age) — `$ME` is literally what's stopping merge
   - Issues with `needs-human-review` label — `/shipyard:do-work` is skipping them (this now includes design-gated issues — see the Pass B bucket above)
   - Issues with `needs-triage`, only when `triage.investigate_dispatch: false` ([#1077](https://github.com/mattsears18/shipyard/issues/1077)) — same "blocked on a human, `/do-work` won't touch it" shape as `needs-human-review` above (see the Pass B bucket above); absent under the default config
-  - Red main / failing CI on default branch with no `fix-main-ci` PR open
 
 - **P1 — decisions**
   - PRs with `blocked:ci` (3-attempt orchestrator fix-loop exhausted, needs human eyes)
@@ -188,7 +178,7 @@ Ranking runs over the **human-only candidates that survive the [Human-only queue
 
 Within each tier, sort by a **leverage score descending** (highest-leverage first), and break ties by `createdAt` ascending (oldest first). **Leverage is the primary within-tier key; age is only the tie-breaker.** This is the fix for [#565](https://github.com/mattsears18/shipyard/issues/565): the old flat `createdAt`-ascending secondary sort made the *stalest* item the head of the queue, which on a P0 tier dominated by long-lived `needs-human-review` issues regularly surfaced an auto-undecomposable epic — the *least* actionable item — first, directly contradicting the command's "highest-leverage thing blocked on you" promise. Oldest-first is a reasonable *tie-breaker*, but it is not a *leverage* signal, and the order the secondary sort produces is the order the [walkthrough](#walkthrough-mode-default) advances through (and the one item a `--limit 1` snapshot renders).
 
-**The leverage score is derived entirely from signals the survey passes A–D already collect** — no new `gh` calls, no new round-trips. Higher score = higher leverage = a human action that unblocks the most downstream work for the least effort. Note the operator-console class (paste a CI secret, flip a provider toggle) is no longer scored here at all — it's filtered out by the [Human-only queue filter](#human-only-queue-filter) as `/do-work`'s work. Rank within a tier by this order (4 = highest leverage, 1 = lowest):
+**The leverage score is derived entirely from signals the survey passes A–C already collect** — no new `gh` calls, no new round-trips. Higher score = higher leverage = a human action that unblocks the most downstream work for the least effort. Note the operator-console class (paste a CI secret, flip a provider toggle) is no longer scored here at all — it's filtered out by the [Human-only queue filter](#human-only-queue-filter) as `/do-work`'s work. Rank within a tier by this order (4 = highest leverage, 1 = lowest):
 
 1. **Score 4 — pure-decision item.** The human action is a single decision that flips the item to dispatch-eligible / mergeable: a `needs-human-review` issue whose body enumerates product / schema / design questions with **no** external-console, on-device, or external-dependency requirement; an external-author trust-review issue (the `<!-- do-work-untrusted-author-review -->` sentinel — the decision is vouch / triage-by-hand / close, a single templated call, per [#1079](https://github.com/mattsears18/shipyard/issues/1079)); a `needs-triage` issue (only when `triage.investigate_dispatch: false`) needing just a priority + type label to become dispatch-eligible; a PR awaiting `$ME`'s review; an issue where the last comment is a direct question or `@$ME` ping awaiting a one-line answer. One human call converts the item to workable-by-`/do-work` (or merges it) — the highest leverage per unit of effort, so these float to the top of their tier.
 2. **Score 3 — quick human action.** A bounded, fast human step that isn't a pure decision but that no automation can take for the user: reply to a review comment thread with a substantive answer, make a small judgment call documented inline, delete a stale branch or flip a GitHub setting that the operator layer was unable to drive (e.g. a security/access-control toggle the operator layer hands back per [#626](https://github.com/mattsears18/shipyard/issues/626)). Bounded and unblocking, slightly slower than a one-line decision. (Pure mechanical operator-console actions are NOT here — they're the operator layer's and filtered out.)
@@ -234,7 +224,7 @@ So: **collect every answer with nothing in between, then act.**
 **Partition the ranked human-only queue** into two disjoint sets:
 
 - **Decision-gated items** — leverage-score-4 pure-decision `needs-human-review` issues with answerable enumerated decisions (see [Decision-gated walkthrough](#decision-gated-walkthrough) for the exact trigger surface). These are Phase 1's.
-- **Everything else** — PRs awaiting review, unanswered questions, `blocked:ci`, red main, epic-decomposition handoffs, housekeeping. These are **set aside untouched** for [Phase 3](#phase-3--walk-the-rest).
+- **Everything else** — PRs awaiting review, unanswered questions, `blocked:ci`, epic-decomposition handoffs, housekeeping. These are **set aside untouched** for [Phase 3](#phase-3--walk-the-rest).
 
 Then, **before asking anything**, run **one bulk context pass** that gathers everything the whole collect run will need: every decision-gated issue's body and comment thread, and the codebase grounding behind *all* the recommendations. Doing this once up front — rather than per-decision at ask-time — is what removes the wait between questions. This pass **may fan out parallel read-only research agents** (see the narrowed no-agent rule in [Don't](#dont)); it performs no mutation of any kind.
 
@@ -265,7 +255,7 @@ Now walk the non-decision items set aside in Phase 1 — **one at a time, advanc
 2. **Walk it.**
    - **PR awaiting `$ME`'s review** → surface the PR URL and the diff summary, and prompt the user to review; when they've approved / requested changes, the item is done.
    - **Unanswered question / `@$ME` ping** → surface the question and the thread URL; the user posts their reply (or asks Claude to draft one for them to send) — `/my-turn` does not post on the user's behalf unless they direct it as part of the walkthrough.
-   - **`blocked:ci` PR / red main with no fix in flight / epic to decompose by hand / housekeeping (stale draft, DIRTY, `CHANGES_REQUESTED`)** → surface the concrete next step and the URL, and point at the dedicated command where one applies (`/shipyard:decompose-epic` for a mechanically-shardable epic, a manual investigation for `blocked:ci`). The user acts; the item is done when they say so.
+   - **`blocked:ci` PR / epic to decompose by hand / housekeeping (stale draft, DIRTY, `CHANGES_REQUESTED`)** → surface the concrete next step and the URL, and point at the dedicated command where one applies (`/shipyard:decompose-epic` for a mechanically-shardable epic, a manual investigation for `blocked:ci`). The user acts; the item is done when they say so.
 3. **Confirm done, then advance.** When the user signals the current item is handled (submitted the review, posted the reply, closed the PR — or they say "skip" / "next"), **immediately advance to the next-ranked item** and repeat from step 1. Do NOT exit after one item; do NOT require the user to re-invoke the command.
 4. **Terminate when the queue is empty.** Print the [empty state](#empty-state) confirmation and stop cleanly. See [Termination contract](#termination-contract) for the exact exit conditions.
 
@@ -329,7 +319,7 @@ Print the full ranked list as a static snapshot — **no phased run, no question
 4. #161 reply to @<other-login>'s question or close if stale  <https://github.com/owner/repo/issues/161>
 5. #134 finish draft and mark ready-for-review, or close (11d stale)  <https://github.com/owner/repo/pull/134>
 
-main: green · 1 blocked:ci PR
+1 blocked:ci PR
 ```
 
 <a id="operator-pointer-line"></a>**Operator pointer line.** When the [Human-only queue filter](#human-only-queue-filter) excluded one or more `agent-console` / browser-completable items, append a single one-line pointer below the structural footer so the user knows those items exist and which command drains them (never list them individually — they aren't `/my-turn`'s work):
@@ -344,7 +334,7 @@ This pointer is the *only* trace of operator items in `/my-turn` output. It rend
 
 When `--chrome-prompt` is present, the **entire visible output** is a single copy-paste-ready prompt block. Nothing appears above the opening divider line and nothing appears below the closing divider line except the optional "can't be automated" section. The user highlights from the first divider line to the last, pastes the whole thing into the Claude for Chrome browser extension, and the extension acts — no further reading or interpretation required.
 
-**Survey, the [Human-only queue filter](#human-only-queue-filter), and ranking run identically.** The same passes A–D run, the queue is filtered to human-only items, the same priority tiers and leverage scores apply, and `--all` / `--limit` govern which actions are included (top-1 without `--all`; all ranked items with `--all`, capped at `--limit`). The only difference is the render — chrome-prompt mode emits a one-shot prompt, not an advancing walkthrough.
+**Survey, the [Human-only queue filter](#human-only-queue-filter), and ranking run identically.** The same passes A–C run, the queue is filtered to human-only items, the same priority tiers and leverage scores apply, and `--all` / `--limit` govern which actions are included (top-1 without `--all`; all ranked items with `--all`, capped at `--limit`). The only difference is the render — chrome-prompt mode emits a one-shot prompt, not an advancing walkthrough.
 
 **Prompt construction.** The body of the pasted prompt is self-contained instructions telling the extension what to do — concrete enough that the extension can act without re-deriving anything:
 
@@ -372,7 +362,7 @@ Rules for each layout element:
 - **Divider lines.** Use exactly `──────────────── COPY THE PROMPT BELOW ────────────────` and `──────────────── COPY THE PROMPT ABOVE ────────────────` (em-dashes `─`, U+2500, repeated). The labels are capitalised; the dashes form a full-width visual rule. One blank line on each interior side of the dividers.
 - **Prompt body.** Self-contained, complete instructions. No meta-commentary ("here is what you should do"), no output-format instructions to the reader — write to the extension as if it were receiving the instructions directly. Use the present-tense imperative ("Go to ...", "Open ...", "Click ...", "Review ..."). Include all URLs. For decision-gated items, enumerate the specific decisions to make and any context the extension needs to recommend or resolve them.
 - **"Can't be automated" section.** Appears after the closing divider, separated by one blank line. The `⚠️  Can't be automated (do these yourself):` header is followed by a bullet list of items that are out of reach for the browser extension: actions requiring physical device access, external-service credentials the extension doesn't have, real-world coordination with a third party, or judgment calls explicitly flagged as needing the user's personal decision. **Omit the section entirely** (header and all) when there are no such items — do not emit an empty section or a "none" bullet. The classification heuristic: an action is browser-doable if it consists of navigation + clicking + typing in a browser tab using the user's session; it is NOT browser-doable if it requires out-of-browser credentials, a native device (TestFlight, on-device build), a third party's manual action, or a purely personal judgment the user must own.
-- **Empty state in chrome-prompt mode.** When passes A–D return zero items, emit the same empty-state text as normal mode but wrap it in the dividers so the output shape is consistent:
+- **Empty state in chrome-prompt mode.** When passes A–C return zero items, emit the same empty-state text as normal mode but wrap it in the dividers so the output shape is consistent:
 
   ```
                                                  (one blank line)
@@ -390,7 +380,7 @@ Rules for each layout element:
 - No tier headers, signal labels, or remainder footer.
 - No operator pointer line (`agent-console` items are filtered out before the prompt is built; the chrome-prompt output is for the extension to act on, not a terminal nudge).
 - No inline decision walkthrough (the `/shipyard:resolve-decisions` flow is a terminal-interactive affordance; the chrome-prompt output goes to the extension, not into an interactive session).
-- No structural footer line (`main: green · ...`).
+- No structural footer line (`<N> blocked:ci PRs`).
 
 **Distinction from `/do-work`.** The `--chrome-prompt` flag is text-emission only: Claude emits a prompt string and stops. No `chrome-devtools-mcp` calls, no browser automation, no MCP connection. The Claude for Chrome extension is a separate agent that receives the text and operates independently. `/do-work` (operator-inclusive by default) covers the complementary mode where Claude Code itself drives the browser via MCP — do not conflate the two.
 
@@ -430,7 +420,7 @@ Per item — **one line by default**:
 
 **Multi-line items.** Only when the next action genuinely doesn't fit on one line *and* breaking it loses information. Follow-up lines are indented and still action-shaped (continuation of the verb), never framing or restatement.
 
-**Optional footer line** — one line, terse, at the bottom of the list. Surface only if at least one is true: red main with no `fix-main-ci` PR open (`main: red`), open `blocked:ci` PRs (`<N> blocked:ci PRs`), or a clean state worth noting (`main: green`). Skip entirely if there's nothing structural worth flagging. Never a paragraph; never a recap of items already in the list.
+**Optional footer line** — one line, terse, at the bottom of the list. Surface only if there are open `blocked:ci` PRs (`<N> blocked:ci PRs`). Skip entirely if there's nothing structural worth flagging. Never a paragraph; never a recap of items already in the list.
 
 ### Third-party console deep links
 
@@ -484,7 +474,7 @@ The ranking step still needs the underlying signals to produce the order — the
 
 ### Empty state
 
-If the human-only queue is empty — passes A–D returned zero human-only items, or the [walkthrough](#walkthrough-mode-default) just exhausted the queue — print a single friendly one-liner and exit cleanly. **Unchanged across modes** — the empty state is identical whether the queue started empty or the walkthrough drained it, and whether or not `--all` / `--limit` is passed. No banner, no multi-line prose — this is the one case where the answer to "what do I need to do" is actively "nothing," and the rendering should mirror the content. If `agent-console` items were filtered out, append the [operator pointer line](#operator-pointer-line) below it so the user knows the operator layer still has work.
+If the human-only queue is empty — passes A–C returned zero human-only items, or the [walkthrough](#walkthrough-mode-default) just exhausted the queue — print a single friendly one-liner and exit cleanly. **Unchanged across modes** — the empty state is identical whether the queue started empty or the walkthrough drained it, and whether or not `--all` / `--limit` is passed. No banner, no multi-line prose — this is the one case where the answer to "what do I need to do" is actively "nothing," and the rendering should mirror the content. If `agent-console` items were filtered out, append the [operator pointer line](#operator-pointer-line) below it so the user knows the operator layer still has work.
 
 ```
 Nothing on your plate — backlog is clean. Try /shipyard:audit to surface fresh work, or take a break.
@@ -506,7 +496,6 @@ The full survey should complete in well under 10 seconds for a backlog of ~100 P
 
 - Pass A + Pass B: two parallel `gh` calls, each ~1–2s
 - Pass C: capped at 20 per-PR follow-ups, run in parallel, ~3s total
-- Pass D: one `gh run list` call, ~1s
 
 If a backlog blows the budget, `--limit` already provides a knob; otherwise file an issue for a future v2 that uses GraphQL to collapse Passes A+B+C into one round-trip.
 
