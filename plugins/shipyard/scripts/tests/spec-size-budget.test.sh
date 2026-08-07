@@ -84,6 +84,21 @@
 # ceiling at all; the repro and full mechanism live in auto-merge.md and
 # issue-work-RATIONALE.md (both uncapped), not duplicated here.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 58000 -> 59000 by
+# #1113 (2026-08-07): a new "Auto-backgrounded verification must be awaited
+# to a terminal result" bullet, sited directly next to the #1054
+# commit-before-yield invariant it's the same family as ("don't yield in a
+# state the orchestrator can't act on") — five workers in one session ended
+# their dispatch on a non-terminal narrative ("I'll resume once it reports
+# back") instead of awaiting an auto-backgrounded test run, and a prompt-
+# level instruction telling a worker not to do this was not sufficient (one
+# worker did it anyway with that exact instruction in its own dispatch
+# prompt) — so the rule has to live in the always-loaded contract every mode
+# reads, not per-dispatch prose. Kept to one bullet, matching the terseness
+# of its four siblings in the same list; the repro detail (which issues, what
+# the workers actually returned) stays in issue #1113 rather than duplicated
+# here.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/spec-size-budget.test.sh
 
@@ -133,7 +148,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  58000 \
+  59000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
