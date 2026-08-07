@@ -436,6 +436,43 @@ if [[ -f "$cmd_path" ]]; then
     "command resolves the my_turn.disposition_call_detection config knob (#1074)"
   assert_contains "$cmd_path" "Resolve the disposition-call detection toggle" \
     "command has a dedicated Setup step resolving the disposition-call detection toggle (#1074)"
+
+  # needs-human-review provenance markers (issue #1091): the label
+  # accumulated at least 8 distinct producers, and four of them (agent
+  # refuse, design-gated, refinement fall-through, investigate/spike-mode
+  # disposition) carried no marker — /my-turn had to infer WHY an issue was
+  # gated from prose. This closed the gap by having every producing path
+  # write a distinct <!-- do-work-<provenance> --> comment marker, mirroring
+  # the existing do-work-needs-decomposition / do-work-external-dependency /
+  # do-work-human-decision-required / do-work-decision-resolved convention.
+  # These assertions guard: the command documents a marker-driven render
+  # (not prose inference), names every new marker plus the two pre-existing
+  # ones this table now also covers (untrusted-author-review,
+  # classifier-undispatchable), states the absent-marker degraded fallback,
+  # and cites the grandfathering note for the two markers that predate this
+  # table.
+  assert_contains "$cmd_path" "render from the provenance marker, not from prose inference" \
+    "command documents marker-driven needs-human-review rendering (#1091)"
+  assert_contains "$cmd_path" "do-work-refinement-fallthrough" \
+    "command recognizes the refinement fall-through provenance marker (#1091)"
+  assert_contains "$cmd_path" "do-work-legacy-needs-design" \
+    "command recognizes the legacy needs-design migration provenance marker (#1091)"
+  assert_contains "$cmd_path" "do-work-agent-refuse" \
+    "command recognizes the agent-refuse provenance marker (#1091)"
+  assert_contains "$cmd_path" "do-work-investigation-disposition" \
+    "command recognizes the investigate/spike-mode disposition provenance marker (#1091)"
+  assert_contains "$cmd_path" "do-work-untrusted-author-review" \
+    "command recognizes the external-author trust review provenance marker (#1079, now part of the #1091 table)"
+  assert_contains "$cmd_path" "do-work-classifier-undispatchable" \
+    "command recognizes the classifier-undispatchable provenance marker (#953, now part of the #1091 table)"
+  assert_contains "$cmd_path" "do-work-needs-decomposition" \
+    "command recognizes the epic-decomposition provenance marker (#519, now part of the #1091 table)"
+  assert_contains "$cmd_path" "absent marker degrades to the generic" \
+    "command states the absent-marker degraded fallback render (#1091)"
+  assert_contains "$cmd_path" "grandfathered spellings" \
+    "command explicitly grandfathers the two pre-#1091 bespoke markers rather than renaming them (#1091)"
+  assert_contains "$cmd_path" "#1091" \
+    "command cites issue #1091 for the needs-human-review provenance-marker convention"
 fi
 
 echo
