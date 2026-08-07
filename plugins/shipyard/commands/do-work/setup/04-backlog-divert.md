@@ -52,6 +52,8 @@ gh issue edit <N> --repo <owner/repo> --add-label <Px>
 
 Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preserve the human judgment that set them. Don't remove existing priority labels, and don't add a second one. Legacy `P3` labels are treated as unlabeled. See [RATIONALE → Auto-triage priority](../../do-work-RATIONALE.md#step-4--auto-triage-priority-rationale).
 
+**This filter is the normative definition of what `/do-work` dispatches** ([#1076](https://github.com/mattsears18/shipyard/issues/1076)) — [`01b-backlog-overview.md`](./01b-backlog-overview.md#2-backlog-overview)'s bucket table is a rendering of it, and [`backlog-ownership.md`](./backlog-ownership.md) is the shared bucket→owner table both are checked against, rather than a third independently-authored description of this routing.
+
 Client-side filter (in this exact order — each gate's drop reason should be logged so the [unfiltered_open_count](../steady-state.md#e-invariant-line-end-of-every-steady-state-turn) invariant token is auditable):
 
 - **Drop issues whose `author.login` (lowercased) is NOT in `trusted_authors`.** This is the dispatch-time security gate — see [step 1.7](01-repo-recovery.md#17-resolve-trusted-author-allowlist) for how the set is populated. An issue filed by a stranger on a public repo lands in step 2's `Untrusted author` bucket and never enters the workable queue, even if all the other filters pass. Belt-and-suspenders with the step-2 bucket pass: step 2 surfaces the count to the user; step 4 enforces the actual drop at dispatch time. Both read the same `trusted_authors` cache so they can never disagree.
