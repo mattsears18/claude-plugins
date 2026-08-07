@@ -1179,6 +1179,31 @@ assert_contains "$schema_path" "unarmed-policy-override" \
 assert_contains "$schema_path" '"policy_override"' \
   "worker-return.schema.json declares the policy_override field"
 
+# Issue #1113 — a worker whose verification run gets auto-backgrounded by the
+# harness must poll it to a terminal result and return one of its mode's
+# documented strings, never end its turn on a non-terminal narrative
+# ("waiting on the suite", "I'll resume once it reports back"). The rule
+# lives in the always-loaded SKILL.md core, sited next to the #1054
+# commit-before-yield invariant (same family: "don't yield in a state the
+# orchestrator can't act on"). issue-work.md carries the companion P2
+# verification-scope guidance — prefer targeted suites plus at most one full
+# sweep, rather than defaulting to the whole battery for a small change.
+assert_contains "$skill_path" \
+  "Auto-backgrounded verification must be awaited to a terminal result" \
+  "SKILL.md carries the #1113 auto-backgrounded-verification rule as an always-loaded core bullet"
+assert_contains "$skill_path" "#1113" \
+  "SKILL.md's #1113 bullet cites the originating issue"
+assert_contains "$skill_path" "never narrated past" \
+  "SKILL.md's #1113 bullet states the never-narrate-past rule"
+assert_contains "$skill_path" "only an explicit orchestrator \`SendMessage\` restarts it" \
+  "SKILL.md's #1113 bullet states the worker does not resume automatically"
+
+assert_contains "$issue_work_path" \
+  "Prefer targeted suites over the full discovered set once the suite count is large enough to risk the foreground time budget" \
+  "issue-work.md §4 carries the #1113 P2 verification-scope guidance"
+assert_contains "$issue_work_path" "**at most one** full sweep" \
+  "issue-work.md's #1113 guidance caps a full sweep at one, on top of the targeted minimum"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
