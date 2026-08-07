@@ -220,7 +220,8 @@ DEFAULTS_JQ='{
     "warn_threshold": 20
   },
   "my_turn": {
-    "stale_undispatched_days": 7
+    "stale_undispatched_days": 7,
+    "max_diagnostic_reads_per_item": 1
   }
 }'
 

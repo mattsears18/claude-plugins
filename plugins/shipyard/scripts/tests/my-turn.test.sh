@@ -324,6 +324,58 @@ if [[ -f "$cmd_path" ]]; then
     "walkthrough reuses resolve-decisions' flow rather than reinventing it (#635)"
   assert_contains "$cmd_path" "#566" \
     "command cites issue #566 for the decision walkthrough lineage"
+
+  # Per-item investigation ceiling (issue #1073): /my-turn had no bound on how
+  # deep it could drill into a single item before rendering its action, so an
+  # agent chasing a satisfying → Now: line for a high-ranked item had every
+  # incentive to root-cause it (read CI logs, drill into a run's jobs) — spend
+  # that costs the human wall-clock and burns an AskUserQuestion slot without
+  # producing a decision they can make. These assertions guard: the opening
+  # router-not-investigator promise, a Don't rule naming CI-log reading and
+  # root-causing as explicitly out of scope, a Performance-budget subsection
+  # stating a concrete post-survey tool-call ceiling (not just the survey
+  # passes' own timing budget), a specified degraded render for anything that
+  # would exceed it, the ceiling generalizing to future signals rather than
+  # today's list, Phase 1's front-loading staying scoped to decision-grounding
+  # (not license to diagnose Phase 3 items), and the config knob + its Setup
+  # resolution step.
+  assert_contains "$cmd_path" "is a router, not an investigator" \
+    "command states the router-not-investigator framing up front (#1073)"
+  assert_contains "$cmd_path" "Don't diagnose" \
+    "command's Don't section states the surface-not-diagnose rule (#1073)"
+  assert_contains "$cmd_path" "root-caus" \
+    "surface-not-diagnose rule names root-causing as explicitly out of scope (#1073)"
+  assert_contains "$cmd_path" "reading CI logs, drilling into a run's jobs" \
+    "surface-not-diagnose rule names CI-log reading and job drill-down as out of scope (#1073)"
+  assert_contains "$cmd_path" "Per-item investigation ceiling" \
+    "command documents a per-item investigation ceiling subsection (#1073)"
+  assert_contains "$cmd_path" "never more than" \
+    "per-item ceiling states a concrete post-survey tool-call bound, not just the survey-pass timing budget (#1073)"
+  assert_contains "$cmd_path" "Degraded render" \
+    "command specifies the degraded render (known signal + URL + owning command) (#1073)"
+  assert_contains "$cmd_path" "any signal added later" \
+    "per-item ceiling generalizes to future signals, not just today's list (#1073)"
+  assert_contains "$cmd_path" "not, and must never be read as, license to establish" \
+    "Phase 1's front-loading is explicitly scoped to decision-grounding, not Phase 3 diagnosis (#1073)"
+  assert_contains "$cmd_path" "max_diagnostic_reads_per_item" \
+    "command resolves the my_turn.max_diagnostic_reads_per_item config knob (#1073)"
+  assert_contains "$cmd_path" "Resolve the per-item investigation-depth ceiling" \
+    "command has a dedicated Setup step resolving the per-item ceiling (#1073)"
+  assert_contains "$cmd_path" "#1073" \
+    "command cites issue #1073 for the per-item investigation ceiling"
+
+  # Config knob declaration (issue #1073): my_turn.max_diagnostic_reads_per_item
+  # must exist in both the built-in defaults and the schema, following the
+  # precedent set by my_turn.stale_undispatched_days (#1078).
+  config_script="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
+  schema_path="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+
+  assert_file_exists "$config_script" "scripts/shipyard-config.sh exists"
+  assert_file_exists "$schema_path" "schemas/shipyard.config.schema.json exists"
+  assert_contains "$config_script" "max_diagnostic_reads_per_item" \
+    "shipyard-config.sh declares a built-in default for my_turn.max_diagnostic_reads_per_item (#1073)"
+  assert_contains "$schema_path" "max_diagnostic_reads_per_item" \
+    "shipyard.config.schema.json declares my_turn.max_diagnostic_reads_per_item (#1073)"
 fi
 
 echo
