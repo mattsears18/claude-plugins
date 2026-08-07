@@ -75,12 +75,9 @@ Environment:
 EOF
 }
 
-# Resolve the sessions directory. Mirrors session-state.sh's `session_path()`.
-sessions_dir() {
-  local home
-  home=$(shipyard_home)
-  printf '%s/sessions\n' "$home"
-}
+# `sessions_dir` and `iso_to_epoch` are provided by lib/common.sh (sourced
+# above) — do-work-supervisor.sh reads the same session files and needs
+# identical parsing, so both helpers live there rather than being copied.
 
 # Convert a number of seconds to a compact `Hh Mm Ss` or `Mm Ss` or `Ss`
 # string. Used for elapsed time + stale-age rendering.
@@ -120,30 +117,6 @@ fmt_tokens() {
     awk -v n="$n" 'BEGIN { printf "%.1fk", n / 1000 }'
   else
     awk -v n="$n" 'BEGIN { printf "%.1fM", n / 1000000 }'
-  fi
-}
-
-# Parse an ISO-8601 UTC timestamp into epoch seconds. macOS BSD date and
-# GNU date disagree on the input flag (`-j -f` vs `-d`), so try both.
-iso_to_epoch() {
-  local ts="$1"
-  if [[ -z "$ts" || "$ts" == "null" ]]; then
-    printf '0\n'
-    return
-  fi
-  # Strip the trailing Z so both `date` variants accept the format.
-  local stripped="${ts%Z}"
-  # GNU date (Linux).
-  local epoch
-  epoch=$(date -u -d "$stripped" +%s 2>/dev/null || true)
-  if [[ -z "$epoch" ]]; then
-    # BSD date (macOS).
-    epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null || true)
-  fi
-  if [[ -z "$epoch" ]]; then
-    printf '0\n'
-  else
-    printf '%s\n' "$epoch"
   fi
 }
 
