@@ -348,6 +348,10 @@ Append each number to `session_prs`, **deduped** against entries already there (
 
 > **Lazy-load when `concurrency == 1`** — same carve-out as [step 5](#5-snapshot-failing-prs). At C=1 the inherited-DIRTY snapshot can defer to the first idle turn alongside the step-5 failed-PR scan; the drain only consumes `session_prs` at end-of-session, so seeding it any time before drain entry is sufficient. When deferred, [steady-state step D's failed-PR scan](../steady-state.md#d-periodic-refresh) runs this query in the same sub-step (it's the same `@me` open-PR list, just a different projection) and seeds `session_prs` then. Set the snapshot aside at startup and let step D pick it up.
 
+### 5.75 Seed inherited draft PRs (draft-PR recovery)
+
+Closes #1069 — a draft PR is invisible to the step-5 scan (checks read SKIPPED, not red) and to 5.7's DIRTY seed (`mergeStateStatus` is usually CLEAN). Read [`04c-draft-pr-recovery.md`](./04c-draft-pr-recovery.md) now and run it in full: classify inherited `@me` draft PRs, auto-ready the safe ones, hand back the rest, record both for the summary.
+
 ### 5.8 Enforce the flake registry (chronic-flake escalation)
 
 Closes [#385](https://github.com/mattsears18/shipyard/issues/385) — phase 2 of the cross-PR flake registry. [Phase 1](#5-snapshot-failing-prs) (issue #378, `scripts/flake-registry.sh`) shipped the data layer: each `fix-checks-only` worker records a flake event when it concludes a failure was a flake, and `flake-registry.sh crossed` names which (workflow, job, test) flakes have crossed the escalation threshold (≥ `rerun_threshold` events spanning ≥ `distinct_prs_threshold` distinct PRs within `window_days`). Phase 1 deliberately stopped at "name the crossed flakes." This step is the **enforcement consumer** — it reads `crossed` and performs the three configured escalation actions so a chronic flake gets root-caused instead of silently re-run forever. Also closes [#863](https://github.com/mattsears18/shipyard/issues/863): the `--prune-window-days` flag on the `flake-enforce.sh enforce` call below is the scheduled prune this step was missing — see that call's comment for the wiring.
