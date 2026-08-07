@@ -35,6 +35,20 @@ gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after
 # the #995 migration window (see CLAUDE.md § "Renamed: needs-operator →
 # agent-console"), so an unrenamed pre-#995 label object on this repo would
 # still be found — but nothing (re-)creates it going forward.
+#
+# RETIRED — never add a `gh label create` line for any of these below; doing
+# so would recreate exactly the drift #1081 found (a folded label kept being
+# applied to fresh issues because it stayed present in the label picker):
+#   needs-refinement    — eliminated #520; GitHub label object deleted #859
+#   needs-design        — folded into needs-human-review #515
+#   needs-decomposition — folded into needs-human-review #519
+#   tracking             — folded into needs-human-review #519. The label
+#                          object itself was never deleted (unlike
+#                          needs-refinement above), so it kept landing on new
+#                          epics — #1081 additionally re-added `tracking` to
+#                          04-backlog-divert.md's dispatch-exclusion
+#                          enumeration as a defensive gate, on top of this
+#                          file's step 3d.2 sub-sweep e migration.
 ```
 
 **3b. Reap stale agent worktrees from dead Claude Code sessions.**
@@ -296,7 +310,7 @@ for n in $(jq -r '.[].number' /tmp/do-work-legacy-needs-design.json); do
 done
 ```
 
-**Sub-sweep e — legacy `needs-decomposition` / `tracking` migration ([#537](https://github.com/mattsears18/shipyard/issues/537)).** [#519](https://github.com/mattsears18/shipyard/issues/519) folded the epic-decomposition pair into `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker. Issues still carrying the pre-fold labels would otherwise pass the step-4 filter. For each legacy epic issue: add `needs-human-review`, remove the legacy label, AND post a comment containing the `<!-- do-work-needs-decomposition -->` marker (the discriminator `/decompose-epic` uses to identify epic handoffs in the broader `needs-human-review` pool). The migration is idempotent — the legacy labels are removed on the first pass.
+**Sub-sweep e — legacy `needs-decomposition` / `tracking` migration ([#537](https://github.com/mattsears18/shipyard/issues/537)).** [#519](https://github.com/mattsears18/shipyard/issues/519) folded the epic-decomposition pair into `needs-human-review` + the `<!-- do-work-needs-decomposition -->` body marker. Issues still carrying the pre-fold labels would otherwise pass the step-4 filter. For each legacy epic issue: add `needs-human-review`, remove the legacy label, AND post a comment containing the `<!-- do-work-needs-decomposition -->` marker (the discriminator `/decompose-epic` uses to identify epic handoffs in the broader `needs-human-review` pool). The migration is idempotent — the legacy labels are removed on the first pass. **This sweep only runs at the START of a session, so it doesn't catch a `tracking` label applied mid-session or by a prior session's un-migrated leftover before this sweep's next run** — [`04-backlog-divert.md`'s dispatch-exclusion filter](04-backlog-divert.md#4-fetch--rank-the-backlog) also enumerates `tracking` directly as a defensive gate ([#1081](https://github.com/mattsears18/shipyard/issues/1081)), closing that window without waiting for this sweep. The two are complementary, not redundant: this sweep does the actual cleanup (label swap + marker so `/decompose-epic` and `/my-turn` can find the issue); the dispatch-time gate only prevents premature dispatch in the meantime.
 
 ```bash
 # Collect all open issues carrying needs-decomposition OR tracking (but NOT already
