@@ -90,25 +90,30 @@ gh label create P2 --repo <owner/repo> --color FBCA04 \
 
 Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the bucket you just assigned per `shipyard:audit-rubrics` — on **every** `gh issue create` you do, alongside `--label shipyard` and your `--label "audit:<dimension>"`. This is not optional and does not depend on whether `P0`/`P1`/`P2` already exist in the target repo's label list (unlike the "apply whichever of these actually exist" guidance for `bug`/`enhancement`/etc. under "Discover labels once" above) — severity labels are auto-created exactly like `audit:<dimension>` and `needs-triage`, because the severity bucket is the filing agent's own classification, not a repo-config decision.
 
-## `needs-triage` label (when the finding needs refinement before work)
+## `needs-triage` label (symptom-shaped findings — auto-investigated, NOT "skip this")
 
-Apply `needs-triage` to any issue you file that **can't be picked up by `/do-work` as-is** because it requires human judgment before implementation. Signals:
+`needs-triage` is investigate mode's entry signal — accepted-but-not-required alongside live detection during the migration window ([#1090](https://github.com/mattsears18/shipyard/issues/1090); see [`04d-investigate-routing.md`](../../commands/do-work/setup/04d-investigate-routing.md)) — it is **not** a "human must look before `/do-work` touches this" flag. Under the default config (`triage.investigate_dispatch: true`), a trusted-author issue carrying it is dispatched to investigate mode automatically. Reserve it for findings that genuinely need investigation before a fix can be written, not for findings that need a **decision**:
 
 - Root cause is ambiguous — the symptom is real but the fix path requires investigation you couldn't do from the audit surface.
+
+For a finding that needs a human **decision** rather than investigation, apply `needs-human-review` instead — applying `needs-triage` to one of these gets it auto-investigated, which isn't the outcome you want:
+
 - Acceptance criteria can't be made concrete without product/design/legal input (e.g., "what should the empty state look like?").
 - Scope spans multiple surfaces or repos and needs decomposition into smaller issues.
 - The finding implies a decision (which library to adopt, whether to deprecate an API) rather than a mechanical fix.
 
-If the finding is clean — concrete evidence, obvious fix, verifiable acceptance criteria — do **not** apply `needs-triage`. The label exists to keep `/do-work` from burning agent time on under-specified work; it's not a generic "needs review" flag.
+If the finding is clean — concrete evidence, obvious fix, verifiable acceptance criteria — apply **neither** label. Both exist to route under-specified work correctly, not as a generic "needs review" flag.
 
-This label is part of the plugin's workflow contract with `/do-work`, so **auto-create it if missing** (same exception as `audit:*`):
+Both labels are part of the plugin's workflow contract with `/do-work`, so **auto-create whichever you need if missing** (same exception as `audit:*`):
 
 ```bash
 gh label list --repo <owner/repo> --limit 100 | grep -q "^needs-triage" || \
-  gh label create "needs-triage" --repo <owner/repo> --color fbca04 --description "Needs refinement before /do-work picks it up"
+  gh label create "needs-triage" --repo <owner/repo> --color C2E0C6 --description "Sentry/bot crash reports (auto-investigated). Label is accepted, not required, during migration."
+gh label list --repo <owner/repo> --limit 100 | grep -q "^needs-human-review" || \
+  gh label create "needs-human-review" --repo <owner/repo> --color D93F0B --description "Awaiting a human DECISION before /do-work will touch it"
 ```
 
-Then pass `--label "needs-triage"` on the `gh issue create` for that finding. Note in your end-of-run summary which issues you triaged out (with reason) so the user knows what's awaiting their input.
+Then pass `--label "needs-triage"` or `--label "needs-human-review"` (whichever matches) on the `gh issue create` for that finding. Note in your end-of-run summary which issues carried either label (with reason) so the user knows what's awaiting investigation vs. awaiting their input.
 
 ## Deduplication (two-tier)
 
