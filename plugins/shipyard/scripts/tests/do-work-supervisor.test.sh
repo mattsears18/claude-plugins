@@ -379,6 +379,51 @@ assert_equals "$([[ -f "$TMP/claude-invocations" ]] && echo yes || echo no)" "no
 teardown_env
 
 # ==========================================================================
+echo "== GNU stat semantics (Linux) — mtime probe ordering"
+# ==========================================================================
+# Regression pin for a macOS-only-green bug that CI caught on Linux.
+#
+# GNU's `stat -f` means --file-system, so `stat -f %m <file>` reads `%m` as a
+# FILE ARGUMENT and prints multi-line filesystem info WITH EXIT 0. A
+# BSD-probe-first file_mtime therefore never fails over on Linux — it
+# succeeds with garbage, which reaches `(( now - mtime ))`, where bash
+# resolves the bare word "File" as a variable name and `set -u` aborts the
+# entire tick. Every mtime-dependent assertion in this file failed that way.
+#
+# This stub exposes ONLY GNU semantics, so the suite exercises the Linux
+# path even on a BSD host.
+setup_env
+cat > "$TMP/bin/stat" <<'STAT'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-c" && "${2:-}" == "%Y" ]]; then
+  perl -e 'print ((stat($ARGV[0]))[9], "\n")' "$3"
+  exit 0
+fi
+if [[ "${1:-}" == "-f" ]]; then
+  # GNU --file-system: every remaining arg is treated as a FILE, and the
+  # command still exits 0 — the exact trap.
+  shift
+  for a in "$@"; do
+    echo "  File: \"$a\""
+    echo "    ID: 0 Namelen: 255 Type: ext2/ext3"
+  done
+  exit 0
+fi
+exit 1
+STAT
+chmod +x "$TMP/bin/stat"
+
+make_session "gnu-stale" 7200 0 1 60 >/dev/null
+make_session "gnu-fresh" 30 0 1 60 >/dev/null
+out=$(PATH="$TMP/bin:$PATH" bash "$script" reap --repo "$REPO" 2>&1)
+assert_not_contains "$out" "unbound variable" \
+  "GNU stat's exit-0 garbage never reaches bash arithmetic"
+assert_contains "$out" "archived 1" "stale file is still archived under GNU stat"
+assert_equals "$(count_json "$SHIPYARD_HOME/sessions")" "1" \
+  "the fresh session survives under GNU stat (mtime read correctly, not zeroed)"
+teardown_env
+
+# ==========================================================================
 echo "== status subcommand"
 # ==========================================================================
 setup_env

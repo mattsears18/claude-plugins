@@ -301,10 +301,30 @@ sessions_for_repo() {
   done
 }
 
-# Portable stat(1) — BSD (macOS) and GNU disagree on the flag.
+# Portable stat(1) mtime in epoch seconds. BSD (macOS) and GNU disagree on
+# the flag, and the probe order is load-bearing:
+#
+#   GNU  `stat -c %Y <file>`  -> mtime.       BSD has no -c, errors cleanly.
+#   BSD  `stat -f %m <file>`  -> mtime.       GNU's -f means --file-system,
+#                                             so it reads `%m` as a FILE
+#                                             ARGUMENT and prints multi-line
+#                                             filesystem info -- with exit 0.
+#
+# That last part is why BSD-first is wrong: on Linux the BSD probe SUCCEEDS
+# with garbage instead of failing over, and the garbage ("  File: ...")
+# reaches `(( now - mtime ))`, where bash resolves the bare word as a
+# variable name and `set -u` aborts the whole tick.
+#
+# The numeric guard makes the result trustworthy regardless of which probe
+# answered, or of any future platform quirk: anything that is not a run of
+# digits degrades to 0, i.e. "epoch zero, therefore very old". A session
+# whose mtime cannot be read is treated as dead rather than silently
+# wedging the supervisor.
 file_mtime() {
-  local f="$1"
-  stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0
+  local f="$1" m
+  m=$(stat -c %Y "$f" 2>/dev/null) || m=$(stat -f %m "$f" 2>/dev/null) || m=""
+  [[ "$m" =~ ^[0-9]+$ ]] || m=0
+  printf '%s\n' "$m"
 }
 
 # Is any session for this repo currently alive? Echoes the live session path.
