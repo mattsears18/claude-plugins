@@ -376,6 +376,66 @@ if [[ -f "$cmd_path" ]]; then
     "shipyard-config.sh declares a built-in default for my_turn.max_diagnostic_reads_per_item (#1073)"
   assert_contains "$schema_path" "max_diagnostic_reads_per_item" \
     "shipyard.config.schema.json declares my_turn.max_diagnostic_reads_per_item (#1073)"
+
+  # Disposition-call detection (issue #1074): Phase 1's decision-gated trigger
+  # surface previously recognized only three body-enumerated signals, so a
+  # needs-human-review issue (or draft PR) whose gated work already landed —
+  # with no decision enumerated anywhere, only a stale gate label — fell
+  # through to a serial Phase 3 walk instead of being batched with the other
+  # one-line answers. These assertions guard: the fourth trigger class is
+  # named and documented, its detection signals are derivable from the
+  # existing Pass A/B projection with no extra gh round-trip, the "strongest
+  # signal" (gate label older than a completion-assertion) is called out, the
+  # templated close/keep-open/split option shape is specified, the L292-style
+  # "don't invent a question" guard is extended (not bypassed) to the new
+  # class, the record shape is distinct from /resolve-decisions' shape, the
+  # PR-shaped signal (validated against this session's own PR #1100 / issue
+  # #1096) is covered, and the config knob + its Setup resolution step exist.
+  assert_contains "$cmd_path" "Disposition-call detection" \
+    "command documents the Disposition-call detection subsection (#1074)"
+  assert_contains "$cmd_path" "disposition call" \
+    "command names the disposition-call trigger class (#1074)"
+  assert_contains "$cmd_path" "fourth trigger class" \
+    "disposition call is documented as the fourth trigger class alongside the three body-enumerated ones (#1074)"
+  assert_contains "$cmd_path" "zero extra \`gh\` calls" \
+    "disposition-call detection is derivable with no extra gh round-trip (#1074)"
+  assert_contains "$cmd_path" "strongest signal" \
+    "stale-gate detection (gate label older than a completion-assertion comment) is called out as the strongest signal (#1074)"
+  assert_contains "$cmd_path" "fixed and verified" \
+    "completion-assertion phrase list includes the originating repro's own wording (#1074)"
+  assert_contains "$cmd_path" "Close as done" \
+    "templated option shape includes close as done (#1074)"
+  assert_contains "$cmd_path" "Keep open" \
+    "templated option shape includes keep open, naming the remainder (#1074)"
+  assert_contains "$cmd_path" "Close and split the remainder into a narrow follow-up" \
+    "templated option shape includes close and split into a narrow follow-up (#1074)"
+  assert_contains "$cmd_path" "shared with an already-verified path" \
+    "recommendation keys on shared-and-verified vs distinct-and-unverified remainder (#1074)"
+  assert_contains "$cmd_path" "Don't invent a disposition call" \
+    "command guards against inventing a disposition call absent a real signal (#1074)"
+  assert_contains "$cmd_path" "Never invent a question for an issue that enumerates none" \
+    "the original decision-gated 'don't invent a question' guard survives intact (#1074)"
+  assert_contains "$cmd_path" "closingIssuesReferences" \
+    "PR-shaped disposition-call signal cross-references closingIssuesReferences against Pass B's open-issue set (#1074)"
+  assert_contains "$cmd_path" "PR #1100" \
+    "command validates the disposition-call detection against the session's own PR #1100 / issue #1096 example (#1074)"
+  assert_contains "$cmd_path" "shipyard-disposition-call" \
+    "disposition-call record mutation uses its own idempotency sentinel, distinct from shipyard-resolve-decisions (#1074)"
+  assert_contains "$cmd_path" "#1074" \
+    "command cites issue #1074 for disposition-call detection"
+
+  # Config knob declaration (issue #1074): my_turn.disposition_call_detection
+  # must exist in both the built-in defaults and the schema, following the
+  # same precedent as my_turn.stale_undispatched_days (#1078) and
+  # my_turn.max_diagnostic_reads_per_item (#1073).
+  assert_contains "$config_script" "disposition_call_detection" \
+    "shipyard-config.sh declares a built-in default for my_turn.disposition_call_detection (#1074)"
+  assert_contains "$schema_path" "disposition_call_detection" \
+    "shipyard.config.schema.json declares my_turn.disposition_call_detection (#1074)"
+  assert_contains "$cmd_path" "disposition_call_detection" \
+    "command resolves the my_turn.disposition_call_detection config knob (#1074)"
+  assert_contains "$cmd_path" "Resolve the disposition-call detection toggle" \
+    "command has a dedicated Setup step resolving the disposition-call detection toggle (#1074)"
 fi
 
 echo
