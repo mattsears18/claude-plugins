@@ -20,6 +20,7 @@ This phase used to live as one ~283KB file, which exceeds the 256KB single-file 
 | [`setup/06b-scope-carveouts.md`](./setup/06b-scope-carveouts.md) | Rest of step **6** (design/arch/epic/spike in-scope-by-default rule, operator-slice carve-out, QA-verification carve-out, per-class `evidence_pointer` shape table) | Immediately after `06-scope-preflight.md` |
 | [`setup/06c-scope-handling-ui.md`](./setup/06c-scope-handling-ui.md) | Rest of step 6 (per-returned-entry handling) plus steps **6.5 → 6.8** (status-line + state-change-banner UI, setup-timing flush) | Immediately after `06b-scope-carveouts.md` |
 | [`setup/07-pool-fill.md`](./setup/07-pool-fill.md) | Step **7** (initial pool fill — dispatch the first wave of workers, then hand off to [steady-state](./steady-state.md)) | Last — after scope pre-flight, immediately before steady-state takes over |
+| [`setup/backlog-ownership.md`](./setup/backlog-ownership.md) | **Reference, not a step** — the canonical bucket→owner table `01b-backlog-overview.md`'s UI rendering and `04-backlog-divert.md`'s dispatch filter are both checked against ([#1076](https://github.com/mattsears18/shipyard/issues/1076)); also referenced by [`/my-turn`](../my-turn.md) for its human-only subset | On demand — auditing or updating who owns a backlog bucket, not part of the ordered per-session walk |
 
 ### How to load on demand
 
