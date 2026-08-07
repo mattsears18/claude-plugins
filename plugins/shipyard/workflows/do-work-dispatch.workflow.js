@@ -410,9 +410,11 @@ const workerReturnSchema = {
         'unavailable',
         'unavailable-workflow-scope',
         'gated-external',
+        'unarmed-policy-override',
         null,
       ],
     },
+    policy_override: { type: ['string', 'null'] },
     checks: { type: ['string', 'null'], enum: ['green', 'pending', 'failing', null] },
     disposition: {
       type: ['string', 'null'],
@@ -433,6 +435,11 @@ const workerReturnSchema = {
       // A disposition outcome must name how it dispositioned.
       if: { properties: { outcome: { const: 'disposition' } } },
       then: { required: ['disposition'] },
+    },
+    {
+      // An unarmed-policy-override auto_merge value must name the overridden control (#1088).
+      if: { properties: { auto_merge: { const: 'unarmed-policy-override' } } },
+      then: { required: ['policy_override'] },
     },
   ],
 }

@@ -50,9 +50,15 @@
         "unavailable",
         "unavailable-workflow-scope",
         "gated-external",
+        "unarmed-policy-override",
         null
       ],
-      "description": "For `shipped` (issue-work), the auto-merge outcome — the structured form of the return-string `(auto-merge: …)` suffix. `enabled`: --auto armed, queued behind checks. `gated-manual`: the ungated-admin-direct-merge pre-check (#598/#716) fired, worker watched checks and merged by hand. `merged-direct`: --auto fell through to an immediate merge with checks green at merge time. `merged-direct-ungated`: same, but the PR landed before CI completed (no required checks — #457). `unavailable`: the merge call genuinely failed for a generic/transient/repo-config reason, needs manual merge. `unavailable-workflow-scope`: the merge call failed specifically because the gh token lacks the `workflow` OAuth scope and the PR's diff touches `.github/workflows/` — a deterministic, session-wide precondition distinct from generic `unavailable` (#812; see `skills/worker-preamble/auto-merge.md` step 1.1). `gated-external`: external-author origin — auto-merge intentionally skipped, needs-human-review applied. Null for non-issue-work modes."
+      "description": "For `shipped` (issue-work), the auto-merge outcome — the structured form of the return-string `(auto-merge: …)` suffix. `enabled`: --auto armed, queued behind checks. `gated-manual`: the ungated-admin-direct-merge pre-check (#598/#716) fired, worker watched checks and merged by hand. `merged-direct`: --auto fell through to an immediate merge with checks green at merge time. `merged-direct-ungated`: same, but the PR landed before CI completed (no required checks — #457). `unavailable`: the merge call genuinely failed for a generic/transient/repo-config reason, needs manual merge. `unavailable-workflow-scope`: the merge call failed specifically because the gh token lacks the `workflow` OAuth scope and the PR's diff touches `.github/workflows/` — a deterministic, session-wide precondition distinct from generic `unavailable` (#812; see `skills/worker-preamble/auto-merge.md` step 1.1). `gated-external`: external-author origin — auto-merge intentionally skipped, needs-human-review applied. `unarmed-policy-override`: producing this PR required disabling/bypassing/overriding a committed security or supply-chain control (see `policy_override`) — auto-merge is intentionally never armed regardless of `originating_author_trust`, needs-human-review applied (#1088). Null for non-issue-work modes."
+    },
+    "policy_override": {
+      "type": ["string", "null"],
+      "description": "When `auto_merge == \"unarmed-policy-override\"`, a one-line name of the committed security/supply-chain control that was disabled, bypassed, or overridden while producing this PR — e.g. \".npmrc min-release-age=7\" — mirroring the `(policy-override: <control>)` free-text suffix (#1088; see `skills/worker-preamble/SKILL.md` § \"Never disable a committed security or supply-chain control\" and `skills/worker-preamble/auto-merge.md` step 0.3). Null unless that auto_merge value is set.",
+      "minLength": 1
     },
     "checks": {
       "type": ["string", "null"],
@@ -91,6 +97,11 @@
       "$comment": "A disposition outcome must name how it dispositioned.",
       "if": { "properties": { "outcome": { "const": "disposition" } } },
       "then": { "required": ["disposition"] }
+    },
+    {
+      "$comment": "An unarmed-policy-override auto_merge value must name the overridden control (#1088).",
+      "if": { "properties": { "auto_merge": { "const": "unarmed-policy-override" } } },
+      "then": { "required": ["policy_override"] }
     }
   ]
 }

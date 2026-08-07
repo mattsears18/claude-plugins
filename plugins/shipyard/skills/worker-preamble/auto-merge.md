@@ -6,7 +6,34 @@ On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./S
 
 After `gh pr create` returns:
 
-0.5. **First, decide whether this PR is on the ungated admin-direct-merge path — and if so, wait for the PR's own checks before merging instead of merging ungated ([#598](https://github.com/mattsears18/shipyard/issues/598)).** The `merged-direct-ungated` advisory in step 1.5 (from [#457](https://github.com/mattsears18/shipyard/issues/457)) is a *post-hoc* signal: by the time you can read `state: MERGED`, the merge has already fired and an ungated red has potentially already reached the default branch. On the repos shipyard is dogfooded against (`mattsears18/shipyard`, `mattsears18/mattsears18.com` — admin dispatcher + no required status checks, *regardless of whether `allow_auto_merge` is `false` (#438) or `true` (#465)*) that post-hoc path is the *common* case, not the edge case, so a pre-merge wait recovers a gate that already exists (the PR's own CI) instead of fixing `main` forward after the fact. The #598 repro: PR #596 (a README refresh) admin-direct-merged ungated, dropped the `decompose-epic.md` substring that `decompose-epic.test.sh` asserts, reddened `main`, and cost a whole second PR (#597) + a ~9-minute red-`main` window to fix forward — a regression the PR's *own* checks (which completed ~53s after merge) would have gated for free.
+0.3. **First of all — did producing this PR require disabling, bypassing, or overriding a committed security or supply-chain control? If so, do NOT arm auto-merge — full stop, no exceptions ([#1088](https://github.com/mattsears18/shipyard/issues/1088)).** `worker-preamble § "Never disable a committed security or supply-chain control"` (the always-loaded core) says this should never happen — a committed control blocking your fix is a `blocked:` return, not something to work around. This check is the defense-in-depth backstop for the case where a PR reaches this point anyway: a `.npmrc` `min-release-age`/cooldown override, an `npm audit --audit-level` (or `pip-audit`/`cargo audit`/`bundler-audit`) override, a lockfile-integrity bypass, a disabled git hook, a `CODEOWNERS` bypass, a required-status-check waiver, or an equivalent control in another ecosystem, anywhere in this PR's commits — including one you judge fully justified. Arming auto-merge on top of a policy waiver means the waiver can land with no human in the loop; that composition must never be automatic even when the waiver itself might be fine.
+
+   Self-assess honestly before the arm call, not after: *did any command I ran, or any config I edited, to produce this diff disable/waive/override a control the repo commits to enforce?* If yes:
+
+   ```bash
+   gh label create needs-human-review --repo <owner/repo> \
+     --description "Worked on by /shipyard:do-work" 2>/dev/null || true
+   gh pr edit <pr-num> --repo <owner/repo> --add-label needs-human-review
+   ```
+
+   Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/policy-override-comment.md` (a heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979)):
+
+   ```
+   This PR's production required overriding a committed security/supply-chain control: <name the control and what was overridden, e.g. ".npmrc min-release-age=7 (overrode to 0 to install js-yaml@4.3.1, published 6d8h earlier)">.
+
+   Auto-merge is intentionally NOT armed. A maintainer must review the override and merge manually (or decline it and route around the control a different way) — see worker-preamble § "Never disable a committed security or supply-chain control" (#1088).
+   ```
+
+   ```bash
+   gh pr comment <pr-num> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/policy-override-comment.md"
+   rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
+   ```
+
+   Do NOT call `gh pr merge --auto` (nor the step-0.5 manual green-checks merge below) on this PR. Skip the rest of this fragment — steps 0.5 through 2 all exist to arm or categorize a merge you are deliberately not performing — and return per your mode's `auto-merge: unarmed — policy-override: <control>` line (see [issue-work.md step 8](../../agents/issue-worker/issue-work.md#8-return) for the exact form; the structured shape is `auto_merge: "unarmed-policy-override"` plus a `policy_override` string naming the control, per [`schemas/worker-return.schema.json`](../../schemas/worker-return.schema.json)).
+
+   This check runs unconditionally, before `originating_author_trust` is even consulted — a policy override on a trusted-author PR is exactly as unsafe to auto-merge as one on an external-author PR; the two gates are independent and both apply when both conditions hold.
+
+0.5. **Next, decide whether this PR is on the ungated admin-direct-merge path — and if so, wait for the PR's own checks before merging instead of merging ungated ([#598](https://github.com/mattsears18/shipyard/issues/598)).** The `merged-direct-ungated` advisory in step 1.5 (from [#457](https://github.com/mattsears18/shipyard/issues/457)) is a *post-hoc* signal: by the time you can read `state: MERGED`, the merge has already fired and an ungated red has potentially already reached the default branch. On the repos shipyard is dogfooded against (`mattsears18/shipyard`, `mattsears18/mattsears18.com` — admin dispatcher + no required status checks, *regardless of whether `allow_auto_merge` is `false` (#438) or `true` (#465)*) that post-hoc path is the *common* case, not the edge case, so a pre-merge wait recovers a gate that already exists (the PR's own CI) instead of fixing `main` forward after the fact. The #598 repro: PR #596 (a README refresh) admin-direct-merged ungated, dropped the `decompose-epic.md` substring that `decompose-epic.test.sh` asserts, reddened `main`, and cost a whole second PR (#597) + a ~9-minute red-`main` window to fix forward — a regression the PR's *own* checks (which completed ~53s after merge) would have gated for free.
 
    **Run the detector as a script — don't re-derive the condition ([#716](https://github.com/mattsears18/shipyard/issues/716)).** The rule below is implemented once, executably, in [`scripts/detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh). Call it and branch on the verdict:
 
