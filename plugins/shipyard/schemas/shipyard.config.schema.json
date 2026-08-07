@@ -457,6 +457,20 @@
         },
         "_comment": { "type": "string" }
       }
+    },
+    "my_turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls /shipyard:my-turn's Pass B 'authored by $ME, never dispatched' signal (issue #1078). The predicate requires the issue to carry no `shipyard` session-stamp label AND not be self-assigned to `@me` — the two `/do-work` claims a workable issue on dispatch — before it's surfaced, so a freshly-filed issue that simply hasn't had its turn yet isn't misread as a misconfiguration. This knob only tunes the age conjunct.",
+      "properties": {
+        "stale_undispatched_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 7,
+          "description": "Minimum age (in days, by `createdAt`) an issue authored by `$ME` must reach — with no `shipyard` label, no self-assignment to `@me`, and no `needs-human-review` label — before /my-turn's Pass B surfaces it as a P2 housekeeping nudge ('/do-work has never picked this up'). Default 7: an issue younger than this has simply not had its turn in a healthy backlog, not been overlooked. Lower it to get an earlier nudge on a low-volume repo; raise it on a repo with a deep backlog where a week's wait is routine."
+        },
+        "_comment": { "type": "string" }
+      }
     }
   },
   "required": ["version"],
