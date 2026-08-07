@@ -142,3 +142,55 @@ atomic_write() {
   fi
   trap - EXIT
 }
+
+# --------------------------------------------------------------------------
+# sessions_dir — directory holding the per-session state files written by
+# the `/do-work` orchestrator (`<session-id>.json`).
+#
+# Extracted from status.sh, which owned the only copy until
+# do-work-supervisor.sh needed the same path to run its liveness check
+# against. Both consumers read the same directory, so the path belongs in
+# one place rather than being open-coded a second time.
+# --------------------------------------------------------------------------
+sessions_dir() {
+  local home
+  home=$(shipyard_home)
+  printf '%s/sessions\n' "$home"
+}
+
+# --------------------------------------------------------------------------
+# iso_to_epoch <timestamp> — parse an ISO-8601 UTC timestamp into epoch
+# seconds, printing `0` for empty / null / unparseable input.
+#
+# macOS BSD date and GNU date disagree on the input flag (`-j -f` vs `-d`),
+# so both are tried in turn. Extracted byte-for-byte from status.sh's copy
+# (which is now deleted in favour of this one) because
+# do-work-supervisor.sh needs identical parsing to compute session
+# durations from the same `started_at` field status.sh renders.
+#
+# Printing `0` rather than failing is deliberate and load-bearing for both
+# callers: a session file with a malformed timestamp should degrade to
+# "epoch zero, therefore very old" and stay visible, not abort the whole
+# dashboard render or supervisor tick.
+# --------------------------------------------------------------------------
+iso_to_epoch() {
+  local ts="$1"
+  if [[ -z "$ts" || "$ts" == "null" ]]; then
+    printf '0\n'
+    return
+  fi
+  # Strip the trailing Z so both `date` variants accept the format.
+  local stripped="${ts%Z}"
+  # GNU date (Linux).
+  local epoch
+  epoch=$(date -u -d "$stripped" +%s 2>/dev/null || true)
+  if [[ -z "$epoch" ]]; then
+    # BSD date (macOS).
+    epoch=$(date -u -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null || true)
+  fi
+  if [[ -z "$epoch" ]]; then
+    printf '0\n'
+  else
+    printf '%s\n' "$epoch"
+  fi
+}

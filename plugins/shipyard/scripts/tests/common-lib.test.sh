@@ -171,6 +171,47 @@ assert_contains "$out" "custom-caller.sh: refusing to rename empty tempfile" "at
 rm -rf "$workdir"
 
 # --------------------------------------------------------------------------
+echo "== sessions_dir"
+# --------------------------------------------------------------------------
+
+out=$(SHIPYARD_HOME="/custom/home" bash -c "source '$lib'; sessions_dir")
+assert_equals "$out" "/custom/home/sessions" "sessions_dir hangs off shipyard_home"
+
+out=$(env -u SHIPYARD_HOME HOME="/tmp/fake-home-$$" bash -c "source '$lib'; sessions_dir")
+assert_equals "$out" "/tmp/fake-home-$$/.shipyard/sessions" "sessions_dir honors the default shipyard_home"
+
+# --------------------------------------------------------------------------
+echo "== iso_to_epoch"
+# --------------------------------------------------------------------------
+
+out=$(bash -c "source '$lib'; iso_to_epoch '1970-01-01T00:00:00Z'")
+assert_equals "$out" "0" "iso_to_epoch parses the unix epoch itself"
+
+# 1786017600 == 2026-08-06T12:00:00Z. Pinning the UTC value (rather than one
+# derived from date(1) at run time) is what makes this a real assertion: a
+# regression that parsed the stamp as LOCAL time would still round-trip
+# through date(1), but would not equal this constant.
+out=$(bash -c "source '$lib'; iso_to_epoch '2026-08-06T12:00:00Z'")
+assert_equals "$out" "1786017600" "iso_to_epoch parses an ISO-8601 UTC timestamp as UTC"
+
+# The trailing Z must be stripped — neither date(1) variant accepts it raw.
+a=$(bash -c "source '$lib'; iso_to_epoch '2026-08-06T12:00:00Z'")
+b=$(bash -c "source '$lib'; iso_to_epoch '2026-08-06T12:00:00'")
+assert_equals "$a" "$b" "iso_to_epoch strips the trailing Z"
+
+# Degrading to 0 rather than failing is load-bearing for both callers:
+# status.sh must still render, and do-work-supervisor.sh must still tick,
+# when a single session file carries a malformed timestamp.
+out=$(bash -c "source '$lib'; iso_to_epoch ''")
+assert_equals "$out" "0" "iso_to_epoch returns 0 for an empty timestamp"
+
+out=$(bash -c "source '$lib'; iso_to_epoch 'null'")
+assert_equals "$out" "0" "iso_to_epoch returns 0 for the literal string null"
+
+out=$(bash -c "source '$lib'; iso_to_epoch 'not-a-timestamp'")
+assert_equals "$out" "0" "iso_to_epoch returns 0 for unparseable input rather than failing"
+
+# --------------------------------------------------------------------------
 printf '\n%sPASS%s: %d  %sFAIL%s: %d\n' "$GREEN" "$RESET" "$pass" "$RED" "$RESET" "$fail"
 
 if [[ "$fail" -gt 0 ]]; then
