@@ -4,6 +4,19 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.10.2 — 2026-08-04
+
+Phase 1 of #1058: a worktree-isolated worker had no sanctioned scratch space at all. The Bash worktree-isolation guard refuses any command it deems "too complex to verify that it stays inside the worktree" — including read-only commands whose only complexity is a shell redirect, a `for`/`while` loop, or an unresolved `$PWD` — and `enforce-edit-scope.sh` independently blocks every `/tmp` write, so the only way to run a loop was to write a helper script into the repo working tree itself, exactly the phantom-dirty-state failure mode the edit-scope hook exists to prevent. This slice promotes `$WORKTREE_PATH/.shipyard-scratch/` from a narrow `--body-file`-payload-only convention (#979) into the single sanctioned general-purpose worker scratch dir for any ephemeral artifact — a `--body-file` payload, a helper script for a refused compound command, loop input, a redirect target, or captured output — makes the directory self-ignoring by seeding its own `.gitignore` (`*`) as the very first artifact so `git status` stays clean even if cleanup never runs, downgrades the mandated `rm -rf` cleanup to explicitly best-effort/non-blocking, documents the decompose-first-then-helper-script recovery pattern for a refused compound read-only command, and points `enforce-edit-scope.sh`'s BLOCK message at the sanctioned destination instead of leaving a `/tmp`-reaching worker at a dead end. Out of scope by design (not deferred): relaxing the harness's Bash complexity classifier, and any carve-out that would place scratch outside the worktree (closes #1058).
+
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — new always-loaded "Scratch directory" hot-rule section documenting the general-purpose `.shipyard-scratch/` convention, the `.gitignore` self-ignoring seed step, and the best-effort cleanup downgrade; fragment-index rows for `body-file-convention.md` and `compound-command-refusal.md` broadened to reflect their generalized scope.
+- `plugins/shipyard/skills/worker-preamble/body-file-convention.md` — retitled and rewritten as the general-purpose scratch-directory convention (the `--body-file` case is now one of two documented uses alongside the new #1058 helper-script case); adds the `.gitignore`-seed mechanism and the best-effort, non-blocking cleanup guidance.
+- `plugins/shipyard/skills/worker-preamble/compound-command-refusal.md` — new section documenting the #1058 decomposition guidance: decompose a refused compound read-only command into plain, separate commands first; when a loop/redirect is genuinely unavoidable, `Write` a helper script into `.shipyard-scratch/` and invoke it as one plain command via a literal absolute or worktree-relative path, never `$PWD`.
+- `plugins/shipyard/hooks/enforce-edit-scope.sh` — BLOCK stderr message now names `<worktree>/.shipyard-scratch/` as the sanctioned scratch destination for a worker reaching for `/tmp`; the `/tmp` (out-of-worktree) block itself is unchanged.
+- `plugins/shipyard/hooks/tests/enforce-edit-scope.test.sh` — new assertion covering the updated BLOCK message text.
+- `plugins/shipyard/scripts/tests/worker-preamble.test.sh` — extended the existing scratch-parity regression block with #1058 assertions across `SKILL.md`, `body-file-convention.md`, `compound-command-refusal.md`, and `enforce-edit-scope.sh`.
+- `plugins/shipyard/agents/issue-worker/issue-work.md` — both scratch-dir call sites (§5's PR-body write, §6's external-trust-gate comment) updated to seed `.shipyard-scratch/.gitignore` first and mark the `rm -rf` cleanup best-effort.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.10.1` → `4.10.2`.
+
 ### 4.10.1 — 2026-08-07
 
 `do-work-supervisor.sh` shipped in 4.10.0 at mode `100644`, so the command the README documents fails on a fresh install:

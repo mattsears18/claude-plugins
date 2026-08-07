@@ -155,8 +155,14 @@ state in the primary, can leak into the user's next manual commit, and is the
 exact failure mode this hook exists to prevent (issue #60).
 
 Fix: re-issue the Edit/Write/MultiEdit/NotebookEdit call with a path under
-your worktree root. If you genuinely need to inspect a file outside the
-worktree, use Read (which is allowed) — but do not write to it.
+your worktree root. Reaching for /tmp for a throwaway file (a helper script,
+loop input, a gh --body-file payload, captured command output)? That's also
+outside your worktree and blocked the same way — the sanctioned scratch
+destination is ${worktree}/.shipyard-scratch/ (self-ignoring via its own
+.gitignore; see shipyard:worker-preamble skill's "Scratch directory" section
+and body-file-convention.md for the full convention). If you genuinely need
+to inspect a file outside the worktree, use Read (which is allowed) — but do
+not write to it.
 
 If you think this block is wrong (e.g. your worktree path doesn't match the
 \`.claude/worktrees/agent-<id>/\` convention), return blocked with the

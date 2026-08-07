@@ -165,6 +165,17 @@ assert_blocked_with "$out" "OUTSIDE your isolated worktree" \
   "Edit on a different repo checkout → blocked"
 
 # -----------------------------------------------------------------------------
+echo "== BLOCK message names the sanctioned .shipyard-scratch/ scratch dir (issue #1058)"
+# -----------------------------------------------------------------------------
+# A worker reaching for /tmp for a throwaway file gets blocked identically to
+# any other out-of-worktree write — but the message should redirect it to the
+# sanctioned scratch destination instead of leaving it at a dead end.
+
+out=$(run_hook "$(mkpayload Write "/tmp/some-scratch-file.md" "$WT")")
+assert_blocked_with "$out" ".shipyard-scratch/" \
+  "Write to /tmp → blocked, message names .shipyard-scratch/ as the sanctioned alternative"
+
+# -----------------------------------------------------------------------------
 echo "== Hook is a no-op when not running inside a worktree"
 # -----------------------------------------------------------------------------
 # If the agent's cwd isn't `.claude/worktrees/agent-<id>/<...>` we have no

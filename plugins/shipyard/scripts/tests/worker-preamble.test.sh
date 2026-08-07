@@ -1012,6 +1012,67 @@ assert_contains "$body_file_convention_path" \
   "rm -rf" \
   "body-file-convention.md prescribes explicit cleanup rather than relying on git-dir invisibility (issue #979)"
 
+# Issue #1058 — .shipyard-scratch/ promoted from a --body-file-payload-only
+# convention to the single sanctioned general-purpose worker scratch dir
+# (helper scripts, loop input files, redirect targets, command output), made
+# git-invisible via a self-ignoring .gitignore seed step (so the mandated
+# `rm -rf` cleanup — permission-denied on some hosts per issue #1061 — is
+# downgraded to best-effort/non-blocking rather than load-bearing), and
+# enforce-edit-scope.sh's BLOCK message updated to redirect a worker reaching
+# for /tmp at the sanctioned destination instead of a dead end. Regression
+# guard below: (a) SKILL.md carries the scratch-dir convention as a hot rule
+# (not buried in an on-demand-only fragment), (b) body-file-convention.md
+# documents the general-purpose scope, the .gitignore self-ignoring seed step,
+# and the best-effort cleanup downgrade, (c) compound-command-refusal.md
+# carries the #1058 decomposition guidance, and (d) enforce-edit-scope.sh's
+# BLOCK message names .shipyard-scratch/ — kept consistent with the docs
+# above rather than drifting into a second, undocumented convention.
+assert_contains "$skill_path" \
+  "Scratch directory" \
+  "SKILL.md's always-loaded core carries the scratch-directory convention as a hot rule (issue #1058)"
+assert_contains "$skill_path" \
+  "self-ignoring" \
+  "SKILL.md's scratch-directory hot rule mentions the self-ignoring .gitignore seed (issue #1058)"
+assert_contains "$body_file_convention_path" \
+  "general-purpose" \
+  "body-file-convention.md documents .shipyard-scratch/ as the general-purpose scratch dir, not body-file-payload-only (issue #1058)"
+# shellcheck disable=SC2016
+# Literal grep needle — the seed-file path is matched verbatim, not expanded.
+assert_contains "$body_file_convention_path" \
+  '$WORKTREE_PATH/.shipyard-scratch/.gitignore' \
+  "body-file-convention.md prescribes seeding .shipyard-scratch/.gitignore as the first artifact (issue #1058)"
+assert_contains "$body_file_convention_path" \
+  "best-effort" \
+  "body-file-convention.md downgrades the rm -rf cleanup to explicitly best-effort/non-blocking (issue #1058)"
+assert_contains "$body_file_convention_path" \
+  "never a reason to return" \
+  "body-file-convention.md states a failed/skipped cleanup is never a blocked: reason (issue #1058)"
+
+compound_command_refusal_1058_path="$wp_dir/compound-command-refusal.md"
+assert_contains "$compound_command_refusal_1058_path" \
+  "#1058" \
+  "compound-command-refusal.md references issue #1058's decomposition guidance"
+assert_contains "$compound_command_refusal_1058_path" \
+  "Decompose first" \
+  "compound-command-refusal.md prescribes decomposing a compound command into plain commands before reaching for a helper script (issue #1058)"
+# shellcheck disable=SC2016
+# Literal grep needle — asserting the discouraged $PWD shape is named, not expanded.
+assert_contains "$compound_command_refusal_1058_path" \
+  'never `$PWD`' \
+  "compound-command-refusal.md warns against invoking a scratch helper script via \$PWD (issue #1058)"
+
+enforce_edit_scope_hook_path="$repo_root/plugins/shipyard/hooks/enforce-edit-scope.sh"
+if [[ -f "$enforce_edit_scope_hook_path" ]]; then
+  assert_contains "$enforce_edit_scope_hook_path" \
+    ".shipyard-scratch/" \
+    "enforce-edit-scope.sh's BLOCK message names .shipyard-scratch/ as the sanctioned scratch destination (issue #1058)"
+  # The /tmp block itself must not be relaxed — the hook still has no carve-out
+  # for /tmp or any other out-of-worktree path; only the message changed.
+  assert_contains "$enforce_edit_scope_hook_path" \
+    "OUTSIDE your isolated worktree" \
+    "enforce-edit-scope.sh's out-of-worktree BLOCK is unchanged — no /tmp carve-out was added (issue #1058)"
+fi
+
 for mode_file in issue-work fix-main-ci fix-failing-prs-batch investigate spike; do
   mode_path="$repo_root/plugins/shipyard/agents/issue-worker/${mode_file}.md"
   if [[ -f "$mode_path" ]]; then
