@@ -2614,6 +2614,33 @@ assert_contains "$rationale_path" \
   '#1060 supersedes #577' \
   "do-work-RATIONALE.md carries the #1060 supersedes #577 section"
 
+# (P) Genuine within-budget-exhaustion bail classifies as soft, not the
+# conservative refuse default (issue #1135, follow-up to #1115). Before this
+# row existed, a worker that bailed `blocked: verification did not complete
+# within budget` (the auto-backgrounded-verification case worker-preamble's
+# SKILL.md already sanctioned) fell through the Reason → class table's own
+# default to `refuse` → needs-human-review — the same human-decision bucket
+# as a security refusal, for what is actually an environmental/transient
+# condition much closer in spirit to `cannot reproduce` / `ambiguous`.
+worker_preamble_skill_path="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+
+assert_contains "$worker_preamble_skill_path" \
+  'blocked: verification did not complete within budget' \
+  "worker-preamble SKILL.md names the canonical within-budget-exhaustion bail phrase (#1135)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'did not complete within budget` | soft | `blocked:agent-soft`' \
+  "steady-state.md Reason → class table classifies the within-budget-exhaustion fragment as soft (#1135)"
+assert_contains "$steady_state_path" \
+  '*"did not complete within budget"*)' \
+  "steady-state.md bail-handler case statement matches the within-budget-exhaustion fragment into the soft branch (#1135)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$rationale_path" \
+  'Why a within-budget-exhaustion bail routes to `soft`' \
+  "do-work-RATIONALE.md cross-references the within-budget-exhaustion soft-routing decision (#1135)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

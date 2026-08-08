@@ -159,9 +159,9 @@ assert_contains "$issue_work_path" "Your terminal state was reached at \"local g
 #     ceilings. These literals mirror spec-size-budget.test.sh's own
 #     assert_under_budget calls — that file is the canonical source for the
 #     ceiling values and their raise history; keep these two in sync with it
-#     whenever a ceiling changes there (most recently 58000 -> 59000 by
-#     #1113, and 116000 -> 120000 by #1088). ---
-assert_under "$skill_path" 59000 "SKILL.md stays under its 59000-byte ceiling"
+#     whenever a ceiling changes there (most recently 59000 -> 60000 by
+#     #1135, and 116000 -> 120000 by #1088). ---
+assert_under "$skill_path" 60000 "SKILL.md stays under its 60000-byte ceiling"
 assert_under "$issue_work_path" 120000 "issue-work.md stays under its 120000-byte ceiling"
 
 # --- Orchestrator-side canned resume-message template (item 4, optional) ---

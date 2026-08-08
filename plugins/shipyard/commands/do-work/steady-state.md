@@ -1065,6 +1065,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   | `suggested fix exceeds expected scope` | soft | `blocked:agent-soft` label | Judgment call — a different worker reading the same body might fit it into scope. |
   | `cannot reproduce` | soft | `blocked:agent-soft` label | Reproduction attempt may have used the wrong env / test command; retry is reasonable. |
   | `ambiguous` | soft | `blocked:agent-soft` label | Vague-on-its-own bodies may clarify across sessions (comments land, sibling PRs merge). |
+  | `did not complete within budget` | soft | `blocked:agent-soft` label | Genuine within-budget-exhaustion bail (e.g. an auto-backgrounded verification run) — environmental/transient, not a human judgment call; a retry is reasonably likely to make progress ([#1135](https://github.com/mattsears18/shipyard/issues/1135), follow-up to [#1115](https://github.com/mattsears18/shipyard/issues/1115)'s declined `verifying` token). |
   | `issue dispositioned mid-dispatch by a concurrent session` | refuse | `needs-human-review` label | The issue itself was already dispositioned (closed, a disposition label applied, or a decision-resolved comment landed) by a concurrent session — e.g. `/shipyard:my-turn` — while the worker was mid-implementation. The worker's own [§5.3 terminal-state re-read](../../agents/issue-worker/issue-work.md#53-terminal-state-re-read--guard-against-a-concurrent-session-dispositioning-the-issue-mid-dispatch-997) already converted its PR to draft and labeled it `needs-human-review` before returning — this issue-side label lands as defense-in-depth, not as new information (issue [#997](https://github.com/mattsears18/shipyard/issues/997)). Falls through to the default refuse routing below; listed explicitly for auditability. |
   | (anything else, no open `Blocked by #N` ref) | refuse | `needs-human-review` label | Conservative default. Unknown reason → human review path. |
 
@@ -1133,7 +1134,8 @@ ${issue_body}" 2>/dev/null || true
       *"pr #"*"already open"*|*"pr #"*"for this issue"*|\
       *"suggested fix exceeds expected scope"*|\
       *"cannot reproduce"*|\
-      *"ambiguous"*)
+      *"ambiguous"*|\
+      *"did not complete within budget"*)
         block_class="soft"
         ;;
     esac
