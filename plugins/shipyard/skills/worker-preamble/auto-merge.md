@@ -33,6 +33,42 @@ After `gh pr create` returns:
 
    This check runs unconditionally, before `originating_author_trust` is even consulted — a policy override on a trusted-author PR is exactly as unsafe to auto-merge as one on an external-author PR; the two gates are independent and both apply when both conditions hold.
 
+0.34. **Next — did this PR narrow the strength of a required CI gate, rather than fix the underlying cause? If so, do NOT arm auto-merge — full stop, no exceptions ([#1139](https://github.com/mattsears18/shipyard/issues/1139)).** This is a DIFFERENT risk class from step 0.3 above, not a restatement of it: 0.3 catches a PR that had to *disable/bypass* an EXISTING committed control to get CI to pass; this catches a PR that leaves the control nominally in place but *narrows what it considers a failure* — a brand-new self-authored allowlist/exception file, a raised severity threshold (`--audit-level` or an ecosystem equivalent), a `continue-on-error: true` added to a gate step, a deleted gate step, or a narrowed workflow trigger filter (`paths-ignore:`). The engineering behind the change can be entirely sound — a genuinely unfixable-today finding, a real dependency constraint — that's not the complaint. The complaint is blast radius: a narrowed gate weakens the check for **every future PR**, not just this one, so the risk-acceptance decision belongs to a human, not an autonomous merge. This mode fires most often on `fix-main-ci` and `fix-failing-prs-batch` — the two modes dispatched precisely because something is unfixably red, which is exactly the situation that tempts a suppress-rather-than-fix remedy — but the check runs unconditionally for every mode that reaches this fragment.
+
+   Run the detector — a **script, not a rule for you to re-derive**, matching the single-source-of-truth posture of the ungated-merge detector in step 0.5 below:
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   GATE_VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-gate-narrowing.sh" <owner/repo> <pr-num>)
+   ```
+
+   - **`GATE_VERDICT == "narrowing"` (or `"unknown"` — the detector couldn't read the diff at all and fails toward the safe/blocking reading, never toward silently arming auto-merge on an unreadable diff)** →
+
+     ```bash
+     gh label create needs-human-review --repo <owner/repo> \
+       --description "Worked on by /shipyard:do-work" 2>/dev/null || true
+     gh pr edit <pr-num> --repo <owner/repo> --add-label needs-human-review
+     ```
+
+     Write this content (with the `Write` tool) to `$WORKTREE_PATH/.shipyard-scratch/gate-narrowing-comment.md` (a heredoc `--body "$(cat <<'EOF' ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979)):
+
+     ```
+     This PR narrows a required CI gate — it changes what the gate considers a failure, rather than fixing the underlying cause (e.g. a self-authored allowlist, a raised severity threshold, a skipped/deleted gate step, or a narrowed trigger filter).
+
+     Auto-merge is intentionally NOT armed. The mechanism itself may well be the right call — but a narrowed gate weakens the check for every future PR, not just this one, and that risk acceptance belongs to a human. See worker-preamble § "Auto-merge + snapshot-and-return pattern" step 0.34 (#1139).
+     ```
+
+     ```bash
+     gh pr comment <pr-num> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/gate-narrowing-comment.md"
+     rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
+     ```
+
+     Do NOT call `gh pr merge --auto` (nor the step-0.5 manual green-checks merge below) on this PR. Skip the rest of this fragment — steps 0.5 through 2 all exist to arm or categorize a merge you are deliberately not performing — and return per your mode's `auto-merge: unarmed — gate-narrowing: <detail>` line (the structured shape is `auto_merge: "unarmed-gate-narrowing"` plus a `gate_narrowing` string naming the signal, per [`schemas/worker-return.schema.json`](../../schemas/worker-return.schema.json)).
+
+   - **`GATE_VERDICT == "clean"`** → continue to step 0.5 below.
+
+   This check runs unconditionally, before `originating_author_trust` is even consulted — a gate-narrowing PR from a trusted author is exactly as unsafe to auto-merge as one from an external author, the same posture as step 0.3.
+
 0.5. **Next, decide whether this PR is on the ungated admin-direct-merge path — and if so, wait for the PR's own checks before merging instead of merging ungated ([#598](https://github.com/mattsears18/shipyard/issues/598)).** The `merged-direct-ungated` advisory in step 1.5 (from [#457](https://github.com/mattsears18/shipyard/issues/457)) is a *post-hoc* signal: by the time you can read `state: MERGED`, the merge has already fired and an ungated red has potentially already reached the default branch. On the repos shipyard is dogfooded against (`mattsears18/shipyard`, `mattsears18/mattsears18.com` — admin dispatcher + no required status checks, *regardless of whether `allow_auto_merge` is `false` (#438) or `true` (#465)*) that post-hoc path is the *common* case, not the edge case, so a pre-merge wait recovers a gate that already exists (the PR's own CI) instead of fixing `main` forward after the fact. The #598 repro: PR #596 (a README refresh) admin-direct-merged ungated, dropped the `decompose-epic.md` substring that `decompose-epic.test.sh` asserts, reddened `main`, and cost a whole second PR (#597) + a ~9-minute red-`main` window to fix forward — a regression the PR's *own* checks (which completed ~53s after merge) would have gated for free.
 
    **Run the detector as a script — don't re-derive the condition ([#716](https://github.com/mattsears18/shipyard/issues/716)).** The rule below is implemented once, executably, in [`scripts/detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh). Call it and branch on the verdict:
