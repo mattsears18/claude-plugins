@@ -2,19 +2,18 @@
 # Test suite: every production script under plugins/shipyard/scripts/ is
 # committed executable (git mode 100755).
 #
-# Background (issue #1094): do-work-supervisor.sh shipped at mode 100644.
-# Nothing caught it — shellcheck lints content, not permissions, and the
-# whole test suite invokes suites as `bash <file>`, which works regardless
-# of the exec bit. The break only surfaced when a human followed the
-# README's own documented invocation:
-#
-#   $ plugins/shipyard/scripts/do-work-supervisor.sh reap
-#   permission denied
+# Background (issue #1094): a script shipped at mode 100644 and nothing
+# caught it — shellcheck lints content, not permissions, and CI invokes
+# every suite as `bash <file>`, which works regardless of the exec bit. The
+# break surfaced only when a human ran the script the way its own docs said
+# to, and got `permission denied`.
 #
 # A second, older instance (verify-new-dep-versions.sh, documented for
 # direct invocation in the adding-dependencies skill) was found by the same
 # sweep, which is what makes this a class worth guarding rather than a
-# one-off slip.
+# one-off slip. The script that prompted the guard has since been removed
+# from the plugin (#1150); the guard stays because the failure mode is a
+# property of the pipeline, not of that one file.
 #
 # Scope note: `tests/` is deliberately excluded. Test suites are genuinely
 # mixed in this repo (both 755 and 644 are present) because CI and every
@@ -88,14 +87,14 @@ else
 fi
 
 # --------------------------------------------------------------------------
-echo "== the two files that motivated this guard"
+echo "== the file that motivated this guard"
 # --------------------------------------------------------------------------
+# do-work-supervisor.sh was the other one; it was removed from the plugin in
+# #1150, so verify-new-dep-versions.sh is the surviving named regression.
 
-for f in plugins/shipyard/scripts/do-work-supervisor.sh \
-         plugins/shipyard/scripts/verify-new-dep-versions.sh; do
-  mode=$(git ls-files -s "$f" | awk '{print $1}')
-  assert_equals "$mode" "100755" "$(basename "$f") is committed 100755"
-done
+f=plugins/shipyard/scripts/verify-new-dep-versions.sh
+mode=$(git ls-files -s "$f" | awk '{print $1}')
+assert_equals "$mode" "100755" "$(basename "$f") is committed 100755"
 
 # --------------------------------------------------------------------------
 echo "== every production script starts with a shebang"

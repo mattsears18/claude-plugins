@@ -4,6 +4,21 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.12.0 — 2026-08-08
+
+Removes `do-work-supervisor.sh` and its test suite. The supervisor shipped in 4.10.0 (#1083) to restart `/do-work` across session deaths, and was shelved after its first real install — but the code stayed in the plugin, where it was not inert. Two findings from that install decided this. It **cannot succeed**: launchd-spawned sessions have no path to Claude's Keychain credentials, so every launch died on startup with `Not logged in` (#1096). And it **damages a running session if invoked by hand** (#1098): its liveness check reads session-file mtime, a working orchestrator can go far longer than the 900s window between write-throughs, and the response to a false-dead verdict was to *move* that live session's state file into `sessions/abandoned/` — after which the supervisor passed its own liveness gate and launched a second `/do-work` against the same repo. All three steps were observed on the maintainer's machine against a session that was `busy` in `claude agents` at the time, not theorized. A script that cannot do its job and can corrupt a live session's state is worse to ship unused than not to ship at all (closes #1150).
+
+What survives the removal, deliberately: `lib/common.sh`'s `sessions_dir` / `iso_to_epoch` stay, because `status.sh` is a genuine consumer and both are covered by `common-lib.test.sh` — only their comments, which cited the supervisor as the second consumer, needed updating. `tests/script-exec-bits.test.sh` also stays: the supervisor's non-executable mode (#1094) is what surfaced it, but the failure it guards is a property of the pipeline — shellcheck lints content rather than permissions, and CI runs every suite as `bash <file>` — so it applies to all 27 production scripts regardless of which one prompted it. Its named-regression block now pins only `verify-new-dep-versions.sh`, the second instance that same sweep found.
+
+- `plugins/shipyard/scripts/do-work-supervisor.sh` — deleted.
+- `plugins/shipyard/scripts/tests/do-work-supervisor.test.sh` — deleted. Its `blocked:ci` case tested the supervisor's own work-exists gate, so it goes with the gate; `flake-enforce.test.sh`'s `apply-blocked-ci` case remains the mechanical label-application coverage.
+- `README.md` — § "Keeping the loop running" removed.
+- `CLAUDE.md` — the `blocked:ci` entry no longer cites the deleted suite as coverage.
+- `plugins/shipyard/scripts/lib/common.sh`, `scripts/status.sh`, `scripts/tests/common-lib.test.sh`, `scripts/tests/script-exec-bits.test.sh` — comments updated to drop supervisor references without changing behavior.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version `4.11.9` → `4.12.0`.
+
+If the idea is ever revisited, #1099's finding stands: `claude --bg` would plausibly resolve the auth failure, make sessions visible in `claude agents`, and give liveness a process-level signal instead of a file timestamp — one substrate change for all three defects.
+
 ### 4.11.9 — 2026-08-08
 
 Fixes a fail-**open** gap in the worktree reaper: `worktree-reap.sh classify-all` reported `no-lock` identically for a genuinely-abandoned worktree AND a currently-running `isolation: "worktree"` Agent-tool dispatch (the default dispatch shape since #830), because that shape never writes a shipyard lock file — so `reap-stale` could delete a live worker's workspace unless every calling site remembered to pass `--exclude-agent-id`, which nothing enforced. Two layered fixes: (1, primary) `reap-stale` now reads `$SHIPYARD_HOME/sessions/<session-id>.json`'s `.in_flight[].agent_id` directly and unions it into the exclude set automatically — the guard no longer depends on the caller's own bookkeeping; (2, defense-in-depth for the cross-session case) `classify-all` adds a new `no-lock-recent` classification: a `no-lock` candidate whose worktree directory was touched within the existing `--peer-stale-min` floor (or whose mtime can't be resolved at all) is presumed live and deferred, mirroring the `peer-alive`/`peer-alive-stale` mtime-floor calibration already in place. `classify-lock` (the single-worktree subcommand) is unchanged — its own call sites already gate on `.in_flight` membership per `commands/do-work/dont.md`. Adds 20 new assertions to `scripts/tests/worktree-reap.test.sh` covering the no-lock-recent classification, the mandatory in-flight cross-check (including its additivity with an explicit `--exclude-agent-id` and its best-effort no-op on a missing session file), plus backdates several pre-existing fixtures whose freshness previously coincided with, but wasn't testing, the new staleness floor. closes #1147
@@ -2969,7 +2984,6 @@ Applies a `needs-decomposition` surfacing label when a `/do-work` scope agent co
 - **`plugins/shipyard/commands/do-work/drain.md`** — the 5.b scope-agent re-validation ready-shape branch now removes `needs-decomposition` (gated on the original `confirmed-non-shippable-as-single-PR` class) when a re-validated defer flips to ready, with a `(removed needs-decomposition)` log suffix, so a slicing-miss epic isn't left hidden behind the new exclusion label.
 - **`plugins/shipyard/commands/do-work.md`** — the `deferred_issues` orchestrator-state note documents the new label application for the unsliceable class and the drain-phase removal.
 - **`plugins/shipyard/.claude-plugin/plugin.json`** — version bump to 1.8.60.
-
 
 ### 1.8.59 — 2026-06-08
 

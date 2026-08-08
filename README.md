@@ -336,46 +336,6 @@ CHANGELOG.md  ·  LICENSE       # per-version changelog (plugin bumps) · MIT
 
 Browse the [repo tree](https://github.com/mattsears18/shipyard/tree/main/plugins/shipyard) for the full per-file breakdown — each command / agent / skill / hook is self-describing.
 
-## Keeping the loop running
-
-`/do-work` is a **terminating** batch job. It burns the backlog down and stops — and it does not always stop cleanly: a session can run out of context, hit a turn boundary, or crash with workers still in flight. Either way nothing restarts it, so the backlog stalls until someone types the command again.
-
-[`do-work-supervisor.sh`](plugins/shipyard/scripts/do-work-supervisor.sh) is the restarter. A launchd agent ticks it on an interval; each tick decides whether to launch a fresh headless `/do-work` session.
-
-```bash
-# Install a supervisor for one repo (ticks every 10 minutes by default).
-plugins/shipyard/scripts/do-work-supervisor.sh install \
-  --repo owner/name --workdir /path/to/checkout --interval 600
-
-plugins/shipyard/scripts/do-work-supervisor.sh status    --repo owner/name
-plugins/shipyard/scripts/do-work-supervisor.sh uninstall --repo owner/name
-```
-
-Try a tick by hand first — `tick --dry-run` runs every guard and prints the verdict without launching anything:
-
-```bash
-plugins/shipyard/scripts/do-work-supervisor.sh tick \
-  --repo owner/name --workdir /path/to/checkout --dry-run
-```
-
-**Five guards must all pass before a launch.** An unattended restart loop is a token furnace if any of them is missing:
-
-| Guard | Behavior |
-|---|---|
-| Single instance | Atomic-mkdir lock (macOS has no `flock`); a stale lock from a killed tick is taken over, never honoured forever. |
-| Liveness | A session file whose mtime is within `LIVENESS_S` means a session is alive — skip. Biased toward "alive", because a false *dead* verdict launches a **second** session against the same repo. |
-| Circuit breaker | N consecutive sessions that shipped **zero PRs** trips it. Stays tripped until `reset` is run **by hand** — this is what stops a broken repo state from burning tokens all night. Duration deliberately does not enter the verdict: a six-hour session that shipped nothing is the worst outcome, not an excused one. |
-| Daily budget | Hard ceiling on launches per calendar day. |
-| Work exists | Two cheap `gh` calls. Never boot a session just to discover an empty backlog. A `gh` **failure** is distinguished from an empty backlog, so a network blip cannot silently park the loop. |
-
-**Every session death is classified and logged** to `~/.shipyard/supervisor/<repo>.ledger.jsonl` as `abandoned`, `clean`, or `failed-launch`, with duration, PRs opened, and `in_flight` at death. This is the point of the whole thing: if sessions are dying of predictable context exhaustion then restarting is exactly right, and if it is a crash loop then restarting makes it *worse* — the ledger is what tells the difference. Read it before trusting the loop.
-
-Abandoned session files are **archived to `~/.shipyard/sessions/abandoned/`, never deleted** — a stale session file is the only evidence that a session died rather than exiting cleanly, so discarding it would destroy the signal the supervisor reads. `do-work-supervisor.sh reap` performs that archival on its own, without launching anything.
-
-> ⚠️ **Permissions.** Headless `claude -p` cannot answer permission prompts. The supervisor defaults to `--permission-mode auto` — the posture [`do-work-RATIONALE.md`](plugins/shipyard/commands/do-work-RATIONALE.md) recommends — and deliberately does **not** escalate to `bypassPermissions`. Some dispatches may be denied and recorded rather than silently permitted. Decide this deliberately via `SHIPYARD_SUPERVISOR_PERMISSION_MODE` rather than discovering it at 3am.
-
-All thresholds are `SHIPYARD_SUPERVISOR_*` env vars; run the script with `--help` for the full list.
-
 ## Optional: auto-file issues on skill/agent failure
 
 The plugin can automatically file (or de-dup-comment) a GitHub issue whenever one of its own `shipyard:*` skills or agents appears to have failed during your session — real failures become structured bug reports without anyone typing one up. It is **opt-in**: nothing is filed unless you `export SHIPYARD_AUTOREPORT=1`. Once enabled, `PostToolUse` / `SubagentStop` hooks run [`plugins/shipyard/scripts/report-plugin-error.sh`](plugins/shipyard/scripts/report-plugin-error.sh) detached in the background; it detects failure signals, scrubs secret-shaped tokens, de-dups by signature against open `auto-reported` issues, and always exits 0 so it can't break your session.

@@ -76,8 +76,7 @@ EOF
 }
 
 # `sessions_dir` and `iso_to_epoch` are provided by lib/common.sh (sourced
-# above) — do-work-supervisor.sh reads the same session files and needs
-# identical parsing, so both helpers live there rather than being copied.
+# above) so the session-file path and timestamp parsing have one definition.
 
 # Convert a number of seconds to a compact `Hh Mm Ss` or `Mm Ss` or `Ss`
 # string. Used for elapsed time + stale-age rendering.
