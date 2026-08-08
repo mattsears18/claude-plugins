@@ -8,7 +8,7 @@
 
 > **Background step.** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. Labels are guaranteed to exist by the time the first dispatched agent applies one (the background group typically finishes well before the first worker fires). The canonical label list and `gh label create` calls live in the background group above.
 
-The `shipyard` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers; `user-feedback`/`needs-human-review`/`needs-triage` drive the [refinement pipeline](#35-refine-pending-issues); `needs-human-review` also doubles as the scope-agent epic-handoff surfacing label (applied by [step 6's Deferred recording path](06-scope-preflight.md#6-initial-scope-pre-flight) when the scope agent confirms an issue is non-shippable as a single PR, distinguished from other `needs-human-review` issues by the `<!-- do-work-needs-decomposition -->` body marker that [`/decompose-epic`](../../decompose-epic.md) consumes to auto-shard); `blocked:agent-soft` / `blocked:ci` are shipyard's block-state circuit breakers (applied by step A on agent / fix-checks block, removed by step 3d.1 / 3d.2 sub-sweep c / next-session backlog re-fetch). See [RATIONALE → Step 3 label-purpose provenance](../../do-work-RATIONALE.md#step-3--label-purpose-provenance-520) for the fold/elimination history behind each of these (`needs-refinement` eliminated #520, `blocked:agent-hard` eliminated #521):
+The `shipyard` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers; `user-feedback`/`needs-human-review`/`needs-triage` drive the [refinement pipeline](#35-refine-pending-issues); `needs-human-review` also doubles as the scope-agent epic-handoff surfacing label (applied by [step 6's Deferred recording path](06-scope-preflight.md#6-initial-scope-pre-flight) when the scope agent confirms an issue is non-shippable as a single PR, distinguished from other `needs-human-review` issues by the `<!-- do-work-needs-decomposition -->` body marker that [`/decompose-epic`](../../decompose-epic.md) consumes to auto-shard); `blocked:agent-soft` / `blocked:ci` are shipyard's block-state circuit breakers (applied by step A on agent / fix-checks block, removed by step 3d.1 / 3d.2 sub-sweep c / next-session backlog re-fetch); `discussion` is a manually-applied, never-automated pause signal (a maintainer is engaged in the thread by hand — see CLAUDE.md § "Gate labels"). See [RATIONALE → Step 3 label-purpose provenance](../../do-work-RATIONALE.md#step-3--label-purpose-provenance-520) for the fold/elimination history behind each of these (`needs-refinement` eliminated #520, `blocked:agent-hard` eliminated #521):
 
 ```bash
 gh label create shipyard --repo <owner/repo> --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
@@ -19,8 +19,9 @@ gh label create user-feedback --repo <owner/repo> --description "Originated from
 gh label create needs-human-review --repo <owner/repo> --description "Awaiting a human DECISION before /do-work will touch it" --color D93F0B 2>/dev/null || true
 gh label create agent-console --repo <owner/repo> --description "Blocked on a browser/console action an agent can drive outside the build — not a human decision. See CLAUDE.md's decision rule." --color 1D76DB 2>/dev/null || true
 gh label create needs-triage --repo <owner/repo> --description "Sentry/bot crash reports (auto-investigated). Label is accepted, not required, during migration." --color C2E0C6 2>/dev/null || true
-gh label create blocked:agent-soft --repo <owner/repo> --description "Worker returned a subjective bail (cannot-reproduce / ambiguous / scope-judgment). Auto-cleared at next session; in-session retry after blocked_agent.soft_retry_minutes." --color FBCA04 2>/dev/null || true
+gh label create blocked:agent-soft --repo <owner/repo> --description "Worker returned a subjective bail (cannot-reproduce / ambiguous / scope-judgment). Changes no routing — visibility only; auto-cleared at next session, in-session retry after blocked_agent.soft_retry_minutes." --color FBCA04 2>/dev/null || true
 gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after fix-checks — needs investigation. Auto-cleared when checks recover." --color B60205 2>/dev/null || true
+gh label create discussion --repo <owner/repo> --description "A maintainer is engaged in the comment thread by hand — /do-work skips it while present. Applied manually, never auto-applied." --color BFD4F2 2>/dev/null || true
 
 # `blocked:agent-hard` and the legacy `blocked:agent` label are NO LONGER created
 # (eliminated in #521 — refuses route to needs-human-review, dependency-waits to
@@ -29,12 +30,10 @@ gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after
 # anymore, and step 3d.2 sub-sweep b migrates any still-attached legacy label off.
 #
 # `needs-operator` (the pre-#995 name for `agent-console`) is likewise NOT
-# created here — only `agent-console` is. Every site that MATCHES on this
-# gate label (the step-4 dispatch-exclusion set, the operator sweep, the
-# `/my-turn` filter) still recognizes the legacy `needs-operator` name during
-# the #995 migration window (see CLAUDE.md § "Renamed: needs-operator →
-# agent-console"), so an unrenamed pre-#995 label object on this repo would
-# still be found — but nothing (re-)creates it going forward.
+# created here — only `agent-console` is. The #995 migration window is CLOSED
+# as of #1082 (zero issues in this repo carried `needs-operator` at the time)
+# — no site matches on the legacy name anymore; an unrenamed pre-#995 label
+# object left on a repo is now inert.
 #
 # RETIRED — never add a `gh label create` line for any of these below; doing
 # so would recreate exactly the drift #1081 found (a folded label kept being
@@ -49,6 +48,19 @@ gh label create blocked:ci --repo <owner/repo> --description "CI failed 3x after
 #                          04-backlog-divert.md's dispatch-exclusion
 #                          enumeration as a defensive gate, on top of this
 #                          file's step 3d.2 sub-sweep e migration.
+#   blocked:agent        — superseded by needs-human-review / no-label #521;
+#                          zero all-time usage in this repo. Object left in
+#                          place for manual cleanup — see #1082.
+#   blocked:agent-hard   — eliminated #521 (see above). Zero all-time usage.
+#                          Object left in place for manual cleanup — #1082.
+#   needs-operator       — renamed to agent-console #995; migration window
+#                          closed #1082. Zero all-time usage. Object left in
+#                          place for manual cleanup.
+#   needs-human          — referenced in investigate.md's step-0 bail list
+#                          before #1082 but the label object never existed in
+#                          this repo — a dead reference, not a retired label.
+#                          Removed from investigate.md; nothing to clean up
+#                          on GitHub. Don't reintroduce it.
 ```
 
 **3b. Reap stale agent worktrees from dead Claude Code sessions.**

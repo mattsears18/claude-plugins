@@ -311,6 +311,15 @@ echo '[{"number":1,"labels":[{"name":"agent-console"}]}]' > "$TMP/issues.json"
 out=$(tick)
 assert_contains "$out" "launching" "agent-console counts as workable (agent does it, outside the build)"
 
+# ...and blocked:ci gates too — it's the fix-checks 3-attempt circuit
+# breaker's terminal label (#1082): a PR that's exhausted the fix loop is
+# "settled — human needs to look," not workable-as-is, same as
+# needs-human-review above.
+rm -f "$SHIPYARD_HOME/supervisor/${SLUG}.state.json" "$TMP/claude-invocations"
+echo '[{"number":1,"labels":[{"name":"blocked:ci"}]}]' > "$TMP/issues.json"
+out=$(tick)
+assert_contains "$out" "backlog is drained" "a blocked:ci issue is not workable (circuit breaker tripped)"
+
 # An open PR alone is enough work to justify a session (drain).
 echo '[]' > "$TMP/issues.json"
 echo '[{"number":7}]' > "$TMP/prs.json"

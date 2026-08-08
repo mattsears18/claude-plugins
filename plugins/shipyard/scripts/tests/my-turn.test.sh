@@ -143,8 +143,12 @@ if [[ -f "$cmd_path" ]]; then
     "command surfaces blocked:ci PRs"
   assert_contains "$cmd_path" "needs-human-review" \
     "command surfaces needs-human-review-labeled issues"
-  assert_contains "$cmd_path" "needs-refinement" \
-    "command surfaces needs-refinement-labeled issues"
+  # `needs-refinement` was eliminated #520 and its GitHub label object was
+  # deleted #859 — #1082 removed the dead Pass B bucket + P1 tier entry that
+  # surfaced a label that can never again exist on a live issue. Assert the
+  # dead reference stays gone rather than asserting it's surfaced.
+  assert_not_contains "$cmd_path" "needs-refinement" \
+    "command no longer surfaces the eliminated needs-refinement label (#520, #859, #1082)"
   # Issue #499: design-gated issues are dispatch-excluded by /do-work, so
   # /my-turn must surface them as a human-blocked decision item — otherwise
   # they fall through both loops and stack up with no path to a human.
