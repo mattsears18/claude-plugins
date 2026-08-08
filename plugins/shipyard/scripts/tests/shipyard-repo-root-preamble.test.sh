@@ -45,21 +45,42 @@
 # `$ORCH_WT/.shipyard-primary-root` variant both carry, so the test doesn't
 # hardcode one exact snippet shape and reject an equally-valid alternative.
 #
+# --- File discovery (issue #1105) -------------------------------------------
+#
+# This suite originally walked a hardcoded FILES array (six files named by
+# #1064's own sweep). #1105 converted it to the same MECHANICAL discovery
+# `claude-plugin-root-preamble.test.sh` already uses for the analogous
+# ${CLAUDE_PLUGIN_ROOT} preamble, after the hardcoded array was caught
+# missing a real, live call site: `setup/01b-backlog-overview.md`'s step-2
+# `triage.investigate_dispatch` read called `shipyard-config.sh` post-
+# relocation with no SHIPYARD_REPO_ROOT pin, and was never added to the
+# array (#1064's sweep predates that file growing the call — it isn't in
+# the six files #1064 named). #1105 fixed that specific gap and switched
+# discovery so a NEW call site in a NEW file can't reintroduce it silently —
+# this is the exact rot `claude-plugin-root-preamble.test.sh`'s own #910
+# history describes (59% of real occurrences uncovered before its glob
+# conversion), just found here one file at a time instead of by count.
+#
+# Candidates: every *.md file under commands/do-work/ (recursively, so a
+# future setup/ or operate/ sub-file is swept in automatically) MINUS
+# setup/00-config-worktree.md, which is excluded explicitly rather than
+# scanned-and-ignored — see the Scope paragraph below for why a scan would
+# false-positive there. A candidate with zero call-bearing bash blocks is a
+# no-op (nothing to check), so this glob is safe to keep wide.
+#
 # Scope — explicitly NOT setup/00-config-worktree.md. That file's step 0.4
 # `shipyard-config.sh` reads run BEFORE step 0.5's relocation (against the
 # PRIMARY checkout directly, where SHIPYARD_REPO_ROOT is a no-op — the cwd
 # IS already the primary checkout) and step 0.56 is where the pin itself is
 # DEFINED, not consumed — sweeping that file would produce false positives
-# against reads that are correct exactly as written. The candidate files
-# below are the post-relocation orchestrator surfaces named by #1064's own
-# body plus every other file under commands/do-work/ this session's sweep
-# found calling either script.
+# against reads that are correct exactly as written.
 #
-# Also explicitly NOT any agents/issue-worker/*.md file. Workers run in
-# their OWN isolated worktree, resolve their OWN config against their own
-# cwd, and step 0.56 documents "Scope: orchestrator session only — never
-# propagate into a dispatched worker." A worker-side shipyard-config.sh call
-# correctly has no SHIPYARD_REPO_ROOT pin at all.
+# Also explicitly NOT any agents/issue-worker/*.md file (out of SCAN_DIRS
+# entirely — the glob only walks commands/do-work/). Workers run in their
+# OWN isolated worktree, resolve their OWN config against their own cwd, and
+# step 0.56 documents "Scope: orchestrator session only — never propagate
+# into a dispatched worker." A worker-side shipyard-config.sh call correctly
+# has no SHIPYARD_REPO_ROOT pin at all.
 #
 # Pure bash, no external dependencies. Run with:
 #
@@ -83,21 +104,19 @@ fi
 
 DO_WORK_DIR="$repo_root/plugins/shipyard/commands/do-work"
 
-# Explicit file list rather than a directory-wide glob (issue #354/#910's
-# discovery pattern doesn't fit here): setup/00-config-worktree.md is
-# deliberately excluded (see the Scope note above), so a mechanical
-# recursive glob over commands/do-work/ would need to special-case that one
-# file anyway. Discovery still costs nothing to widen later — add a file
-# here the moment it grows a real call site the sweep should have caught.
-FILES=(
-  "$DO_WORK_DIR/dispatch-rules.md"
-  "$DO_WORK_DIR/drain.md"
-  "$DO_WORK_DIR/steady-state.md"
-  "$DO_WORK_DIR/inline-trivial.md"
-  "$DO_WORK_DIR/setup/00b-parallelization-cache.md"
-  "$DO_WORK_DIR/setup/04-backlog-divert.md"
-  "$DO_WORK_DIR/setup/04d-investigate-routing.md"
-)
+# Mechanical discovery (issue #1105, converting the #354/#910 pattern
+# `claude-plugin-root-preamble.test.sh` already uses for the analogous
+# ${CLAUDE_PLUGIN_ROOT} preamble): every *.md file under commands/do-work/,
+# recursively, MINUS setup/00-config-worktree.md (excluded explicitly — see
+# the Scope note above for why a scan would false-positive there, not just
+# find nothing). A new commands/do-work/ file is covered automatically the
+# moment it grows a real call site — no hand-maintained array entry needed.
+EXCLUDE_FILE="$DO_WORK_DIR/setup/00-config-worktree.md"
+FILES=()
+while IFS= read -r -d '' f; do
+  [[ "$f" == "$EXCLUDE_FILE" ]] && continue
+  FILES+=("$f")
+done < <(find "$DO_WORK_DIR" -type f -name '*.md' -print0 2>/dev/null | sort -z)
 
 pass=0
 fail=0
@@ -113,17 +132,63 @@ assert_fail() {
   fail=$((fail+1))
 }
 
-echo "SHIPYARD_REPO_ROOT pin regression tests (issue #1059/#1064)"
+echo "SHIPYARD_REPO_ROOT pin regression tests (issue #1059/#1064, discovery per #1105)"
 echo
 
-# (1) Discovery sanity — every listed file must actually exist.
-for f in "${FILES[@]}"; do
-  if [[ -f "$f" ]]; then
-    assert_pass "candidate file exists: ${f#"$repo_root"/}"
+# (1) Discovery sanity. A `find` scope regression (wrong repo_root, a
+# directory rename that silently drops commands/do-work/ out of scope) would
+# make FILES empty and every subsequent check "pass" vacuously — the exact
+# false-confidence failure mode #910 was filed to close for the sibling
+# ${CLAUDE_PLUGIN_ROOT} test, now closed here too. Assert discovery found a
+# non-trivial number of files, and that a small canary set of well-known
+# files — including the file #1105 found this array had been missing —
+# was among them.
+if (( ${#FILES[@]} >= 20 )); then
+  assert_pass "discovery found ${#FILES[@]} candidate *.md files under commands/do-work/ (minus setup/00-config-worktree.md)"
+else
+  assert_fail "discovery found ${#FILES[@]} candidate *.md files under commands/do-work/ (expected >= 20 — DO_WORK_DIR or repo_root may be wrong)"
+fi
+
+CANARY_FILES=(
+  "$DO_WORK_DIR/dispatch-rules.md"
+  "$DO_WORK_DIR/drain.md"
+  "$DO_WORK_DIR/steady-state.md"
+  "$DO_WORK_DIR/inline-trivial.md"
+  "$DO_WORK_DIR/setup/00b-parallelization-cache.md"
+  "$DO_WORK_DIR/setup/04-backlog-divert.md"
+  "$DO_WORK_DIR/setup/04d-investigate-routing.md"
+  "$DO_WORK_DIR/setup/01b-backlog-overview.md"
+)
+for canary in "${CANARY_FILES[@]}"; do
+  found=0
+  for f in "${FILES[@]}"; do
+    [[ "$f" == "$canary" ]] && { found=1; break; }
+  done
+  if (( found )); then
+    assert_pass "discovery includes canary file ${canary#"$repo_root"/}"
   else
-    assert_fail "candidate file exists: ${f#"$repo_root"/} (missing — file moved/renamed?)"
+    assert_fail "discovery includes canary file ${canary#"$repo_root"/} (missing — DO_WORK_DIR or exclude list may have regressed)"
   fi
 done
+
+# (1b) The excluded file must still exist and still be excluded — a rename
+# of setup/00-config-worktree.md would silently stop excluding anything
+# (EXCLUDE_FILE just wouldn't match), re-introducing the false-positive scan
+# the Scope note above documents.
+if [[ -f "$EXCLUDE_FILE" ]]; then
+  assert_pass "setup/00-config-worktree.md (the excluded pre-relocation file) still exists at the expected path"
+else
+  assert_fail "setup/00-config-worktree.md (the excluded pre-relocation file) still exists at the expected path (renamed? EXCLUDE_FILE needs updating)"
+fi
+excluded_ok=1
+for f in "${FILES[@]}"; do
+  [[ "$f" == "$EXCLUDE_FILE" ]] && excluded_ok=0
+done
+if (( excluded_ok )); then
+  assert_pass "setup/00-config-worktree.md is excluded from the scanned FILES set"
+else
+  assert_fail "setup/00-config-worktree.md is excluded from the scanned FILES set (exclude filter regressed)"
+fi
 
 # (2) Walk every bash code block in every scanned file, IN FILE ORDER. A
 # block that invokes shipyard-config.sh or resolve-dispatch-model.sh must
