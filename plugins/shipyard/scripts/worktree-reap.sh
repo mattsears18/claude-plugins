@@ -111,10 +111,39 @@
 #     liveness for the WHOLE batch with exactly one `ps -e -o pid=` call
 #     (checked in-memory per lock), walks the self-ancestor chain exactly
 #     once, and batch-`stat`s every worktree directory's mtime in one call.
-#     Same classification vocabulary as `classify-lock`. Emits one line per
-#     `agent-*` worktree: `<name> <classification> <lock-pid|null>`, sorted
-#     oldest-first by worktree-dir mtime so a caller implementing a
-#     bounded, oldest-first reap can consume the output directly.
+#     Emits one line per `agent-*` worktree: `<name> <classification>
+#     <lock-pid|null>`, sorted oldest-first by worktree-dir mtime so a
+#     caller implementing a bounded, oldest-first reap can consume the
+#     output directly.
+#
+#     Classification vocabulary is `classify-lock`'s PLUS one extra state,
+#     `no-lock-recent` (issue #1147) — see that issue's writeup below for
+#     why: a harness-provisioned `isolation: "worktree"` dispatch (the
+#     default Agent-tool shape since #830) never writes a shipyard lock
+#     file, so a currently-running worker's worktree classifies identically
+#     to `no-lock` under the plain PID-liveness check `classify-lock` alone
+#     performs. `classify-all` additionally consults the worktree
+#     DIRECTORY's own mtime for every `no-lock` candidate (mirroring the
+#     `peer-alive` / `peer-alive-stale` mtime floor above — same
+#     `--peer-stale-min` knob, same calibration tradeoff): a directory
+#     touched within the floor is presumed live and reported as
+#     `no-lock-recent` (defer — same posture as `peer-alive`); older than
+#     the floor (or the directory's mtime can't be resolved at all — fail
+#     CLOSED on a destructive operation, not open) falls through to the
+#     original `no-lock` (reap-eligible) verdict. This is a narrower,
+#     defense-in-depth backstop for the cross-session case (a peer
+#     orchestrator's live agent, whose `.in_flight` this process cannot
+#     read) — the PRIMARY guard for a live agent belonging to THIS
+#     session's own `.in_flight` is `reap-stale`'s own mandatory
+#     cross-check, documented below; `no-lock-recent` exists for the case
+#     that check cannot cover. `classify-lock` (the single-worktree
+#     subcommand) is intentionally NOT changed — every one of its own call
+#     sites (dispatch-rules §2d, drain's pre-dispatch reap, steady-state's
+#     A.0.5/A.1/step-B, cleanup-summary) already checks `.in_flight`
+#     membership BEFORE ever consulting it, per `commands/do-work/dont.md`'s
+#     "Don't reap a live-PID worktree" rule — `classify-all` is the one
+#     bulk, cross-worktree sweep that had no such per-call prose guard, and
+#     issue #1147's repro is specific to it.
 #     Exit codes:
 #       0  enumeration succeeded (output may be empty)
 #       64 bad usage (missing --repo-root, malformed flag value)
@@ -125,16 +154,34 @@
 #     Issue #836 fix 2 — bound + checkpoint the cross-session stale-
 #     worktree sweep. Built on `classify-all`: reaps at most
 #     `--max-per-session` reap-eligible worktrees this session, oldest
-#     first; peer-alive worktrees are always deferred (not counted against
-#     the cap); anything reap-eligible beyond the cap is left untouched on
-#     disk — the remaining backlog on disk IS the checkpoint, so the next
-#     session's sweep naturally continues from where this one stopped with
-#     no separate state file to maintain. `--exclude-agent-id` (repeatable)
-#     excludes a worktree from consideration entirely, BEFORE
-#     classification is even consulted — the in-flight guard (issue #832):
-#     a currently-dispatched slot's worktree must never be reaped
-#     regardless of what its lock classifies as, because branch name is
-#     never a liveness signal (see commands/do-work/dont.md).
+#     first; `peer-alive` / `no-lock-recent` worktrees are always deferred
+#     (not counted against the cap); anything reap-eligible beyond the cap
+#     is left untouched on disk — the remaining backlog on disk IS the
+#     checkpoint, so the next session's sweep naturally continues from
+#     where this one stopped with no separate state file to maintain.
+#     `--exclude-agent-id` (repeatable) excludes a worktree from
+#     consideration entirely, BEFORE classification is even consulted — the
+#     in-flight guard (issue #832): a currently-dispatched slot's worktree
+#     must never be reaped regardless of what its lock classifies as,
+#     because branch name is never a liveness signal (see
+#     commands/do-work/dont.md).
+#
+#     Mandatory in-flight cross-check (issue #1147). `--exclude-agent-id`
+#     above is only as good as every calling site remembering to compute
+#     and pass it — nothing enforced that. `reap-stale` now ALSO reads
+#     `$SHIPYARD_HOME/sessions/<session-id>.json`'s `.in_flight[].agent_id`
+#     directly (the SAME session-id already required as `--session-id`) and
+#     unions those agent-ids into the exclude set automatically, before any
+#     classification happens — turning the guard from "the orchestrator's
+#     prose remembered to wire it" into "the subcommand cannot be called
+#     without it." `--exclude-agent-id` remains available additionally
+#     (e.g. to protect an agent-id from a DIFFERENT session's state). Best
+#     effort: when the session file doesn't exist yet, or `jq` isn't on
+#     PATH, this step is silently skipped and the sweep proceeds on
+#     whatever `--exclude-agent-id` flags (and `no-lock-recent`'s
+#     mtime-floor backstop) it has — a missing cross-check here does not
+#     block the sweep, but it also isn't the only guard: `no-lock-recent`
+#     above still defers a freshly-touched `no-lock` worktree either way.
 #     Stdout: one `reaped: <name>` / `unreaped: <name>` (issue #712 —
 #       verified end state, not intent) / `deferred: <name>` line per
 #       acted-upon worktree, followed by exactly one summary line:
@@ -411,23 +458,41 @@ classify-all              — Issue #836. Bulk classification: reads every
                           per worktree — `<name> <classification>
                           <lock-pid|null>` — sorted oldest-first by
                           worktree-dir mtime. Same classification
-                          vocabulary as classify-lock.
+                          vocabulary as classify-lock PLUS `no-lock-recent`
+                          (issue #1147): a `no-lock` candidate whose
+                          worktree DIRECTORY was touched within the
+                          --peer-stale-min floor (or whose mtime can't be
+                          resolved at all) is presumed live and reported
+                          as `no-lock-recent` instead — defer, same
+                          posture as peer-alive. Defense-in-depth backstop
+                          for a harness-provisioned isolation:"worktree"
+                          dispatch, which never writes a shipyard lock
+                          file and so classifies identically to a
+                          genuinely-abandoned worktree under PID-liveness
+                          alone.
 
 reap-stale                — Issue #836 fix 2. Bounded, checkpointed sweep
                           built on classify-all: reaps at most
                           --max-per-session (default 10) reap-eligible
-                          worktrees, oldest-first, defers peer-alive ones,
-                          and leaves the remainder on disk — the on-disk
-                          backlog itself is the checkpoint, so a later
-                          session picks up where this one left off with no
-                          separate state file. --exclude-agent-id (repeat)
-                          skips a worktree entirely before classification
-                          is even consulted (issue #832 in-flight guard —
-                          branch name is never a liveness signal). Emits
-                          reaped:/unreaped:/deferred: lines plus one
-                          `summary: reaped=<R> deferred=<D> unreaped=<U>
-                          remaining=<REMAIN>` line. --dry-run skips
-                          removes and audit writes.
+                          worktrees, oldest-first, defers peer-alive /
+                          no-lock-recent ones, and leaves the remainder on
+                          disk — the on-disk backlog itself is the
+                          checkpoint, so a later session picks up where
+                          this one left off with no separate state file.
+                          --exclude-agent-id (repeat) skips a worktree
+                          entirely before classification is even consulted
+                          (issue #832 in-flight guard — branch name is
+                          never a liveness signal). ALSO auto-derives the
+                          same exclusion from
+                          $SHIPYARD_HOME/sessions/<session-id>.json's
+                          .in_flight[].agent_id (issue #1147) — mandatory,
+                          not dependent on the caller remembering to pass
+                          --exclude-agent-id; best-effort skipped when the
+                          session file doesn't exist yet or jq isn't on
+                          PATH. Emits reaped:/unreaped:/deferred: lines
+                          plus one `summary: reaped=<R> deferred=<D>
+                          unreaped=<U> remaining=<REMAIN>` line. --dry-run
+                          skips removes and audit writes.
 
 detect-orchestrator-pid, derive-session-id, find-orphan-orchestrators
                         — Issue #941: moved to the sibling script
@@ -949,18 +1014,72 @@ classify_all() {
     stat_mtimes+=("$mtime")
   done <<< "$stat_out"
 
+  # Issue #1147 — `now`, computed ONCE for the whole batch (not once per
+  # no-lock candidate), used below by the no-lock-recent staleness gate.
+  # Same batching philosophy as alive_blob / self_ancestor_blob above: one
+  # subprocess for the entire sweep, not O(n).
+  local batch_now
+  batch_now=$(date +%s 2>/dev/null || echo "")
+
   # Pass 5 — classify each worktree from the in-memory data built above.
   # Only a peer-alive candidate (alive, not self/ancestor) pays a per-lock
   # `stat` call, for the staleness gate — every other branch is pure
   # in-memory lookup / pattern match.
   local out_lines=()
-  local i found_mtime j classification
+  local i found_mtime j classification no_lock_age_min
   for ((i = 0; i < ${#names[@]}; i++)); do
     name="${names[$i]}"
     pid="${lock_pids[$i]}"
+
+    # Linear-scan lookup of this worktree's directory mtime by name — moved
+    # ahead of classification (issue #1147) so the no-lock branch below can
+    # consult it.
+    found_mtime="0"
+    for ((j = 0; j < ${#stat_names[@]}; j++)); do
+      if [ "${stat_names[$j]}" = "$name" ]; then
+        found_mtime="${stat_mtimes[$j]}"
+        break
+      fi
+    done
+
     classification=""
     if [ "${lock_exists[$i]}" = "0" ]; then
-      classification="no-lock"
+      # Issue #1147 — a harness-provisioned `isolation: "worktree"`
+      # dispatch (the default Agent-tool shape since #830) never writes a
+      # shipyard lock file, so a currently-running worker's worktree
+      # classifies identically to `no-lock` under plain PID-liveness. The
+      # mandatory in-flight cross-check in `reap_stale` (below) is the
+      # PRIMARY guard for THIS session's own live agents; this is the
+      # defense-in-depth layer for the cross-session case (a peer
+      # orchestrator's live agent, whose in_flight this process cannot
+      # read). Mirror the existing peer-alive-stale mtime floor exactly —
+      # same `peer_stale_min` knob, same calibration tradeoff documented at
+      # the top of this file ("Why a second gate"): a worktree DIRECTORY
+      # touched within the floor is presumed live and deferred, exactly
+      # like a fresh peer-alive lock; older than the floor falls through to
+      # the original `no-lock` (reap-eligible) verdict.
+      #
+      # Fail CLOSED, not open, when the mtime can't be resolved at all
+      # (found_mtime stayed "0" — the stat lookup found nothing for this
+      # name, e.g. a dangling `.git/worktrees` registration with no
+      # `.claude/worktrees` directory left to stat): treat as
+      # no-lock-recent (deferred), mirroring classify_lock's own
+      # unresolvable-mtime fallback to `peer-alive` rather than to a
+      # reap-eligible state. This is safe either way — a genuinely
+      # nonexistent directory has nothing for `reap_action` to destroy, and
+      # a dangling registration with no live worktree gets pruned by the
+      # unconditional `git worktree prune` every reap-stale caller already
+      # runs right after this sweep.
+      if [ -n "$found_mtime" ] && [ "$found_mtime" != "0" ] && [ -n "$batch_now" ]; then
+        no_lock_age_min=$(( (batch_now - found_mtime) / 60 ))
+        if [ "$no_lock_age_min" -ge "$peer_stale_min" ] 2>/dev/null; then
+          classification="no-lock"
+        else
+          classification="no-lock-recent"
+        fi
+      else
+        classification="no-lock-recent"
+      fi
     elif [ -z "$pid" ]; then
       classification="dead"
     elif [[ "$alive_blob" == *$'\n'"$pid"$'\n'* ]]; then
@@ -987,15 +1106,6 @@ classify_all() {
     else
       classification="dead"
     fi
-
-    # Linear-scan lookup of this worktree's directory mtime by name.
-    found_mtime="0"
-    for ((j = 0; j < ${#stat_names[@]}; j++)); do
-      if [ "${stat_names[$j]}" = "$name" ]; then
-        found_mtime="${stat_mtimes[$j]}"
-        break
-      fi
-    done
 
     out_lines+=("$found_mtime $name $classification ${pid:-null}")
   done
@@ -2036,17 +2146,49 @@ reap_stale() {
     return 64
   fi
 
+  # Issue #1147 — mandatory in-flight cross-check. `--exclude-agent-id` is
+  # only as protective as every calling site remembering to compute and
+  # pass it, and nothing enforced that — the repro that motivated this: a
+  # harness-provisioned isolation:"worktree" dispatch (the default
+  # Agent-tool shape since #830) never writes a shipyard lock file, so
+  # classify-all reports `no-lock` for a currently-running worker
+  # identically to a genuinely-abandoned one, and the ONLY thing standing
+  # between reap-stale and destroying it was --exclude-agent-id having
+  # actually been passed. Read THIS session's own live agent-ids directly
+  # from its session-state file — the SAME --session-id already required
+  # above — and union them into the exclude set automatically, so the
+  # guard no longer depends on the caller's own bookkeeping.
+  #
+  # Best-effort: a missing session file (the session hasn't flushed state
+  # yet, or a synthetic --session-id in a test) or a missing `jq` binary
+  # silently skips this step rather than failing the whole sweep —
+  # --exclude-agent-id (explicit) and classify_all's no-lock-recent mtime
+  # floor (defense in depth, see classify_all's own docstring) still apply
+  # either way, so this isn't the only guard in play.
+  local -a in_flight_agent_ids=()
+  local session_state_file
+  session_state_file="$(shipyard_home)/sessions/${session_id}.json"
+  if [ -f "$session_state_file" ] && command -v jq >/dev/null 2>&1; then
+    local ifaid
+    while IFS= read -r ifaid; do
+      [ -z "$ifaid" ] && continue
+      in_flight_agent_ids+=("$ifaid")
+    done < <(jq -r '.in_flight[]?.agent_id // empty' "$session_state_file" 2>/dev/null)
+  fi
+
   # Build the exclude set (bare agent-ids -> agent-<id> worktree names) as a
   # sentinel-delimited string for membership checks — bash-3.2 compatible
   # (no associative arrays), same pattern reap_session_worktrees' `seen_csv`
-  # already uses in this file.
+  # already uses in this file. Union of the explicit --exclude-agent-id
+  # flags AND the auto-derived in-flight set above — either source alone
+  # protects an id; this is deliberately additive, never a replacement.
   local excluded_blob="|"
   local eid
   # `${arr[@]+"${arr[@]}"}` is the bash-3.2-safe expansion for "possibly
   # empty array under set -u" — bash < 4.4 treats a bare `"${arr[@]}"` on a
   # zero-element array as an unbound-variable error under `set -u`, and
   # --exclude-agent-id is commonly omitted entirely (no in-flight workers).
-  for eid in "${exclude_ids[@]+"${exclude_ids[@]}"}"; do
+  for eid in "${exclude_ids[@]+"${exclude_ids[@]}"}" "${in_flight_agent_ids[@]+"${in_flight_agent_ids[@]}"}"; do
     excluded_blob+="agent-${eid}|"
   done
 
@@ -2080,7 +2222,13 @@ reap_stale() {
 
     worktree_path="$repo_root/.claude/worktrees/$name"
 
-    if [ "$classification" = "peer-alive" ]; then
+    # Defer on peer-alive (a genuine cross-session peer, alive and fresh)
+    # OR no-lock-recent (issue #1147 — a no-lock candidate whose worktree
+    # directory was touched within the staleness floor, presumed live in
+    # the absence of a lock file to check). `--reason` carries the ACTUAL
+    # classification into the audit line rather than a hardcoded
+    # "peer-alive" that would misreport a no-lock-recent defer.
+    if [ "$classification" = "peer-alive" ] || [ "$classification" = "no-lock-recent" ]; then
       printf 'deferred: %s\n' "$name"
       deferred_count=$((deferred_count + 1))
       if [ "$dry_run" -eq 0 ]; then
@@ -2089,7 +2237,7 @@ reap_stale() {
           --worktree-path "$worktree_path" \
           --worktree-name "$name" \
           --session-id "$session_id" \
-          --reason "peer-alive" \
+          --reason "$classification" \
           --phase "setup-3b" \
           --lock-pid "$pid" \
           >/dev/null 2>&1 || true
