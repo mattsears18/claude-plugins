@@ -147,10 +147,10 @@ atomic_write() {
 # sessions_dir — directory holding the per-session state files written by
 # the `/do-work` orchestrator (`<session-id>.json`).
 #
-# Extracted from status.sh, which owned the only copy until
-# do-work-supervisor.sh needed the same path to run its liveness check
-# against. Both consumers read the same directory, so the path belongs in
-# one place rather than being open-coded a second time.
+# Extracted from status.sh, its genuine consumer, so the path belongs in
+# one place rather than being open-coded per caller. (A second consumer,
+# do-work-supervisor.sh, once read the same directory for its liveness
+# check; it was removed in #1150 — shelved and non-functional.)
 # --------------------------------------------------------------------------
 sessions_dir() {
   local home
@@ -164,14 +164,13 @@ sessions_dir() {
 #
 # macOS BSD date and GNU date disagree on the input flag (`-j -f` vs `-d`),
 # so both are tried in turn. Extracted byte-for-byte from status.sh's copy
-# (which is now deleted in favour of this one) because
-# do-work-supervisor.sh needs identical parsing to compute session
-# durations from the same `started_at` field status.sh renders.
+# (which is now deleted in favour of this one) to parse the same
+# `started_at` field status.sh renders.
 #
-# Printing `0` rather than failing is deliberate and load-bearing for both
-# callers: a session file with a malformed timestamp should degrade to
-# "epoch zero, therefore very old" and stay visible, not abort the whole
-# dashboard render or supervisor tick.
+# Printing `0` rather than failing is deliberate and load-bearing: a
+# session file with a malformed timestamp should degrade to "epoch zero,
+# therefore very old" and stay visible, not abort the whole dashboard
+# render.
 # --------------------------------------------------------------------------
 iso_to_epoch() {
   local ts="$1"

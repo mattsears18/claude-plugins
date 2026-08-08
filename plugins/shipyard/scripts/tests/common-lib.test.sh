@@ -199,9 +199,9 @@ a=$(bash -c "source '$lib'; iso_to_epoch '2026-08-06T12:00:00Z'")
 b=$(bash -c "source '$lib'; iso_to_epoch '2026-08-06T12:00:00'")
 assert_equals "$a" "$b" "iso_to_epoch strips the trailing Z"
 
-# Degrading to 0 rather than failing is load-bearing for both callers:
-# status.sh must still render, and do-work-supervisor.sh must still tick,
-# when a single session file carries a malformed timestamp.
+# Degrading to 0 rather than failing is load-bearing for status.sh: it
+# must still render when a single session file carries a malformed
+# timestamp.
 out=$(bash -c "source '$lib'; iso_to_epoch ''")
 assert_equals "$out" "0" "iso_to_epoch returns 0 for an empty timestamp"
 
