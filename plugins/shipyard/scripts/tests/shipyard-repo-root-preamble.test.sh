@@ -96,6 +96,7 @@ FILES=(
   "$DO_WORK_DIR/inline-trivial.md"
   "$DO_WORK_DIR/setup/00b-parallelization-cache.md"
   "$DO_WORK_DIR/setup/04-backlog-divert.md"
+  "$DO_WORK_DIR/setup/04d-investigate-routing.md"
 )
 
 pass=0
