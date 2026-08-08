@@ -579,6 +579,58 @@ if [[ -f "$cmd_path" ]]; then
     "backlog-ownership.md's agent-console row states its config precondition inline (#1093)"
   assert_contains "$ownership_path" "my_turn.assume_operator_enabled" \
     "backlog-ownership.md cross-references the assume_operator_enabled knob (#1093)"
+
+  # Config-conditional DIRTY-PR author-scoping ownership (issue #1075). Before
+  # this fix, /my-turn surfaced ANY DIRTY PR >24h without distinguishing
+  # author — but /do-work's drain-phase fix-rebase already adopts and
+  # rebases @me-authored DIRTY PRs across sessions, so surfacing them here
+  # too was a false-positive overlap. A related in-flight issue (#1093, PR
+  # #1122) flagged that a naive author-only scoping fix would itself be
+  # wrong once ci.skip_drain_rebase is considered: that knob turns OFF
+  # drain-phase rebase dispatch entirely, so a @me DIRTY PR under that
+  # config isn't actually being adopted by anything, and an unconditional
+  # author-scoped exclusion would strand it exactly like the pre-#1093
+  # agent-console filter stranded operator items under --no-operate. These
+  # assertions guard: a dedicated setup step resolves the existing
+  # ci.skip_drain_rebase knob (no new schema entry — it already exists);
+  # the Pass A DIRTY-PR signal, the Human-only queue filter's new
+  # /do-work-owns-@me-DIRTY-PRs bullet, the P2 ranking tier, and the
+  # leverage-score-1 fallback bucket are all gated on it with both branches
+  # stated explicitly; a failed resolution degrades to surfacing (not
+  # hiding); and the two non-observable rebase give-up states
+  # (rebase_blocked_prs, the rate-limit cap) are preserved as a
+  # bottom-of-tier fallback rather than silently dropped, per the issue's
+  # own "prefer keeping @me DIRTY PRs at the bottom of P2 over dropping
+  # them silently" guidance.
+  assert_contains "$cmd_path" "ci.skip_drain_rebase" \
+    "command resolves the existing ci.skip_drain_rebase config knob for DIRTY-PR scoping (#1075)"
+  assert_contains "$cmd_path" "Resolve \`ci.skip_drain_rebase\` for the DIRTY-PR author-scoping gate" \
+    "command documents a dedicated setup step for the DIRTY-PR author-scoping gate (#1075)"
+  assert_contains "$cmd_path" "author.login != \$ME" \
+    "command scopes the DIRTY-PR signal to non-@me authors under the default config (#1075)"
+  assert_contains "$cmd_path" "rebase_blocked_prs" \
+    "command names the non-observable rebase-blocked give-up state as a carve-out (#1075)"
+  assert_contains "$cmd_path" "rate-limit cap" \
+    "command names the non-observable rebase rate-limit-cap give-up state as a carve-out (#1075)"
+  assert_contains "$cmd_path" "per-session, in-memory drain" \
+    "command states the rebase give-up states are not gh-observable session-local bookkeeping (#1075)"
+  assert_contains "$cmd_path" "prefer keeping" \
+    "command states the fail-safe preference for surfacing over dropping a @me DIRTY PR (#1075)"
+  assert_contains "$cmd_path" "only when \`ci.skip_drain_rebase: false\`" \
+    "command gates the @me DIRTY-PR fallback bucket on the config knob (#1075)"
+  assert_contains "$cmd_path" "ci.skip_drain_rebase: true" \
+    "command documents the unscoped (all-authors) branch when drain-phase rebase is disabled (#1075)"
+  assert_contains "$cmd_path" "#1075" \
+    "command cites issue #1075 for the config-conditional DIRTY-PR author-scoping fix"
+
+  # ci.skip_drain_rebase is a pre-existing /do-work-side knob (drain.md),
+  # not a new my_turn.* one — confirm it's declared in both layers already
+  # (regression guard: if a future refactor renamed or removed it without
+  # updating this command, the reference above would silently go stale).
+  assert_contains "$config_script" "skip_drain_rebase" \
+    "shipyard-config.sh already declares a built-in default for ci.skip_drain_rebase (#1075)"
+  assert_contains "$schema_path" "skip_drain_rebase" \
+    "shipyard.config.schema.json already declares ci.skip_drain_rebase (#1075)"
 fi
 
 echo
