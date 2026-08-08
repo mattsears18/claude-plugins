@@ -11,6 +11,10 @@
 #   $ plugins/shipyard/scripts/do-work-supervisor.sh reap
 #   permission denied
 #
+# (do-work-supervisor.sh itself was later deleted in #1150 — shelved and
+# non-functional — but the exec-bit class of bug it exposed is independent
+# of that one script, which is why this guard stays.)
+#
 # A second, older instance (verify-new-dep-versions.sh, documented for
 # direct invocation in the adding-dependencies skill) was found by the same
 # sweep, which is what makes this a class worth guarding rather than a
@@ -88,14 +92,15 @@ else
 fi
 
 # --------------------------------------------------------------------------
-echo "== the two files that motivated this guard"
+echo "== the file that motivated this guard"
 # --------------------------------------------------------------------------
+# do-work-supervisor.sh (the original 100644 offender) was deleted in
+# #1150; verify-new-dep-versions.sh is the remaining directly-invocable
+# script whose exec bit this guard was built to protect.
 
-for f in plugins/shipyard/scripts/do-work-supervisor.sh \
-         plugins/shipyard/scripts/verify-new-dep-versions.sh; do
-  mode=$(git ls-files -s "$f" | awk '{print $1}')
-  assert_equals "$mode" "100755" "$(basename "$f") is committed 100755"
-done
+f="plugins/shipyard/scripts/verify-new-dep-versions.sh"
+mode=$(git ls-files -s "$f" | awk '{print $1}')
+assert_equals "$mode" "100755" "$(basename "$f") is committed 100755"
 
 # --------------------------------------------------------------------------
 echo "== every production script starts with a shebang"
