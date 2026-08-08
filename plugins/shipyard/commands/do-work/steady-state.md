@@ -264,9 +264,10 @@ dirty=$(git -C "$worktree_path" status --porcelain 2>/dev/null)
    Either way, the message/prompt:
    - States plainly that this is a **resume**, not a fresh start, and **opens with the orchestrator's own verified reading from step 2** — not a request for the worker to re-derive it.
    - Instructs the worker to **stop waiting on any background process or `Monitor` subscription** — that mechanism cannot notify it again inside a resume — and to **re-run the blocking command (the test suite, the long-running check) synchronously in the foreground**, reading its exit status directly, exactly as `shipyard:worker-preamble`'s "Run all work synchronously to a terminal state" rule already requires of every dispatch.
+   - **Explicitly forbids arming a NEW background process for any LATER step in the same resumed dispatch, not only re-waiting on the one it's being resumed from ([#1111](https://github.com/mattsears18/shipyard/issues/1111)).** The instruction above stops the worker re-subscribing to the *specific* wait it was killed on; on its own it doesn't say anything about a *different* operation later in the same turn. The #1111 repro shows the gap concretely: a `fix-checks-only` worker resumed for a backgrounded CI-verification wait, correctly stopped waiting on that one — then went on to background its next `git commit` (tracked via a fresh `Monitor`) and stalled a second time on the same target. One resume telling a worker to stop waiting on a specific thing does not reliably generalize to "don't background anything else either" — the resume message has to say so.
    - Tells the worker to then proceed through its mode's normal terminal steps (commit, push, open the PR, or continue past whatever step the step-2 reading shows is next) once the foreground command completes, and to return one of its mode's normal terminal strings.
 
-   **Canned resume-message template ([#1054](https://github.com/mattsears18/shipyard/issues/1054)) — fill in the bracketed fields from step 2's verified reading rather than improvising prose per incident:**
+   **Canned resume-message template ([#1054](https://github.com/mattsears18/shipyard/issues/1054), strengthened by [#1111](https://github.com/mattsears18/shipyard/issues/1111)) — fill in the bracketed fields from step 2's verified reading rather than improvising prose per incident:**
    ```
    RESUME (not a fresh start) — target #<slot-target>, worktree <worktree_path>, branch <branch>.
 
@@ -277,12 +278,16 @@ dirty=$(git -C "$worktree_path" status --porcelain 2>/dev/null)
    - open PR for this branch: <#M | none>
 
    Stop waiting on any background process or Monitor subscription now — it cannot
-   notify you again inside this resume. If you were blocked on a long-running
-   command, re-run it synchronously in the foreground and read its exit status
-   directly. Then proceed through your mode's normal terminal steps from the
-   verified state above (commit if not yet committed, push, open the PR, arm
-   auto-merge) and return one of your mode's normal terminal strings — not a
-   narrative.
+   notify you again inside this resume. This applies for the REST of this
+   dispatch, not only the thing you were waiting on: do not arm a NEW background
+   process either (a `run_in_background` Bash call, a Monitor, a backgrounded
+   commit or pre-commit hook) for any later step — a worker resumed once has been
+   observed re-backgrounding a different operation and stalling a second time on
+   the same target (#1111). If you were blocked on a long-running command, re-run
+   it synchronously in the foreground and read its exit status directly. Then
+   proceed through your mode's normal terminal steps from the verified state
+   above (commit if not yet committed, push, open the PR, arm auto-merge) and
+   return one of your mode's normal terminal strings — not a narrative.
    ```
 4. Log `[reconcile-A.0.5-resume] slot=<slot-id> target=#<slot-target> stalled resume attempt 1/1 via <SendMessage|fresh-agent()-call> into existing worktree <worktree_path> (#838/#833)` and append a `stalled_dispatches` entry (see [`orchestrator-state-reference.md`](./orchestrator-state-reference.md#cold-orchestrator-state-structures)) with `outcome: "resumed"`. End this turn's A.0.5 handling for this slot — the resume becomes the slot's new in-flight agent (for a `SendMessage` resume, `.in_flight.<slot>.agent_id` is unchanged since it's the same agent; for a fresh `agent()` call, update it to the new call's id). Its own completion re-enters this same reconcile flow on its own wake, subject to the same detection and the now-exhausted retry cap.
 5. When the resume itself later returns a genuine terminal string, A.1's normal per-mode handling processes it exactly as if it had arrived on the first attempt — `stalled` is invisible to A.1's return vocabulary once it resolves; update the `stalled_dispatches` entry's `resumed_pr` field to the shipped PR number, if any. If the resume stalls again, the cap (step 1) is now exhausted — the NEXT stalled (or `status: failed`) wake for that target falls through to the ordinary crash-recovery path below and its own `stalled_dispatches` entry records `outcome: "handed-back"`.

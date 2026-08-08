@@ -1204,6 +1204,38 @@ assert_contains "$issue_work_path" \
 assert_contains "$issue_work_path" "**at most one** full sweep" \
   "issue-work.md's #1113 guidance caps a full sweep at one, on top of the targeted minimum"
 
+# Issue #1111 — workers routinely ended their turn waiting on a background
+# job THEY THEMSELVES launched (a Monitor-tracked commit, a background
+# verification wait), returning narrative prose instead of a terminal
+# string. Observed five times in one session across issue-work and
+# fix-checks-only, including the SAME worker doing it twice in a row on the
+# same PR — once, then again immediately after an A.0.5 resume that had
+# already told it to stop waiting on the specific thing it was resumed for.
+# That finding is the residual gap #1054/#1113 didn't close: the resume
+# message stopped the worker re-subscribing to ITS OLD wait but said nothing
+# about arming a NEW one for a later step. Fix: strengthen the canned
+# resume-message template (steady-state.md, shared across all seven modes'
+# A.0.5 resume path) to forbid backgrounding anything for the rest of the
+# dispatch, and reinforce fix-checks-only.md's `pending` return as a
+# success-shaped terminal, not something to keep watching after you've
+# earned it.
+fix_checks_only_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
+
+assert_contains "$steady_state_hot_path" \
+  "This applies for the REST of this" \
+  "steady-state.md's canned resume template forbids backgrounding anything for the rest of the dispatch (#1111)"
+assert_contains "$steady_state_hot_path" "#1111" \
+  "steady-state.md's resume-template strengthening cites the originating issue"
+assert_contains "$steady_state_hot_path" \
+  "re-backgrounding a different operation and stalling a second time on" \
+  "steady-state.md documents the #1111 same-worker-twice-in-a-row finding"
+
+assert_contains "$fix_checks_only_path" \
+  "\`pending\` is a success-shaped outcome, not a partial or lesser one" \
+  "fix-checks-only.md frames pending as a success-shaped terminal (#1111)"
+assert_contains "$fix_checks_only_path" "#1111" \
+  "fix-checks-only.md's pending reinforcement cites the originating issue"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
