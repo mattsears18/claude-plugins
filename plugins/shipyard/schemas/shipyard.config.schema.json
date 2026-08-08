@@ -480,6 +480,11 @@
           "default": true,
           "description": "Disposition-call detection toggle (issue #1074): whether /my-turn's Phase 1 recognizes a needs-human-review issue (or draft PR) whose gated work is already complete or all-but-complete as a batchable disposition call (close as done / keep open / close and split), derived entirely from the already-fetched survey projection (labels, updatedAt, last-3-comments, closingIssuesReferences) with no extra gh round-trip. Default true. Set false to disable the heuristic entirely and fall back to the pre-#1074 behavior (such an issue is treated as a plain needs-human-review item, walked in Phase 3) — e.g. if the completion-assertion phrase matching produces false positives on a repo's comment conventions."
         },
+        "assume_operator_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Declared assumption (issue #1093) about whether THIS repo's /shipyard:do-work runs are actually draining `agent-console` items via the browser-operator phase. /my-turn's Human-only queue filter excludes agent-console issues on the premise that /do-work's operator phase drains them — true only when /do-work is NOT run with --no-operate / --hands-off. That flag is per-invocation and not persisted, so /my-turn (a separate command run) cannot observe which way the last /do-work run was actually started; reading /do-work's live session state directly is tracked separately by issue #1080 and is NOT what this knob does. Default true matches /do-work's own operator-inclusive-by-default posture — the common case. Set false for a repo whose maintainer habitually runs /do-work with --no-operate / --hands-off: /my-turn then stops filtering agent-console items to a one-line pointer and instead walks them in the human-only queue directly, since nothing is automatically draining them. This is a declared assumption, not an observed fact, and will occasionally be wrong if the invocation pattern varies run to run — it is the best available approximation until #1080 lands."
+        },
         "_comment": { "type": "string" }
       }
     }

@@ -526,6 +526,59 @@ if [[ -f "$cmd_path" ]]; then
   assert_not_contains "$cmd_path" \
     "the queue is filtered to human-only items" \
     "the pre-#1092 buggy phrasing (chrome-prompt sharing the Human-only queue filter verbatim) does not reappear"
+
+  # Config-conditional agent-console ownership (issue #1093). Before this
+  # fix, the Human-only queue filter's agent-console exclusion and the
+  # operator pointer line both assumed /do-work always runs with the
+  # operator phase enabled — but --no-operate / --hands-off is a
+  # per-invocation flag, and under it /do-work's operator phase never drains
+  # agent-console items, so the old unconditional filter/pointer stranded
+  # them (excluded from /my-turn's queue, and pointed at a command that
+  # would never touch them). These assertions guard: a dedicated setup step
+  # resolves a declared my_turn.assume_operator_enabled config knob (since
+  # /my-turn can't observe /do-work's actual last invocation — that's #1080,
+  # explicitly not resolved here); the agent-console Pass B bucket, the
+  # Human-only queue filter, the P1 ranking tier, the leverage-score-3
+  # bucket, and the operator pointer line are all gated on it; a failed
+  # resolution degrades to surfacing rather than hiding; and the specific
+  # promise that the pointer line never names a command configured not to
+  # do the work is stated explicitly.
+  assert_contains "$cmd_path" "my_turn.assume_operator_enabled" \
+    "command resolves a declared my_turn.assume_operator_enabled config knob (#1093)"
+  assert_contains "$cmd_path" "Resolve the operator-phase assumption for the" \
+    "command documents a dedicated setup step for the operator-phase assumption (#1093)"
+  assert_contains "$cmd_path" "cannot observe" \
+    "command states /my-turn cannot observe /do-work's actual --no-operate / --hands-off invocation (#1093)"
+  assert_contains "$cmd_path" "#1080" \
+    "command cites issue #1080 for the underlying session-state-read gap this knob approximates (#1093)"
+  assert_contains "$cmd_path" "declared assumption, not an observed fact" \
+    "command states the knob is a declared assumption, not an observed fact (#1093)"
+  assert_contains "$cmd_path" "degrades to \`false\`" \
+    "command degrades a failed config resolution to surfacing, not hiding (#1093)"
+  assert_contains "$cmd_path" "only when \`my_turn.assume_operator_enabled: false\`" \
+    "command gates the P1 ranking tier's agent-console bullet on the config knob (#1093)"
+  assert_contains "$cmd_path" "configured not to do the work" \
+    "command states the pointer line must never name a command configured not to do the work (#1093)"
+  assert_contains "$cmd_path" "#1093" \
+    "command cites issue #1093 for the config-conditional agent-console ownership fix"
+
+  # Config knob declaration (issue #1093): my_turn.assume_operator_enabled
+  # must exist in both the built-in defaults and the schema, following the
+  # same precedent as my_turn.max_diagnostic_reads_per_item (#1073) and
+  # my_turn.disposition_call_detection (#1074).
+  assert_contains "$config_script" "assume_operator_enabled" \
+    "shipyard-config.sh declares a built-in default for my_turn.assume_operator_enabled (#1093)"
+  assert_contains "$schema_path" "assume_operator_enabled" \
+    "shipyard.config.schema.json declares my_turn.assume_operator_enabled (#1093)"
+
+  # backlog-ownership.md carries the config precondition on its own
+  # partition-table row, not just in /my-turn's own spec (#1093 acceptance
+  # criterion: "the partition table records config preconditions per row").
+  ownership_path="$repo_root/plugins/shipyard/commands/do-work/setup/backlog-ownership.md"
+  assert_contains "$ownership_path" "config-precondition" \
+    "backlog-ownership.md's agent-console row states its config precondition inline (#1093)"
+  assert_contains "$ownership_path" "my_turn.assume_operator_enabled" \
+    "backlog-ownership.md cross-references the assume_operator_enabled knob (#1093)"
 fi
 
 echo
