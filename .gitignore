@@ -5,7 +5,8 @@ docs/superpowers/
 !.claude/hooks/
 .claude/hooks/*
 !.claude/hooks/stop-shellcheck.sh
-.shipyard/
+.shipyard/*
+!.shipyard/trusted-authors.txt
 
 # Per-suite test-log output from the CI test-suite runner steps in
 # .github/workflows/{tests,shellcheck}.yml (issue #865) — only produced
