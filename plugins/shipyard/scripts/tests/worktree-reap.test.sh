@@ -1789,6 +1789,13 @@ sleep 0.05
 printf 'claude agent agent-peer (pid %s)\n' "$ca_sibling_pid" \
   > "$ca_repo/.git/worktrees/agent-peer/locked"
 
+# agent-nolock backdated past the default 60min floor so it lands on the
+# pre-#1147 verdict (no-lock) this parity matrix was written against —
+# no-lock-recent has its own dedicated tests below (94b-94e). Leaving
+# agent-peer's lock fresh (un-backdated) keeps it classifying peer-alive,
+# not peer-alive-stale.
+backdate_minutes "$ca_repo/.claude/worktrees/agent-nolock" 90
+
 result=$(run_classify_all --orchestrator-pid "$$" | sort)
 expected=$(printf 'agent-dead dead 999999\nagent-nolock no-lock null\nagent-peer peer-alive %s\nagent-self self-ancestor %s' \
   "$ca_sibling_pid" "$$")
@@ -1826,6 +1833,42 @@ assert_equals "$result" "agent-stale peer-alive $ca_sibling_pid" \
   "(94a) same lock + --peer-stale-min 120 -> not stale vs a higher floor"
 kill "$ca_sibling_pid" 2>/dev/null
 wait "$ca_sibling_pid" 2>/dev/null
+
+# --- (94b)-(94e) issue #1147 — no-lock-recent defense-in-depth ---
+#
+# A harness-provisioned isolation:"worktree" dispatch (the default
+# Agent-tool shape since #830) never writes a shipyard lock file, so a
+# currently-running worker's worktree classifies identically to a
+# genuinely-abandoned one under plain PID-liveness (`no-lock`). classify-all
+# now additionally consults the worktree DIRECTORY's own mtime for every
+# no-lock candidate: fresh (within --peer-stale-min) -> no-lock-recent
+# (presumed live, defer); older than the floor -> no-lock (unchanged,
+# reap-eligible).
+reset_ca_layout
+ca_add_worktree freshnolock
+result=$(run_classify_all)
+assert_equals "$result" "agent-freshnolock no-lock-recent null" \
+  "(94b) freshly-created no-lock worktree -> 'no-lock-recent' (issue #1147 repro)"
+
+# --- (94c) same worktree, --peer-stale-min 0 -> back to 'no-lock' ---
+# A staleness floor of 0 makes any no-lock worktree "stale" regardless of
+# true age — mirrors test (85)'s override-activates pattern for peer-alive.
+result=$(run_classify_all --peer-stale-min 0)
+assert_equals "$result" "agent-freshnolock no-lock null" \
+  "(94c) fresh no-lock worktree + --peer-stale-min 0 -> 'no-lock' (override activates)"
+
+# --- (94d) no-lock worktree backdated past the floor -> 'no-lock' (unchanged) ---
+reset_ca_layout
+ca_add_worktree oldnolock
+backdate_minutes "$ca_repo/.claude/worktrees/agent-oldnolock" 90
+result=$(run_classify_all)
+assert_equals "$result" "agent-oldnolock no-lock null" \
+  "(94d) 90min-old no-lock worktree + default 60min floor -> 'no-lock' (reap-eligible, regression check)"
+
+# --- (94e) same backdated worktree, --peer-stale-min 120 -> still 'no-lock-recent' ---
+result=$(run_classify_all --peer-stale-min 120)
+assert_equals "$result" "agent-oldnolock no-lock-recent null" \
+  "(94e) 90min-old no-lock worktree + --peer-stale-min 120 -> 'no-lock-recent' (not stale vs a higher floor)"
 
 # --- (95) bad usage ---
 bash "$helper" classify-all --repo-root "$ca_repo" --bogus-flag 2>/dev/null
@@ -1913,10 +1956,24 @@ run_rs() {
     "$@" 2>/dev/null
 }
 
+# Issue #1147 — classify-all now defers a freshly-created no-lock worktree
+# as no-lock-recent (same --peer-stale-min floor as peer-alive-stale, so a
+# blanket override here would also flip the fresh peer-alive fixtures below
+# into peer-alive-stale). Backdate a plain reap-eligible no-lock fixture
+# past the default 60min floor so it lands on the pre-#1147 verdict
+# (`no-lock`) these existing tests were written against — realistic besides:
+# a genuinely stale worktree from a prior session really would be old.
+rs_backdate_nolock() {
+  local id="$1"
+  backdate_minutes "$rs_repo/.claude/worktrees/agent-$id" 90
+}
+
 # --- (97) dry-run -> lines + summary, nothing removed, no audit log ---
 reset_rs_layout
 rs_add_worktree aaa
 rs_add_worktree bbb
+rs_backdate_nolock aaa
+rs_backdate_nolock bbb
 result=$(run_rs --dry-run)
 last_line=$(printf '%s\n' "$result" | tail -1)
 assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0" \
@@ -1932,6 +1989,8 @@ assert_equals "$dry_audit" "absent" \
 reset_rs_layout
 rs_add_worktree aaa
 rs_add_worktree bbb
+rs_backdate_nolock aaa
+rs_backdate_nolock bbb
 result=$(run_rs)
 last_line=$(printf '%s\n' "$result" | tail -1)
 assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0" \
@@ -1947,11 +2006,17 @@ assert_equals "$phase_count" "2" \
   "(98c) real run -> audit lines carry phase setup-3b"
 
 # --- (99) --max-per-session caps removal, oldest-first ---
+# Both backdated past the default 60min no-lock-recent floor (issue #1147)
+# so both classify plain `no-lock` (reap-eligible) — this test is about the
+# CAP mechanism, not the freshness gate; a genuinely-fresh "newer" would
+# classify no-lock-recent and get deferred instead of landing in
+# `remaining`, which is a different (also correct, separately tested above)
+# code path.
 reset_rs_layout
 rs_add_worktree older
 rs_add_worktree newer
 backdate_minutes "$rs_repo/.claude/worktrees/agent-older" 120
-backdate_minutes "$rs_repo/.claude/worktrees/agent-newer" 5
+backdate_minutes "$rs_repo/.claude/worktrees/agent-newer" 70
 result=$(run_rs --max-per-session 1)
 last_line=$(printf '%s\n' "$result" | tail -1)
 assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=1" \
@@ -1964,9 +2029,15 @@ assert_equals "$newer_kept" "yes" \
   "(99b) the newer worktree survives — left for a future session"
 
 # --- (100) --exclude-agent-id (in-flight guard, issue #832) ---
+# agent-inflight is deliberately left FRESH (no backdate) — it's excluded
+# BEFORE classification is ever consulted (issue #832), so its own
+# no-lock/no-lock-recent verdict is irrelevant either way. agent-aaa is
+# backdated so it lands on the pre-#1147 no-lock (reap-eligible) verdict —
+# this test is about exclusion, not freshness.
 reset_rs_layout
 rs_add_worktree aaa
 rs_add_worktree inflight
+rs_backdate_nolock aaa
 result=$(run_rs --exclude-agent-id inflight)
 last_line=$(printf '%s\n' "$result" | tail -1)
 assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
@@ -1979,9 +2050,13 @@ assert_equals "$excluded_in_output" "0" \
   "(100b) excluded worktree produces no reaped:/deferred: line at all"
 
 # --- (101) peer-alive is deferred and does NOT count against the cap ---
+# agent-peer's lock stays fresh (un-backdated) so it classifies peer-alive,
+# not peer-alive-stale. agent-aaa is backdated so it lands on the plain
+# no-lock (reap-eligible) verdict this test's cap assertion depends on.
 reset_rs_layout
 rs_add_worktree peer
 rs_add_worktree aaa
+rs_backdate_nolock aaa
 (sleep 300) &
 rs_sibling_pid=$!
 sleep 0.05
@@ -2039,9 +2114,14 @@ assert_exit_code "$?" "64" \
   "(103b) reap-stale unknown flag -> exit 64"
 
 # --- (104) --max-per-session 0 -> nothing removed, all land in remaining ---
+# Backdated past the no-lock-recent floor so both classify plain no-lock
+# (reap-eligible-but-capped -> remaining), not no-lock-recent (deferred) —
+# this test is about the cap, not freshness.
 reset_rs_layout
 rs_add_worktree aaa
 rs_add_worktree bbb
+rs_backdate_nolock aaa
+rs_backdate_nolock bbb
 result=$(run_rs --max-per-session 0)
 last_line=$(printf '%s\n' "$result" | tail -1)
 assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=2" \
@@ -2049,6 +2129,94 @@ assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=2"
 [ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && zero_cap_kept=yes || zero_cap_kept=no
 assert_equals "$zero_cap_kept" "yes" \
   "(104a) --max-per-session 0 -> nothing actually removed"
+
+# ============================================================================
+# Issue #1147 — no-lock-recent defer path + mandatory in-flight cross-check
+#
+# Matrix:
+#   105) freshly-created no-lock worktree under reap-stale (default floor,
+#        no --exclude-agent-id) -> DEFERRED, not reaped (the core repro fix)
+#   106) same worktree, --peer-stale-min 0 -> reaped (override still works
+#        end-to-end through reap-stale, not just classify-all)
+#   107) mandatory in-flight cross-check: an agent-id present in the
+#        session-state file's .in_flight is excluded automatically, with
+#        NO --exclude-agent-id passed at all
+#   108) the auto-derived in-flight exclusion is ADDITIVE with an explicit
+#        --exclude-agent-id for a different id — both apply
+#   109) missing session-state file -> best-effort no-op, sweep still
+#        succeeds (falls through to the no-lock-recent mtime backstop)
+# ============================================================================
+
+# --- (105) fresh no-lock worktree -> deferred, not reaped (default floor) ---
+reset_rs_layout
+rs_add_worktree fresh
+result=$(run_rs)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=0 deferred=1 unreaped=0 remaining=0" \
+  "(105) freshly-created no-lock worktree -> deferred (issue #1147 core repro)"
+[ -d "$rs_repo/.claude/worktrees/agent-fresh" ] && fresh_kept=yes || fresh_kept=no
+assert_equals "$fresh_kept" "yes" \
+  "(105a) the fresh worktree is NOT removed"
+
+# --- (106) same fixture, --peer-stale-min 0 -> reaped ---
+reset_rs_layout
+rs_add_worktree fresh
+result=$(run_rs --peer-stale-min 0)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+  "(106) fresh no-lock worktree + --peer-stale-min 0 -> reaped (override reaches reap-stale end-to-end)"
+
+# --- (107) mandatory in-flight cross-check, NO --exclude-agent-id passed ---
+reset_rs_layout
+rs_add_worktree aaa
+rs_add_worktree livepeer
+rs_backdate_nolock aaa
+mkdir -p "$rs_home/sessions"
+cat > "$rs_home/sessions/rs-test-session.json" <<'JSON'
+{"in_flight": {"slot-1": {"agent_id": "livepeer"}}}
+JSON
+result=$(run_rs)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+  "(107) in_flight agent-id excluded automatically with no --exclude-agent-id passed"
+[ -d "$rs_repo/.claude/worktrees/agent-livepeer" ] && livepeer_kept=yes || livepeer_kept=no
+assert_equals "$livepeer_kept" "yes" \
+  "(107a) the in_flight worktree is never touched"
+livepeer_in_output=$(printf '%s\n' "$result" | grep -c "agent-livepeer" || true)
+assert_equals "$livepeer_in_output" "0" \
+  "(107b) the in_flight worktree produces no reaped:/deferred: line at all"
+
+# --- (108) auto-derived in_flight exclusion is additive with --exclude-agent-id ---
+reset_rs_layout
+rs_add_worktree aaa
+rs_add_worktree livepeer
+rs_add_worktree manualexclude
+rs_backdate_nolock aaa
+mkdir -p "$rs_home/sessions"
+cat > "$rs_home/sessions/rs-test-session.json" <<'JSON'
+{"in_flight": {"slot-1": {"agent_id": "livepeer"}}}
+JSON
+result=$(run_rs --exclude-agent-id manualexclude)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+  "(108) both the explicit --exclude-agent-id and the auto-derived in_flight id are excluded"
+[ -d "$rs_repo/.claude/worktrees/agent-livepeer" ] && both_livepeer_kept=yes || both_livepeer_kept=no
+[ -d "$rs_repo/.claude/worktrees/agent-manualexclude" ] && both_manual_kept=yes || both_manual_kept=no
+assert_equals "$both_livepeer_kept" "yes" \
+  "(108a) the in_flight worktree survives"
+assert_equals "$both_manual_kept" "yes" \
+  "(108b) the explicitly-excluded worktree survives"
+
+# --- (109) missing session-state file -> best-effort no-op, sweep still works ---
+reset_rs_layout
+rs_add_worktree aaa
+rs_backdate_nolock aaa
+# rs_home has no sessions/ dir at all for this session-id — the auto-derive
+# step must not error the whole sweep.
+result=$(run_rs)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+  "(109) missing session-state file -> auto-derive is a silent no-op, sweep still succeeds"
 
 echo
 if (( fail > 0 )); then
