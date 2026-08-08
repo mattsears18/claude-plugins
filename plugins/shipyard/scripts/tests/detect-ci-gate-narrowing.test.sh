@@ -270,11 +270,15 @@ if [[ -f "$SKILL_MD" ]]; then
   assert_contains "$SKILL_MD" 'issues/1139' \
     "SKILL.md cites issue #1139"
 
+  # This literal mirrors spec-size-budget.test.sh's own assert_under_budget
+  # call — that file is the canonical source for the ceiling value and its
+  # raise history (most recently 59000 -> 60000 by #1135); keep this in sync
+  # with it whenever a ceiling changes there.
   skill_bytes=$(wc -c < "$SKILL_MD" | tr -d ' ')
-  if [[ "$skill_bytes" -lt 59000 ]]; then
-    assert_pass "SKILL.md stays under the #980 59000-byte ceiling ($skill_bytes bytes)"
+  if [[ "$skill_bytes" -lt 60000 ]]; then
+    assert_pass "SKILL.md stays under the #980 60000-byte ceiling ($skill_bytes bytes)"
   else
-    assert_fail "SKILL.md stays under the #980 59000-byte ceiling ($skill_bytes bytes exceeds 59000)"
+    assert_fail "SKILL.md stays under the #980 60000-byte ceiling ($skill_bytes bytes exceeds 60000)"
   fi
 else
   assert_fail "SKILL.md exists (missing at $SKILL_MD)"

@@ -99,6 +99,21 @@
 # the workers actually returned) stays in issue #1113 rather than duplicated
 # here.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 59000 -> 60000 by
+# #1135 (2026-08-08), a follow-up to #1115's declined `verifying` token: the
+# "Auto-backgrounded verification must be awaited" bullet (#1113, above)
+# told a worker to bail with `blocked:` when it genuinely can't finish
+# verification within budget, but named no canonical phrase — so
+# steady-state.md's Reason -> class table had nothing reliable to match,
+# and such a bail fell through to the table's conservative `refuse` default
+# (needs-human-review) instead of the `soft` (blocked:agent-soft,
+# auto-retried next session) treatment it actually deserves — an
+# environmental/transient condition, not a human judgment call. Extended
+# the existing sentence in place (no new heading) to name the canonical
+# phrase `verification did not complete within budget`; the file was
+# already 22 bytes under the prior ceiling, so even this one-sentence
+# extension needed the bump.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/spec-size-budget.test.sh
 
@@ -148,7 +163,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  59000 \
+  60000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
