@@ -115,8 +115,12 @@ EXTRA_ARGS="${SHIPYARD_SUPERVISOR_EXTRA_ARGS:-}"
 
 # Labels that make an open issue NOT dispatch-eligible, for the work-exists
 # gate. Intentionally excludes `agent-console` — that label means "the agent
-# does it, outside the build", not "hand it to a human".
-GATE_LABELS="${SHIPYARD_SUPERVISOR_GATE_LABELS:-needs-human-review,blocked:agent,blocked:agent-hard,blocked:ci}"
+# does it, outside the build", not "hand it to a human". `blocked:agent` and
+# `blocked:agent-hard` were dropped from the default (#1082) — both were
+# eliminated by #521 (a refuse now carries `needs-human-review`, already in
+# this list; a dependency-wait carries no label), have zero all-time usage,
+# and nothing applies them anymore, so matching on them here was dead code.
+GATE_LABELS="${SHIPYARD_SUPERVISOR_GATE_LABELS:-needs-human-review,blocked:ci}"
 
 usage() {
   cat <<'EOF'

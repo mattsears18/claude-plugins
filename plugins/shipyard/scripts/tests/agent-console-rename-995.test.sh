@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Test: the `needs-operator` → `agent-console` label rename (#995) landed
 # consistently — the new name is what CLAUDE.md defines and what every
-# label-creation site now creates, while the load-bearing MATCHING sites
-# (the dispatch-exclusion set, the operator proactive sweep, and
-# `/my-turn`'s human-only-queue filter) still recognize the legacy
-# `needs-operator` name during the migration window, per the issue's
-# documented sequence: ship dual-recognition first, THEN let consuming
-# repos rename their live GitHub label object, THEN drop legacy
-# recognition in a later release.
+# label-creation site now creates. The load-bearing MATCHING sites (the
+# dispatch-exclusion set, the operator proactive sweep, and `/my-turn`'s
+# human-only-queue filter) recognized the legacy `needs-operator` name
+# too, for a migration window, per the issue's documented sequence: ship
+# dual-recognition first, THEN let consuming repos rename their live
+# GitHub label object, THEN drop legacy recognition in a later release.
+#
+# That window is now CLOSED (#1082) — zero issues in this repo ever
+# carried `needs-operator`, so there was no live data left to migrate.
+# The matching sites no longer recognize the legacy name; this test
+# guards that closure instead of the dual-recognition window it replaced.
 #
 # Background — issue #995: `needs-operator` read as "needs a human
 # operator," the opposite of what it means (the label marks work an AGENT
@@ -21,8 +25,8 @@
 #
 # This is the regression guard: if a label-creation site starts
 # (re-)creating the legacy `needs-operator` label, if a matching site
-# drops legacy recognition before the migration window closes, or if
-# CLAUDE.md's canonical definition / decision rule / migration note
+# reintroduces legacy-name recognition now that the window is closed, or
+# if CLAUDE.md's canonical definition / decision rule / migration note
 # regresses, this test fails.
 #
 # Pure bash, no external dependencies. Run with:
@@ -175,24 +179,36 @@ assert_contains "$steady_state_path" \
   "steady-state.md applies the agent-console label to the provisioning bail"
 
 echo ""
-echo "Matching / filtering sites recognize BOTH agent-console and the legacy needs-operator name during the #995 migration window"
+echo "Matching / filtering sites recognize ONLY agent-console now that the #995 migration window is closed (#1082)"
 echo ""
 
-assert_contains "$backlog_divert_path" \
+assert_not_contains "$backlog_divert_path" \
   "or the legacy \`needs-operator\` name" \
-  "setup/04-backlog-divert.md's dispatch-exclusion set recognizes the legacy needs-operator alias"
+  "setup/04-backlog-divert.md's dispatch-exclusion set no longer recognizes the legacy needs-operator alias"
+
+assert_contains "$backlog_divert_path" \
+  "legacy-name back-compat window is closed" \
+  "setup/04-backlog-divert.md documents the closed migration window"
+
+assert_not_contains "$operator_sweep_path" \
+  "or the legacy \`needs-operator\` name" \
+  "operate/04-steady-state-hooks.md's proactive sweep no longer recognizes the legacy needs-operator alias"
 
 assert_contains "$operator_sweep_path" \
-  "or the legacy \`needs-operator\` name" \
-  "operate/04-steady-state-hooks.md's proactive sweep recognizes the legacy needs-operator alias"
+  "legacy-name back-compat window is closed" \
+  "operate/04-steady-state-hooks.md documents the closed migration window"
 
 assert_contains "$my_turn_path" \
   "renamed from \`needs-operator\` in" \
   "my-turn.md's human-only queue filter cites the #995 rename"
 
-assert_contains "$my_turn_path" \
+assert_not_contains "$my_turn_path" \
   "treat an issue still carrying the legacy \`needs-operator\` name identically" \
-  "my-turn.md's filter recognizes the legacy needs-operator alias"
+  "my-turn.md's filter no longer recognizes the legacy needs-operator alias"
+
+assert_contains "$my_turn_path" \
+  "legacy-name back-compat window is closed" \
+  "my-turn.md documents the closed migration window"
 
 echo ""
 if [[ $fail -eq 0 ]]; then
