@@ -111,6 +111,80 @@ assert_file_contains "$init_md" '--dry-run' "init.md documents --dry-run flag"
 assert_file_contains "$init_md" 'shipyard-config.sh' "init.md routes through shipyard-config.sh"
 
 # --------------------------------------------------------------------------
+# Issue #1137 — the seeded .gitignore entry must be the content-level
+# `.shipyard/*` form, not the bare directory-level `.shipyard/` form, so a
+# later `!.shipyard/trusted-authors.txt` negation actually un-ignores that
+# one committed file (git's rule: a negation cannot re-include a file whose
+# *parent directory* is excluded, only its *contents* — see #1131, the
+# sibling fix to this repo's own .gitignore). The idempotency check must
+# recognize BOTH the new and legacy forms as "already seeded" so re-running
+# /shipyard:init never appends a duplicate/conflicting line.
+echo "== /shipyard:init .gitignore seed is content-level and idempotent (#1137)"
+
+assert_file_contains "$init_md" 'printf '"'"'.shipyard/*\n'"'"'' \
+  "init.md seeds the content-level .shipyard/* form, not bare .shipyard/"
+assert_file_contains "$init_md" "grep -qx '\\.shipyard/\\*'" \
+  "init.md idempotency check recognizes the new .shipyard/* form"
+assert_file_contains "$init_md" "grep -qx '\\.shipyard/'" \
+  "init.md idempotency check recognizes the legacy bare .shipyard/ form"
+
+# Functional check — mirror the exact seeding logic documented in init.md
+# step 6 against a scratch directory, so a future edit that reintroduces the
+# inert bare-.shipyard/ seed, or breaks the dual-form idempotency check,
+# fails this suite rather than surfacing as an #1131-shaped bug report on
+# some other consumer repo.
+seed_gitignore() {
+  local GITIGNORE="$1"
+  if ! [ -f "$GITIGNORE" ] || { ! grep -qx '\.shipyard/\*' "$GITIGNORE" && ! grep -qx '\.shipyard/' "$GITIGNORE"; }; then
+    [ -f "$GITIGNORE" ] && [ "$(tail -c 1 "$GITIGNORE")" != "" ] && printf '\n' >> "$GITIGNORE"
+    printf '.shipyard/*\n' >> "$GITIGNORE"
+  fi
+}
+
+scratch_dir="$(mktemp -d)"
+
+# Case 1: fresh repo — seeds .shipyard/* (the negation-safe form).
+seed_gitignore "$scratch_dir/case1.gitignore"
+if [[ "$(cat "$scratch_dir/case1.gitignore" 2>/dev/null)" == ".shipyard/*" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "fresh repo seeds .shipyard/* verbatim"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "fresh repo seeds .shipyard/* verbatim"
+  fail=$((fail+1))
+fi
+
+# Case 2: already-migrated repo (.shipyard/* present) — re-running must not
+# append a duplicate line.
+printf '.shipyard/*\n' > "$scratch_dir/case2.gitignore"
+seed_gitignore "$scratch_dir/case2.gitignore"
+seed_gitignore "$scratch_dir/case2.gitignore"
+case2_count=$(grep -c '^\.shipyard' "$scratch_dir/case2.gitignore")
+if [[ "$case2_count" == "1" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "re-running on an already-migrated repo does not duplicate the line"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (found %s shipyard line(s), expected 1)\n' "$RED" "$RESET" \
+    "re-running on an already-migrated repo does not duplicate the line" "$case2_count"
+  fail=$((fail+1))
+fi
+
+# Case 3: repo already bootstrapped with the legacy bare .shipyard/ form —
+# must be left untouched (no second, conflicting .shipyard/* line appended).
+printf 'node_modules/\n.shipyard/\n' > "$scratch_dir/case3.gitignore"
+seed_gitignore "$scratch_dir/case3.gitignore"
+case3_count=$(grep -c '^\.shipyard' "$scratch_dir/case3.gitignore")
+if [[ "$case3_count" == "1" ]] && grep -qx '\.shipyard/' "$scratch_dir/case3.gitignore" \
+   && ! grep -qx '\.shipyard/\*' "$scratch_dir/case3.gitignore"; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "legacy-form repo is left on the bare .shipyard/ line, unduplicated"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "legacy-form repo is left on the bare .shipyard/ line, unduplicated"
+  fail=$((fail+1))
+fi
+
+rm -rf "$scratch_dir"
+
+# --------------------------------------------------------------------------
 # Issue #714 — /shipyard:init offers to pre-authorize the worktree-reap
 # commands in .claude/settings.json (opt-in, default off).
 #

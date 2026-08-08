@@ -1,11 +1,11 @@
 # `/shipyard:init` — bootstrap shipyard for this repo
 
-Creates `shipyard.config.json` at the repo root (committed) and seeds `.gitignore` with `.shipyard/` (gitignored, for personal overrides + session state). Optional interactive prompts walk you through the most-common knobs; flags let you bypass the interactive flow for scripted setup.
+Creates `shipyard.config.json` at the repo root (committed) and seeds `.gitignore` with `.shipyard/*` (gitignored, for personal overrides + session state — the trailing `/*` rather than a bare `.shipyard/` is deliberate, see step 5 below and issue [#1137](https://github.com/mattsears18/shipyard/issues/1137)). Optional interactive prompts walk you through the most-common knobs; flags let you bypass the interactive flow for scripted setup.
 
 ## What this command does
 
 1. **Resolve the repo root.** Uses `git rev-parse --show-toplevel`. Fails fast if you're not inside a git repo — shipyard's config sits at the repo root and the gate keys off that path.
-2. **Detect existing shipyard usage.** Looks for the `shipyard` label, prior `shipyard`-stamped PRs, the absence of `.shipyard/` in `.gitignore`. Pre-fills sensible defaults when the repo's been used before (e.g., trusted-author list from prior closed PRs).
+2. **Detect existing shipyard usage.** Looks for the `shipyard` label, prior `shipyard`-stamped PRs, the absence of a `.shipyard/` gitignore entry (either the current `.shipyard/*` form or the legacy bare `.shipyard/` form left by a pre-#1137 `/shipyard:init` run). Pre-fills sensible defaults when the repo's been used before (e.g., trusted-author list from prior closed PRs).
 3. **Optionally prompt** (skip with non-interactive flags below):
    - Repo owner/name (inferred from `gh repo view` and the git remote)
    - Auto-merge policy (`always` / `trusted-only` / `never` — default `trusted-only`)
@@ -16,7 +16,7 @@ Creates `shipyard.config.json` at the repo root (committed) and seeds `.gitignor
    - **Worktree-reap allowlist (default `off`).** Offer (opt-in) to append the worktree-reap commands to `settings.json`'s `permissions.allow`, so `/do-work`'s end-of-session worktree cleanup is pre-authorized rather than depending on Claude Code's auto-mode classifier permitting it each time. See [step 9.6 below](#96-optionally-pre-authorize-the-worktree-reap-commands) for the full prompt + install logic. Issue [#714](https://github.com/mattsears18/shipyard/issues/714).
    - **Adding-dependencies `CLAUDE.md` rule (default `off`).** Offer (opt-in) to append a short "look up the current stable version before introducing a new dependency" rule to the target repo's own `CLAUDE.md`, so a plain interactive Claude Code session on that repo — one with no shipyard skills loaded — inherits the same convention a `/shipyard:do-work` worker dispatch already gets from the `shipyard:adding-dependencies` skill. See [step 9.7 below](#97-optionally-append-the-adding-dependencies-rule-to-claudemd) for the full prompt + install logic. Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048).
 4. **Write `shipyard.config.json`** at the repo root using the atomic-write helper in `plugins/shipyard/scripts/shipyard-config.sh`. Validates against the JSON schema before writing.
-5. **Append `.shipyard/` to `.gitignore`** if not already present. Creates `.gitignore` if it doesn't exist. **Never** modifies any other line — the addition is appended, with a leading newline if the file doesn't end in one.
+5. **Append `.shipyard/*` to `.gitignore`** if neither that form nor the legacy bare `.shipyard/` form is already present. Creates `.gitignore` if it doesn't exist. **Never** modifies any other line — the addition is appended, with a leading newline if the file doesn't end in one, and an already-present legacy `.shipyard/` line is left as-is rather than rewritten (see step 6 below for why).
 6. **Create `.shipyard/`** as an empty directory (for session state, gh-cache, etc. — the helper scripts create subdirectories on demand).
 7. **Print a summary** of the effective config (calls `shipyard-config.sh show`).
 
@@ -105,15 +105,20 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
    fi
    ```
 
-6. **Update `.gitignore`.**
+6. **Update `.gitignore`.** Seeds `.shipyard/*` — a **content-level** exclusion — rather than a bare `.shipyard/` **directory** exclusion. This is a deliberate, behavior-preserving change (issue [#1137](https://github.com/mattsears18/shipyard/issues/1137), the consumer-repo counterpart of [#1131](https://github.com/mattsears18/shipyard/issues/1131)): git's rule is that a negation (`!path`) cannot re-include a file whose *parent directory* is excluded — only a content-level exclusion like `.shipyard/*` lets a later `!.shipyard/trusted-authors.txt` line actually un-ignore that one committed file (verified empirically with `git check-ignore -v` / `git add --dry-run`; see #1131's PR for the repro). A bare `.shipyard/` entry ignores everything under the directory identically to `.shipyard/*` for every path that ISN'T the subject of a later negation, so this seed change has no effect on a repo that never adds one.
+
+   The idempotency check recognizes **both** the new `.shipyard/*` form and the legacy bare `.shipyard/` form as "already seeded" — re-running `/shipyard:init` never appends a second, conflicting line either way:
+
    ```bash
    GITIGNORE="$REPO_ROOT/.gitignore"
-   if ! [ -f "$GITIGNORE" ] || ! grep -qx '\.shipyard/' "$GITIGNORE"; then
+   if ! [ -f "$GITIGNORE" ] || { ! grep -qx '\.shipyard/\*' "$GITIGNORE" && ! grep -qx '\.shipyard/' "$GITIGNORE"; }; then
      # Append a leading newline if the file doesn't end in one.
      [ -f "$GITIGNORE" ] && [ "$(tail -c 1 "$GITIGNORE")" != "" ] && printf '\n' >> "$GITIGNORE"
-     printf '.shipyard/\n' >> "$GITIGNORE"
+     printf '.shipyard/*\n' >> "$GITIGNORE"
    fi
    ```
+
+   **A repo already bootstrapped with the old bare `.shipyard/` line is deliberately left on that legacy form — this command never rewrites an existing `.gitignore` line (step 5's "never modifies any other line" invariant).** The old pattern still correctly ignores everything under `.shipyard/`; a repo stuck on it only forgoes the negation-safety a maintainer would need if they *later* add a `!.shipyard/<file>` exception (as [#1131](https://github.com/mattsears18/shipyard/issues/1131) did for shipyard's own repo). A maintainer who needs that negation-safety on an old-form repo can migrate by hand: replace the `.shipyard/` line with `.shipyard/*` in their `.gitignore` (a one-line, one-time edit) — `/shipyard:init` itself won't do this automatically, since silently rewriting a line a human might have customized is a bigger footgun than leaving an inert-but-still-correct pattern in place.
 
 7. **Create `.shipyard/` (empty).** The helper scripts create subdirectories on demand (`sessions/`, `gh-cache/`, etc.); this command just ensures the parent directory exists so the personal-override path `.shipyard/config.local.json` is writable without the user doing it manually.
    ```bash
