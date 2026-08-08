@@ -237,6 +237,35 @@ A second silent-pass failure mode, distinct from the missing-`node_modules` case
 
 **The signal.** When you run the target repo's test suite (or read your pre-push hook's output) and see a **zero-tests-found pass** — `No tests found`, `0 tests`, `0 passed`, `--passWithNoTests` firing — against a diff that **does** add or modify test files, do NOT treat it as a green local run. A zero-test pass on a test-touching diff is the silent-pass tell.
 
+## Stale `node_modules` on a recycled worktree slot ([#1138](https://github.com/mattsears18/shipyard/issues/1138))
+
+A fifth silent-quality-gate hazard, and a DIFFERENT failure from the missing-`node_modules` case at the top of this fragment. `/shipyard:do-work` recycles worker worktree slots across dispatches: a reused slot's checkout moves onto a new branch/commit (`git checkout -B`), but nothing re-installs `node_modules/` — it's whatever the slot's *previous* occupant left behind. When the newly-checked-out `package.json` added, removed, or version-bumped a dependency since that install, the worktree's `node_modules` **predates** the commit you're actually working against. Because the directory itself still exists, the presence check at the top of this fragment (`[ -f package.json ] && [ ! -d node_modules ]`) passes cleanly — the gap is invisible until a pre-push hook (or your own test run) fails with a "cannot resolve module" error that looks unrelated to anything you changed.
+
+Confirmed repro (issue #1138): `mattsears18/lightwork` session `do-work-20260807T202400Z`. `expo-location` was added to `apps/lightwork/package.json`; worktrees recycled onto a later commit still carried a pre-`expo-location` install, so `.husky/pre-push`'s advisory lint failed with `Unable to resolve path to module 'expo-location'`. **CI was green on the same file at the same SHA** (runners always do a real `npm ci`), so the failure read as "green in CI, red on my machine" — a tooling bug, not a missing package — and was initially misfiled as a lint false positive; two of the four agents that hit it then reached for `SKIP_PRE_PUSH=1`, bypassing the exact net that would have caught a genuine problem. A `rm -rf node_modules && npm ci` fixes the dependency gap but can still *look* like it didn't work, because the ESLint cache (`.eslintcache`, or `.expo/cache/eslint/` on Expo repos) keys on file content/mtime, not dependency resolution — a cached failure survives a correct reinstall.
+
+**The check.** Once the presence check above confirms `node_modules/` exists (a `missing` verdict there already routes to the existing symlink → `cp -al` → `npm ci` ladder — this section doesn't change that path), run [`detect-stale-node-modules.sh`](../../scripts/detect-stale-node-modules.sh) — the single executable source of truth for this predicate, so the freshness condition (`npm ls --depth=0 --silent` exiting non-zero) isn't re-derived as prose here or in any per-mode spec. Reuse the already-resolved `CLAUDE_PLUGIN_ROOT` literal from `shipyard:worker-preamble`'s step-0 (issue [#965](https://github.com/mattsears18/shipyard/issues/965)) rather than re-deriving it; the export line below is the fallback if you somehow reach here without an already-resolved value:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-stale-node-modules.sh" .
+```
+
+Run against each directory whose `package.json` you're about to test, including nested non-hoisted packages from the section above.
+
+The verdict on stdout:
+
+- **`noop`** — no `package.json` at this path. Ecosystem-tolerant no-op: a non-Node repo, or a Node repo checked from a path with none, is unaffected — proceed.
+- **`missing`** — `node_modules/` absent entirely. Already covered by the presence check and remediation ladder above; nothing new to do here.
+- **`fresh`** — the installed tree satisfies `package.json`. Proceed; do NOT touch the ESLint cache — it's still valid.
+- **`stale`** — the #1138 case: `node_modules/` exists but does not satisfy `package.json`. Reinstall for real, then clear the ESLint cache (only after a REAL install — never on a `fresh` verdict):
+  ```bash
+  npm ci --no-audit --no-fund --prefer-offline
+  rm -rf .eslintcache .expo/cache/eslint
+  ```
+  Run both from the same directory you passed to the detector. The second `rm -rf` target only exists on Expo repos (`expo lint`'s cache location) — it's a no-op elsewhere. If `npm ci` itself fails, treat it exactly as the existing ladder's step 3: return `blocked: cannot bootstrap node_modules — npm ci failed (<reason>)`.
+
+**When NOT to run this check.** Same scope as the presence check above — skip for non-Node repos, skip for documentation-only diffs to a Node repo (nothing depends on a fresh install), and the `noop` verdict already makes a no-`package.json` path a no-op automatically.
+
 **The recovery, in order:**
 
 1. **Re-run with the worktree-ignore entry stripped.** If the repo's config ignores `/.claude/worktrees/`, re-run the suite with the *other* ignore entries preserved but the worktree entry dropped, so the runner sees your worktree's tests. Jest takes repeatable `--testPathIgnorePatterns` flags that **replace** the config value, so pass the surviving entries explicitly:
