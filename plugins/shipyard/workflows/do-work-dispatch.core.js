@@ -411,10 +411,12 @@ const workerReturnSchema = {
         'unavailable-workflow-scope',
         'gated-external',
         'unarmed-policy-override',
+        'unarmed-gate-narrowing',
         null,
       ],
     },
     policy_override: { type: ['string', 'null'] },
+    gate_narrowing: { type: ['string', 'null'] },
     checks: { type: ['string', 'null'], enum: ['green', 'pending', 'failing', null] },
     disposition: {
       type: ['string', 'null'],
@@ -440,6 +442,11 @@ const workerReturnSchema = {
       // An unarmed-policy-override auto_merge value must name the overridden control (#1088).
       if: { properties: { auto_merge: { const: 'unarmed-policy-override' } } },
       then: { required: ['policy_override'] },
+    },
+    {
+      // An unarmed-gate-narrowing auto_merge value must name the tripped signal (#1139).
+      if: { properties: { auto_merge: { const: 'unarmed-gate-narrowing' } } },
+      then: { required: ['gate_narrowing'] },
     },
   ],
 }

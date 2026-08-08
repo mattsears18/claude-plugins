@@ -497,6 +497,8 @@ Branch on the `originating_author_trust` field the orchestrator put in your disp
 
 **First — run the policy-override check.** `auto-merge.md` step 0.3 checks whether this PR required overriding a committed security control ([§4.45](#445-never-disable-a-committed-security-or-supply-chain-control-to-make-ci-pass-1088) is the ordinary-case bail; this is the backstop). If it trips: `needs-human-review`, skip straight to [step 8](#8-return)'s `unarmed — policy-override` line, regardless of `originating_author_trust`.
 
+**Then — run the gate-narrowing check.** `auto-merge.md` step 0.34 checks whether this PR *narrows* a required CI gate rather than fixing the underlying cause — a different risk class from the policy-override check above, and the one [#1139](https://github.com/mattsears18/shipyard/issues/1139) exists to close. If it trips: `needs-human-review`, skip straight to [step 8](#8-return)'s `unarmed — gate-narrowing` line, regardless of `originating_author_trust`.
+
 **When `originating_author_trust == "trusted"`:**
 
 #### 6.a Run the ungated-admin-direct-merge pre-check FIRST — before any merge call ([#598](https://github.com/mattsears18/shipyard/issues/598) / [#602](https://github.com/mattsears18/shipyard/issues/602) / [#716](https://github.com/mattsears18/shipyard/issues/716))
@@ -690,6 +692,12 @@ When `auto-merge.md` step 0.3 tripped ([#1088](https://github.com/mattsears18/sh
 > `shipped #<N> via PR #<M> (auto-merge: unarmed — policy-override: <control>, needs-human-review label applied, checks: <green|pending|failing>)`
 
 `<control>` names the overridden control, e.g. `.npmrc min-release-age=7`.
+
+When `auto-merge.md` step 0.34 tripped ([#1139](https://github.com/mattsears18/shipyard/issues/1139)) → return (same priority as the policy-override line above, over either trust branch):
+
+> `shipped #<N> via PR #<M> (auto-merge: unarmed — gate-narrowing: <signal>, needs-human-review label applied, checks: <green|pending|failing>)`
+
+`<signal>` names what tripped — e.g. `new allowlist file .github/security/audit-allowlist.json`, `raised --audit-level low<high`, `continue-on-error: true added`, `deleted gate step`, `narrowed paths-ignore filter`, or `diff unreadable` for the `unknown` fail-safe case.
 
 When [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851) ran (an operator-slice split dispatch — the issue does NOT close) → return, folding in the normal auto-merge/checks suffix from whichever branch above matched:
 
