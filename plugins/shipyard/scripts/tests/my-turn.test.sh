@@ -631,6 +631,44 @@ if [[ -f "$cmd_path" ]]; then
     "shipyard-config.sh already declares a built-in default for ci.skip_drain_rebase (#1075)"
   assert_contains "$schema_path" "skip_drain_rebase" \
     "shipyard.config.schema.json already declares ci.skip_drain_rebase (#1075)"
+
+  # Issue #1089: two survey signals — Pass B's "last comment authored by
+  # someone other than $ME" and Pass C's per-PR review-comment follow-up —
+  # keyed on author IDENTITY to detect "a human asked something." In a
+  # shipyard-driven repo every comment, human or agent, is authored by the
+  # same $ME login (agents act through the maintainer's own authenticated
+  # gh), so both predicates are structurally dead: Pass B's identity test
+  # can never fire, and Pass C burns its per-PR gh api budget (the single
+  # largest line item in the performance budget) on a guaranteed-empty
+  # result. The fix: Pass B tests INTENT (an explicit @$ME mention, an
+  # un-labeled shipyard-* handoff sentinel, or a bare "?" only when no gate
+  # label is already applied) instead of authorship; Pass C is skipped
+  # outright — zero gh api calls — when Pass A's already-fetched open-PR
+  # authors contain no one but $ME. These assertions guard: the command
+  # states $ME is the automation identity (not "the human") at the point
+  # $ME is resolved; Pass B's signal is rewritten to intent markers with
+  # the identity filter explicitly disclaimed; Pass C documents the
+  # zero-extra-call skip gate; and the stale identity-only wording does not
+  # silently reappear.
+  assert_contains "$cmd_path" "names this repo's automation identity" \
+    "command states \$ME is the automation identity, not the human, where \$ME is resolved (#1089)"
+  assert_contains "$cmd_path" "do NOT filter by \`author != \$ME\`" \
+    "Pass B's rewritten signal explicitly disclaims the identity filter (#1089)"
+  assert_contains "$cmd_path" "shipyard handoff sentinel" \
+    "Pass B's signal recognizes an un-labeled shipyard-* handoff sentinel as an intent marker (#1089)"
+  assert_contains "$cmd_path" "shipyard-worker-progress" \
+    "Pass B's signal names the concrete un-labeled handoff case (a reaped worker's progress comment) (#1089)"
+  assert_contains "$cmd_path" "only when the issue carries none of those same gate labels already" \
+    "Pass B's bare-\`?\` branch is gated on the issue carrying no gate label, to avoid double-surfacing (#1089)"
+  assert_contains "$cmd_path" "Skip this pass entirely when the repo has no non-\`\$ME\` participants" \
+    "Pass C documents the zero-gh-call skip gate for repos with no outside participants (#1089)"
+  assert_contains "$cmd_path" "Pass A's already-fetched open-PR" \
+    "Pass C's skip gate is decided from Pass A's projection already in hand, no extra gh call (#1089)"
+  assert_contains "$cmd_path" "#1089" \
+    "command cites issue #1089 for the author-identity-collapse fix"
+  assert_not_contains "$cmd_path" \
+    "Issue where the last comment was authored by someone other than \`\$ME\` AND the comment text contains" \
+    "the stale identity-keyed Pass B signal wording does not reappear (#1089)"
 fi
 
 echo
