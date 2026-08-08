@@ -222,7 +222,8 @@ DEFAULTS_JQ='{
   "my_turn": {
     "stale_undispatched_days": 7,
     "max_diagnostic_reads_per_item": 1,
-    "disposition_call_detection": true
+    "disposition_call_detection": true,
+    "assume_operator_enabled": true
   }
 }'
 
