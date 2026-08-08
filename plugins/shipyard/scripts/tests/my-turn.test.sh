@@ -673,6 +673,46 @@ if [[ -f "$cmd_path" ]]; then
   assert_not_contains "$cmd_path" \
     "Issue where the last comment was authored by someone other than \`\$ME\` AND the comment text contains" \
     "the stale identity-keyed Pass B signal wording does not reappear (#1089)"
+
+  # Issue #1080: /my-turn previously read no /do-work session state at all —
+  # labels were the only channel between the two commands, even though
+  # /do-work's session file at ~/.shipyard/sessions/<id>.json already answers
+  # two questions /my-turn was re-deriving by hand: is a live agent already
+  # working this issue/PR right now (.in_flight), and is the default branch's
+  # CI red (.main_ci). Adds an optional Setup step that reads the newest
+  # session file for the resolved repo, gates .in_flight on the session's PID
+  # being alive (session-state.sh is-active — the same two-gate liveness
+  # check /do-work's own orphan-sweep uses), gates .main_ci on its own
+  # checked_at freshness instead, and uses the two fields only to suppress
+  # (drop a live in-flight issue/PR from the queue) or enrich (a
+  # default-branch-CI banner) — never to add a queue item or urgency. A
+  # missing/unreadable/malformed/wrong-repo/dead session file must degrade
+  # silently to the pre-#1080 behavior. These assertions guard: the dedicated
+  # setup step exists and cites the two-gate liveness pattern; the
+  # in_flight-suppression bullet is documented in the Human-only queue
+  # filter; both new output affordances are defined and wired into
+  # list-snapshot mode / the termination contract / the empty state; the
+  # suppress-and-enrich-only contract is stated as a Don't rule; and the
+  # three fields left deliberately unconsumed are named so a future reader
+  # doesn't mistake the slice for full six-field coverage.
+  assert_contains "$cmd_path" "Resolve \`/do-work\`'s live session state" \
+    "command documents a dedicated setup step reading /do-work's session state (#1080)"
+  assert_contains "$cmd_path" "session-state.sh\" is-active --session-id" \
+    "command gates .in_flight on the session-state.sh is-active liveness check (#1080)"
+  assert_contains "$cmd_path" "fromdateiso8601" \
+    "command gates .main_ci on its own checked_at freshness window (#1080)"
+  assert_contains "$cmd_path" "owns an issue or PR a LIVE session is actively working on right now" \
+    "Human-only queue filter documents the in-flight suppression bullet (#1080)"
+  assert_contains "$cmd_path" "in-flight-pointer-line" \
+    "command defines the in-flight pointer line output affordance (#1080)"
+  assert_contains "$cmd_path" "default-branch-ci-line" \
+    "command defines the default-branch CI line output affordance (#1080)"
+  assert_contains "$cmd_path" "Don't treat \`/do-work\`'s session state as authoritative" \
+    "command states the suppress-and-enrich-only contract as a Don't rule (#1080)"
+  assert_contains "$cmd_path" "Left unconsumed, deliberately" \
+    "command names the session-state fields deliberately left unconsumed (#1080)"
+  assert_contains "$cmd_path" "#1080" \
+    "command cites issue #1080 for the /do-work session-state read"
 fi
 
 echo

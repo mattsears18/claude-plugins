@@ -139,6 +139,84 @@ skip_drain_rebase=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.sk
 
 **Two carve-outs preserve visibility for a `@me` DIRTY PR even under the default (`ci.skip_drain_rebase: false`)** — see the Pass A bucket below: a `@me` DIRTY PR that also carries `blocked:ci` is already caught, at full priority, by the separate `blocked:ci` signal (an observable "given up" label, unrelated to author). A `@me` DIRTY PR that `/do-work`'s drain-phase rebase has genuinely given up on for a *rebase-specific* reason (`rebase_blocked_prs` — a non-trivial conflict — or the 3-successful-rebase rate-limit cap) has no such observable signal: both states are per-session, in-memory drain bookkeeping ([`drain.md`](./do-work/drain.md#drain-protocol)) that's never persisted to a label or anything else `gh` can read. Per [#1075](https://github.com/mattsears18/shipyard/issues/1075): prefer keeping a `@me` DIRTY PR visible at the bottom of its tier over dropping it silently — a false negative here strands the PR with no path to anyone.
 
+### 9. Resolve `/do-work`'s live session state (optional enrichment) ([#1080](https://github.com/mattsears18/shipyard/issues/1080))
+
+`/my-turn` and `/do-work` communicate through exactly one channel by default: GitHub labels — `/my-turn` reads no `/do-work` session state on its own. This step adds a second, best-effort read of `/do-work`'s own on-disk session file, used **only** to suppress items a live session is already working on and to cheaply enrich the default-branch CI read (see [the default-branch CI line](#default-branch-ci-line) below) instead of re-deriving it by hand — the six-`gh`-call repro the originating issue measured. **Strictly optional, degrade-silently input: `/my-turn` MUST still produce a correct queue on a machine that has never run `/do-work`**, and a missing, unreadable, malformed, wrong-repo, or stale session file must never change the output shape, error, or warn — this step simply contributes nothing on any of those paths.
+
+**1. Find the newest session file for this repo, best-effort** (mirrors [`/shipyard:status`'s](./status.md) own file-discovery idiom — `shopt -s nullglob` over `sessions/*.json`):
+
+```bash
+SHIPYARD_HOME="${SHIPYARD_HOME:-$HOME/.shipyard}"
+session_id=""
+if [[ -d "$SHIPYARD_HOME/sessions" ]]; then
+  shopt -s nullglob
+  candidates=("$SHIPYARD_HOME"/sessions/*.json)
+  shopt -u nullglob
+  newest_updated_at=""
+  for f in "${candidates[@]}"; do
+    repo_field=$(jq -r '.repo // empty' "$f" 2>/dev/null) || continue
+    [[ "$repo_field" == "<owner/repo>" ]] || continue
+    updated_at=$(jq -r '.updated_at // empty' "$f" 2>/dev/null) || continue
+    [[ -n "$updated_at" ]] || continue
+    # ISO-8601 UTC timestamps (fixed-width, always Z-suffixed) compare
+    # correctly as plain strings — no date-parsing needed to find "newest".
+    if [[ -z "$newest_updated_at" || "$updated_at" > "$newest_updated_at" ]]; then
+      newest_updated_at="$updated_at"
+      session_id=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
+      [[ -n "$session_id" ]] || session_id="$(basename "$f" .json)"
+    fi
+  done
+fi
+```
+
+Any failure along the way — no `sessions/` dir (a machine that's never run `/do-work`), no file matching this repo, a corrupt file `jq` can't parse — simply leaves `session_id` empty. Treat that exactly like "this step doesn't apply": skip steps 2–3 below and proceed to the survey passes unchanged.
+
+**2. Gate `.in_flight` on liveness — the same two-gate pattern `/shipyard:do-work`'s own step 1.6 orphan sweep uses** ([#253](https://github.com/mattsears18/shipyard/issues/253)):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+live=0
+if [[ -n "$session_id" ]]; then
+  if "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" is-active --session-id "$session_id" 2>/dev/null; then
+    live=1
+  fi
+fi
+```
+
+**Why liveness, not just "the file exists."** The newest session file for a repo is very often a *dead* one — a `/do-work` run that finished normally, or crashed, leaves its file on disk until a future `/do-work` session's own step 1.6 sweep reaps it; `/my-turn` never runs that sweep itself, so a stale file can sit there indefinitely. `.in_flight` names workers that were live *at the last write* — reading it from a dead session's file would list agents that no longer exist, silently telling the human to skip an issue nobody is actually touching. `is-active` (the identical helper the orphan-sweep already uses) exits `0` only when the file's `.pid` is alive (`kill -0 $pid`); exit `1` covers a dead pid, a missing/null pid (an older shipyard version, or a degraded-recovery file), or the file having disappeared between step 1 and here. **Any of those degrades to `live=0` — `.in_flight` is read no further and nothing is suppressed on its account.** `.main_ci` (step 3) is read regardless of `$live` — see why there.
+
+**3. Read the two fields this step consumes, gated as above:**
+
+```bash
+in_flight_issue_targets=""
+in_flight_pr_targets=""
+if [[ "$live" == "1" ]]; then
+  in_flight_issue_targets=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+    --session-id "$session_id" \
+    --path '.in_flight[] | select(.kind == "issue" or .kind == "investigate" or .kind == "spike") | .target' 2>/dev/null)
+  in_flight_pr_targets=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+    --session-id "$session_id" \
+    --path '.in_flight[] | select(.kind == "fix-checks" or .kind == "fix-rebase") | .target' 2>/dev/null)
+fi
+
+main_ci_status="unknown"
+if [[ -n "$session_id" ]]; then
+  main_ci_status=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+    --session-id "$session_id" --path \
+    'if .main_ci.checked_at and ((now - (.main_ci.checked_at | fromdateiso8601)) <= 1800) then .main_ci.status else "unknown" end' \
+    2>/dev/null)
+  [[ -n "$main_ci_status" ]] || main_ci_status="unknown"
+fi
+```
+
+`main_ci_status` is read **regardless of `$live`** — deliberately. Unlike `.in_flight` (a claim about what a *process* is doing right now, meaningless once that process is dead), `.main_ci` is a cached snapshot of a `gh`-observable fact (the default branch's CI state) that stays true independent of whether the writer is still running. Its own `checked_at` freshness bound (30 minutes — the same window [#253](https://github.com/mattsears18/shipyard/issues/253)'s reap sweep uses) is the correct staleness gate for a *fact*, in place of a liveness gate for a *process*; older than that, `main_ci_status` resolves to `"unknown"` and the rest of this step behaves as if it never ran.
+
+**Consumed by:**
+- The [Human-only queue filter](#human-only-queue-filter)'s in-flight suppression bullet and the [in-flight pointer line](#in-flight-pointer-line) in Output — `in_flight_issue_targets` / `in_flight_pr_targets`, gated by `$live`.
+- The [default-branch CI line](#default-branch-ci-line) in Output — `main_ci_status`, gated by its own freshness.
+
+**Left unconsumed, deliberately.** `deferred_issues`, `divert_queue`, `session_prs`, `rebase_blocked_prs`, and `rebase_success_counts` are read by nothing in this step. Each is a plausible future enrichment — `deferred_issues` most of all, since most of its defer classes already surface via an existing GitHub label (`needs-human-review` / `agent-console`) and only its two label-less classes (`untrusted-author`, `confirmed-blocker-still-open`) would add anything genuinely new — but folding all six fields into one pass risks exactly the kind of broad, hard-to-verify change this file's own [Don't](#dont) section keeps `/my-turn`'s *own* output away from. This step is a narrower, independently-verifiable slice: the two fields that directly answer the two concrete costs the originating [#1080](https://github.com/mattsears18/shipyard/issues/1080) repro measured — recommending an issue a live worker already owns, and re-deriving red-main state by hand across six `gh` calls. **This does not change [Setup step 7](#7-resolve-the-operator-phase-assumption-for-the-agent-console-filter-1093)'s behavior** — the session-state schema has no field recording whether a given `/do-work` run's operator phase was enabled, so step 7's declared `my_turn.assume_operator_enabled` config knob remains the only signal for that question; wiring a live read for it is future work, not part of this fix.
+
 ## Survey passes
 
 Run each of the following passes in parallel (one batch of `gh` calls in a single message). Each pass produces a list of candidate items; the final ranking step merges them.
@@ -231,6 +309,7 @@ After the passes collect candidates and **before** ranking, drop everything that
 - **`/do-work` owns browser-completable operator actions — when its operator phase is enabled** ([#1093](https://github.com/mattsears18/shipyard/issues/1093)) — `agent-console` items, and any item whose next step is a mechanical browser/console action Claude can drive in the user's real Chrome (close a superseded PR, paste a CI secret, toggle a non-security console setting, post an unambiguous reply). This holds under `/do-work`'s default (operator-inclusive), but `--no-operate` / `--hands-off` disables it — a per-invocation flag `/my-turn` cannot observe directly (the underlying fix is tracked in [#1080](https://github.com/mattsears18/shipyard/issues/1080)), so `/my-turn` instead relies on the declared `my_turn.assume_operator_enabled` config knob (default `true`, resolved once at [Setup step 7](#7-resolve-the-operator-phase-assumption-for-the-agent-console-filter-1093)). **When `true` (the default) — exclude these from the walkthrough queue.** They are surfaced — if any exist — only as a single one-line pointer (see [the operator pointer](#operator-pointer-line) in Output), never walked. **When `false`** — the maintainer has declared this repo's `/do-work` doesn't drain them — **include these in the walkthrough queue** instead; the pointer must never name a command configured not to do the work.
 - **`/do-work` owns CI recovery on the default branch** — a dedicated `fix-main-ci` worker mode exists exactly for red main / failing CI with no fix-main-ci PR open. That's `/do-work`'s condition to catch on its own; it never enters `/my-turn`'s queue.
 - **`/do-work` owns `@me`-authored DIRTY PRs — scoped, and only while drain-phase rebase dispatch is enabled** ([#1075](https://github.com/mattsears18/shipyard/issues/1075)) — the drain-phase `fix-rebase` worker mode adopts and rebases a `@me`-authored `mergeStateStatus: DIRTY` PR across sessions (see [`do-work/drain.md`](./do-work/drain.md#drain-protocol)). This holds under the default (`ci.skip_drain_rebase: false`, resolved once at [Setup step 8](#8-resolve-ciskip_drain_rebase-for-the-dirty-pr-author-scoping-gate-1075)); when `true`, drain-phase rebase dispatch is off entirely and a `@me` DIRTY PR is `/my-turn`'s exactly like any other author's. **Unlike the `agent-console` gate above, this is narrower than "all-or-nothing":** even under the default config, a `@me` DIRTY PR still surfaces here as a low-priority fallback when `/do-work`'s rebase-specific give-up states (`rebase_blocked_prs`, the rate-limit cap) aren't observable from a `gh` projection — see the Pass A bucket above. An outside-contributor's DIRTY PR is never affected by this gate; it's `/my-turn`'s regardless.
+- **`/do-work` owns an issue or PR a LIVE session is actively working on right now** ([#1080](https://github.com/mattsears18/shipyard/issues/1080), optional — applies only when [Setup step 9](#9-resolve-do-works-live-session-state-optional-enrichment-1080) found a live session's `.in_flight`). An issue with a live `issue` / `investigate` / `spike` slot, or a PR with a live `fix-checks` / `fix-rebase` slot, has an agent working it *this instant* — nothing for the human to do until it returns. Exclude any survey candidate whose number appears in `in_flight_issue_targets` (issues) or `in_flight_pr_targets` (PRs). **Suppression only, never assertion** — the absence of this signal (no session file for this repo, a dead session, session state unreadable) changes nothing; the candidate is judged on every other signal exactly as it is today. See the [in-flight pointer line](#in-flight-pointer-line) in Output for how a suppression is surfaced (never silently, and never as a walked item).
 - **`/my-turn` owns genuine human-required items** — and *only* these survive into the ranked queue: a `needs-human-review` decision/judgment call (design call, product/schema decision, epic-decomposition handoff a human must do by hand, an agent-refuse a human must adjudicate, external-author trust review, a disposition call — see [Disposition-call detection](#disposition-call-detection-1074), [#1074](https://github.com/mattsears18/shipyard/issues/1074)), a `needs-triage` issue **only when `triage.investigate_dispatch: false`** (under the default it's `/do-work`'s, dispatched via investigate mode — see the Pass B bucket above and [#1077](https://github.com/mattsears18/shipyard/issues/1077)), an `agent-console` item **only when `my_turn.assume_operator_enabled: false`** (nothing is assumed to be draining these either — see the Pass B bucket above and [#1093](https://github.com/mattsears18/shipyard/issues/1093)), a PR awaiting `$ME`'s review, an unanswered question / `@$ME` ping, a `blocked:ci` PR needing human eyes, and the housekeeping signals (stale draft, a non-`@me` DIRTY PR — plus a `@me` DIRTY PR fallback when the rebase give-up state isn't observable, per the bullet above and [#1075](https://github.com/mattsears18/shipyard/issues/1075) — `CHANGES_REQUESTED`, stale assigned-to-other issues, stale never-claimed-by-`/do-work` own-authored issues). These are the things no automation can finish for the user.
 
 **The discriminator is "can `/do-work` complete it without a human decision, and is `/do-work` actually configured to?"** If yes to both → it's the operator layer's, filtered out (pointer only). If it needs a person to *decide* or *judge* something no automation can — it stays, unconditionally. If the operator layer *could* complete it mechanically but isn't assumed to be running (`my_turn.assume_operator_enabled: false`, [#1093](https://github.com/mattsears18/shipyard/issues/1093)) — it also stays, since nothing else will. A `needs-human-review` item that is *also* a security/access-control console toggle (which the operator layer hands back rather than drives, per [#626](https://github.com/mattsears18/shipyard/issues/626)) still needs the human, so it stays in the queue regardless of the config gate.
@@ -466,6 +545,22 @@ Print the full ranked list as a static snapshot — **no phased run, no question
 
 This pointer, when it renders, is the *only* trace of operator items in `/my-turn` output. It renders in list-snapshot mode (below the structural footer) and, in [walkthrough mode](#walkthrough-mode-default), once at the end when the queue empties (alongside the empty-state confirmation) — never as a walked item.
 
+<a id="in-flight-pointer-line"></a>**In-flight pointer line** ([#1080](https://github.com/mattsears18/shipyard/issues/1080)). Renders only when [Setup step 9](#9-resolve-do-works-live-session-state-optional-enrichment-1080) found a live session AND the [Human-only queue filter](#human-only-queue-filter)'s in-flight suppression bullet actually excluded ≥1 candidate this run:
+
+```
+2 items excluded — a live /shipyard:do-work session is already working on them
+```
+
+Same placement as the [operator pointer line](#operator-pointer-line) above (list-snapshot mode: below the structural footer; walkthrough mode: once at the end alongside the empty-state confirmation) — never a walked item, never listed individually. **Never renders when Setup step 9 found nothing to read** (no session file for this repo, a dead session, an unreadable/malformed file) — silence here is the correct degrade, not a state worth calling out.
+
+<a id="default-branch-ci-line"></a>**Default-branch CI line** ([#1080](https://github.com/mattsears18/shipyard/issues/1080)). Renders only when [Setup step 9](#9-resolve-do-works-live-session-state-optional-enrichment-1080)'s `main_ci_status` resolved to `"red"` from a fresh (≤30 min old) cached reading — green, pending, and `"unknown"` never render a line, and `/do-work` already owns fixing a red default branch on its own (see [Human-only queue filter](#human-only-queue-filter)), so this line is purely informational and never a queue item:
+
+```
+default branch CI: red (cached — /shipyard:do-work owns recovery)
+```
+
+When `$live == 1` and a live `.in_flight` slot carries `kind == "fix-main-ci"` (already read in [Setup step 9](#9-resolve-do-works-live-session-state-optional-enrichment-1080) step 3), append `— a live session is already on it`. This is exactly the "is red main already claimed" question the originating [#1080](https://github.com/mattsears18/shipyard/issues/1080) repro spent six `gh` calls answering by hand; here it costs zero calls beyond what step 9 already fetched. **Enrichment only** — never a queue item, and it never renders from a stale or absent reading.
+
 ### Chrome-prompt mode (`--chrome-prompt`)
 
 When `--chrome-prompt` is present, the **entire visible output** is a single copy-paste-ready prompt block. Nothing appears above the opening divider line and nothing appears below the closing divider line except the optional "can't be automated" section. The user highlights from the first divider line to the last, pastes the whole thing into the Claude for Chrome browser extension, and the extension acts — no further reading or interpretation required.
@@ -551,7 +646,7 @@ Rules for each layout element:
 
 The phased run is the only mode that continues until a queue is exhausted, so it needs a defined exit ([#635](https://github.com/mattsears18/shipyard/issues/635)). It **terminates cleanly** when any of:
 
-- **Both queues are empty** — every decision was collected and committed, and every [Phase 3](#phase-3--walk-the-rest) item has been walked (handled or skipped). Print the [empty state](#empty-state) confirmation, plus the [operator pointer line](#operator-pointer-line) if any `agent-console` items were filtered out, and stop.
+- **Both queues are empty** — every decision was collected and committed, and every [Phase 3](#phase-3--walk-the-rest) item has been walked (handled or skipped). Print the [empty state](#empty-state) confirmation, plus the [operator pointer line](#operator-pointer-line) if any `agent-console` items were filtered out, plus the [in-flight pointer line](#in-flight-pointer-line) and [default-branch CI line](#default-branch-ci-line) if applicable ([#1080](https://github.com/mattsears18/shipyard/issues/1080)), and stop.
 - **The user stops it** — the user says "stop" / "that's enough" / "done for now" at any point. **Where the halt lands matters:**
   - **During [Phase 1](#phase-1--collect-no-mutation-no-work)** → do **not** discard the answers already given. Proceed directly to [Phase 2](#phase-2--commit-all-mutation-batched) and commit them, applying the per-issue answered/partial branch, then report what landed and how many decisions remain uncollected (`<K> decisions left — rerun /my-turn to continue`). Skipping Phase 2 on a halt would throw away work the maintainer already did.
   - **During Phase 3** → halt immediately; confirm what's been handled and how many items remain (`<K> human-only items left — rerun /my-turn to continue`), and stop.
@@ -637,7 +732,7 @@ The ranking step still needs the underlying signals to produce the order — the
 
 ### Empty state
 
-If the human-only queue is empty — passes A–C returned zero human-only items, or the [walkthrough](#walkthrough-mode-default) just exhausted the queue — print a single friendly one-liner and exit cleanly. **Unchanged across modes** — the empty state is identical whether the queue started empty or the walkthrough drained it, and whether or not `--all` / `--limit` is passed. No banner, no multi-line prose — this is the one case where the answer to "what do I need to do" is actively "nothing," and the rendering should mirror the content. If `agent-console` items were filtered out, append the [operator pointer line](#operator-pointer-line) below it so the user knows the operator layer still has work.
+If the human-only queue is empty — passes A–C returned zero human-only items, or the [walkthrough](#walkthrough-mode-default) just exhausted the queue — print a single friendly one-liner and exit cleanly. **Unchanged across modes** — the empty state is identical whether the queue started empty or the walkthrough drained it, and whether or not `--all` / `--limit` is passed. No banner, no multi-line prose — this is the one case where the answer to "what do I need to do" is actively "nothing," and the rendering should mirror the content. If `agent-console` items were filtered out, append the [operator pointer line](#operator-pointer-line) below it so the user knows the operator layer still has work. Append the [in-flight pointer line](#in-flight-pointer-line) and/or the [default-branch CI line](#default-branch-ci-line) too, when either applies ([#1080](https://github.com/mattsears18/shipyard/issues/1080)) — a genuinely empty human-only queue is still worth knowing "and here's what's already being worked."
 
 ```
 Nothing on your plate — backlog is clean. Try /shipyard:audit to surface fresh work, or take a break.
@@ -700,4 +795,5 @@ The survey passes' own budget above governs *collection*. This governs what happ
 - **Don't invent a disposition call** ([#1074](https://github.com/mattsears18/shipyard/issues/1074)). The class fires only when [Disposition-call detection](#disposition-call-detection-1074)'s actual signal is present — a completion-asserting last comment, or a PR whose linked issue closed out from under it. A `needs-human-review` issue with a quiet thread and no such signal is an ordinary human-review item, not a disposition call; don't manufacture a close/keep/split question for it just to give Phase 1 more to batch.
 - **In `--chrome-prompt` mode, don't emit anything outside the dividers except the "can't be automated" section.** The entire output must be highlightable as one clean copy region. Any preamble, status line, `→ Now:` directive, walkthrough prompt, or trailing prose outside the defined layout breaks the copy flow and defeats the mode's purpose. The "can't be automated" section is intentionally after the closing divider — it is for the human's eyes, not for the extension to execute, and it must not be inside the prompt body.
 - **In `--chrome-prompt` mode, don't run the inline decision walkthrough or any interactive prompt.** The interactive [decision-gated walkthrough](#decision-gated-walkthrough) is a terminal-interactive affordance for the human at the terminal — it has no place in a one-shot prompt destined for the browser extension. Chrome-prompt mode is exclusively for extension consumption; terminal-only and interactive affordances are suppressed.
+- **Don't treat `/do-work`'s session state as authoritative, and don't let it add items or urgency** ([#1080](https://github.com/mattsears18/shipyard/issues/1080)). [Setup step 9](#9-resolve-do-works-live-session-state-optional-enrichment-1080)'s optional session-file read is a **suppression and enrichment** signal only — it can drop a candidate (a live in-flight issue/PR) or annotate the output (the default-branch CI line), but it must never manufacture a new queue item, bump an item's tier or leverage score, or otherwise change what would have been ranked without it. And it's always optional: a missing, unreadable, malformed, wrong-repo, or dead (PID not alive) session file must silently produce the *exact same* queue `/my-turn` would render on a machine that has never run `/do-work` — no error, no warning, no degraded-output banner, no change in output shape.
 - **Don't call any MCP browser tools or attempt to drive the browser.** `/my-turn` never drives the browser — not in `--chrome-prompt` mode (which emits a text prompt and stops; browser execution is the Claude for Chrome extension's job when the user pastes the prompt) and not in walkthrough mode (it surfaces items for the human; it does not act). Driving the browser directly is `/do-work`'s scope, not this command's.
