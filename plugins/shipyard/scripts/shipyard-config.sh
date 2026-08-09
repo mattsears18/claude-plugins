@@ -196,7 +196,8 @@ DEFAULTS_JQ='{
     "settled_minutes": 20,
     "max_drain_hours": 8,
     "backpressure_multiplier": 5,
-    "backpressure_min_in_flight": 1
+    "backpressure_min_in_flight": 1,
+    "prefer_cheap_under_backpressure": true
   },
   "flake_registry": {
     "enabled": false,

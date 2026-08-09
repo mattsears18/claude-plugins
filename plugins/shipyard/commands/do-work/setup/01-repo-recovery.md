@@ -146,6 +146,27 @@ fi
 
 **One-time, not re-checked mid-session.** The pool size is read once at startup, matching step 1.3's and step 1.35's "one-time diagnostic" posture. Queue depth is inherently a live number — the end-of-session summary re-reads it fresh at session end rather than trusting `queued_at_start`, since a 4+-hour session's queue depth at the end is the number that matters for the "why didn't these land" question.
 
+### 1.37 Detect CI-cheap-path availability ([#1157](https://github.com/mattsears18/shipyard/issues/1157))
+
+Follow-up to [step 1.36](#136-detect-ci-executor-pool-capacity-and-clamp-toward-it-1141) / [#1156](https://github.com/mattsears18/shipyard/issues/1156)'s dispatch-time backpressure hold. Both treat every candidate issue as equally CI-expensive when deciding whether to fill a freed slot. On a repo whose CI is path-gated — a `pull_request`-triggered workflow declares `paths-ignore: ['docs/**', '**/*.md']` (or similar) so a diff confined to those globs never triggers the heavy job — a docs-only or config-only PR costs the saturated runner pool nothing, and [steady-state.md step C](../steady-state.md#dispatch-rules-used-by-step-7-and-step-c)'s CI-cheap bias can prefer such a candidate instead of leaving the slot idle. This step is the one-time, session-start read that tells step C whether such a lane even exists on this repo.
+
+**The read lives in exactly one place** — [`scripts/detect-ci-cheap-path.sh`](../../../scripts/detect-ci-cheap-path.sh)'s repo-shape mode, the same single-executable-source-of-truth pattern as steps 1.3 and 1.36's detectors. It scans `.github/workflows/*.yml` / `*.yaml` in the checked-out repo (a local file read — no network call, unlike the other two detectors) for any `paths-ignore:` glob list and reports the union, deduplicated. **Deliberately narrow**: only `paths-ignore:` (an exclude list, directly invertible: "the diff matches the ignore list" ⇒ "this workflow doesn't even run") counts as a cheap path. A workflow that instead uses an include-only `paths:` allowlist is NOT treated as evidence of a cheap path — its implicit complement isn't safely invertible without also knowing every other path in the repo. A repo with no `paths-ignore:` anywhere reports `no-cheap-path` honestly rather than guessing one — the bias is a no-op on such a repo, exactly the "should probably be a no-op on a repo where every PR runs the full CI matrix" design question the originating issue raised.
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CI_CHEAP_LINE=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-cheap-path.sh" "<repo-checkout>/.github/workflows" 2>/dev/null || echo no-cheap-path)
+CI_CHEAP_GLOBS=""
+if [ "${CI_CHEAP_LINE%% *}" = "cheap-path-available" ]; then
+  CI_CHEAP_GLOBS=$(printf '%s' "$CI_CHEAP_LINE" | sed -n 's/^cheap-path-available globs=//p')
+fi
+```
+
+**Hold `CI_CHEAP_GLOBS` for the write-through in [step 1.5](#15-initialise-the-session-state-file)** — folded into the same `.ci_capacity` object step 1.36 writes, as `cheap_ci_globs` (comma-separated glob list, empty string when no cheap path exists). Unconditional write, same posture as `.ci_capacity.shape`.
+
+**This step's read folds into the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch)** alongside the others — it's a local filesystem read (no `gh api`/`gh run list` call), so it's cheap regardless of batching, but batching keeps the setup-step ordering consistent with steps 1 / 1.3 / 1.36.
+
+**One-time, not re-checked mid-session.** A repo's CI workflow shape doesn't change mid-session in the overwhelming common case; if it does (a workflow-editing PR merges to the default branch during a long session), the stale glob list only means the CI-cheap bias under-fires (misses a newly-cheap path) or over-fires (biases toward a path that's no longer cheap) for the rest of the session — never a correctness problem, since [steady-state.md step C](../steady-state.md#dispatch-rules-used-by-step-7-and-step-c)'s bias only ever *prefers* a candidate among otherwise-eligible ones; it never skips the normal eligibility checks.
+
 ### 1.5 Initialise the session state file
 
 Stand up the durable JSON mirror (see [Session state file](../../do-work.md#session-state-file) and the full [schema + helper reference](../session-state-file.md)). One-shot setup write — every subsequent mutation routes through `session-state.sh update`.
@@ -163,13 +184,13 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 
 `$EFFECTIVE_CONCURRENCY` is resolved (and, on an `ungated` merge shape or a small self-hosted CI runner pool, clamped) by [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) and [step 1.36](#136-detect-ci-executor-pool-capacity-and-clamp-toward-it-1141) — don't re-read `--concurrency` or `concurrency.default` independently here, or the clamps become bypassable by whichever read happens second.
 
-**Immediately after `init` returns successfully**, write through the CI-capacity observation step 1.36 computed (`CI_POOL_SHAPE` / `CI_POOL_TOTAL` / `CI_POOL_QUEUED`) — unconditionally, regardless of `CI_POOL_SHAPE`'s value, so the end-of-session summary always has a `.ci_capacity.shape` to branch on:
+**Immediately after `init` returns successfully**, write through the CI-capacity observation step 1.36 computed (`CI_POOL_SHAPE` / `CI_POOL_TOTAL` / `CI_POOL_QUEUED`) plus [step 1.37](#137-detect-ci-cheap-path-availability-1157)'s `CI_CHEAP_GLOBS` — unconditionally, regardless of either value, so the end-of-session summary and steady-state.md step C always have a `.ci_capacity.shape` / `.ci_capacity.cheap_ci_globs` to branch on:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update \
   --session-id "<session-id>" \
-  --set ".ci_capacity = { shape: \"${CI_POOL_SHAPE}\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0} }"
+  --set ".ci_capacity = { shape: \"${CI_POOL_SHAPE}\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0}, cheap_ci_globs: \"${CI_CHEAP_GLOBS:-}\" }"
 ```
 
 The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The default config above is the entire schema with empty queues + an `unknown` `main_ci` state — everything else gets filled in by later setup steps and the steady-state loop.

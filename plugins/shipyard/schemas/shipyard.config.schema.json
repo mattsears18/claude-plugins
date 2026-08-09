@@ -310,6 +310,11 @@
           "default": 1,
           "description": "Escape valve for the `backpressure_multiplier` dispatch-time hold (issue #1156): backpressure never fires while fewer than this many workers are already in flight, so a saturated self-hosted CI pool can never fully stall the session with backlog work still waiting and every slot held empty. Default 1 guarantees at least one worker always stays dispatched. Set to 0 to disable the escape valve (backpressure can hold every slot, including the last one, on a sufficiently deep queue) — not recommended outside debugging, since it can produce a session that goes fully idle despite non-empty queues."
         },
+        "prefer_cheap_under_backpressure": {
+          "type": "boolean",
+          "default": true,
+          "description": "When a dispatch-time backpressure hold (`backpressure_multiplier`, above) would otherwise leave a freed slot empty (issue #1157, follow-up to #1141/#1156), bias candidate selection toward an issue whose changed-file footprint is likely to skip the repo's heavy CI path instead of just holding the slot. Only ever engages when BOTH conditions hold: a hold verdict actually fired this turn, AND the repo's `pull_request`-triggered workflows declare a `paths-ignore:` cheap path (`scripts/detect-ci-cheap-path.sh`'s repo-shape read, cached once at session start in `.ci_capacity.cheap_ci_globs`) — a repo with no such path is a no-op regardless of this setting, since there is no cheap lane to bias toward. This is a pool-FILTER at the moment of a hold, never a ranking override: normal severity/priority ordering (P0/P1/P2, label priority) is unchanged, and outside a backpressure hold this knob has zero effect. Set false to restore #1156's unconditional-hold behavior (always park the slot under backpressure, regardless of candidate CI cost)."
+        },
         "_comment": { "type": "string" }
       }
     },
