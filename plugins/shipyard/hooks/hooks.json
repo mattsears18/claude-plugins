@@ -37,6 +37,10 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/refuse-broad-process-kill.sh\""
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/refuse-credential-mint.sh\""
           }
         ]
       }
