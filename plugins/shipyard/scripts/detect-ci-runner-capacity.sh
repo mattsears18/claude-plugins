@@ -50,13 +50,52 @@
 #        concern, out of scope for the pure decision; queued depth is also
 #        live-path-only and is not part of this pure decision).
 #
+# Usage — pure dispatch-time backpressure decision (issue #1156, hermetic,
+# no network calls):
+#   bash detect-ci-runner-capacity.sh --decide-backpressure \
+#     <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>
+#     -> prints "hold" or "dispatch" on stdout (single line).
+#
+#   This is a SEPARATE decision from `decide()` above: `decide()` answers
+#   "what shape is this repo's CI pool" (a one-time, session-start read);
+#   `decide_backpressure()` answers "should THIS dispatch turn fill a freed
+#   slot, or hold it" against a LIVE queued-run count re-read every dispatch
+#   turn (`/shipyard:do-work` steady-state.md step C). Kept in this same
+#   script because both consume the same pool-shape signal and this keeps a
+#   single executable source of truth for CI-capacity decisions rather than
+#   splitting the logic across two scripts.
+#
+#   - POOL_TOTAL     — `.ci_capacity.pool_total` from session state (the
+#                       session-start online-runner count; 0 disables the
+#                       check entirely — always "dispatch").
+#   - QUEUED          — a LIVE re-read of `gh run list --status queued`
+#                       (never the stale `queued_at_start` snapshot).
+#   - IN_FLIGHT       — count of workers currently in `.in_flight` BEFORE
+#                       this slot is filled.
+#   - MULTIPLIER      — `ci.backpressure_multiplier` config value (default 5).
+#                       Threshold = POOL_TOTAL × MULTIPLIER.
+#   - MIN_IN_FLIGHT   — `ci.backpressure_min_in_flight` config value
+#                       (default 1). Escape valve: if IN_FLIGHT is already
+#                       below this floor, always "dispatch" regardless of
+#                       queue depth, so a saturated pool can never fully
+#                       stall the session with backlog work still waiting.
+#
+#   All five inputs degrade to a safe default on non-numeric input rather
+#   than erroring (POOL_TOTAL/QUEUED/IN_FLIGHT -> 0, MULTIPLIER -> 5,
+#   MIN_IN_FLIGHT -> 1) — this is an advisory throughput check, not a
+#   security gate, so a malformed input should never crash the dispatch
+#   loop; it degrades toward "dispatch" (POOL_TOTAL=0) or toward the
+#   documented default threshold.
+#
 # Fail-safe posture: this is advisory-only, unlike the ungated-merge and
 # gate-narrowing detectors (which gate a security-relevant merge decision).
 # A false `unknown` costs nothing but a missed clamp/hint; a false
 # `self-hosted` on a repo that's actually GitHub-hosted would wrongly clamp
 # concurrency for no reason, so `unknown` is the safe default whenever the
 # runners endpoint itself cannot be read cleanly — never guess `hosted` or
-# fabricate a pool size.
+# fabricate a pool size. Likewise, `decide_backpressure()` fails toward
+# "dispatch" on a zero/unreadable pool size — never toward holding every
+# slot on a signal we couldn't actually read.
 #
 # Queue-depth caveat: `gh run list --status queued` is a repo-wide, all-
 # workflow count — it does not distinguish which queued runs are actually
@@ -86,6 +125,35 @@ decide() {
   printf 'self-hosted pool_total=%d pool_idle=%d\n' "$online_count" "$idle"
 }
 
+decide_backpressure() {
+  local pool_total="$1" queued="$2" in_flight="$3" multiplier="$4" min_in_flight="$5"
+
+  case "$pool_total" in ''|*[!0-9]*) pool_total=0 ;; esac
+  case "$queued" in ''|*[!0-9]*) queued=0 ;; esac
+  case "$in_flight" in ''|*[!0-9]*) in_flight=0 ;; esac
+  case "$multiplier" in ''|*[!0-9.]*) multiplier=5 ;; esac
+  case "$min_in_flight" in ''|*[!0-9]*) min_in_flight=1 ;; esac
+
+  # A zero/unreadable pool size disables the check entirely — never gate
+  # dispatch on a signal we couldn't actually read.
+  if [ "$pool_total" -eq 0 ]; then
+    printf 'dispatch\n'
+    return 0
+  fi
+
+  # Escape valve — never let backpressure hold every slot on a saturated
+  # pool. At least MIN_IN_FLIGHT workers stay dispatched regardless of
+  # queue depth, so a heavily-backpressured session can't go fully idle
+  # with backlog work still waiting and nothing ever filling a slot.
+  if [ "$in_flight" -lt "$min_in_flight" ]; then
+    printf 'dispatch\n'
+    return 0
+  fi
+
+  awk -v q="$queued" -v p="$pool_total" -v m="$multiplier" \
+    'BEGIN { print (q > p * m) ? "hold" : "dispatch" }'
+}
+
 main() {
   if [ "${1:-}" = "--decide" ]; then
     if [ "$#" -ne 4 ]; then
@@ -96,10 +164,20 @@ main() {
     exit 0
   fi
 
+  if [ "${1:-}" = "--decide-backpressure" ]; then
+    if [ "$#" -ne 6 ]; then
+      echo "usage: $0 --decide-backpressure <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>" >&2
+      exit 1
+    fi
+    decide_backpressure "$2" "$3" "$4" "$5" "$6"
+    exit 0
+  fi
+
   local repo="${1:-}"
   if [ -z "$repo" ]; then
     echo "usage: $0 <owner/repo>" >&2
     echo "       $0 --decide <RUNNER_COUNT> <ONLINE_COUNT> <BUSY_COUNT>" >&2
+    echo "       $0 --decide-backpressure <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>" >&2
     exit 1
   fi
 

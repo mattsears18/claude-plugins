@@ -194,7 +194,9 @@ DEFAULTS_JQ='{
     "skip_speculative_rerun": true,
     "require_in_progress_check_to_settle": false,
     "settled_minutes": 20,
-    "max_drain_hours": 8
+    "max_drain_hours": 8,
+    "backpressure_multiplier": 5,
+    "backpressure_min_in_flight": 1
   },
   "flake_registry": {
     "enabled": false,

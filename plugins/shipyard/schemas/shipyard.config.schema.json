@@ -298,6 +298,18 @@
           "default": 8,
           "description": "End-of-session drain: the ultimate wall-clock ceiling, in hours, after which drain forcibly exits even if forward progress is still observable (issue #374). Replaces the old hardcoded 120-min (2-hour) ceiling that fired on wall-clock time rather than progress signal — a healthy multi-PR merge train with full E2E sharding + release-please cascades can legitimately exceed 2 hours. The progress-based `settled_minutes` exit is the primary termination path; this is the belt-and-braces safety net so a degenerate session (runaway CI loop, infinite rebase) still can't run forever. Default 8h; lower it on cheap-CI repos where a >1h drain is itself a smell."
         },
+        "backpressure_multiplier": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 5,
+          "description": "Dispatch-time queue-depth backpressure threshold (issue #1156), only meaningful when `.ci_capacity.shape == \"self-hosted\"` (issue #1141's one-time session-start pool-shape read). Before filling a freed dispatch slot, `/shipyard:do-work` steady-state.md step C re-reads the LIVE queued-run count and holds the slot (mirroring the existing 'leave the slot empty for now' path used for path/lockfile collisions) when queued runs exceed `pool_total × backpressure_multiplier`. Deliberately looser than the end-of-session summary's fixed 3× *advisory* threshold ([#1141](https://github.com/mattsears18/shipyard/issues/1141)) — a dispatch-blocking hold has a real cost (an idle worker slot) that a passive summary line doesn't, so the default is set higher. Lower it to make the session more conservative about piling CI runs onto a saturated pool; raise it (or set very high) to make backpressure effectively advisory-only."
+        },
+        "backpressure_min_in_flight": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 1,
+          "description": "Escape valve for the `backpressure_multiplier` dispatch-time hold (issue #1156): backpressure never fires while fewer than this many workers are already in flight, so a saturated self-hosted CI pool can never fully stall the session with backlog work still waiting and every slot held empty. Default 1 guarantees at least one worker always stays dispatched. Set to 0 to disable the escape valve (backpressure can hold every slot, including the last one, on a sufficiently deep queue) — not recommended outside debugging, since it can produce a session that goes fully idle despite non-empty queues."
+        },
         "_comment": { "type": "string" }
       }
     },
