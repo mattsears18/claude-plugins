@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.17.2 — 2026-08-09
+
+Disambiguates a *live* `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker from the same literal string merely *quoted* in prose. The step-4 client-side dispatch filter (added by #1161) previously extracted "the first marker found anywhere in the body," with no distinction between a real gate and a doc issue describing the mechanism and citing the marker syntax as a worked example — exactly the shape #1165's own body took, surviving the filter during its own dispatch only by luck (its placeholder dates `YYYY-MM-DD` / `<date>` don't parse, so the fail-open path saved it). A follow-up citing a well-formed, still-future example date would have been silently dropped from the workable queue with no diagnostic. Requires the marker to occupy the body's literal first line to be treated as live — matching exactly how the marker is actually produced (scope pre-flight's `time-gated` recording path and a human hand-writing one both always prepend to line 1, never insert mid-body), so the fix costs zero false negatives against genuine markers while ruling out every quoted-in-prose false positive, including this filter's own two closest instances (#1165's and #1168's own bodies). closes #1168
+
+- `plugins/shipyard/commands/do-work/setup/04-backlog-divert.md` — step 4's `do-work-blocked-until` filter now requires the marker to be the body's first line; a marker anywhere else (mid-paragraph, backticked, fenced, cited as an example) does not gate dispatch. The malformed-date fail-open behavior is unchanged.
+- `plugins/shipyard/scripts/tests/do-work-split.test.sh` — regression coverage asserting the position-discipline rule and its rationale landed, and that the old ambiguous "first marker found in the body" extraction phrasing is gone.
+
 ### 4.16.0 — 2026-08-09
 
 Adds a sixth `defer_reason_class`, `time-gated`, so scope pre-flight can *produce* the `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker instead of a human hand-writing it. #1161 (PR #1164, shipped as part of the same session) added only the client-side dispatch-filter half of the mechanism — a self-clearing marker the step-4 filter honors — and deliberately deferred this production half as its own follow-up, since it touches the scope-preflight validator, the per-class evidence-shape table, and the recording path across multiple files. A `time-gated` defer never gets `needs-human-review` or `agent-console`: the whole point of the class is that no human review is needed once the date elapses, matching #1161's own point that this class needs no human at all — the recording path writes the body marker directly instead of applying any gate label. closes #1165
