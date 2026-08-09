@@ -220,53 +220,30 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
 5.8. **Assert every line the PR's own commit added is still present verbatim, per touched file — bail if any went missing (issue [#983](https://github.com/mattsears18/shipyard/issues/983)).** Steps 5.5–5.7 catch, respectively: unresolved conflict markers, deleted CHANGELOG headings, and a whole-PR diff that went empty. None of them catch a narrower and more insidious failure: `git rebase` can report **"Auto-merging \<file\>"** — a clean 3-way merge, zero conflict markers, steps 5.5/5.6/5.7 all pass — while still silently splicing content from the *wrong* hunk into the result. This happens most readily in a file with high internal repetition (many structurally-identical blocks — e.g. repeated `uses:` / `id:` / `with:` step blocks in a CI workflow) combined with a large line-offset shift on the default-branch side (a big refactor landed on main between when the PR branched and when it rebased): diff3/patience matching can mismatch context anchors and merge a hunk against the wrong twin. The result is a file that is textually well-formed (no markers, non-empty, no CHANGELOG loss) but **semantically wrong** — a load-bearing per-job distinction silently collapsed to one variant, with explanatory comments replaced by plausible-looking but mismatched text. See issue #983 for the full repro (a lightwork PR's four-job CI cache split was silently flattened to one variant across three jobs, with the corresponding pinned regression test correspondingly weakened, purely from a "clean" rebase).
 
-   **The check is generic and mechanical — it never inspects *which* file or *what* the content means.** It only asserts a structural invariant: every line the PR's own commit(s) added, relative to the pre-rebase merge-base, must still be found verbatim somewhere in that same file after the rebase. `origin/$HEAD_REF` still points at the pre-rebase head (the force-push is step 6, not yet run) and `origin/$DEFAULT_BRANCH` is the branch being rebased onto, so the merge-base between them is the PR's original branch point — stable regardless of which conflict-resolution path (clean auto-merge, or step 4's trivial hand-resolution) got you here:
+   **The check is generic and mechanical — it never inspects *which* file or *what* the content means.** It only asserts a structural invariant: every line the PR's own commit(s) added, relative to the pre-rebase merge-base, must still be found verbatim somewhere in that same file after the rebase. `origin/$HEAD_REF` still points at the pre-rebase head (the force-push is step 6, not yet run) and `origin/$DEFAULT_BRANCH` is the branch being rebased onto, so the merge-base between them is the PR's original branch point — stable regardless of which conflict-resolution path (clean auto-merge, or step 4's trivial hand-resolution) got you here.
+
+   **The check runs as a standalone, testable script, not an inline snippet re-typed per worker ([#1175](https://github.com/mattsears18/shipyard/issues/1175)).** The original inline invocation here piped the added lines into a `grep` call combining the `-v` / `-F` / `-x` / `-f <pattern-file>` flags — typed directly into the worker's own interactive Bash-tool shell. In at least one live worker environment that shell's `grep` is shadowed by a function wrapping `ugrep`, and the shadowed command silently **false-negatived**: it reported "no missing lines" for files that genuinely had missing lines. See [`verify-added-lines-survived.sh`](../../scripts/verify-added-lines-survived.sh) — it avoids `grep` for the comparison entirely (uses `sort`/`comm`/`awk` instead), runs as a genuinely separate `bash` process so it can't inherit the calling shell's function shadowing either, and runs a synthetic self-check before trusting any verdict, failing loud (`exit 2`, `INDETERMINATE:`) rather than reporting a false-clean pass when the comparison mechanism itself can't be trusted in the current environment. Do not re-inline the check — call the script:
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+
    MERGE_BASE=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH")
-   PR_TOUCHED_FILES=$(git diff --name-only "$MERGE_BASE" "origin/$HEAD_REF")
 
-   CORRUPTED=""
-   for f in $PR_TOUCHED_FILES; do
-     # The PR itself deleted this file — nothing to verify survived.
-     if ! git cat-file -e "origin/$HEAD_REF:$f" 2>/dev/null; then
-       continue
-     fi
-     # The file no longer exists in the rebased tree at all — itself a
-     # red flag (the PR kept/added it; the rebase shouldn't have removed it).
-     if [ ! -f "$f" ]; then
-       CORRUPTED="$CORRUPTED $f(missing)"
-       continue
-     fi
+   VERIFY_OUTPUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" 2>&1)
+   VERIFY_STATUS=$?
 
-     # Lines the PR's own commit(s) added, verbatim — strip the diff '+'
-     # marker, drop the '+++' file-header line, and skip blank lines (noise).
-     ADDED_LINES=$(git diff "$MERGE_BASE" "origin/$HEAD_REF" -- "$f" \
-       | grep '^+' | grep -v '^+++' | sed 's/^+//' | grep -v '^[[:space:]]*$' || true)
-     if [ -z "$ADDED_LINES" ]; then
-       continue
-     fi
-
-     # Every added line must appear verbatim (exact whole-line match) SOMEWHERE
-     # in the final rebased file. -f "$f" reads the rebased file's own lines
-     # as the exact-match pattern set; -v surfaces added lines that matched
-     # none of them — i.e. content the PR added that the merge dropped/altered.
-     MISSING=$(grep -vFxf "$f" <<<"$ADDED_LINES" || true)
-     if [ -n "$MISSING" ]; then
-       CORRUPTED="$CORRUPTED $f"
-     fi
-   done
-
-   if [ -n "$CORRUPTED" ]; then
+   if [ "$VERIFY_STATUS" != "0" ]; then
      git rebase --abort 2>/dev/null || true
-     echo "blocked rebase #<M>: auto-merge silently dropped/altered PR-added content in:$CORRUPTED — needs manual rebase (https://github.com/mattsears18/shipyard/issues/983)"
+     echo "blocked rebase #<M>: line-survival check did not pass ($VERIFY_OUTPUT) — needs manual rebase (https://github.com/mattsears18/shipyard/issues/983)"
      exit 0
    fi
    ```
 
+   **Exit 0 is the only "safe to proceed" result.** The script's exit 1 (`CORRUPTED:<files>` — a real mismatch found) and exit 2 (`INDETERMINATE: <reason>` — the check couldn't establish a trustworthy result at all, e.g. an unresolvable ref or a broken `sort`/`comm` in this environment) are both bail conditions here — never branch on exit 1 vs 2 to decide whether to proceed; only exit 0 does.
+
    **Why exact-line matching, not a semantic diff.** The check deliberately doesn't try to understand the file's structure or meaning — that would require per-file domain knowledge, which is exactly what this guard must NOT hard-code. Exact verbatim survival of every added line is a cheap, universal, false-positive-resistant proxy: legitimate further edits from other trivial-conflict resolution (step 4) still leave the PR's own added lines intact, because those lines were never in conflict in the first place. A false positive here (an added line legitimately reworded by a later, unrelated commit already on the PR branch before this rebase) is rare and cheap to recover from — one `blocked rebase` and a human eyeballs the diff; a false negative (silent corruption slipping through) is the failure mode from #983, with no error signal at all and a real functional regression landing behind a green CI run.
 
-   **Why this runs unconditionally, for every touched file, regardless of path.** Unlike step 4.6's manifest/CHANGELOG carve-out, this guard makes no attempt to classify a file as "safe" up front — a file this PR modified only lightly can be just as vulnerable to a mismatched-context splice as a file it changed heavily, and pre-selecting "files worth checking" would reintroduce the exact per-file judgment this guard exists to avoid. The cost of checking every touched file is a handful of cheap `git diff` / `grep` calls — far below the cost of a silent regression landing on `main`.
+   **Why this runs unconditionally, for every touched file, regardless of path.** Unlike step 4.6's manifest/CHANGELOG carve-out, this guard makes no attempt to classify a file as "safe" up front — a file this PR modified only lightly can be just as vulnerable to a mismatched-context splice as a file it changed heavily, and pre-selecting "files worth checking" would reintroduce the exact per-file judgment this guard exists to avoid. The cost of checking every touched file is a handful of cheap `git diff` / `sort` / `comm` calls — far below the cost of a silent regression landing on `main`.
 
 6. **Push the rebased branch.** This is a fast-forward-incompatible operation (rebase rewrites commit SHAs), so a force push with lease is required. You're in detached HEAD (per step 1), so push `HEAD` explicitly to the remote branch ref rather than relying on an upstream:
    ```bash

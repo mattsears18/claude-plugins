@@ -39,6 +39,14 @@
 # placement) regress, or its "no per-file hard-coding" guarantee is
 # violated, the test fails.
 #
+# Issue #1175 follow-up: the exact-line survival check itself was extracted
+# out of this file's inline `grep -vFxf` snippet into a standalone,
+# behaviorally-tested script (verify-added-lines-survived.sh) after that
+# inline snippet was found to silently false-negative under a shadowed
+# `grep`. This file's assertions were updated accordingly — see
+# verify-added-lines-survived.test.sh for the script's own behavioral tests
+# (clean/corrupted/deleted/bad-ref/self-check/shadowed-grep-independence).
+#
 # Pure bash, no external dependencies. Run with:
 #
 #   bash plugins/shipyard/scripts/tests/fix-rebase-line-survival-guard.test.sh
@@ -60,6 +68,7 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 fix_rebase_path="$repo_root/plugins/shipyard/agents/issue-worker/fix-rebase.md"
+verify_script_path="$repo_root/plugins/shipyard/scripts/verify-added-lines-survived.sh"
 
 pass=0
 fail=0
@@ -150,7 +159,7 @@ if [[ -f "$fix_rebase_path" ]]; then
     "fix-rebase.md adds a §5.8 line-survival guard (issue #983)"
   assert_contains "$fix_rebase_path" "https://github.com/mattsears18/shipyard/issues/983" \
     "fix-rebase.md links to the originating issue #983"
-  assert_contains "$fix_rebase_path" "auto-merge silently dropped/altered PR-added content in:" \
+  assert_contains "$fix_rebase_path" "line-survival check did not pass" \
     "fix-rebase.md documents the canonical corruption bail string"
   assert_contains "$fix_rebase_path" "blocked rebase #<M>:" \
     "fix-rebase.md uses the blocked rebase #<M>: return format"
@@ -160,15 +169,32 @@ if [[ -f "$fix_rebase_path" ]]; then
   # untouched until the §6 force-push.
   assert_contains "$fix_rebase_path" 'MERGE_BASE=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH")' \
     "fix-rebase.md computes the merge-base between the pre-rebase head and the rebase target"
-  assert_contains "$fix_rebase_path" 'PR_TOUCHED_FILES=$(git diff --name-only "$MERGE_BASE" "origin/$HEAD_REF")' \
-    "fix-rebase.md enumerates every file the PR's own commit(s) touched"
 
-  # (3) The core mechanism: exact verbatim line survival, not a semantic diff
-  # or a per-file heuristic — this is what keeps the guard generic.
-  assert_contains "$fix_rebase_path" 'grep -vFxf "$f" <<<"$ADDED_LINES"' \
-    "fix-rebase.md asserts exact-line (verbatim) survival of every PR-added line"
+  # (3) The core mechanism: fix-rebase.md delegates the exact verbatim
+  # line-survival comparison to the extracted, standalone script rather than
+  # re-inlining it (issue #1175) — this is what keeps the check testable and
+  # independent of the calling shell's own `grep` semantics.
+  assert_file_exists "$verify_script_path" \
+    "scripts/verify-added-lines-survived.sh exists"
+  assert_contains "$fix_rebase_path" 'scripts/verify-added-lines-survived.sh' \
+    "fix-rebase.md invokes verify-added-lines-survived.sh rather than an inline comparison"
+  assert_contains "$fix_rebase_path" 'bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF"' \
+    "fix-rebase.md's invocation passes MERGE_BASE and the pre-rebase head ref"
   assert_contains "$fix_rebase_path" "it never inspects *which* file or *what* the content means" \
     "fix-rebase.md states the guard is content-agnostic (no per-file hard-coding)"
+  assert_contains "$fix_rebase_path" "https://github.com/mattsears18/shipyard/issues/1175" \
+    "fix-rebase.md links to the extraction issue #1175"
+
+  # A regression to watch for: the original inline snippet's per-file
+  # enumeration loop must not be re-inlined into the spec's own code block —
+  # it now lives solely inside verify-added-lines-survived.sh. (The exact
+  # `grep -vFxf "$f" <<<"$ADDED_LINES"` invocation is fine to keep appearing
+  # in prose describing the historical bug — checked via single-line needles
+  # below, since assert_not_contains's grep -F match is line-scoped.)
+  assert_not_contains "$fix_rebase_path" 'PR_TOUCHED_FILES=$(git diff --name-only "$MERGE_BASE" "origin/$HEAD_REF")' \
+    "fix-rebase.md does not re-inline the old PR_TOUCHED_FILES enumeration loop"
+  assert_not_contains "$fix_rebase_path" 'MISSING=$(grep -vFxf "$f" <<<"$ADDED_LINES" || true)' \
+    "fix-rebase.md does not re-inline the shadowing-prone grep -vFxf comparison line"
 
   # A regression to watch for: a future edit narrowing the guard to a
   # specific filename or extension would defeat its generality. Assert the
