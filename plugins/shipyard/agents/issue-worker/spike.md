@@ -334,3 +334,4 @@ Identical mechanics to `issue-work` § 7 — one-shot snapshot, never `--watch`,
 - **Don't `--watch` checks, and don't open a `Monitor` / backgrounded CI-poll loop** to wait for the rollup before returning — same as `issue-work` and `investigate`. Push, arm auto-merge, snapshot once, return.
 - **Don't `git add -A`.** Stage specific paths so you don't accidentally commit worktree junk, secrets, or a dependency-bootstrap symlink.
 - **Don't expand scope on the implementable slice.** New bugs spotted along the way → new issue, not folded into this PR.
+- **Never create a credential.** See `shipyard:worker-preamble` § "Never create a credential" — a missing credential is a hand-back, not something to route around ([#1166](https://github.com/mattsears18/shipyard/issues/1166)).

@@ -160,9 +160,9 @@ assert_contains "$issue_work_path" "Your terminal state was reached at \"local g
 #     assert_under_budget calls — that file is the canonical source for the
 #     ceiling values and their raise history; keep these two in sync with it
 #     whenever a ceiling changes there (most recently 59000 -> 60000 by
-#     #1135, and 116000 -> 120000 by #1088). ---
+#     #1135, 116000 -> 120000 by #1088, and 120000 -> 121000 by #1166). ---
 assert_under "$skill_path" 60000 "SKILL.md stays under its 60000-byte ceiling"
-assert_under "$issue_work_path" 120000 "issue-work.md stays under its 120000-byte ceiling"
+assert_under "$issue_work_path" 121000 "issue-work.md stays under its 121000-byte ceiling"
 
 # --- Orchestrator-side canned resume-message template (item 4, optional) ---
 assert_contains "$steady_state_path" "Canned resume-message template" \

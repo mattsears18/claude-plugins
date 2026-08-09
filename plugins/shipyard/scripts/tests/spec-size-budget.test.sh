@@ -114,6 +114,20 @@
 # already 22 bytes under the prior ceiling, so even this one-sentence
 # extension needed the bump.
 #
+# skills/worker-preamble/SKILL.md did NOT need a ceiling raise for #1166
+# (2026-08-09) — the new "Never create a credential" section (569 bytes) fit
+# inside the ~864 bytes of headroom left after #1135's last raise.
+#
+# issue-work.md's ceiling was raised 120000 -> 121000 by #1166 (2026-08-09):
+# a P0 security-boundary fix — a worker minted a live GCP service-account key
+# to work around a missing credential rather than handing back — added a
+# "Never create a credential" prohibition to the always-loaded
+# skills/worker-preamble/SKILL.md core, plus a one-line Don't-section mirror
+# in every per-mode file (this one included) so the prohibition is
+# discoverable directly in the worker's own spec, not only via a skill
+# cross-reference. issue-work.md was already 60 bytes under its prior
+# ceiling; the new bullet needed the bump.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/spec-size-budget.test.sh
 
@@ -158,7 +172,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  120000 \
+  121000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \
