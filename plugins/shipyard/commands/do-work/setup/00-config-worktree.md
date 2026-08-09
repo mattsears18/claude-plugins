@@ -127,18 +127,12 @@ if [ "$CLAUDE_PLUGIN_ROOT" = "$(pwd)/plugins/shipyard" ]; then
       cat <<EOF >&2
 warning: this repo's primary checkout is $SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) behind origin/$STALENESS_DEFAULT_BRANCH.
 
-  CLAUDE_PLUGIN_ROOT resolved repo-local (dogfooding: this repo IS the
-  plugin source) to commit $SHIPYARD_PLUGIN_ROOT_SHA. Every spec file this
-  session reads via \$CLAUDE_PLUGIN_ROOT — including this one — is that
-  stale copy, and nothing else in the session will warn you (issue #907).
-  Run 'git pull --ff-only' in the primary checkout before trusting this
-  session's conclusions about "what the spec says" (including any issue
-  it may file describing a spec claim). Step 0.5's orchestrator-worktree
-  relocation re-resolves CLAUDE_PLUGIN_ROOT against origin's tip and now
-  runs its own explicit post-relocation staleness assertion rather than
-  assuming the relocation always succeeds (issue #1167) — this warning is
-  specific to steps 0.3/0.4, which still run against the primary checkout
-  before that assertion exists.
+  CLAUDE_PLUGIN_ROOT resolved repo-local to commit $SHIPYARD_PLUGIN_ROOT_SHA.
+  Every spec file this session reads is that stale copy (issue #907). Run
+  'git pull --ff-only' in the primary checkout before trusting this session's
+  conclusions. Step 0.5's relocation re-resolves CLAUDE_PLUGIN_ROOT and now
+  runs its own post-relocation staleness assertion (issue #1167) — this warning
+  applies to steps 0.3/0.4 only, before that assertion.
 EOF
     fi
   fi
@@ -229,7 +223,7 @@ esac
 
 `SHIPYARD_CONFIG_SCHEMA_FAILURE` is session-local working memory (like `SHIPYARD_UNCONFIGURED`) — not mirrored to the session-state file. It's set only on the schema-failure path; when unset, the end-of-session summary omits the `Config:` line entirely (silence is the right default for a clean config load). Treat the two as mutually-exclusive-ish in practice: `SHIPYARD_UNCONFIGURED=1` means no `shipyard.config.json` at all, while `SHIPYARD_CONFIG_SCHEMA_FAILURE` means one is present but invalid.
 
-**`SHIPYARD_PLUGIN_ROOT_SHA` and `SHIPYARD_PLUGIN_ROOT_STALE` ([#907](https://github.com/mattsears18/shipyard/issues/907)).** Same session-local-working-memory convention as the two variables above — not mirrored to the session-state file. `SHIPYARD_PLUGIN_ROOT_SHA` is set unconditionally (to `unknown` when the resolved plugin root isn't a git checkout) to the short commit sha the resolved `CLAUDE_PLUGIN_ROOT` sits at, so "which version of the spec ran?" is answerable from the transcript after the fact. `SHIPYARD_PLUGIN_ROOT_STALE` is set ONLY in the dogfooding case (`CLAUDE_PLUGIN_ROOT` resolved repo-local — layer 1) when the primary checkout is measurably behind `origin/<default-branch>`; when unset, the end-of-session summary omits the corresponding `Plugin root:` line entirely (silence is the default — a fresh-enough primary checkout, or a consumer install where the check doesn't apply). This step's staleness check runs against the **primary checkout** (before the [step 0.5](#05-move-into-the-orchestrators-worktree) relocation) — that resolution is superseded once the orchestrator relocates into its own worktree, which is *expected* to check out `origin/<default-branch>`'s tip fresh by construction. **That expectation does not always hold** — issue [#1167](https://github.com/mattsears18/shipyard/issues/1167) found a session (against a repo carrying a repo-level `WorktreeCreate` hook) where the post-relocation worktree was itself ~130 commits behind `origin/main`, with nothing warning about it — so step 0.5 now runs its own explicit [post-relocation staleness assertion](#05-move-into-the-orchestrators-worktree) rather than relying on this assumption alone. See step 0.5's closing note for how `CLAUDE_PLUGIN_ROOT` (and any spec-file read built from it) should be re-derived from the orchestrator worktree for the remainder of the session, rather than reused from this pre-relocation resolution.
+**`SHIPYARD_PLUGIN_ROOT_SHA` and `SHIPYARD_PLUGIN_ROOT_STALE` ([#907](https://github.com/mattsears18/shipyard/issues/907)).** Session-local working memory variables (not mirrored to session-state file). `SHIPYARD_PLUGIN_ROOT_SHA` records the short commit sha the resolved `CLAUDE_PLUGIN_ROOT` sits at. `SHIPYARD_PLUGIN_ROOT_STALE` is set in the dogfooding case when the primary checkout is behind `origin/<default-branch>`. Issue [#1167](https://github.com/mattsears18/shipyard/issues/1167) found post-relocation worktrees landing stale despite `baseRef: fresh`, so step 0.5 now runs an explicit [post-relocation staleness assertion](#05-move-into-the-orchestrators-worktree).
 
 Flags interpreted here:
 
@@ -264,7 +258,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 
 Create (or reuse) the orchestrator's worktree under `.claude/worktrees/orchestrator-<session-id>` from the tip of the default branch. `<session-id>` is the current Claude Code session identifier — stable across the run, distinct from each dispatched agent's `<id>`.
 
-**New worktree — fetch first, then call the `EnterWorktree` tool directly (not `Bash`).** Fetching before the tool call keeps the primary checkout's `origin/<default-branch>` tracking ref current, closing one plausible path to a stale base even though `EnterWorktree`'s own base-ref resolution mechanism is otherwise outside shipyard's control ([#1167](https://github.com/mattsears18/shipyard/issues/1167) — see also the post-relocation assertion further below, which catches the case where this fetch alone isn't sufficient):
+**New worktree — fetch first, then call the `EnterWorktree` tool directly (not `Bash`).** Fetching before the tool call keeps `origin/<default-branch>` current ([#1167](https://github.com/mattsears18/shipyard/issues/1167); see also the post-relocation assertion below):
 
 ```bash
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
@@ -327,7 +321,7 @@ echo "resolved CLAUDE_PLUGIN_ROOT commit=$SHIPYARD_PLUGIN_ROOT_SHA (post-relocat
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
 ```
 
-**Post-relocation staleness assertion ([#1167](https://github.com/mattsears18/shipyard/issues/1167)).** [Step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson)'s dogfooding staleness check runs against the **primary checkout**, before relocation — it cannot see whether the *orchestrator worktree itself* actually landed on `origin/<default-branch>`'s tip. `EnterWorktree`'s `baseRef: fresh` setting is documented to branch from `origin/<default-branch>`, but a real session (against a repo carrying a repo-level `WorktreeCreate` hook) found the resulting worktree ~130 commits / ~250 files behind `origin/main` anyway, with nothing in the session warning about it — the orchestrator triaged its backlog against a stale tree and dispatched workers to redo already-merged work. Assert the base explicitly rather than trusting the tool's semantics silently — same shape as step 0.4's check, applied to the post-relocation worktree instead of the pre-relocation primary checkout:
+**Post-relocation staleness assertion ([#1167](https://github.com/mattsears18/shipyard/issues/1167)).** The orchestrator worktree's `baseRef: fresh` setting should branch from `origin/<default-branch>`'s tip, but a session against a repo carrying a `WorktreeCreate` hook found the resulting worktree far behind, with no warning — the orchestrator triaged against stale state. Assert the base explicitly instead of trusting tool semantics silently:
 
 ```bash
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
@@ -335,23 +329,15 @@ git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
 ORCH_WT_BEHIND=$(git rev-list --count "HEAD..origin/$DEFAULT_BRANCH" 2>/dev/null)
 if [ -n "$ORCH_WT_BEHIND" ] && [ "$ORCH_WT_BEHIND" -gt 0 ] 2>/dev/null; then
   cat <<EOF >&2
-warning: the orchestrator worktree is $ORCH_WT_BEHIND commit(s) behind origin/$DEFAULT_BRANCH immediately after relocation (issue #1167).
-
-  EnterWorktree's baseRef: fresh setting should branch from origin's tip, but
-  this worktree did not land there. If this repo carries a repo-level
-  WorktreeCreate hook, that hook's interaction with EnterWorktree is the
-  suspected cause (#1167's repro). Backlog triage and every spec-file read
-  for the rest of this session are against a STALE base unless corrected.
-  Recommended remedy:
-    git fetch origin "$DEFAULT_BRANCH" && git reset --hard "origin/$DEFAULT_BRANCH"
-  before trusting this session's issue triage or spec reads.
+warning: the orchestrator worktree is $ORCH_WT_BEHIND commit(s) behind origin/$DEFAULT_BRANCH (issue #1167).
+  Remedy: git fetch origin "$DEFAULT_BRANCH" && git reset --hard "origin/$DEFAULT_BRANCH"
 EOF
 fi
 ```
 
-This is a **warning, not a hard fail** — same posture as step 0.4's check — because the orchestrator can still recover by fetching and hard-resetting per the printed remedy; aborting a fully-recoverable session would be worse than proceeding with a loud warning. Unlike step 0.4's check (gated to the dogfooding repo-local `CLAUDE_PLUGIN_ROOT` case only), this assertion runs unconditionally at every install layout, because what's being verified here is `EnterWorktree`'s own base-ref resolution, not which `CLAUDE_PLUGIN_ROOT` layer resolved.
+This is a warning, not a hard fail — the orchestrator can still recover per the remedy. This assertion runs at every install layout, unlike step 0.4's dogfooding-only check, because it verifies `EnterWorktree`'s base-ref resolution.
 
-**Prefer the orchestrator worktree for spec reads too, not just bash script invocations ([#907](https://github.com/mattsears18/shipyard/issues/907)).** The `${CLAUDE_PLUGIN_ROOT}` re-export preamble is written for `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` bash invocations, but the orchestrator (the LLM) also reads this spec's own markdown files directly via the `Read` tool — and that consumption doesn't naturally re-run the preamble the way a templated bash call does. Once this step has re-resolved `CLAUDE_PLUGIN_ROOT` against the orchestrator worktree above, treat **that** path — not whatever was echoed at [step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson) before relocation — as the canonical source for any further spec-file read this session, in the dogfooding case. This is what makes the spec the orchestrator executes match the spec that's actually current, in the common case: the orchestrator worktree is checked out fresh from `origin/<default-branch>`'s tip in this very step and that freshness is now explicitly asserted post-relocation ([#1167](https://github.com/mattsears18/shipyard/issues/1167)), so a spec file read from there should not be the arbitrarily-stale primary-checkout copy [step 0.4's staleness check](#04-check-the-repo-level-opt-in-shipyardconfigjson) exists to catch — see the [post-relocation assertion](#05-move-into-the-orchestrators-worktree) above for what to do if it fires anyway.
+**Prefer the orchestrator worktree for spec reads too, not just bash script invocations ([#907](https://github.com/mattsears18/shipyard/issues/907)).** Once this step has re-resolved `CLAUDE_PLUGIN_ROOT` against the orchestrator worktree, treat **that** path — not the pre-relocation value from [step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson) — as the canonical source for any further spec-file read this session. The orchestrator worktree is fresh from `origin/<default-branch>`'s tip (per this step, and verified by the [post-relocation assertion](#05-move-into-the-orchestrators-worktree) above), so spec reads will be current rather than the stale primary-checkout copy.
 
 End-of-session cleanup also runs from the orchestrator worktree, and reaps the orchestrator's own worktree last — see [End-of-session cleanup](../cleanup-summary.md#end-of-session-cleanup) below.
 
