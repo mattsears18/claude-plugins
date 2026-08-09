@@ -111,6 +111,41 @@ fi
 
 **Never attempt to refresh, escalate, or modify the token's scopes.** This step only surfaces the remediation command for a human to run — it does not call `gh auth refresh` itself. Auth handling is left entirely to the operator.
 
+### 1.36 Detect CI executor pool capacity and clamp toward it ([#1141](https://github.com/mattsears18/shipyard/issues/1141))
+
+`--concurrency N` bounds how many **workers** the orchestrator keeps in flight. It says nothing about how many **CI runs** those workers generate, or whether the repo's CI executor can absorb them. On a repo whose CI runs on a small, fixed self-hosted runner pool — a maintainer's own Macs is the observed case — worker throughput and CI-landing throughput decouple: the session dispatches happily while the queue behind the runners grows without bound, and the session's own landing-based termination condition ([`do-work.md`'s completion contract](../../do-work.md)) becomes unreachable purely on CI capacity, not correctness. See [RATIONALE → CI executor pool capacity repro](../../do-work-RATIONALE.md#step-136--ci-executor-pool-capacity-repro-1141) for the session that motivated this.
+
+**The read lives in exactly one place** — [`scripts/detect-ci-runner-capacity.sh`](../../../scripts/detect-ci-runner-capacity.sh), the same single-executable-source-of-truth pattern as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config)'s merge-shape detector. It reads `repos/{owner}/{repo}/actions/runners` for the self-hosted runner pool's online/idle counts and `gh run list --status queued` for the current repo-wide queue depth, and fails safe toward `unknown` on any unreadable signal — never toward a fabricated pool size.
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CI_POOL_LINE=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-runner-capacity.sh" <owner/repo> 2>/dev/null || echo unknown)
+CI_POOL_SHAPE=$(printf '%s' "$CI_POOL_LINE" | awk '{print $1}')
+CI_POOL_TOTAL=0
+CI_POOL_QUEUED=0
+if [ "$CI_POOL_SHAPE" = "self-hosted" ]; then
+  CI_POOL_TOTAL=$(printf '%s' "$CI_POOL_LINE" | grep -oE 'pool_total=[0-9]+' | cut -d= -f2)
+  CI_POOL_QUEUED=$(printf '%s' "$CI_POOL_LINE" | grep -oE 'queued=[0-9]+' | cut -d= -f2)
+fi
+```
+
+**Clamp only a config-sourced `EFFECTIVE_CONCURRENCY`, never an explicit `--concurrency` — same narrow-clamp shape as [step 1.3's #733 clamp](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config).** An operator who passed `--concurrency` by hand is asking for it explicitly and always wins, even against a small pool — the queue-depth advisory in the [end-of-session summary](../cleanup-summary.md#end-of-session-summary) is what surfaces the mismatch for them to act on next time. Only a **built-in/config default** concurrency gets clamped down here:
+
+```bash
+if [ "$CI_POOL_SHAPE" = "self-hosted" ] && [ -z "<--concurrency CLI value, if passed>" ] && [ "$CI_POOL_TOTAL" -gt 0 ] 2>/dev/null && [ "$EFFECTIVE_CONCURRENCY" -gt "$CI_POOL_TOTAL" ] 2>/dev/null; then
+  echo "[setup] concurrency clamped ${EFFECTIVE_CONCURRENCY} -> ${CI_POOL_TOTAL} (self-hosted CI runner pool has only ${CI_POOL_TOTAL} online runner(s) — #1141)"
+  EFFECTIVE_CONCURRENCY="$CI_POOL_TOTAL"
+fi
+```
+
+`EFFECTIVE_CONCURRENCY` (now clamped by both step 1.3's merge-shape check and this pool-capacity check, in that order) is the value [step 1.5](#15-initialise-the-session-state-file) passes to `session-state.sh init --concurrency`. This clamp fires on `self-hosted` regardless of whether step 1.3 already clamped for a different reason — the two checks are independent and compose (a repo can be `ungated` AND have a small self-hosted pool; whichever check produces the lower value governs, since each re-reads the current `EFFECTIVE_CONCURRENCY`).
+
+**Hold `CI_POOL_SHAPE` / `CI_POOL_TOTAL` / `CI_POOL_QUEUED` for the write-through in [step 1.5](#15-initialise-the-session-state-file).** The observation gets persisted into session state unconditionally — whether or not the clamp above fired — right after `session-state.sh init` creates the file (the field can't be `--set` before the file exists). This is what lets the [end-of-session summary](../cleanup-summary.md#end-of-session-summary) surface a "queue depth far exceeds pool capacity" advisory even on a session where the operator's **explicit** `--concurrency` was left un-clamped (the repro this issue reports: `--concurrency 4` against a 4-runner pool that itself degraded to 4 from 6 mid-session). See step 1.5 for the exact `update --set ".ci_capacity = ..."` call. On `hosted` (no self-hosted runners registered — the common case, GitHub-hosted runners are elastic) or `unknown` (couldn't read the signal), `.ci_capacity.shape` records that value too, so the summary step can distinguish "checked, nothing to report" from "never checked" if it ever needs to.
+
+**This step's reads fold into the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch)** alongside step 1's and step 1.3's reads — fire them in the same burst, not serially. Both `gh api .../actions/runners` and `gh run list --status queued` are read-only diagnostic calls; a failure degrades to `unknown` and never blocks setup.
+
+**One-time, not re-checked mid-session.** The pool size is read once at startup, matching step 1.3's and step 1.35's "one-time diagnostic" posture. Queue depth is inherently a live number — the end-of-session summary re-reads it fresh at session end rather than trusting `queued_at_start`, since a 4+-hour session's queue depth at the end is the number that matters for the "why didn't these land" question.
+
 ### 1.5 Initialise the session state file
 
 Stand up the durable JSON mirror (see [Session state file](../../do-work.md#session-state-file) and the full [schema + helper reference](../session-state-file.md)). One-shot setup write — every subsequent mutation routes through `session-state.sh update`.
@@ -126,7 +161,16 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
   --soft-collision-concurrency <N from --soft-collision-concurrency arg>
 ```
 
-`$EFFECTIVE_CONCURRENCY` is resolved (and, on an `ungated` merge shape, clamped) by [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) — don't re-read `--concurrency` or `concurrency.default` independently here, or the clamp becomes bypassable by whichever read happens second.
+`$EFFECTIVE_CONCURRENCY` is resolved (and, on an `ungated` merge shape or a small self-hosted CI runner pool, clamped) by [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) and [step 1.36](#136-detect-ci-executor-pool-capacity-and-clamp-toward-it-1141) — don't re-read `--concurrency` or `concurrency.default` independently here, or the clamps become bypassable by whichever read happens second.
+
+**Immediately after `init` returns successfully**, write through the CI-capacity observation step 1.36 computed (`CI_POOL_SHAPE` / `CI_POOL_TOTAL` / `CI_POOL_QUEUED`) — unconditionally, regardless of `CI_POOL_SHAPE`'s value, so the end-of-session summary always has a `.ci_capacity.shape` to branch on:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update \
+  --session-id "<session-id>" \
+  --set ".ci_capacity = { shape: \"${CI_POOL_SHAPE}\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0} }"
+```
 
 The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The default config above is the entire schema with empty queues + an `unknown` `main_ci` state — everything else gets filled in by later setup steps and the steady-state loop.
 
