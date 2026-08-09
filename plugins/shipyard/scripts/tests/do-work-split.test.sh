@@ -2686,6 +2686,25 @@ assert_contains "$dont_path" \
   'match none of the six' \
   "dont.md dispatch-loop rule updated to the six-value defer_reason_class enum (#1165)"
 
+# (R) The step-4 do-work-blocked-until extraction must disambiguate a LIVE
+# marker from the same literal string merely quoted in prose — e.g. a doc
+# issue describing the mechanism itself (#1165, #1168). Without a position
+# rule, "extract the first marker found anywhere in the body" would silently
+# drop such an issue from the workable queue the moment it cites a
+# well-formed future date as a worked example, with no diagnostic (#1168).
+assert_contains "$setup_path" \
+  "FIRST LINE is a" \
+  "setup.md step 4 do-work-blocked-until filter requires the marker to be the body's first line, not merely present anywhere (#1168)"
+assert_contains "$setup_path" \
+  'Position discipline, line 1 only' \
+  "setup.md step 4 documents the position-discipline disambiguation rule (#1168)"
+assert_contains "$setup_path" \
+  'a marker anywhere else (mid-paragraph, backticked, fenced, or quoted) is NOT live and MUST NOT gate dispatch' \
+  "setup.md step 4 explicitly excludes mid-body / backticked / fenced / quoted occurrences from gating dispatch (#1168)"
+assert_not_contains "$setup_path" \
+  'Extract the first marker found in the body; a marker present but' \
+  "setup.md step 4 no longer uses the ambiguous 'first marker found anywhere in the body' extraction (#1168, superseded)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
