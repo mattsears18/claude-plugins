@@ -25,6 +25,25 @@
 #   (F) cleanup-summary.md documents the `CI executor capacity` banner,
 #       gated on shape == self-hosted, a fresh re-query, and F > 0.
 #
+# Follow-up — issue #1156 (dispatch-time queue-depth backpressure)
+# -------------------------------------------------------------------
+# #1141 shipped a one-time, session-start pool-capacity read + an
+# end-of-session advisory banner. It deliberately did NOT do anything about
+# a queue that grows *during* a long session as the dispatch loop keeps
+# filling freed worker slots regardless of CI backlog depth. #1156 closes
+# that gap: steady-state.md step C now re-reads the LIVE queued-run count
+# before filling a freed slot and holds it (mirroring the existing
+# "leave the slot empty for now" path) when the queue is too deep relative
+# to the pool, with an escape valve so backpressure can never fully stall
+# the session. This file additionally pins:
+#   (G) the `--decide-backpressure` pure decision truth table;
+#   (H) `--decide-backpressure` argument-count usage handling;
+#   (I) steady-state.md step C wires the live backpressure check in (reads
+#       .ci_capacity via session-state.sh, calls the detector script, uses
+#       gh-cached.sh, documents the escape valve);
+#   (J) the `ci.backpressure_multiplier` / `ci.backpressure_min_in_flight`
+#       config knobs exist in both the schema and the built-in defaults.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/detect-ci-runner-capacity.test.sh
 
@@ -48,6 +67,9 @@ DETECTOR="$repo_root/plugins/shipyard/scripts/detect-ci-runner-capacity.sh"
 SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md"
 CLEANUP_MD="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 SESSION_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/session-state-file.md"
+STEADY_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+CONFIG_SCHEMA="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+CONFIG_SH="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
 
 pass=0
 fail=0
@@ -203,6 +225,121 @@ if [[ -f "$CLEANUP_MD" ]]; then
     "banner gate requires F (still-open PRs) > 0"
 else
   assert_fail "cleanup-summary.md exists (missing at $CLEANUP_MD)"
+fi
+echo
+
+
+# ---------------------------------------------------------------------------
+# (G) decide_backpressure() — pure decision truth table (issue #1156).
+# ---------------------------------------------------------------------------
+echo "(G) detector script — dispatch-time backpressure decision truth table"
+if [[ -f "$DETECTOR" ]]; then
+  # decide-backpressure <pool_total> <queued> <in_flight> <multiplier> <min_in_flight> <expected> <label>
+  assert_backpressure() {
+    local got
+    got="$(bash "$DETECTOR" --decide-backpressure "$1" "$2" "$3" "$4" "$5" 2>/dev/null)"
+    assert_equals "$7" "$6" "$got"
+  }
+
+  assert_backpressure 4 10 2 5 1 "dispatch" "queued (10) under threshold (4x5=20) -> dispatch"
+  assert_backpressure 4 20 2 5 1 "dispatch" "queued exactly at threshold (20) -> dispatch (strictly greater-than gate)"
+  assert_backpressure 4 21 2 5 1 "hold" "queued (21) over threshold (20) -> hold"
+  assert_backpressure 4 100 0 5 1 "dispatch" "in_flight (0) below min_in_flight (1) -> escape valve dispatches regardless of queue depth"
+  assert_backpressure 0 100 2 5 1 "dispatch" "pool_total 0 (unreadable/hosted) -> always dispatch, never hold on an unread signal"
+  assert_backpressure 4 26 5 5 5 "hold" "in_flight (5) not below min_in_flight (5) -> escape valve does NOT fire; falls through to threshold check (queued 26 > threshold 20 -> hold)"
+  assert_backpressure 4 26 5 5 6 "dispatch" "in_flight (5) below min_in_flight (6) -> escape valve fires"
+
+  # Non-numeric inputs degrade to safe defaults rather than crashing.
+  got="$(bash "$DETECTOR" --decide-backpressure "" "" "" "" "" 2>/dev/null)"
+  assert_equals "empty inputs degrade to dispatch (pool_total defaults to 0)" "dispatch" "$got"
+else
+  assert_fail "detect-ci-runner-capacity.sh exists (missing at $DETECTOR)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (H) --decide-backpressure argument-count usage handling.
+# ---------------------------------------------------------------------------
+echo "(H) --decide-backpressure usage handling"
+if [[ -f "$DETECTOR" ]]; then
+  bash "$DETECTOR" --decide-backpressure 4 10 2 5 >/dev/null 2>/tmp/detect-ci-runner-capacity-bp-usage.$$
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    assert_pass "--decide-backpressure with wrong arg count exits non-zero"
+  else
+    assert_fail "--decide-backpressure with wrong arg count exits non-zero (got exit 0)"
+  fi
+  rm -f /tmp/detect-ci-runner-capacity-bp-usage.$$
+else
+  assert_fail "--decide-backpressure usage handling (detector missing)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (I) steady-state.md step C — live backpressure check wiring (issue #1156).
+# ---------------------------------------------------------------------------
+echo "(I) steady-state.md step C — dispatch-time backpressure check wiring"
+if [[ -f "$STEADY_STATE_MD" ]]; then
+  assert_pass "steady-state.md exists"
+  assert_contains "$STEADY_STATE_MD" "Queue-depth backpressure check" \
+    "step C documents the queue-depth backpressure check"
+  assert_contains "$STEADY_STATE_MD" 'issues/1156' \
+    "step C cites issue #1156"
+  assert_contains "$STEADY_STATE_MD" '.ci_capacity.shape == "self-hosted"' \
+    "backpressure check is gated on the self-hosted shape"
+  assert_contains "$STEADY_STATE_MD" '--decide-backpressure' \
+    "step C calls the detector's --decide-backpressure pure decision"
+  assert_contains "$STEADY_STATE_MD" 'gh-cached.sh' \
+    "live queue re-read composes with the gh-cached.sh wrapper (short TTL)"
+  assert_contains "$STEADY_STATE_MD" 'run list --repo "<owner/repo>" --status queued' \
+    "live re-read uses the same gh run list --status queued shape as the end-of-session banner"
+  assert_contains "$STEADY_STATE_MD" 'ci.backpressure_multiplier' \
+    "step C reads the ci.backpressure_multiplier config knob"
+  assert_contains "$STEADY_STATE_MD" 'ci.backpressure_min_in_flight' \
+    "step C reads the ci.backpressure_min_in_flight config knob (escape valve)"
+  assert_contains "$STEADY_STATE_MD" 'parked (CI queue backpressure:' \
+    "held slot uses the existing parked (...) idle_reason convention"
+  assert_contains "$STEADY_STATE_MD" 'escape valve' \
+    "step C documents the escape valve — at least one worker always stays in flight"
+else
+  assert_fail "steady-state.md exists (missing at $STEADY_STATE_MD)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (J) ci.backpressure_multiplier / ci.backpressure_min_in_flight config knobs
+#     — schema + built-in defaults (issue #1156).
+# ---------------------------------------------------------------------------
+echo "(J) backpressure config knobs — schema + built-in defaults"
+if [[ -f "$CONFIG_SCHEMA" ]]; then
+  assert_pass "shipyard.config.schema.json exists"
+  assert_contains "$CONFIG_SCHEMA" '"backpressure_multiplier"' \
+    "schema declares ci.backpressure_multiplier"
+  assert_contains "$CONFIG_SCHEMA" '"backpressure_min_in_flight"' \
+    "schema declares ci.backpressure_min_in_flight"
+  if command -v jq >/dev/null 2>&1; then
+    if jq empty "$CONFIG_SCHEMA" >/dev/null 2>&1; then
+      assert_pass "shipyard.config.schema.json is valid JSON after the backpressure additions"
+    else
+      assert_fail "shipyard.config.schema.json is valid JSON after the backpressure additions"
+    fi
+  fi
+else
+  assert_fail "shipyard.config.schema.json exists (missing at $CONFIG_SCHEMA)"
+fi
+
+if [[ -f "$CONFIG_SH" ]]; then
+  assert_contains "$CONFIG_SH" '"backpressure_multiplier": 5' \
+    "built-in defaults set ci.backpressure_multiplier to 5"
+  assert_contains "$CONFIG_SH" '"backpressure_min_in_flight": 1' \
+    "built-in defaults set ci.backpressure_min_in_flight to 1"
+
+  got="$(bash "$CONFIG_SH" get ci.backpressure_multiplier 2>/dev/null)"
+  assert_equals "shipyard-config.sh get ci.backpressure_multiplier resolves to the built-in default" "5" "$got"
+  got="$(bash "$CONFIG_SH" get ci.backpressure_min_in_flight 2>/dev/null)"
+  assert_equals "shipyard-config.sh get ci.backpressure_min_in_flight resolves to the built-in default" "1" "$got"
+else
+  assert_fail "shipyard-config.sh exists (missing at $CONFIG_SH)"
 fi
 echo
 

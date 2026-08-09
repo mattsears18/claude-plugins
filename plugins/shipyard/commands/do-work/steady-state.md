@@ -1457,10 +1457,60 @@ Filter applies to net-new issues from the lightweight re-check ONLY — issues a
 
 **Cache the backlog re-check via `gh-cached.sh`.** This is a hot path — it fires on every dispatch turn — and the backlog doesn't change meaningfully over a 60-second window. Wrap the `gh issue list` call through [`gh-cached.sh`](./setup/00b-parallelization-cache.md#09-gh-cachedsh-wrapper-opt-in-per-call-site) with `--ttl 60`. Invalidate the cache (`gh-cached.sh invalidate --session-id "<session-id>"`) right after any state-changing call shipyard itself makes (issue close, label edit, etc.) so the next dispatch turn picks up the post-write view. Caller picks the trade-off: skip the wrapper to always re-fetch live, or accept up to 60s of staleness in exchange for not re-hitting the API every dispatch.
 
+**Queue-depth backpressure check (self-hosted CI pools only, issue [#1156](https://github.com/mattsears18/shipyard/issues/1156)) — run before filling ANY freed slot, regardless of which queue would supply the candidate.** [Step 1.36](./setup/01-repo-recovery.md#136-detect-ci-executor-pool-capacity-and-clamp-toward-it-1141) clamps `EFFECTIVE_CONCURRENCY` toward a self-hosted runner pool's size **once, at session start** — a one-time signal that says nothing about a queue that grows *during* a long session as the loop keeps filling freed slots regardless of how deep the CI backlog already is. This check is the dispatch-time complement: a **live**, per-turn re-read that can hold a slot open rather than dispatch into an already-saturated pool, mirroring the existing "leave the slot empty for now" path documented for path/lockfile collisions ([dispatch-rules.md](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c), rule 4/6) — the parking mechanism is unchanged, only the trigger (a fresh queue-depth read) is new.
+
+Skip this check entirely unless `.ci_capacity.shape == "self-hosted"` **and** `.ci_capacity.pool_total > 0` (both from session state, written once at [step 1.5](./setup/01-repo-recovery.md#15-initialise-the-session-state-file)) — on `hosted` (GitHub-hosted runners are elastic) or `unknown` (the pool size was never readable), there is nothing to hold back against and the check is a no-op:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+ci_shape=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.shape" 2>/dev/null)
+pool_total=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.pool_total" 2>/dev/null)
+
+if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; then
+  # Live re-read, NOT the stale `.ci_capacity.queued_at_start` snapshot —
+  # queue depth is inherently a live number (same posture as the
+  # end-of-session summary's own re-query). Cache with a short TTL: this
+  # fires on every dispatch turn, and the queue doesn't meaningfully change
+  # inside a ~30s window, so a live call on every single turn would be
+  # pure API-call waste for no decision-quality gain.
+  queued_live=$("${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" run \
+    --session-id "<session-id>" --ttl 30 -- \
+    run list --repo "<owner/repo>" --status queued --limit 100 \
+    --json databaseId --jq 'length' 2>/dev/null)
+
+  # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064) before the
+  # shipyard-config.sh reads below — each Bash-tool call is a fresh,
+  # hermetic subshell, so nothing set in an earlier call (including step
+  # 0.56's original stash-and-export) survives into this one.
+  SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
+  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+  export SHIPYARD_REPO_ROOT
+  multiplier=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.backpressure_multiplier 2>/dev/null)
+  min_in_flight=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.backpressure_min_in_flight 2>/dev/null)
+
+  # <in_flight> is the count of entries in `.in_flight` BEFORE this slot is
+  # filled — the same count step E's `in_flight < concurrency` check reads.
+  verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-runner-capacity.sh" \
+    --decide-backpressure "$pool_total" "${queued_live:-0}" "<in_flight>" "$multiplier" "$min_in_flight")
+
+  if [ "$verdict" = "hold" ]; then
+    threshold=$(awk -v p="$pool_total" -v m="${multiplier:-5}" 'BEGIN{printf "%.0f", p*m}')
+    idle_reason="parked (CI queue backpressure: queued=${queued_live:-0} > threshold=${threshold} = pool_total(${pool_total})×${multiplier:-5})"
+    # Do NOT dispatch this turn — leave the slot empty and go straight to
+    # step E's idle-proof with this idle_reason. The next completion (or
+    # the next dispatch turn's fresh live re-read) retries.
+  fi
+fi
+```
+
+**The decision itself lives in exactly one place** — [`scripts/detect-ci-runner-capacity.sh`](../../scripts/detect-ci-runner-capacity.sh)'s `--decide-backpressure` pure mode (same single-executable-source-of-truth pattern as the ungated-admin-direct-merge and gate-narrowing detectors) — do not re-derive the threshold arithmetic inline. `queued > pool_total × ci.backpressure_multiplier` (config default `5` — deliberately looser than the end-of-session summary's fixed `3×` **advisory** threshold, since holding a dispatch slot has a real cost an already-past-tense summary line doesn't) triggers a hold, **unless** the escape valve fires first: `<in_flight> < ci.backpressure_min_in_flight` (config default `1`) always dispatches regardless of queue depth, so a saturated pool can never fully stall the session with backlog work still waiting and every slot parked. A `pool_total` of `0` (shouldn't happen given the `self-hosted` + `pool_total > 0` guard above, but the script is defensive) always dispatches too — never hold on a signal that couldn't actually be read.
+
+**When the check holds** — skip straight to the dispatch-rules candidate selection's "no compatible job" outcome for this slot (same downstream handling as any other parked reason: it feeds step E's invariant line, and the slot retries on the next dispatch turn once the live re-read comes back under threshold or the escape valve fires). **When it doesn't hold** (verdict `dispatch`, or the check was skipped because the shape isn't `self-hosted`) — proceed to the dispatch rules below exactly as before; this check changes nothing about which candidate gets picked, only whether a candidate is picked *at all* this turn.
+
 Apply the **dispatch rules** to pick the next job:
 
 - **Job found** → issue the dispatch call **in this turn**: the default `Agent` call (`subagent_type` + `isolation: "worktree"`, per [dispatch-rules.md's Agent-tool section](./dispatch-rules.md#agent-tool-dispatch--the-default-dispatch-shape-825)), or, under the `Workflow`-substrate alternate, pre-provision the worker's worktree yourself first and then issue the `Workflow` tool call (per [that section](./dispatch-rules.md#workflow-substrate-dispatch--an-alternate-dispatch-shape-825)). Multiple slots freed by step B fill with parallel calls in the same message.
-- **No compatible job** → record *why* the slot stays empty. The reason feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (all ready_issues collide with in_flight lockfile sections: overrides×1, dependencies×1)`, `parked (all ready_issues blocked by soft-cap on CLAUDE.md, ×3 active)`, `parked (all queues empty after backlog re-check)`.
+- **No compatible job** → record *why* the slot stays empty. The reason feeds into step E's invariant line. Examples: `parked (all ready_issues collide with in_flight paths)`, `parked (all ready_issues collide with in_flight lockfile sections: overrides×1, dependencies×1)`, `parked (all ready_issues blocked by soft-cap on CLAUDE.md, ×3 active)`, `parked (all queues empty after backlog re-check)`, `parked (CI queue backpressure: queued=25 > threshold=20 = pool_total(4)×5)` (the queue-depth backpressure check above).
 - **Dispatch call refused by the harness permission classifier** → the dispatch never happened: no agent ran, **no completion notification coming**. Follow [dispatch-rules.md § "Dispatch denied by the harness permission classifier"](./dispatch-rules.md#dispatch-denied-by-the-harness-permission-classifier-718) ([#718](https://github.com/mattsears18/shipyard/issues/718)) — record it in `dispatch_denials`, **reap the worktree you pre-provisioned for the refused dispatch** (it is orphaned: no worker, no `.in_flight` slot, and no other reap path will find it), take **at most one** *accuracy-correcting* re-dispatch (never a wording retry against the classifier), hand back to the human on a second denial, and fill the slot with the next candidate in the same turn. Do **not** run step A against a denial and do **not** write an `.in_flight` slot for it.
 
 **Per-slot dispatch metadata write-through.** When a new slot lands in `.in_flight`, the orchestrator's write-through call MUST include the slot's `started_at` ISO-8601 UTC timestamp alongside `kind` / `target` / `claimed_paths` / the dispatch id / **`model`** (plus the pre-provisioned `worktree_path` under the `Workflow`-substrate alternate). **The write-through runs only AFTER the dispatch call is accepted** — the dispatch id doesn't exist until it returns, and a speculative pre-write would leave a phantom slot behind on the classifier-denial path ([#718](https://github.com/mattsears18/shipyard/issues/718)). The timestamp powers [`/shipyard:status`](../status.md)'s `ELAPSED` column and the stale-worker detection — without it, every worker would render as "elapsed 0s, stale" the moment a new orchestrator instance reads the file. Per-slot `progress_current` / `progress_total` start as `null` and are managed by the worker via `session-state.sh set-progress --slot <id>` if the worker is doing batch work (the typical issue-work / fix-checks-only worker doesn't bother — the kind alone is enough).
