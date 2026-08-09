@@ -128,6 +128,21 @@
 # cross-reference. issue-work.md was already 60 bytes under its prior
 # ceiling; the new bullet needed the bump.
 #
+# This file became the SOLE owner of these ceiling assertions by #1177
+# (2026-08-09): commit-before-yield-1054.test.sh and
+# detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
+# a subset of these same literals (with their own drifting raise-history
+# comments), and the two copies had already gone out of sync once — the
+# issue-work.md ceiling was raised to 121000 here but commit-before-
+# yield-1054.test.sh's mirror still read 120000, costing a full fix-checks
+# dispatch to diagnose on a P0 security PR. Both mirrors were pure defensive
+# duplication (neither suite's own subject — the #1054 commit-before-yield
+# invariant's content, the #1139 gate-narrowing pointer's content — has
+# anything to do with file size) and were removed rather than reconciled via
+# a shared constant: this suite already runs in the same CI job as every
+# other `*.test.sh` on every PR (tests.yml's glob discovery), so there was
+# never a coverage gap to fill, only a second place for the number to drift.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/spec-size-budget.test.sh
 

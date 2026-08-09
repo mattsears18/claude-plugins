@@ -258,11 +258,11 @@ echo
 # ---------------------------------------------------------------------------
 # (F) SKILL.md carries a short pointer to the rule (extending the existing
 #     PR-creation-contract sentence that already names what the auto-merge.md
-#     fragment carries, rather than a new dedicated section) and stays under
-#     its per-file size budget (issue #980 — this is the always-loaded core;
-#     the full explanation lives in the on-demand auto-merge.md fragment).
+#     fragment carries, rather than a new dedicated section). Its per-file
+#     size budget (issue #980 — this is the always-loaded core) is enforced
+#     solely by spec-size-budget.test.sh, not duplicated here (issue #1177).
 # ---------------------------------------------------------------------------
-echo "(F) SKILL.md — pointer present, budget respected"
+echo "(F) SKILL.md — pointer present"
 if [[ -f "$SKILL_MD" ]]; then
   assert_pass "SKILL.md exists"
   assert_contains "$SKILL_MD" 'the gate-narrowing pre-check' \
@@ -270,16 +270,12 @@ if [[ -f "$SKILL_MD" ]]; then
   assert_contains "$SKILL_MD" 'issues/1139' \
     "SKILL.md cites issue #1139"
 
-  # This literal mirrors spec-size-budget.test.sh's own assert_under_budget
-  # call — that file is the canonical source for the ceiling value and its
-  # raise history (most recently 59000 -> 60000 by #1135); keep this in sync
-  # with it whenever a ceiling changes there.
-  skill_bytes=$(wc -c < "$SKILL_MD" | tr -d ' ')
-  if [[ "$skill_bytes" -lt 60000 ]]; then
-    assert_pass "SKILL.md stays under the #980 60000-byte ceiling ($skill_bytes bytes)"
-  else
-    assert_fail "SKILL.md stays under the #980 60000-byte ceiling ($skill_bytes bytes exceeds 60000)"
-  fi
+  # No ceiling assertion here (issue #1177) — spec-size-budget.test.sh is the
+  # sole owner of SKILL.md's size-ceiling enforcement and already runs in the
+  # same CI job on every PR (tests.yml discovers every *.test.sh under
+  # plugins/). This suite tests that the gate-narrowing pointer text is
+  # present, not file size; a second copy of the literal ceiling here would
+  # be exactly the kind of duplicate that has already drifted twice.
 else
   assert_fail "SKILL.md exists (missing at $SKILL_MD)"
 fi
