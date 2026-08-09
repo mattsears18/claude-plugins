@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.14.1 — 2026-08-09
+
+At `--concurrency 1` the just-in-time scope pre-flight is done inline by the orchestrator itself rather than by a dispatched scoping agent — and nothing required that inline check to read the candidate's comment thread or check for a merged PR that already referenced it, so an issue a prior session had already partially shipped (via a merged PR with no closing keyword) looked indistinguishable from fresh work. The step-4 backlog filter can't catch this either — it only joins against **open** PRs. Repro: a session's inline scope pass composed a dispatch prompt asserting an issue was "shippable now," when a PR had in fact merged 29h earlier that already shipped part of the fix — caught only by the dispatched worker's own step-2 pre-implementation read, ~160k tokens after a single `gh issue view --json comments` call at scope time would have prevented the dispatch. Makes the comment-thread read and the existing staleness probe's merged-PR check mandatory in the C=1 inline path before the dispatch prompt is composed — matching #1148/#1154's posture that either signal is a reason to look, not an automatic defer. closes #1162
+
+- `plugins/shipyard/commands/do-work/setup/06-scope-preflight.md` — C=1 just-in-time note now mandates the comment-thread read and the staleness probe's merged-PR check before composing the top candidate's dispatch prompt.
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new Step 6 rationale entry documenting the repro and the fix.
+
 ### 4.13.1 — 2026-08-09
 
 Retires the bare `blocked` GitHub label (distinct from the `blocked:*` family) as a #1082 fast-follow. `mattsears18/lightwork`'s 6 issues that carried it, and `mattsears18/shipyard`'s (already zero), are confirmed migrated off it — both repos now show zero open `blocked`-labeled issues, relabeled to `needs-human-review` per the binary-backlog direction (#515/#519/#520/#521). With the cross-repo migration precondition satisfied, drops the now-dead `blocked` bail condition from the step-0 checks in the three worker specs that carried it, and moves the label's documentation from a standalone "deprecated, migration pending" bullet in CLAUDE.md's Gate labels section into the canonical Retired labels table. closes #1128
