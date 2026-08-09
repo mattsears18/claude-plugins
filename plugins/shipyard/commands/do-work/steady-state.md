@@ -1505,7 +1505,35 @@ fi
 
 **The decision itself lives in exactly one place** — [`scripts/detect-ci-runner-capacity.sh`](../../scripts/detect-ci-runner-capacity.sh)'s `--decide-backpressure` pure mode (same single-executable-source-of-truth pattern as the ungated-admin-direct-merge and gate-narrowing detectors) — do not re-derive the threshold arithmetic inline. `queued > pool_total × ci.backpressure_multiplier` (config default `5` — deliberately looser than the end-of-session summary's fixed `3×` **advisory** threshold, since holding a dispatch slot has a real cost an already-past-tense summary line doesn't) triggers a hold, **unless** the escape valve fires first: `<in_flight> < ci.backpressure_min_in_flight` (config default `1`) always dispatches regardless of queue depth, so a saturated pool can never fully stall the session with backlog work still waiting and every slot parked. A `pool_total` of `0` (shouldn't happen given the `self-hosted` + `pool_total > 0` guard above, but the script is defensive) always dispatches too — never hold on a signal that couldn't actually be read.
 
-**When the check holds** — skip straight to the dispatch-rules candidate selection's "no compatible job" outcome for this slot (same downstream handling as any other parked reason: it feeds step E's invariant line, and the slot retries on the next dispatch turn once the live re-read comes back under threshold or the escape valve fires). **When it doesn't hold** (verdict `dispatch`, or the check was skipped because the shape isn't `self-hosted`) — proceed to the dispatch rules below exactly as before; this check changes nothing about which candidate gets picked, only whether a candidate is picked *at all* this turn.
+**When the check holds** — before parking the slot, try the **CI-cheap candidate bias** below (issue [#1157](https://github.com/mattsears18/shipyard/issues/1157), follow-up to #1141/#1156). **When it doesn't hold** (verdict `dispatch`, or the check was skipped because the shape isn't `self-hosted`) — proceed to the dispatch rules below exactly as before; this check changes nothing about which candidate gets picked, only whether a candidate is picked *at all* this turn.
+
+**CI-cheap candidate bias under a backpressure hold ([#1157](https://github.com/mattsears18/shipyard/issues/1157)) — prefer a candidate whose PR would skip the heavy CI path, rather than only holding the slot.** This runs ONLY when the backpressure check immediately above just produced `verdict = "hold"` — outside a hold, this bias never activates and never changes candidate ranking. It is a **pool FILTER at the moment of a hold, not a rank override**: the existing priority order computed for `ready_issues` ([setup step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) — `P0` > `P1` > `P2` > unlabeled, then staleness) is never re-sorted by this bias, and a CI-heavy P0 is never skipped in favor of a CI-cheap P2 except in the one narrow sense that, at a moment when the P0 candidate literally cannot be dispatched without violating the hold this turn produced, a CI-cheap candidate further down the list gets a chance instead of the slot sitting idle.
+
+Skip this bias entirely (fall straight through to the "no compatible job" park below, unchanged) unless BOTH:
+
+- `ci.prefer_cheap_under_backpressure` resolves to `true` (config default `true` — set `false` to restore #1156's unconditional-hold behavior), AND
+- `.ci_capacity.cheap_ci_globs` (from session state, written once at [setup step 1.37](./setup/01-repo-recovery.md#137-detect-ci-cheap-path-availability-1157)) is non-empty — a repo with no path-gated CI has no cheap lane to bias toward, so the bias is a documented no-op there regardless of the config knob.
+
+When both hold, scan `ready_issues` **in its existing priority order** — do not re-rank it — for the first candidate that is BOTH otherwise dispatch-eligible (passes the same collision / soft-cap / label checks any other candidate this turn would) AND CI-cheap:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+cheap_globs=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.cheap_ci_globs" 2>/dev/null)
+
+# For each candidate <N> in ready_issues, in existing priority order:
+candidate_text="<issue title>\n<issue body>"
+candidate_paths=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-cheap-path.sh" --extract-paths "$candidate_text")
+verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-cheap-path.sh" --match "$candidate_paths" "${cheap_globs:-}")
+# verdict = "match" -> this candidate's mentioned file paths are ALL covered
+# by the repo's paths-ignore glob list; it is CI-cheap. Stop scanning and
+# dispatch THIS candidate for the freed slot (normal dispatch mechanics
+# unchanged — same Agent-tool / Workflow-substrate call the "Job found"
+# branch below would use for any other pick).
+```
+
+**Never bias on zero evidence.** `--match` (per [`detect-ci-cheap-path.sh`](../../scripts/detect-ci-cheap-path.sh)) always returns `no-match` when either input is empty — a candidate whose title/body mentions no file path at all is never assumed cheap, and a repo with an empty glob list never matches anything. This mirrors the [inline-trivial](./inline-trivial.md) fast path's own conservative posture: the heuristic only fires on a positive, extractable signal, never a guess.
+
+**No CI-cheap candidate found among `ready_issues`** → fall through to the "no compatible job" park below exactly as [#1156](https://github.com/mattsears18/shipyard/issues/1156) already documented — the `idle_reason` stays `parked (CI queue backpressure: ...)` (optionally append `; no CI-cheap candidate available` for operator visibility, e.g. via `/shipyard:status`). **A CI-cheap candidate IS found** → dispatch it for this slot this turn (the normal dispatch call below — this bias changes *which* candidate gets picked, never the dispatch mechanics themselves) and note the reason in the per-slot dispatch metadata / session log, e.g. `ci-cheap bias: dispatched #<N> under backpressure (queued=<Q> > threshold=<T>) — candidate paths (<paths>) match cheap-path glob(s) (<globs>)`.
 
 Apply the **dispatch rules** to pick the next job:
 
