@@ -1557,8 +1557,8 @@ assert_contains "$dont_path" \
   "Don't hand a workable issue to the human" \
   "dont.md carries the attempt-then-escalate dispatch-loop rule (#531)"
 assert_contains "$dont_path" \
-  'match none of the five' \
-  "dont.md ties the invalid defer rationalizations to the five defer_reason_class values (#531)"
+  'match none of the six' \
+  "dont.md ties the invalid defer rationalizations to the six defer_reason_class values (#531, #1165)"
 assert_contains "$rationale_path" \
   'Self-filed follow-ups re-enter the backlog like any other issue' \
   "RATIONALE.md states self-filed follow-ups re-enter the backlog (#531)"
@@ -1757,8 +1757,8 @@ assert_contains "$setup_path" \
 
 # The three-branch enumeration must be present (missing / present-but-invalid / valid).
 assert_contains "$setup_path" \
-  'Present but not one of the five valid tokens' \
-  "setup.md recording path enumerates the present-but-invalid branch (#547)"
+  'Present but not one of the six valid tokens' \
+  "setup.md recording path enumerates the present-but-invalid branch (#547, #1165)"
 
 # The inference rules must cite the evidence_pointer shape for normalization.
 assert_contains "$setup_path" \
@@ -2334,8 +2334,8 @@ assert_contains "$setup_path" \
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
 assert_contains "$setup_path" \
-  'external-dependency` gates with `agent-console` instead and is out of scope here' \
-  "setup.md re-gate guard scopes itself to human-decision-required / confirmed-non-shippable-as-single-PR (#962)"
+  'external-dependency` gates with `agent-console` instead and `time-gated` gates with no label at all' \
+  "setup.md re-gate guard scopes itself to human-decision-required / confirmed-non-shippable-as-single-PR (#962, #1165)"
 
 # ── Issue #997 — worker must re-read issue state before posting a decision;
 #    /my-turn can resolve the same issue mid-dispatch ──────────────────────
@@ -2640,6 +2640,51 @@ assert_contains "$steady_state_path" \
 assert_contains "$rationale_path" \
   'Why a within-budget-exhaustion bail routes to `soft`' \
   "do-work-RATIONALE.md cross-references the within-budget-exhaustion soft-routing decision (#1135)"
+
+# (Q) A sixth `defer_reason_class`, `time-gated`, lets scope pre-flight
+# PRODUCE the `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker
+# instead of a human hand-writing it (issue #1165, follow-up to #1161 which
+# shipped only the client-side dispatch-filter half of the mechanism).
+#
+# A time-gated defer must NOT get needs-human-review or agent-console — the
+# whole point of the class is that no human review is needed once the date
+# elapses, matching #1161's own point that this class needs no human at all.
+
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  '`time-gated` (' \
+  "setup.md defer_reason_class enum documents the time-gated class (#1165)"
+assert_contains "$setup_path" \
+  'Time-gate: <YYYY-MM-DD> — <citation>' \
+  "setup.md/06b-scope-carveouts.md per-class evidence shape table documents the Time-gate: shape (#1165)"
+assert_contains "$setup_path" \
+  'do-work-time-gated' \
+  "setup.md recording-path marker table stamps <!-- do-work-time-gated --> as the comment dedupe sentinel (#1165)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'write the self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker instead of a label' \
+  "setup.md step 4a writes the do-work-blocked-until body marker for time-gated defers, not a label (#1165)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'No label is applied — not `needs-human-review`, not `agent-console`' \
+  "setup.md step 4a explicitly applies no gate label for time-gated defers (#1165)"
+assert_contains "$drain_path" \
+  'time-gated' \
+  "drain.md 5.b per-class re-validation and pre-drain audit banner cover the time-gated class (#1165)"
+assert_contains "$do_work_path" \
+  '"confirmed-non-shippable-as-single-PR" | "time-gated"' \
+  "do-work.md canonical deferred_issues struct includes time-gated in the defer_reason_class enum (#1165)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$cleanup_path" \
+  'confirmed-non-shippable-as-single-PR` / `time-gated`' \
+  "cleanup-summary.md Deferred: line bracket enumeration includes time-gated (#1165)"
+assert_contains "$dont_path" \
+  'match none of the six' \
+  "dont.md dispatch-loop rule updated to the six-value defer_reason_class enum (#1165)"
 
 echo
 if (( fail > 0 )); then
