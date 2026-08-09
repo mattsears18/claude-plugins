@@ -172,7 +172,7 @@ if [[ -f "$DETECTOR" ]]; then
   # the SAME check name must not count (issue #333's latest-per-name rule,
   # reused here) -- and a check name NOT in the required set must be ignored
   # even though it fails.
-  # shellcheck disable=SC2329 # invoked indirectly by the sourced pr_required_check_sets(), which shellcheck can't trace through the dynamically-generated tmp_src
+  # shellcheck disable=SC2329,SC2317 # invoked indirectly by the sourced pr_required_check_sets(), which shellcheck can't trace through the dynamically-generated tmp_src
   gh() {
     if [[ "$1" == "pr" && "$2" == "view" ]]; then
       cat <<'JSON'
