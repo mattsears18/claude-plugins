@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.13.1 — 2026-08-09
+
+Retires the bare `blocked` GitHub label (distinct from the `blocked:*` family) as a #1082 fast-follow. `mattsears18/lightwork`'s 6 issues that carried it, and `mattsears18/shipyard`'s (already zero), are confirmed migrated off it — both repos now show zero open `blocked`-labeled issues, relabeled to `needs-human-review` per the binary-backlog direction (#515/#519/#520/#521). With the cross-repo migration precondition satisfied, drops the now-dead `blocked` bail condition from the step-0 checks in the three worker specs that carried it, and moves the label's documentation from a standalone "deprecated, migration pending" bullet in CLAUDE.md's Gate labels section into the canonical Retired labels table. closes #1128
+
+- `plugins/shipyard/agents/issue-worker/issue-work.md` — step-0 bail list no longer checks for the bare `blocked` label.
+- `plugins/shipyard/agents/issue-worker/investigate.md` — step-0 bail list no longer checks for the bare `blocked` label.
+- `plugins/shipyard/agents/issue-worker/spike.md` — step-0 bail list no longer checks for the bare `blocked` label.
+- `CLAUDE.md` — bare `blocked` moved from the Gate labels section into the Retired labels table (superseded-by, provenance, GitHub-object columns); manual-deletion command list extended.
+- `plugins/shipyard/commands/do-work/setup/01c-label-recovery-refine.md` — `# RETIRED` comment block extended to mirror the bare `blocked` retirement inline at the label-creation code.
+
 ### 4.13.0 — 2026-08-09
 
 `/shipyard:do-work`'s dispatch loop (steady-state.md step C) now holds a freed worker slot open, rather than filling it, when a self-hosted CI runner pool's queue is already deep relative to its size. Follow-up to #1141 (shipped in #1155): that PR's session-start pool-capacity read and end-of-session advisory banner deliberately deferred the dispatch-time half of the fix — a queue that grows *during* a long session, as the loop keeps filling freed slots regardless of CI backlog depth, was still unaddressed. Step C now re-reads the live queued-run count (`gh run list --status queued`, wrapped through `gh-cached.sh` with a 30s TTL) before filling any freed slot and holds it — mirroring the existing "leave the slot empty for now" path used for path/lockfile collisions — when `queued > pool_total × ci.backpressure_multiplier` (new config knob, default `5`, deliberately looser than the end-of-session banner's fixed 3× advisory threshold). An escape valve (`ci.backpressure_min_in_flight`, default `1`) guarantees at least one worker always stays dispatched, so a saturated pool can never fully stall a session with backlog work still waiting. The threshold decision is a new `--decide-backpressure` pure mode on the existing `detect-ci-runner-capacity.sh` detector (same single-executable-source-of-truth pattern as the ungated-merge and gate-narrowing detectors), so it's independently unit-testable without a live `gh` call. closes #1156
