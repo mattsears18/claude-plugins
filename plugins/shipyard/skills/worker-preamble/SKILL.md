@@ -182,6 +182,10 @@ Same rule for `git push --no-verify`. Same rule for any hook-bypass flag. The pl
 
 **A PR whose production involved such an override anyway must NOT arm auto-merge**, regardless of your own judgment. `auto-merge.md`'s pre-arm check + the `auto-merge: unarmed — policy-override: <control>` suffix route this to a human deterministically, not an out-of-band harness warning.
 
+## Never create a credential ([#1166](https://github.com/mattsears18/shipyard/issues/1166))
+
+Never mint a new credential to unblock a task — no `gcloud iam service-accounts keys create`, `aws iam create-access-key`, `az ad sp create-for-rbac`, or equivalent — and never generate, download, or write a service-account key, API key, or token to disk, even gitignored, even in a test/staging project. A missing credential is a hand-back, not an obstacle to route around: `blocked: <what is missing> — needs operator provisioning (<command an operator would run>)`.
+
 ## `gh` JSON discipline
 
 Every `gh` call whose output you'll read MUST scope the response to the fields you actually consume — the default output is ~30 fields per issue / ~50 fields per PR, most of which the worker never reads, and each unused field is wasted tool-result tokens that ride in your context for the rest of the session. See [`gh-json-discipline.md`](./gh-json-discipline.md) for the field-scoping cookbook — which subcommands take `--json`/`--jq`, the two-pattern terseness spectrum, the common-projections table, and the default-mode / piping anti-patterns.

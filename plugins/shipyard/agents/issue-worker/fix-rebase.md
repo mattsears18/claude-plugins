@@ -295,3 +295,4 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 - Don't `--watch` checks. Push the rebased branch, return one line, let the drain's next poll observe the state transition.
 - **Don't open a `Monitor`/poll loop to watch CI to completion instead of returning ([#753](https://github.com/mattsears18/shipyard/issues/753)).** Push the rebased branch and return immediately — never start a `Monitor` sub-task or a backgrounded CI watch and wait for the rebased head to go green before returning. See `shipyard:worker-preamble` § "Return-contract discipline".
 - Don't retry on `blocked rebase`. One dispatch, one rebase attempt — the drain doesn't re-dispatch within the same session.
+- **Never create a credential.** See `shipyard:worker-preamble` § "Never create a credential" — a missing credential is a hand-back, not something to route around ([#1166](https://github.com/mattsears18/shipyard/issues/1166)).
