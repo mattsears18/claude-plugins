@@ -85,24 +85,6 @@ assert_contains() {
   fi
 }
 
-assert_under() {
-  local path="$1" ceiling="$2" label="$3"
-  if [[ ! -f "$path" ]]; then
-    printf '  %sFAIL%s  %s (file missing: %s)\n' "$RED" "$RESET" "$label" "$path"
-    fail=$((fail + 1))
-    return
-  fi
-  local size
-  size=$(wc -c < "$path" | tr -d ' ')
-  if (( size <= ceiling )); then
-    printf '  %sPASS%s  %s (%d bytes, ceiling %d)\n' "$GREEN" "$RESET" "$label" "$size" "$ceiling"
-    pass=$((pass + 1))
-  else
-    printf '  %sFAIL%s  %s (%d bytes exceeds %d-byte ceiling)\n' "$RED" "$RESET" "$label" "$size" "$ceiling"
-    fail=$((fail + 1))
-  fi
-}
-
 echo "== commit-before-yield-1054.test.sh =="
 
 # --- The new invariant lives in worker-preamble's core, cites #1054 ---
@@ -155,14 +137,16 @@ assert_contains "$issue_work_path" "Return synchronously — never arm a backgro
 assert_contains "$issue_work_path" "Your terminal state was reached at \"local gates green, PR opened, auto-merge armed\"" \
   "issue-work.md still carries its own #707 cross-reference"
 
-# --- Both always-loaded files stay under their spec-size-budget.test.sh
-#     ceilings. These literals mirror spec-size-budget.test.sh's own
-#     assert_under_budget calls — that file is the canonical source for the
-#     ceiling values and their raise history; keep these two in sync with it
-#     whenever a ceiling changes there (most recently 59000 -> 60000 by
-#     #1135, 116000 -> 120000 by #1088, and 120000 -> 121000 by #1166). ---
-assert_under "$skill_path" 60000 "SKILL.md stays under its 60000-byte ceiling"
-assert_under "$issue_work_path" 121000 "issue-work.md stays under its 121000-byte ceiling"
+# --- No ceiling assertion here (issue #1177). spec-size-budget.test.sh is
+#     the sole owner of size-ceiling enforcement for skill_path/issue_work_path
+#     and already runs in the same CI job on every PR (tests.yml discovers
+#     every *.test.sh under plugins/) — duplicating the literal here just
+#     gives it a second place to drift out of sync, which is exactly what
+#     happened: this suite's own copy sat at 120000 while the canonical file
+#     had already been raised to 121000, costing a full fix-checks dispatch
+#     to diagnose. This suite tests the #1054 commit-before-yield invariant's
+#     *content*, not file size — dropping the mirrored ceiling check doesn't
+#     weaken enforcement, it just stops asserting the same thing twice.
 
 # --- Orchestrator-side canned resume-message template (item 4, optional) ---
 assert_contains "$steady_state_path" "Canned resume-message template" \
