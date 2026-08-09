@@ -61,6 +61,13 @@ gh label create discussion --repo <owner/repo> --description "A maintainer is en
 #                          this repo — a dead reference, not a retired label.
 #                          Removed from investigate.md; nothing to clean up
 #                          on GitHub. Don't reintroduce it.
+#   blocked (bare)        — superseded by needs-human-review #1082 → #1128.
+#                          Never created here (zero all-time usage in this
+#                          repo); the 6 open lightwork issues that carried it
+#                          were migrated to needs-human-review before the
+#                          step-0 bail conditions in issue-work.md,
+#                          investigate.md, and spike.md were dropped. Distinct
+#                          from the blocked:* family above — don't conflate.
 ```
 
 **3b. Reap stale agent worktrees from dead Claude Code sessions.**

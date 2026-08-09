@@ -52,7 +52,7 @@ Bail with `blocked` if any of:
 
 - Issue state is `CLOSED`.
 - Issue has an assignee that isn't the authenticated `gh` user (someone else picked it up).
-- Issue carries `blocked` / `wontfix` / `needs-human-review` / `needs-triage` / `discussion` labels. (The former `needs-design` design-gate was folded into `needs-human-review` per [#515](https://github.com/mattsears18/shipyard/issues/515).)
+- Issue carries `wontfix` / `needs-human-review` / `needs-triage` / `discussion` labels. (`needs-design` folded into `needs-human-review` per [#515](https://github.com/mattsears18/shipyard/issues/515); bare `blocked` retired to `needs-human-review` per [#1128](https://github.com/mattsears18/shipyard/issues/1128).)
 - **Any open PR references this issue with a closing keyword** — don't open a duplicate. Return: `blocked: PR #<M> already open for this issue`.
 - **Any open PR already has head branch `do-work/issue-<N>`** (the second query above), even without a closing keyword. This is almost always either a live sibling worktree mid-dispatch, or a native-auto-opened draft PR left over from a worker that pushed then bailed before `gh pr create` (see the worker-preamble cross-reference above). Don't open a second PR against the same branch — return `blocked: PR #<M> already open on canonical branch do-work/issue-<N> — verify it carries --label shipyard and a closing keyword before retrying` so a human (or a fresh dispatch once the branch is free) can patch or replace it rather than racing it.
 

@@ -44,7 +44,7 @@ Bail with `blocked` if any of:
 
 - Issue state is `CLOSED`.
 - Issue has an assignee that isn't the authenticated `gh` user.
-- Issue carries `blocked` / `wontfix` / `needs-human-review` / `needs-triage` labels (a prior dispatch already dispositioned it — don't re-run the spike).
+- Issue carries `wontfix` / `needs-human-review` / `needs-triage` labels (a prior dispatch already dispositioned it — don't re-run the spike). (The bare `blocked` label — distinct from the `blocked:*` family — was retired in favor of `needs-human-review` per [#1128](https://github.com/mattsears18/shipyard/issues/1128); see CLAUDE.md's Retired labels table.)
 - **Any open PR references this issue with a closing keyword** — return `blocked: PR #<M> already open for this issue`.
 
 **Resume check — a prior dispatch may have been reaped mid-spike.** Before starting fresh, check whether follow-on sub-issues already exist referencing this issue as parent (`gh search issues --repo <owner/repo> "Part of #<N>" --json number,title`) and whether a design-doc file already exists on the default branch naming this issue (see [step 5](#5-write-the-design-doc-committed-in-repo) for the path convention). If both are present, the spike was already completed by a prior dispatch that never returned cleanly — don't re-decompose or re-file duplicate sub-issues; just open the PR for whatever's left (or return `blocked: spike artifacts already exist but no PR closes this issue — manual triage required` if you can't reconcile the state).
