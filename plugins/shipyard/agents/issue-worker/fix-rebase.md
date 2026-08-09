@@ -225,12 +225,9 @@ This is the one structured exception to step 4's "both sides edited the same JSO
    **The check runs as a standalone, testable script, not an inline snippet re-typed per worker ([#1175](https://github.com/mattsears18/shipyard/issues/1175)).** The original inline invocation here piped the added lines into a `grep` call combining the `-v` / `-F` / `-x` / `-f <pattern-file>` flags — typed directly into the worker's own interactive Bash-tool shell. In at least one live worker environment that shell's `grep` is shadowed by a function wrapping `ugrep`, and the shadowed command silently **false-negatived**: it reported "no missing lines" for files that genuinely had missing lines. See [`verify-added-lines-survived.sh`](../../scripts/verify-added-lines-survived.sh) — it avoids `grep` for the comparison entirely (uses `sort`/`comm`/`awk` instead), runs as a genuinely separate `bash` process so it can't inherit the calling shell's function shadowing either, and runs a synthetic self-check before trusting any verdict, failing loud (`exit 2`, `INDETERMINATE:`) rather than reporting a false-clean pass when the comparison mechanism itself can't be trusted in the current environment. Do not re-inline the check — call the script:
 
    ```bash
-   MERGE_BASE=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH")
-
-   # Reuse the literal plugin-root value already resolved at worker-preamble's
-   # step-0 (whether orchestrator-supplied or self-resolved) in place of
-   # ${CLAUDE_PLUGIN_ROOT} below instead of re-deriving it here (#965).
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+
+   MERGE_BASE=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH")
 
    VERIFY_OUTPUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" 2>&1)
    VERIFY_STATUS=$?
