@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.22.4 — 2026-08-10
+
+A dispatch prompt's own scope-boundary framing — an "Operator residual" paragraph, a "CRITICAL SCOPE BOUNDARY" assertion, a "Phase-1 slice" — is computed at scope-preflight time (or earlier in a long session) and can go stale by the time the dispatched worker actually acts on it: a maintainer can complete a barred action, or a comment can resolve a cited blocker, in the interim. A real cross-repo repro (`mattsears18/lightwork`#3525) showed a dispatch's own boundary framing had gone stale against two access-granting actions the maintainer had already completed — caught only because the dispatch happened to include an ad hoc "verify it" caveat. Nothing in the worker contract guaranteed that re-check. This is the worker-side counterpart to `dispatch-rules.md`'s existing orchestrator-side comment-thread-awareness rule (#781/#1062), which only keeps the *prompt* from being composed with a stale premise — it doesn't cover the premise going stale afterward, before the worker acts. closes #1179
+
+- `plugins/shipyard/agents/issue-worker/issue-work.md` — new mandatory §0.5 pre-flight step: whenever the dispatch prompt carries a scope-boundary assertion (Operator-residual/Verification-slice, Phase-1-slice, or an ad hoc "CRITICAL SCOPE BOUNDARY" framing), diff it against the issue's live `comments` (already fetched in step 0) and let the live issue state win on any contradiction. A no-op when no such framing is present. New "Don't" bullet cross-referencing the step.
+- `plugins/shipyard/agents/issue-worker/issue-work-scope-boundary-recheck.md` — new on-demand fragment carrying the full procedure, kept out of the hot-path file to stay under `spec-size-budget.test.sh`'s 121000-byte ceiling for `issue-work.md` (loaded on every `issue-work` dispatch).
+- `plugins/shipyard/agents/issue-worker/issue-work-RATIONALE.md` — new "Stale scope-boundary framing repro (#1179)" section with the lightwork#3525 write-up.
+- `plugins/shipyard/commands/do-work/dispatch-rules.md` — cross-references the new worker-side check from the existing #781/#1062 comment-thread-awareness rule, so the two stay consistent rather than drifting independently.
+- `plugins/shipyard/commands/do-work/setup/06b-scope-carveouts.md` — cross-references the new check from the operator-slice carve-out, since `operator_residual` is one of the framings that can go stale.
+
 ### 4.22.3 — 2026-08-09
 
 `issue-work.md`'s byte ceiling had drifted into a duplication trap: `spec-size-budget.test.sh` was the canonical source of the 121000-byte ceiling, but `commit-before-yield-1054.test.sh` and `detect-ci-gate-narrowing.test.sh` had each grown their own mirrored copy of a subset of the same literals (SKILL.md's 60000-byte ceiling, issue-work.md's 121000-byte ceiling), each with its own hand-maintained "keep this in sync" comment. The two copies had already gone out of sync once — a P0 security fix (#1166, #1171) raised the canonical ceiling to 121000, but `commit-before-yield-1054.test.sh`'s mirror still read 120000, failing two required checks and costing a full `fix-checks-only` dispatch (~157k tokens) to diagnose a one-line divergence. closes #1177
