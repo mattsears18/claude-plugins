@@ -1236,6 +1236,29 @@ assert_contains "$fix_checks_only_path" \
 assert_contains "$fix_checks_only_path" "#1111" \
   "fix-checks-only.md's pending reinforcement cites the originating issue"
 
+# Issue #1186 — "Node-version pinning (nvm/.nvmrc) without a bare `source`
+# refusal" fragment. A worker following a target repo's documented
+# `source "$NVM_DIR/nvm.sh"; nvm use` Node-version-pin snippet hit a bare
+# `source`-invocation refusal from the harness's own worktree-isolation Bash
+# guard (confirmed NOT one of shipyard's own hooks.json-wired Bash hooks —
+# none of the four reference "source" or this message). The fragment must
+# exist, be indexed in SKILL.md's on-demand fragment table, name the
+# nvm-exec / scratch-script / PATH-prepend remediations, and node-bootstrap.md
+# must point a worker already there at it. Removing any of these regresses
+# the #1186 fix.
+nvm_source_refusal_path="$wp_dir/nvm-source-refusal.md"
+assert_file_exists "$nvm_source_refusal_path" "worker-preamble fragment nvm-source-refusal.md exists (issue #1186)"
+assert_contains "$skill_path" "(./nvm-source-refusal.md)" \
+  "SKILL.md fragment-index links nvm-source-refusal.md (issue #1186)"
+assert_contains "$nvm_source_refusal_path" "harness's own built-in worktree-isolation Bash classifier" \
+  "nvm-source-refusal.md attributes the refusal to the harness, not a shipyard hook (issue #1186)"
+assert_contains "$nvm_source_refusal_path" "nvm-exec" \
+  "nvm-source-refusal.md documents the nvm-exec remediation (issue #1186)"
+assert_contains "$nvm_source_refusal_path" "PATH-prepend" \
+  "nvm-source-refusal.md documents the PATH-prepend fallback remediation (issue #1186)"
+assert_contains "$node_bootstrap_path" "nvm-source-refusal.md" \
+  "node-bootstrap.md points a worker with a Node-version (not just deps) mismatch at nvm-source-refusal.md (issue #1186)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

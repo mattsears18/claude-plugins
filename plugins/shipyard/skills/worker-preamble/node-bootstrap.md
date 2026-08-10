@@ -4,6 +4,8 @@ On-demand fragment of the `shipyard:worker-preamble` skill (see [`SKILL.md`](./S
 
 **Why these live in a worker-preamble fragment and not per-mode.** Every dispatched worker (issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate) eventually runs `git push` against the target repo, and the silent-test-skip failure modes are identical across modes. One fragment beats six copy-pasted recipes. The shipyard repo itself is shell-test-driven with no `package.json` deps to bootstrap and no husky setup, so a worker dispatched against `mattsears18/shipyard` skips these checks — they guard the *target-repo* tooling (lightwork, mattsears18.com, etc.).
 
+**Node *version* mismatch (not just missing deps)?** If `npm ci` / the test suite need a specific `nvm`-pinned Node version (an `.nvmrc`-driven repo convention) and the standard `source "$NVM_DIR/nvm.sh"; nvm use` snippet is refused by the harness's `Bash` guard, that's a different fragment — see [`nvm-source-refusal.md`](./nvm-source-refusal.md).
+
 ## Dependency-bootstrap check for Node-based target repos
 
 The Claude Code harness creates your agent worktree with `git worktree add` and nothing else — it does NOT install npm dependencies, does NOT symlink `node_modules` from the primary checkout, and does NOT run `npm ci`. For most target repos this is fine (Python, Go, plain shell, docs-only). For **Node-based target repos** it's a silent test-correctness gap, because:

@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.22.8 — 2026-08-10
+
+An `issue-work` worker following a target repo's own documented `nvm`-based Node-version-pin snippet (`source "$NVM_DIR/nvm.sh"; nvm use`) hit a refusal from a bare `source` invocation, even with no chaining or redirect. Investigation confirmed the refusal is the Claude Code harness's own built-in worktree-isolation `Bash` guard, not one of shipyard's own `hooks.json`-wired `Bash` hooks (`refuse-escape-symlink-commit.sh`, `guard-primary-checkout.sh`, `refuse-broad-process-kill.sh`, `refuse-credential-mint.sh` — none reference `source` or the refusal's message text) — so the guard itself can't be narrowed from this repo. Per the issue's option 2, the fix documents the safe alternatives where a worker will find them before hitting the refusal. closes #1186
+
+- `plugins/shipyard/skills/worker-preamble/nvm-source-refusal.md` — new on-demand fragment: confirms the refusal's source, then documents three remediations in priority order — `$NVM_DIR/nvm-exec` (a standalone, directly-executable nvm wrapper that never puts `source` on the command line), a `.shipyard-scratch/` helper-script escape hatch mirroring `compound-command-refusal.md`'s existing pattern, and a last-resort PATH-prepend against an already-installed version.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — new on-demand-fragment table row indexing `nvm-source-refusal.md` for discoverability.
+- `plugins/shipyard/skills/worker-preamble/node-bootstrap.md` — short pointer in the intro directing a worker with a Node-*version* mismatch (not just missing `node_modules`) to the new fragment.
+- `plugins/shipyard/scripts/tests/worker-preamble.test.sh` — new regression assertions: the fragment exists, is indexed in `SKILL.md`, attributes the refusal to the harness (not a shipyard hook), and documents both the `nvm-exec` and PATH-prepend remediations; `node-bootstrap.md` points at it.
+
 ### 4.22.7 — 2026-08-10
 
 `session-state.sh bump-tokens`'s `models.<mode>` policy-consistency check (#978) shells out to `resolve-dispatch-model.sh` without re-exporting the `SHIPYARD_REPO_ROOT` pin `setup/00-config-worktree.md` step 0.56 establishes — the same bug class #1059 fixed at its origin, but this internal call site was one of the un-swept consumers, and unlike the others it's on the every-reconcile-turn hot path. Post-relocation, resolving with no pin reads config against the orchestrator worktree (a fresh checkout that by construction can't contain the gitignored `.shipyard/config.local.json` layer), so a mode whose override lives only in that local layer silently falls back to the built-in default and the check emits a false cost-attribution mismatch warning against a dispatch that was in fact correct. closes #1185
