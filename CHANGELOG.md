@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.22.9 — 2026-08-10
+
+The operator-slice carve-out (and the phase-1 slicing path generally) let a scope pass dispatch a `phase_1_scope` naming a concrete artifact path without ever checking whether that path already existed on `origin/<default-branch>` — the scope-result freshness check verifies cached *decisions* aren't stale, the `Blocked by #N` filter resolves blocker *state*, but nothing checked deliverable *existence*. Real repro: an operator-slice scope pass verified both of an issue's named blockers were closed, then dispatched a worker to curate and commit a dataset file that had, in fact, merged the day before via a different PR — costing ~262k tokens / ~36 min before the worker found adjacent salvage work. closes #1187
+
+- `plugins/shipyard/commands/do-work/setup/06b-scope-carveouts.md` — new "Phase-1 artifact-existence check" section: whenever `phase_1_scope` names a concrete artifact path, `git ls-tree origin/<default-branch> -- <path>` before dispatch — absent, dispatch as today; present, re-scope so the slice records what's complete or explicitly extends/modifies the existing artifact rather than recreating it. Cross-referenced from the scoping-agent prompt instruction alongside the other per-class carve-outs.
+- `plugins/shipyard/commands/do-work/dont.md` — new generalizing bullet: don't assert in a dispatch prompt that a deliverable is outstanding without checking that it is — the same category as the existing comment-thread-awareness rules (#781/#1062), cross-referenced rather than duplicated.
+
 ### 4.22.8 — 2026-08-10
 
 An `issue-work` worker following a target repo's own documented `nvm`-based Node-version-pin snippet (`source "$NVM_DIR/nvm.sh"; nvm use`) hit a refusal from a bare `source` invocation, even with no chaining or redirect. Investigation confirmed the refusal is the Claude Code harness's own built-in worktree-isolation `Bash` guard, not one of shipyard's own `hooks.json`-wired `Bash` hooks (`refuse-escape-symlink-commit.sh`, `guard-primary-checkout.sh`, `refuse-broad-process-kill.sh`, `refuse-credential-mint.sh` — none reference `source` or the refusal's message text) — so the guard itself can't be narrowed from this repo. Per the issue's option 2, the fix documents the safe alternatives where a worker will find them before hitting the refusal. closes #1186
