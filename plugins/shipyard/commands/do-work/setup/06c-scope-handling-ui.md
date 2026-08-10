@@ -183,7 +183,7 @@ $CURRENT_BODY"
      fi
      ```
 
-     No label applied. The marker alone gates via the [step-4 client-side filter](04-backlog-divert.md#4-fetch--rank-the-backlog) — drops while `today < date`, re-admits at date elapsed.
+     No label is applied — not `needs-human-review`, not `agent-console`. The marker alone gates via the [step-4 client-side filter](04-backlog-divert.md#4-fetch--rank-the-backlog) — drops while `today < date`, re-admits at date elapsed.
 
   4b. **Write a self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker** when `$DEFER_REASON_CLASS == "external-dependency"` ([#1195](https://github.com/mattsears18/shipyard/issues/1195)):
 
