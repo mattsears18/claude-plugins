@@ -211,55 +211,20 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 
 **Sweep `$SHIPYARD_HOME/sessions/` for orphan files left behind by prior sessions that crashed or exited without running [`cleanup-summary.md`'s step 7 → step 8 flush + cleanup chain](../cleanup-summary.md#end-of-session-cleanup).** Without this sweep, any session that doesn't terminate via the happy-path cleanup strands its per-session ledger on disk forever — the cross-session reports at `/shipyard:cost report` then under-count by full sessions. See [RATIONALE → Step 1.6 orphan session-file regression](../../do-work-RATIONALE.md#step-16--orphan-session-file-regression-227) for the production repro (issue #227).
 
+**Extracted into [`scripts/sweep-orphan-sessions.sh`](../../../scripts/sweep-orphan-sessions.sh) (issue #1182)** — this section used to duplicate the sweep as an inline `find | while read` loop calling `session-state.sh` / `cost-history.sh` per iteration, directly contradicting its own "Do NOT duplicate the implementation here" callout above (and, independent of the duplication, a multi-statement compound shape Auto Mode's classifier can refuse outright as part of the larger step-0.7 background group — the concrete repro that motivated the extraction). The canonical call, run from inside the step-0.7 background group:
+
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-# Find session files that aren't the current session and haven't been
-# modified in the last 30 minutes (the 30-min floor is a race-safety
-# margin against a concurrent /do-work session that's about to flush its
-# own file — we never reap something another orchestrator might still
-# be writing to). Stacked with a PID-liveness check (`is-active`) for
-# defense in depth — see issue #253 for the failure mode where the
-# mtime floor alone was insufficient.
-SESSIONS_DIR="${SHIPYARD_HOME:-$HOME/.shipyard}/sessions"
-find "$SESSIONS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +30 2>/dev/null | while read -r orphan; do
-  orphan_id=$(basename "$orphan" .json)
-  if [[ "$orphan_id" == "<session-id>" ]]; then
-    continue  # skip our own session
-  fi
-  # PID-liveness gate (#253). is-active exits 0 when the session file's
-  # `.pid` is alive (per `kill -0 $pid`); exit 1 otherwise (missing file,
-  # missing/null pid, dead pid). If the owning process is alive, skip the
-  # reap regardless of mtime — defends against the race where a quiet-but-
-  # alive orchestrator's file would otherwise get reaped during a long
-  # drain phase or CI watch (the failure trace in #253). PID recycling is
-  # still possible but the mtime floor above is the second gate against
-  # that — both have to fail to reap, so a recycled pid + fresh mtime
-  # scenario still skips.
-  if "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" is-active --session-id "$orphan_id" 2>/dev/null; then
-    echo "[orphan-reap] skipped $orphan_id (pid alive)"
-    continue
-  fi
-  # Flush is idempotent — re-flushing a session id already in the ledger
-  # is a no-op. Cleanup is also idempotent.
-  "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "$orphan_id" 2>/dev/null || true
-  # --reap-audit (issue #281) records one JSONL line per reap to
-  # ~/.shipyard/reap-audit.jsonl with the reaped session's metadata
-  # (pid, repo, tokens, mtime) + the reaper's session-id / pid. Without
-  # this line, a "where did my session file go?" investigation has no
-  # forensic trail. Same JSONL file as worktree-reap.sh's audit log (#284).
-  "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" \
-    --reap-audit \
-    --reaper-session-id "<session-id>" \
-    --reason "orphan-sweep-step-1.6" \
-    --phase "setup-1.6" 2>/dev/null || true
-  echo "[orphan-reap] flushed + reaped $orphan_id"
-done
+"${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-sessions.sh" sweep \
+  --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
+  --current-session-id "<session-id>" \
+  --reaper-session-id "<session-id>"
 ```
 
-Both helpers are idempotent and exit 0 on already-flushed / already-reaped sessions, so this sweep is safe to re-run. The 30-minute floor is the race-safety boundary against a concurrent `/do-work` orchestrator in another terminal that's about to flush its own file — we never reap something another orchestrator might still be writing to. (Concurrent orchestrators are uncommon but possible — multiple repos, multiple terminals; the floor is the cheap safe default.)
+**Same two-gate shape as before, now inside the script.** Session files older than 30 minutes (`--stale-min`, race-safety margin against a concurrent `/do-work` session about to flush its own file) AND whose owning process is confirmed dead via `session-state.sh is-active` (PID-liveness — see issue #253 for the failure mode where the mtime floor alone was insufficient) qualify for reap; either gate alone is not enough. Every reap flushes cost-history for that session id (idempotent — a no-op if already flushed) then calls `session-state.sh cleanup --reap-audit`, so a re-run of the sweep is always safe. The script's own header carries the full rationale; regression coverage lives at [`scripts/tests/sweep-orphan-sessions.test.sh`](../../../scripts/tests/sweep-orphan-sessions.test.sh).
 
-**Orphan atomic-write `.tmp` sweep (issue #858).** The sweep above only discovers stale `*.json` session files — it has no way to discover a `.tmp.<pid>` leftover whose target `.json` never successfully landed (a crash between `atomic_write`'s `cat > "$tmp"` and its `mv -f "$tmp" "$target"`, most commonly during `session-state.sh init`). That file matches no session id the sweep above could hand to `cleanup --session-id`, so under the loop alone it would linger forever. `cost-history.sh`'s reconcile-rewrite path (`mktemp "${session_target}.XXXXXX"` / `.err.XXXXXX`) and `flake-registry.sh`'s prune rewrite (`<path>.tmp.$$`) have the identical structural gap, with no sweep anywhere for either. [`scripts/sweep-orphan-tmp.sh`](../../../scripts/sweep-orphan-tmp.sh) closes all three in one pass, right after the loop above, in the same background bash group:
+**Orphan atomic-write `.tmp` sweep (issue #858).** The sweep above only discovers stale `*.json` session files — it has no way to discover a `.tmp.<pid>` leftover whose target `.json` never successfully landed (a crash between `atomic_write`'s `cat > "$tmp"` and its `mv -f "$tmp" "$target"`, most commonly during `session-state.sh init`). That file matches no session id the sweep above could hand to `cleanup --session-id`, so under that sweep alone it would linger forever. `cost-history.sh`'s reconcile-rewrite path (`mktemp "${session_target}.XXXXXX"` / `.err.XXXXXX`) and `flake-registry.sh`'s prune rewrite (`<path>.tmp.$$`) have the identical structural gap, with no sweep anywhere for either. [`scripts/sweep-orphan-tmp.sh`](../../../scripts/sweep-orphan-tmp.sh) closes all three in one pass, right after the sweep above, in the same background bash group:
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)

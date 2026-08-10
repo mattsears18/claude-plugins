@@ -48,32 +48,20 @@ export SHIPYARD_REPO_ROOT
   # whose owning process is still alive. Both have to fail before reap — protects
   # against the race where a peer orchestrator went quiet for >30 min (long drain,
   # CI watch) but is still actively running and will write through again.
-  SESSIONS_DIR="${SHIPYARD_HOME:-$HOME/.shipyard}/sessions"
-  find "$SESSIONS_DIR" -maxdepth 1 -type f -name '*.json' -mmin +30 2>/dev/null | while read -r orphan; do
-    orphan_id=$(basename "$orphan" .json)
-    [[ "$orphan_id" == "<session-id>" ]] && continue
-    # PID-liveness gate: if the orchestrator that owns this file is still alive,
-    # skip the reap regardless of mtime. is-active exits 0 when the file's .pid
-    # is alive (per kill -0). Exit 1 on missing file, missing/null pid, or dead pid.
-    if "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" is-active --session-id "$orphan_id" 2>/dev/null; then
-      continue
-    fi
-    "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "$orphan_id" 2>/dev/null || true
-    # --reap-audit (issue #281) writes one JSONL line to
-    # ~/.shipyard/reap-audit.jsonl capturing the reaped session's
-    # pid / repo / tokens / mtime, plus the reaper's session id and pid,
-    # so a subsequent "where did my session file go?" investigation has
-    # forensic data. The line lands in the same JSONL file as worktree-reap
-    # audit entries (issue #284) so a reader can correlate session-file and
-    # worktree reaps for the same session.
-    "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "$orphan_id" \
-      --reap-audit \
-      --reaper-session-id "<session-id>" \
-      --reason "orphan-sweep-step-1.6" \
-      --phase "setup-1.6" 2>/dev/null || true
-  done
+  #
+  # Extracted into sweep-orphan-sessions.sh (issue #1182) — this used to be
+  # an inlined `find | while read` loop calling two other scripts per
+  # iteration, the same multi-statement compound shape sweep-orphan-tmp.sh
+  # (issue #858, immediately below) already extracted for the sibling
+  # .tmp-leftover sweep. A single plain script call, with its own test
+  # coverage under scripts/tests/, rather than an untested inline loop
+  # nested three levels inside this already-large background group.
+  "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-sessions.sh" sweep \
+    --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
+    --current-session-id "<session-id>" \
+    --reaper-session-id "<session-id>" 2>/dev/null || true
 
-  # 1.6 (continued) — orphan atomic-write .tmp sweep (issue #858). The loop
+  # 1.6 (continued) — orphan atomic-write .tmp sweep (issue #858). The sweep
   # above only discovers stale *.json files; a .tmp.<pid> whose target
   # .json never landed (crash mid-atomic_write, most commonly during
   # `session-state.sh init`) matches no session id the loop above could
@@ -404,6 +392,19 @@ step 0.7 opens timing window
   └── foreground parallel batch (steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5)
         └── after batch: step 1.7 → 3.5 → 4 → 4.5 aggregate → 6 → 7 (serial)
 ```
+
+### Worktree-isolation classifier refusal — decompose into a self-contained wrapper or separate plain calls ([#1182](https://github.com/mattsears18/shipyard/issues/1182))
+
+**Distinct from the destructive-verb denial above.** In a worktree-isolated session (`EnterWorktree`, the primary path per [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)), Auto Mode's classifier can refuse the whole `(...) &` background-group call — or a sub-piece of it — for a *different* reason: *"this command is too complex to verify that it stays inside the worktree; break it into plain, separate commands."* Confirmed in the [#1182](https://github.com/mattsears18/shipyard/issues/1182) repro: step 3a's `for label_args in ... do eval "gh label create ... " & done; wait` loop was refused outright as part of this group, and the step-1.6 sweep loop (now extracted into `sweep-orphan-sessions.sh`, above) was likewise refused until re-wrapped. This is the same refusal shape `shipyard:worker-preamble`'s [`assert-worktree-cwd-fallback.md`](../../../skills/worker-preamble/assert-worktree-cwd-fallback.md) documents for worker-side blocks, reproduced here at the orchestrator's own step 0.7.
+
+**Recovery — two equivalent shapes; pick whichever is cheaper for the step at hand:**
+
+1. **A single self-contained `bash -c '…'` wrapper.** Fold the step's own commands into one `bash -c` argument with no host-shell-variable dependencies — every value either a literal substituted in directly, or re-derived inside the wrapper's own `-c` string — the same "resolve inside the call, don't depend on cross-call shell state" discipline [step 0.3](00-config-worktree.md#03-claude_plugin_root-re-export-preamble-every-bash-tool-call)'s `CLAUDE_PLUGIN_ROOT` preamble already uses. This is the shape that recovered the step-1.6 sweep loop in the #1182 repro, before it was extracted into its own script.
+2. **Separate plain `Bash` tool calls, one per step.** Run 1.6 / 1.6.5 / 3a / 3b / 3c as N separate foreground (not backgrounded) calls instead of one `(...) &` block. This loses the "fire-and-forget, don't block dispatch" property the background group exists for — every step now runs in the foreground, serially — so accept that cost only when the compound form is genuinely refused; it is not a general substitute for the background group on the happy path.
+
+Either way, **don't retry the identical refused compound text** — per `shipyard:worker-preamble` § "After a classifier denial" and [`dont.md`](../dont.md)'s "Don't iterate prompt wording against the permission classifier" rule (cited above for the destructive-verb case; it applies identically here): decompose, don't reword.
+
+**Extracting a step into its own script (as step 1.6 was, above) is the strongest fix when a step turns out to be a *recurring* refusal target**, since it collapses the step to a single plain call permanently — every future session gets the simpler shape for free — rather than requiring per-session decomposition. That's a larger, per-step judgment call (surface area, need for test coverage, how load-bearing the step is), matching the extraction precedent `sweep-orphan-tmp.sh` (#858) and `sweep-orphan-sessions.sh` (#1182, above) both set. The `bash -c` wrapper or the separate-calls fallback above are the immediate, always-available recovery when a step hasn't (yet) earned that investment.
 
 **Steps that MUST run after the batch (foreground, serial):**
 
