@@ -341,6 +341,17 @@
           "default": 14,
           "description": "How many days out an `external-dependency` scope-preflight defer's self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` recheck marker is set from today (issue #1195). Written into the issue body in addition to the `agent-console` label so the proactive operator sweep can skip re-enqueueing (and re-judging) the issue while the date is still future, instead of re-litigating an unchanged upstream condition every tick. Computed entirely orchestrator-side from today's UTC date — never derived from scope-agent-supplied text, so every external-dependency defer gets a marker regardless of what the agent wrote in `evidence_pointer`. Does not affect dispatch eligibility (the `agent-console` label already excludes the issue from `raw_backlog`)."
         },
+        "recheck_probe_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the proactive operator sweep evaluates a `<!-- do-work-recheck: <verb> <args...> -->` companion body marker (issue #1198, scripts/eval-recheck-probe.sh) before falling back to the plain `do-work-blocked-until` calendar check on an `agent-console`-labeled issue. Set to `false` to disable probe evaluation entirely and always fall through to the calendar-only check — the pre-#1198 behavior. Does not affect whether a `do-work-blocked-until` marker itself is honored; it only gates whether a companion recorded-probe marker gets evaluated."
+        },
+        "recheck_probe_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 15,
+          "description": "Bounded timeout, in seconds, for a single `do-work-recheck` probe command (`npm view` / `gh api`) run by scripts/eval-recheck-probe.sh. A probe that exceeds this timeout is treated as `unknown` and falls through to the plain `do-work-blocked-until` calendar check — never treated as evidence the blocking condition changed."
+        },
         "_comment": { "type": "string" }
       }
     },
