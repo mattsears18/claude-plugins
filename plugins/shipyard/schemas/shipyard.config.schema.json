@@ -335,6 +335,12 @@
           "default": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"],
           "description": "Path fragments that Detector 2 (setup.md step 6 pre-scope detector batch, issue #591) treats as Claude-Code self-modification targets. When an issue's DELIVERABLE is editing one of these paths, the Claude Code auto-mode classifier applies a HARD BLOCK not cleared by user intent, so a worker dispatch can never ship the change — the orchestrator synthesizes a `human-decision-required` defer instead of burning a ~100k-token worker dispatch. Trailing-slash entries (e.g. `.claude/hooks/`) match any path under that directory. Set to an EMPTY array (`[]`) to disable Detector 2 entirely — appropriate for users NOT running under Auto Mode, where edits to these paths succeed normally and the pre-defer would be a false positive that strands shippable work in the human-review queue. Default covers the four known Auto-Mode-denied agent-config surfaces."
         },
+        "external_dependency_recheck_days": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 14,
+          "description": "How many days out an `external-dependency` scope-preflight defer's self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` recheck marker is set from today (issue #1195). Written into the issue body in addition to the `agent-console` label so the proactive operator sweep can skip re-enqueueing (and re-judging) the issue while the date is still future, instead of re-litigating an unchanged upstream condition every tick. Computed entirely orchestrator-side from today's UTC date — never derived from scope-agent-supplied text, so every external-dependency defer gets a marker regardless of what the agent wrote in `evidence_pointer`. Does not affect dispatch eligibility (the `agent-console` label already excludes the issue from `raw_backlog`)."
+        },
         "_comment": { "type": "string" }
       }
     },

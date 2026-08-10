@@ -209,7 +209,8 @@ DEFAULTS_JQ='{
   },
   "scope": {
     "diagnosis_reuse_hours": 72,
-    "self_modification_paths": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"]
+    "self_modification_paths": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"],
+    "external_dependency_recheck_days": 14
   },
   "decompose": {
     "auto": true,

@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.23.0 — 2026-08-10
+
+Of the six `defer_reason_class` values, `time-gated` self-clears via the `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker and `confirmed-blocker-still-open` self-clears via the `Blocked by #N` filter — `external-dependency` had no equivalent, so its diagnosis lived only in a session-local comment and got re-derived from scratch every time the issue was revisited. A real repro: an `external-dependency` issue re-litigated roughly 14 times over three weeks with the same unchanged upstream fact each time, mostly via the proactive operator sweep re-scanning every open `agent-console`-labeled issue on every tick. `external-dependency` defers now additionally write the same self-clearing `<!-- do-work-blocked-until: -->` marker, alongside (not instead of) their `agent-console` label, with the date computed entirely orchestrator-side rather than depending on the scope agent supplying one. The proactive operator sweep skips re-enqueueing an `agent-console` issue while its marker date is still future. The issue's own second suggested shape — a command-based `<!-- do-work-recheck: <command> -->` probe — needs its own security design (arbitrary command execution from issue-body text) before it's safe to ship, so it's left as a follow-up rather than folded into this slice. closes #1195
+
+- `plugins/shipyard/commands/do-work/setup/06c-scope-handling-ui.md` — new step 4b in the scope-preflight Recording path: writes the `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker for `external-dependency` defers (date = today + `scope.external_dependency_recheck_days`, extending rather than shortening an existing later marker).
+- `plugins/shipyard/commands/do-work/operate/04-steady-state-hooks.md` — the D-hook proactive sweep now skips an `agent-console` issue whose recheck marker date is still in the future instead of re-enqueueing/re-judging it every tick.
+- `plugins/shipyard/commands/do-work/setup/04-backlog-divert.md` — documents that the `do-work-blocked-until` marker is no longer `time-gated`-exclusive.
+- `plugins/shipyard/commands/do-work.md` — `deferred_issues` doc paragraph now covers the `external-dependency` recheck marker.
+- `plugins/shipyard/scripts/shipyard-config.sh` / `plugins/shipyard/schemas/shipyard.config.schema.json` — new `scope.external_dependency_recheck_days` config knob (default 14).
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new rationale section covering the repro and the three rejected design alternatives.
+
 ### 4.22.12 — 2026-08-10
 
 Setup step 4's backlog filter is correct — `@me`-assigned open issues PASS, since that's the resumable-work case #332 exists to protect — and both mid-session re-fetch call sites (steady-state step C's lightweight re-check, drain's termination-assertion step 4) already restated that filter in prose. But a real session still hand-rolled an ad-hoc `select((.assignees|length)==0)` "is anything left?" check outside both documented procedures, silently dropping every issue the session had self-assigned and reporting a 10-issue backlog as empty — recreating #332's failure mode one layer down. The instrument meant to catch this (`unfiltered_open_count=`) already carried a "missing = contract violation" sentence, but nothing ever checked the invariant line for the token's actual presence before the turn ended; it was absent for the full 6.5-hour session with no consequence. closes #1194
