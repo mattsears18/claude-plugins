@@ -2754,6 +2754,63 @@ assert_contains "$operate_path" \
   'source of the invariant line'"'"'s `operator=` token' \
   "operate.md documents that the preflight's outcome feeds the invariant-line operator= token (#1193)"
 
+# (T) The mid-session re-fetch call sites (steady-state step C, drain
+# termination-assertion step 4) already restated the client-side filter in
+# prose (#332), but a real session still hand-rolled an ad-hoc
+# `select((.assignees|length)==0)` query outside both documented procedures
+# and silently dropped every self-assigned issue — reporting a 10-issue
+# backlog as empty (issue #1194). Two-part fix: (a) a `me_assigned_open=<N>`
+# invariant-line token narrows the existing unfiltered_open_count smell to
+# the exact bucket a wrong assignee filter erases; (b) a third mandatory
+# self-check (token-presence) turns the existing "missing token = contract
+# violation" prose into an actual pre-return check, mirroring the
+# under-dispatch / over-defer self-checks. A dont.md rule and both re-fetch
+# sites also gain an explicit "never hand-roll a shorthand" caution.
+assert_contains "$steady_state_path" \
+  'issues/1194' \
+  "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
+assert_contains "$steady_state_path" \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=<k>' \
+  "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
+assert_contains "$steady_state_path" \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=0' \
+  "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'is the per-turn evidence flag naming the specific bucket a wrong client-side filter is most likely to erase' \
+  "steady-state.md documents what me_assigned_open means (#1194)"
+assert_contains "$steady_state_path" \
+  'Divergence smell, self-assign class' \
+  "steady-state.md documents the me_assigned_open divergence-smell rule (#1194)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'A missing `me_assigned_open=` token entirely is a contract violation' \
+  "steady-state.md treats a missing me_assigned_open= token as a contract violation (#1194)"
+assert_contains "$steady_state_path" \
+  'Run ALL THREE self-checks' \
+  "steady-state.md's self-check section now runs three self-checks, not two (#1194)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  '3. **Token-presence check' \
+  "steady-state.md adds the token-presence self-check as the enforcement companion to the per-token 'missing = violation' prose (#1194)"
+assert_contains "$steady_state_path" \
+  'never re-derive it here or hand-roll a shorthand substitute' \
+  "steady-state.md step C's lightweight backlog re-check warns against a hand-rolled shorthand filter (#1194)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$drain_path" \
+  'Also stamp `me_assigned_open`' \
+  "drain.md termination-assertion step 4 stamps me_assigned_open (#1194)"
+assert_contains "$drain_path" \
+  'recurred client-side in a mid-drain ad-hoc query as recently as' \
+  "drain.md's never-re-derive caution cross-references the #1194 ad-hoc-query regression"
+assert_contains "$dont_path" \
+  "Don't hand-roll an ad-hoc \`gh issue list\` query mid-session" \
+  "dont.md prohibits ad-hoc backlog queries that bypass the canonical wide-fetch + client-side filter (#1194)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
