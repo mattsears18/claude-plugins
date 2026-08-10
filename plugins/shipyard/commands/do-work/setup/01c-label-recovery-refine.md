@@ -77,7 +77,8 @@ gh label create discussion --repo <owner/repo> --description "A maintainer is en
 The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting. Reap every agent worktree whose lock-holding PID is dead; skip ones owned by live PIDs (could be another active Claude Code instance) — **unless the lock is stale enough that a live PID is more likely a recycled one than a genuine peer** (issue [#755](https://github.com/mattsears18/shipyard/issues/755); see [`worktree-reap.sh`'s `classify-lock` docstring](../../../scripts/worktree-reap.sh) for the full rationale). `classify-lock` applies this staleness corroboration itself — no separate check is needed here.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
 reaped_stale=0
 deferred_stale=0
@@ -425,7 +426,8 @@ The sub-f migration runs **once per legacy issue** — after the first pass ther
 **Timing instrumentation (issue #238).** Bracket this step even when it runs with no refinement-candidate issues — the wall clock still measures the `/refine-issues` invocation overhead:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_3_5_refine_issues 2>/dev/null || true
 # /refine-issues --repo <owner/repo> --concurrency <N>

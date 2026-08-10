@@ -118,7 +118,8 @@ Extract the `usage` payload from the dispatch tool result — the harness emits 
 **Every A.0 bash call MUST be preceded by this preamble in the same Bash tool call** — without it, a reconcile-turn cwd-leak (the harness relocates the orchestrator's cwd into the just-returned agent's `agent-*` worktree) makes session-id derivation read the wrong directory and silently lose token attribution, the `session_prs` append, and the cost comment for the turn. This solves a different problem than the reap blocks' `STABLE_DIR` cwd anchor ([#497](https://github.com/mattsears18/shipyard/issues/497)) — reading the session-id file correctly, not avoiding a doomed-directory delete; the two compose. See [RATIONALE → A.0 preamble mandate](../do-work-RATIONALE.md#a0-preamble-mandate-548) for the full failure chain, repro, and how the defenses compose.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Derive the session id from the NEWEST orchestrator-* worktree's stash.
 # cwd-independent given the explicit --repo-root (immune to the #477 cwd-leak
 # that fires on reconcile turns). See setup.md §0.55 for the full rationale.
@@ -146,7 +147,8 @@ Run this preamble block **once per Bash tool call** that contains an A.0 `bump-t
 Invoke (after the A.0 required preamble above — `SESSION_ID` is already set):
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
 if [ -n "$SESSION_ID" ]; then
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
@@ -171,7 +173,8 @@ The strict path requires the harness to emit `input_tokens` / `output_tokens` / 
 When the `<usage>` block has `total_tokens` but no breakdown, fall back to the **degraded path** rather than skipping the bump entirely:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
 if [ -n "$SESSION_ID" ]; then
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
@@ -341,7 +344,8 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 **Skip silently on clean terminal returns** — when the prefix check passes (`shipped` / `green` / `noop:` / `blocked` / `rebased` / `reaped:`), do NOT run this step. Step B's per-completion reap is the right path for clean returns; running A.0.5 too would double-call into `classify-lock` for the common case and waste tool calls. The skip is a no-op — proceed directly to A.1.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — the version-coordination + auto_merge.method reads
 # further down this block would otherwise silently drop
@@ -758,7 +762,8 @@ Closes [#387](https://github.com/mattsears18/shipyard/issues/387). The Claude Co
 **The guard.** Root cause is harness behavior shipyard can't change, so this is a defensive assert-and-restore. Fire it every reconcile turn (here) AND at [drain entry](./drain.md#end-of-session-drain). It is **read-mostly**: the common case (primary already on the default branch) costs two `git -C` reads and writes nothing.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 
 # The primary checkout is the repo root that contains .claude/worktrees/.
 # Derive it INDEPENDENT of cwd (issue #452): `git rev-parse --show-toplevel`
@@ -827,7 +832,8 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Verify the armed merge method — don't trust the worker's own claim ([#989](https://github.com/mattsears18/shipyard/issues/989)).** A worker can arm auto-merge with the wrong method (`--merge` instead of the configured `--squash`, or vice versa) despite every per-mode spec resolving `auto_merge.method` before its own `gh pr merge` call — the #989 repro shows this is **intermittent**: two workers in the same session both mis-armed `mergeMethod: MERGE` while every sibling PR that session correctly armed `SQUASH`. The worker's return string never carries the armed method, so there's nothing to parse here — re-read the PR directly and correct it before moving on. Skip this check entirely for a `disposition:`/`verified:` return (no PR) and for `auto-merge: gated — external-author origin`, `auto-merge: unarmed — policy-override: <control>` ([#1088](https://github.com/mattsears18/shipyard/issues/1088) — intentionally never armed), or `auto-merge: unavailable*` (nothing armed to check).
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -873,7 +879,8 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Then post a cost-tracking comment on the resulting PR — gated on `cost_tracking.comment_on_pr` ([#855](https://github.com/mattsears18/shipyard/issues/855)).** The session-state file's `.tokens.per_pr[<M>]` bucket was populated by every `bump-tokens` call made while the worker was in flight (see [Cost-tracking write-through](./session-state-file.md#cost-tracking-write-through)). Before posting, read the effective `cost_tracking.comment_on_pr` value — same shell-out-to-`shipyard-config.sh` pattern [setup's flake-registry gate](./setup/04-backlog-divert.md#58-enforce-the-flake-registry-chronic-flake-escalation) uses for `flake_registry.enabled` — and skip the post entirely when it's `false`. This is independent of the ledger-write gate `cost-history.sh flush` enforces on `cost_tracking.enabled` (issue #855): a user might want the local `~/.shipyard/cost-history.jsonl` record but not a public, on-the-PR token/cost comment on a shared or externally-visible repo, so the two knobs are checked separately rather than one implying the other. When `comment_on_pr` is true (or unset — the schema default), read it as a Markdown body via the helper and post on the PR with edit-or-create semantics keyed on the `<!-- do-work-cost-tracking -->` sentinel:
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -931,7 +938,8 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   **Force-reap even on `peer-alive` here.** A `shipped` return is the worker's terminal contract: the agent subprocess has exited, the PR is on the remote, the worktree has no further purpose — deferring on `peer-alive` here would cause the same drain-phase `blocked: branch locked in another worktree` failures A.0.5 exists to avoid (see [§A.0.5](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1s-return-string-parsing)). Audit the reap with `--classification peer-alive-force` so the override is visible in `~/.shipyard/reap-audit.jsonl`. See [RATIONALE → Force-reap on peer-alive (#576/#771)](../do-work-RATIONALE.md#force-reap-on-peer-alive-576771) for the failure-mode history.
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
   # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
   # harness can leak the orchestrator's cwd into an `agent-*` worktree that
   # this block then `git worktree remove --force`s; once that dir is gone,
@@ -1179,7 +1187,8 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 - **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.) **Refresh the cost-tracking comment** for `<M>` so the cumulative total includes this fix-checks dispatch's tokens (A.0 bumped them into `.tokens.per_pr[<M>]`). Same edit-or-create semantics as the `shipped` hook:
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -1334,7 +1343,8 @@ The single-point reap below covers every one of these. The A.1 `shipped #<N>` pa
 **Force-reap even on `peer-alive` here — closes the general-reap gap #576 left open (issue [#771](https://github.com/mattsears18/shipyard/issues/771)).** By the time step B runs, step A has already parsed this turn's **terminal** return string (every mode's completion contract: `shipped` / `green` / `noop` / `rebased` / `blocked`), so the agent is done by definition regardless of which mode produced the release — the same reasoning A.1 and drain's #370 already apply. A `peer-alive` classification at this call site means the lock PID is a transient harness subprocess that outlived the agent's own return by milliseconds, not a genuine still-working peer. Force-reap and audit with classification `peer-alive-force` (same token A.1 uses — the `phase` field, already `steady-state-B-completion`, is what distinguishes the two call sites in `~/.shipyard/reap-audit.jsonl`). See [RATIONALE → Force-reap on peer-alive (#576/#771)](../do-work-RATIONALE.md#force-reap-on-peer-alive-576771) for the PR#2598/#2701 repro that motivated this.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Capture the agent id BEFORE the in-memory slot removal — the path
 # derivation needs it. The agent_id is the same task-id the harness uses
 # end-to-end (see step A.−1 for the keying convention) and matches the
@@ -1427,7 +1437,8 @@ Step B identifies the worktree by `agent_id` (available in working memory at rel
 **Soft-blocked in-window filter (per [#300](https://github.com/mattsears18/shipyard/issues/300)).** Step 4's workable filter does NOT exclude `blocked:agent-soft` — by design, so the label doesn't leak across sessions — but within a session, immediately re-dispatching a worker against an issue another worker just bailed soft on would just re-encounter the same ambiguity. The in-memory `session_blocked_soft` map (populated by step A.1's `blocked` handler — `{issue_number → ISO-8601 timestamp of the bail}`) gates this. Before appending any net-new issue to `raw_backlog`, check:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -1462,7 +1473,8 @@ Filter applies to net-new issues from the lightweight re-check ONLY — issues a
 Skip this check entirely unless `.ci_capacity.shape == "self-hosted"` **and** `.ci_capacity.pool_total > 0` (both from session state, written once at [step 1.5](./setup/01-repo-recovery.md#15-initialise-the-session-state-file)) — on `hosted` (GitHub-hosted runners are elastic) or `unknown` (the pool size was never readable), there is nothing to hold back against and the check is a no-op:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 ci_shape=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.shape" 2>/dev/null)
 pool_total=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.pool_total" 2>/dev/null)
 
@@ -1517,7 +1529,8 @@ Skip this bias entirely (fall straight through to the "no compatible job" park b
 When both hold, scan `ready_issues` **in its existing priority order** — do not re-rank it — for the first candidate that is BOTH otherwise dispatch-eligible (passes the same collision / soft-cap / label checks any other candidate this turn would) AND CI-cheap:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 cheap_globs=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.cheap_ci_globs" 2>/dev/null)
 
 # For each candidate <N> in ready_issues, in existing priority order:
@@ -1546,7 +1559,8 @@ Apply the **dispatch rules** to pick the next job:
 **`model`** ([#978](https://github.com/mattsears18/shipyard/issues/978)) is the exact value [the per-dispatch model-resolution rule](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) computed for this dispatch a moment earlier — `<dispatch_model>` (`opus`/`sonnet`/`haiku`/`fable`) if non-empty, or the literal string `"default"` if the resolver returned empty (meaning the shim's frontmatter pin, or the `Workflow` runtime's own default, applies instead). Write it through **unconditionally** — never omit the field, and never write it *only* when it differs from a mode's usual tier. The whole point is that a slot's recorded `model` is now a durable, inspectable claim about what this dispatch was told to run on, independent of whether the model was actually attached to the dispatch call correctly: a repo with `models.issue_work` configured but a dispatch call that (through orchestrator error) omitted the `model` parameter still ran on *some* model, and recording what was *supposed* to be attached here — rather than skipping the write because "it's just the default" — is what makes that class of silent omission inspectable after the fact via `/shipyard:status` or the end-of-session summary, instead of undetectable (the exact gap #978 reports; this in_flight field cannot itself confirm which model the dispatch call actually invoked — the harness exposes no such signal — but it stops the intended model from disappearing without a trace). Example shape — see [the schema doc](./session-state-file.md#schema) for the canonical fields:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # --allow-degraded-init survives the mid-session file-disappear race
 # (issue #281). Without it, a concurrent /do-work session's orphan-sweep
 # reaping this file mid-session would surface as exit 3 on the next

@@ -7,7 +7,8 @@
 **Timing instrumentation (issue #238).** Bracket this step including the auto-triage label-apply loop and client-side filter pass:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_4_backlog_fetch_and_rank 2>/dev/null || true
 # ... run step 4 ...
@@ -70,7 +71,8 @@ Client-side filter (in this exact order — each gate's drop reason should be lo
 - **Drop issues that have an open linked PR authored by `@me` AND that PR is healthy.** The "healthy" qualifier is load-bearing: a closed/abandoned PR (the resumable case) does NOT lock the issue against re-dispatch, and an open-but-failing PR is in the orchestrator's [`failed_prs` / fix-checks bucket](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) rather than the issue's. Build the set **once per setup pass** from open PRs' `closingIssuesReferences` field — the structural projection GitHub itself uses to decide which issues auto-close on merge — joined against `author.login == @me` and `mergeStateStatus ∈ {CLEAN, HAS_HOOKS, UNSTABLE}` (i.e. no failing checks):
 
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
   # Build the "open, @me-authored, healthy" closing set once per setup pass.
   # Drop the candidate issue if any healthy @me-authored open PR has it in
   # closingIssuesReferences. The healthy gate uses the same latest-per-name
@@ -346,7 +348,8 @@ Closes [#385](https://github.com/mattsears18/shipyard/issues/385) — phase 2 of
 **Gate on `flake_registry.enabled`.** Skip this step entirely unless the effective config has `flake_registry.enabled == true` (it defaults to `false`, preserving pre-#378 behavior). The check is one config read against the already-loaded `EFFECTIVE_CONFIG` (step 0.4):
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 FLAKE_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
 if [ "$FLAKE_ENABLED" = "true" ]; then
   # Read crossed flakes and enforce the per-row actions. The helper computes

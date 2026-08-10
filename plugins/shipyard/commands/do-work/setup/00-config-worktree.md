@@ -72,7 +72,7 @@ Semantics:
 
 **Defense in depth — the helpers also self-locate.** Every script under `plugins/shipyard/scripts/*.sh` resolves sibling-script paths via `BASH_SOURCE[0]`, not via `$CLAUDE_PLUGIN_ROOT`. The preamble only fixes layer 1 (how the orchestrator *invokes* a script); layer 2 (how a script finds its peers) was already correct. Together the two layers mean a templated invocation works regardless of how the harness configures (or fails to configure) the env var.
 
-**Every bash block in this file (and `steady-state.md` / `drain.md` / `cleanup-summary.md` / `inline-trivial.md`) that uses `${CLAUDE_PLUGIN_ROOT}` already carries this preamble as its first line.** Don't strip it; don't move it after the first `${CLAUDE_PLUGIN_ROOT}/...` usage; don't substitute a different fallback path. The pattern is regression-guarded by [`scripts/tests/claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) — any new bash block that references `${CLAUDE_PLUGIN_ROOT}` without the preamble at its top fails CI.
+**This compound preamble is PRE-RELOCATION ONLY** ([#1181](https://github.com/mattsears18/shipyard/issues/1181)) — steps 0.3, 0.4, and the pre-`EnterWorktree` timing bracket atop [step 0.5](#05-move-into-the-orchestrators-worktree) are the only orchestrator blocks that still carry it, since those run before isolation. The identical one-liner is **refused** post-isolation: "too complex to verify that it stays inside the worktree." **Every other orchestrator-phase block** — step 0.5's post-relocation resolution onward, here and in `steady-state.md` / `drain.md` / `cleanup-summary.md` / `inline-trivial.md` / `dispatch-rules.md` / the rest of `setup/` — instead reads the `.shipyard-plugin-root` stash step 0.5 writes, via `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null); export CLAUDE_PLUGIN_ROOT`. Worker-side files (`agents/issue-worker/*.md`, `skills/worker-preamble/*.md`) keep the compound form unconditionally — a dispatched worker's own `agent-*` worktree has no such stash, and gets the resolved literal via its dispatch prompt instead ([#965](https://github.com/mattsears18/shipyard/issues/965)). Regression-guarded by [`scripts/tests/claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) (accepts either form per file scope).
 
 ### 0.4 Check the repo-level opt-in (`shipyard.config.json`)
 
@@ -304,14 +304,32 @@ fi
 
 **From this point on, every subsequent `Bash` / `Edit` / `Write` tool call in the orchestrator's session runs with `<repo-root>/.claude/worktrees/orchestrator-<session-id>` as cwd.** Under the primary `EnterWorktree` path this is automatic — the tool relocates the session's cwd as part of entering. Under the raw-git fallback, prepend `cd "$ORCH_WT" && ` (or pass `-C "$ORCH_WT"` to git) for any command whose effect lands on disk or on a branch ref. Either way, the user's primary checkout's HEAD MUST NOT change during this session — if you find yourself running a write-class command in the primary checkout, back up, switch to the orchestrator worktree, retry. See [RATIONALE → Why a dedicated worktree](../../do-work-RATIONALE.md#step-05--why-a-dedicated-orchestrator-worktree) for the failure modes this prevents.
 
+**Decompose, don't re-run the compound preamble ([#1181](https://github.com/mattsears18/shipyard/issues/1181)).** Step 0.3's one-liner is pre-relocation-only — refused post-isolation: "too complex to verify that it stays inside the worktree." Resolve via separate plain commands (same shape as `shipyard:worker-preamble`'s [`assert-worktree-cwd-fallback.md`](../../../skills/worker-preamble/assert-worktree-cwd-fallback.md)), then stash the result so later blocks read it back instead of re-resolving:
+
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-# Re-echo the resolved value + commit sha now that cwd has relocated into the
-# orchestrator worktree (issue #907). This re-derivation naturally resolves
-# to the ORCHESTRATOR WORKTREE's own plugins/shipyard (fresh off
-# origin/<default-branch>'s tip, per this step), superseding step 0.4's
-# pre-relocation resolution against the primary checkout — the staleness
-# step 0.4 could warn about cannot recur here, by construction.
+git rev-parse --show-toplevel
+```
+
+Call the result `TOPLEVEL` (= `$ORCH_WT`). Then:
+
+```bash
+test -d "<TOPLEVEL>/plugins/shipyard/scripts"
+```
+
+Exit 0 → resolved value `<TOPLEVEL>/plugins/shipyard`. Exit non-zero → run `jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json"` (result `INSTALL_PATH`), then `test -d "<INSTALL_PATH>/scripts"` — exit 0 → `<INSTALL_PATH>`; otherwise → `<TOPLEVEL>/plugins/shipyard`. Same two-layer probe as step 0.3, decomposed.
+
+Stash it, then finish by reading it back (hermetic across calls):
+
+```bash
+printf '%s\n' "<resolved CLAUDE_PLUGIN_ROOT literal>" > .shipyard-plugin-root
+```
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+# Re-echo the resolved value + commit sha (#907) — naturally the
+# ORCHESTRATOR WORKTREE's own plugins/shipyard, superseding step 0.4's
+# pre-relocation resolution against the primary checkout.
 echo "resolved CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT (post-relocation)" >&2
 SHIPYARD_PLUGIN_ROOT_SHA=$(git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD 2>/dev/null)
 [ -z "$SHIPYARD_PLUGIN_ROOT_SHA" ] && SHIPYARD_PLUGIN_ROOT_SHA="unknown"
@@ -371,7 +389,8 @@ Derive the session id with the `session-identity.sh derive-session-id` helper in
 **Newest-by-mtime, not first-in-listing-order — issue [#513](https://github.com/mattsears18/shipyard/issues/513).** The previous inline derive used `awk '... {print p; exit}'`, which returns the *first* `orchestrator-*` entry in `git worktree list --porcelain` order. When prior crashed sessions leave their `orchestrator-<dead-id>` worktrees un-reaped (the [step 1.6.5 sweep](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees) didn't run, or hasn't run yet), "first in listing order" is the **oldest orphan**, so the derive read a dead orphan's stash and every `session-state.sh update` / `bump-tokens` write landed in the orphan's session file — same repo, so the `--expected-repo` guard never tripped, silently corrupting the cost ledger, `/shipyard:status`, and `--resume` while this session's real file stayed at init defaults (the #513 repro: 245k tokens + 11 deferred issues + `session_prs += [1897]` all misattributed to a 6-day-old orphan). The live session's orchestrator worktree was created **this run** in [step 0.5](#05-move-into-the-orchestrators-worktree), so among any set of coexisting orchestrator worktrees it has the newest directory mtime — selecting newest resolves to the live session whenever orphans coexist, and is a no-op (a single candidate) in the common one-worktree case. (The deeper fix is to make [step 1.6.5](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees) reap orphans so the multi-orchestrator-worktree precondition rarely arises in the first place; newest-by-mtime is the correctness floor for when it does.)
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Derive the session id from the NEWEST orchestrator-* worktree's stash
 # (issue #513 — newest, not first-in-listing-order, so an accumulated orphan
 # from a prior crashed session can't shadow the live session). cwd-independent
@@ -416,7 +435,8 @@ export SHIPYARD_REPO_ROOT
 **Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer both exists and changes the merged result:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 if [ -f "$SHIPYARD_PRIMARY_CHECKOUT_ROOT/.shipyard/config.local.json" ]; then
   UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$ORCH_WT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
   PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$SHIPYARD_PRIMARY_CHECKOUT_ROOT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)

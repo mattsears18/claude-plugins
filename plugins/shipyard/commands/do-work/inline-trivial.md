@@ -103,7 +103,8 @@ Commit message: subject line matches the issue title (or a clean truncation if t
 Same as the worker-dispatched path's [issue-work step 6](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust). Since rule 2 of the eligibility check guarantees `originating_author_trust == "trusted"`, only the trusted branch applies — but the trust gate and the **ungated-merge gate** are orthogonal, so [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)'s pre-check still applies here ([#720](https://github.com/mattsears18/shipyard/issues/720)). Run the detector **before** any merge call — it is a script, not a rule to re-derive:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — otherwise this read silently drops
 # .shipyard/config.local.json post-relocation.
@@ -148,7 +149,8 @@ Inline execution has no agent return to reconcile in [step A](./steady-state.md#
 - Take a single check-rollup snapshot (`gh pr view <M> --json statusCheckRollup,mergeStateStatus`) — record the `checks: green|pending|failing` state for the cost-tracking comment.
 - Post the cost-tracking comment via the same [edit-or-create flow as `shipped` returns](./steady-state.md#a-reconcile-the-return). Use the helper:
   ```bash
-  export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
   "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
     --session-id "<session-id>" --pr <M> --format comment --mode inline
   ```

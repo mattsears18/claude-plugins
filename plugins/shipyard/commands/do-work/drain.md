@@ -207,7 +207,8 @@ Also initialize six per-session structures that gate fix-rebase re-dispatch, pro
 Read the two #374 duration knobs once at drain entry (they don't change mid-session):
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — otherwise this read silently drops
 # .shipyard/config.local.json post-relocation.
@@ -237,7 +238,8 @@ This intentionally **does NOT filter `-label:blocked:ci`** — `blocked:ci` PRs 
 **Batching the per-PR refresh.** When the drain loop has already snapshotted the open-PR list (above) but needs to re-resolve per-PR fields *for a known subset* — e.g. the "did this `D_dirty` PR's `mergeStateStatus` flip to `CLEAN` since the previous poll, or did its `headRefOid` move?" check that powers the forward-progress rule below — use `plugins/shipyard/scripts/gh-batch.sh pr-status` instead of N sequential `gh pr view <M>`:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # One round-trip + one tool-result block instead of N. Same projection
 # fields the per-PR `gh pr view` would return.
 "${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
@@ -296,7 +298,8 @@ Closes [#370](https://github.com/mattsears18/shipyard/issues/370). Before dispat
 **The reap.** For each PR `#<M>` the drain is about to dispatch a worker against, resolve its head branch, find any `agent-*` worktree **or the primary checkout** locked against that branch, and reap / restore it iff safe. The two holders are handled differently: an `agent-*` worktree is reaped iff the lock classifies as reapable (`no-lock` / `dead` / `self-ancestor`), deferring only on `peer-alive`; the **primary checkout** holding the head branch is the [#387](https://github.com/mattsears18/shipyard/issues/387) harness-leak case — restore it to the default branch iff its tree is clean (never reap the primary; it's the user's checkout), warn-and-skip if dirty. The drain-entry guard above usually handles the primary case first, but this per-PR check is the belt-and-suspenders for a leak that lands *mid-drain* (after the entry guard ran).
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 cd "$(git rev-parse --show-toplevel)"
 # Declare the orchestrator PID once so classify-lock short-circuits self-locks
 # to `self-ancestor` (issue #263) regardless of process-tree shape.
@@ -438,7 +441,8 @@ Before the per-poll actions below dispatch anything, scan for a **mutually-block
 **Run the detector.** It is a **script, not a rule to re-derive** — the same single-executable-source-of-truth convention as [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh) / [`detect-ci-gate-narrowing.sh`](../../scripts/detect-ci-gate-narrowing.sh) / [`detect-stale-node-modules.sh`](../../scripts/detect-stale-node-modules.sh), with a pure `--decide-pair` mode so the truth table is unit-testable without a live `gh`:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 mb_pairs=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-mutually-blocking-prs.sh" <owner/repo> <candidate PR numbers, space-separated>)
 mb_exit=$?
 ```
@@ -484,7 +488,8 @@ mb_exit=$?
    **CI-minute pre-dispatch gates (gated on `ci.*` config keys).** Before the per-PR re-dispatch policy below, check the config keys in this order — both default to off (preserves pre-#323 behavior); flip them in `shipyard.config.json`'s `ci.*` block to engage:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+   export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -545,7 +550,8 @@ mb_exit=$?
    **CHANGELOG-serialization gate (gated on `version_coordination.serialize_drain_rebase`).** On a repo where every PR appends a top-of-file `### <version>` CHANGELOG entry (the canonical version-coordinated shape — `version_coordination.enabled` AND a non-empty `changelog_path`), **parallel drain rebases cannot converge**: each merge moves the CHANGELOG insert point, so the moment one rebased PR lands, every sibling that just rebased onto the previous CHANGELOG head goes DIRTY again on the CHANGELOG-append row. When the gate is engaged, drain dispatches a fix-rebase for **at most one** DIRTY PR per poll and does not dispatch the next until the in-flight one has merged (or settled out of DIRTY). This runs **after** the CI-minute truncation above — it caps the already-truncated `D_dirty` set to its single lowest-numbered member. See [RATIONALE → CHANGELOG-serialization gate](../do-work-RATIONALE.md#changelog-serialization-gate-438) for the [#438](https://github.com/mattsears18/shipyard/issues/438) repro that motivated it:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+   export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -634,7 +640,8 @@ The default drain protocol assumes **cloud CI auto-runs on every PR push** — p
 **Engagement.** The loop is gated entirely on `merge_gate.command` (config `merge_gate.*`, schema in `shipyard.config.schema.json`). Read it once at drain entry:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -685,7 +692,8 @@ Never infer "release PR" from a version bump *inside a feature PR* — on this r
 **Arming.** For a trusted release PR not already armed this session, branch on the drain-entry `merge_gating` verdict ([#720](https://github.com/mattsears18/shipyard/issues/720) — read once at drain entry per the [deferred-merge lander](#deferred-merge-lander-merge-unarmed-green-session-prs--720) below; do NOT re-probe per poll):
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -767,7 +775,8 @@ Closes the orchestrator-turn half of [#720](https://github.com/mattsears18/shipy
 **Engagement.** Read the verdict **once at drain entry** (a per-repo property — do NOT re-probe per poll):
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 merge_gating=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 ```
 

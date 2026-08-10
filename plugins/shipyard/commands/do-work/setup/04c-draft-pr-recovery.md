@@ -21,7 +21,8 @@ Runs [`scripts/draft-pr-recovery.sh`](../../../scripts/draft-pr-recovery.sh) `en
 Part of the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it can fire alongside steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5 / 5.7. Reuse the literal plugin-root value already resolved at step-0 (orchestrator-supplied or self-resolved, [#965](https://github.com/mattsears18/shipyard/issues/965)) rather than re-deriving it:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 DRAFT_PR_RECOVERY_OUTPUT=$("${CLAUDE_PLUGIN_ROOT}/scripts/draft-pr-recovery.sh" enforce --repo "<owner/repo>" 2>&1)
 ```
 
