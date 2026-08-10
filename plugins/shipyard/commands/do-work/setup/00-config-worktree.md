@@ -370,19 +370,18 @@ The orchestrator's many Bash tool calls each need to know `<session-id>` to subs
 **Write the id at session start, immediately after the orchestrator worktree is created.** Place this block after the [step 0.5 timing close](#05-move-into-the-orchestrators-worktree) and before [step 0.7](#07-setup-parallelization-contract-fire-once-batch):
 
 ```bash
-# `$ORCH_WT` was set in step 0.5; derive the absolute path so the read-back
-# below works regardless of the caller's cwd inside the worktree subtree.
-printf '%s\n' "<session-id>" > "$ORCH_WT/.shipyard-session-id"
+# Worktree-relative, not `$ORCH_WT`-prefixed — that var doesn't survive this hermetic call (#1182).
+printf '%s\n' "<session-id>" > .shipyard-session-id
 ```
 
 **Read it back at the top of every Bash tool call that needs the id.** Cheap (one `cat`); robust against the harness's per-call hermetic-shell semantics; impossible to race because the path is per-session-unique:
 
 ```bash
-SESSION_ID=$(cat "$ORCH_WT/.shipyard-session-id")
+SESSION_ID=$(cat .shipyard-session-id 2>/dev/null)
 # ... use $SESSION_ID in subsequent calls; e.g. session-state.sh update --session-id "$SESSION_ID" --set '...'
 ```
 
-Equivalently — when `$ORCH_WT` isn't already in scope — derive the orchestrator worktree path and read the stash from there. **Do NOT derive it from `git rev-parse --show-toplevel`** (issue [#477](https://github.com/mattsears18/shipyard/issues/477)): `git rev-parse --show-toplevel` returns whatever worktree the shell's cwd is in, and the harness can silently relocate the orchestrator's own Bash-tool cwd into a just-returned **agent's** `agent-*` isolation worktree on a reconcile turn (the same `isolation: "worktree"` cwd-leak class as [#452](https://github.com/mattsears18/shipyard/issues/452), which [A.0.6's primary-leak guard](../steady-state.md#a06-primary-checkout-branch-leak-guard-fires-every-reconcile-turn-before-a1) already hardens against). When cwd is in an `agent-*` worktree, `git rev-parse --show-toplevel` returns the **agent** worktree path — which has no `.shipyard-session-id` stash (that file lives only in the orchestrator worktree, per the "MUST live inside the orchestrator's own worktree" rule above). The `cat` then comes up empty, every downstream `session-state.sh` call is invoked with an empty `--session-id` and exits 64 (`--session-id is required`), and the turn silently loses its cost attribution + `session_prs` append (a lost `session_prs` append can strand a PR out of the drain watch list).
+Equivalently — for a drifted-off cwd — derive the orchestrator worktree path and read the stash from there. **Do NOT derive it from `git rev-parse --show-toplevel`** (issue [#477](https://github.com/mattsears18/shipyard/issues/477)): `git rev-parse --show-toplevel` returns whatever worktree the shell's cwd is in, and the harness can silently relocate the orchestrator's own Bash-tool cwd into a just-returned **agent's** `agent-*` isolation worktree on a reconcile turn (the same `isolation: "worktree"` cwd-leak class as [#452](https://github.com/mattsears18/shipyard/issues/452), which [A.0.6's primary-leak guard](../steady-state.md#a06-primary-checkout-branch-leak-guard-fires-every-reconcile-turn-before-a1) already hardens against). When cwd is in an `agent-*` worktree, `git rev-parse --show-toplevel` returns the **agent** worktree path — which has no `.shipyard-session-id` stash (that file lives only in the orchestrator worktree, per the "MUST live inside the orchestrator's own worktree" rule above). The `cat` then comes up empty, every downstream `session-state.sh` call is invoked with an empty `--session-id` and exits 64 (`--session-id is required`), and the turn silently loses its cost attribution + `session_prs` append (a lost `session_prs` append can strand a PR out of the drain watch list).
 
 Derive the session id with the `session-identity.sh derive-session-id` helper instead of an inline `awk` walk. The helper globs `<repo-root>/.claude/worktrees/orchestrator-*` (cwd-independent given the explicit `--repo-root`, so it is immune to the #477 cwd-leak) and reads the `.shipyard-session-id` stash from the **newest-by-mtime** orchestrator worktree.
 
@@ -414,17 +413,17 @@ The `REPO_ROOT` derived from `git rev-parse --show-toplevel` here only feeds the
 
 **Every config read after step 0.5's relocation silently loses the `.shipyard/config.local.json` layer.** `shipyard-config.sh`'s `repo_root()` resolves via `git rev-parse --show-toplevel` from cwd unless `SHIPYARD_REPO_ROOT` overrides it. [Step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson)'s `EFFECTIVE_CONFIG` is unaffected (it runs pre-relocation), but every OTHER config read this session — a fresh `shipyard-config.sh get`, or a helper like `resolve-dispatch-model.sh` / `flake-enforce.sh` — resolves against cwd at call time, which post-relocation is the orchestrator worktree: a fresh `origin/<default-branch>` checkout with no gitignored files. `.shipyard/config.local.json` silently drops out with no warning — and not just for `models.*`: `trust.authors`, `auto_merge.policy`, `concurrency.*`, `cost_tracking.*`, `ci.*`, `flake_registry.*` all revert too.
 
-**Pin it here, reusing [step 0.55](#055-session-id-storage-per-worktree-not-tmp)'s stash-file pattern.** `$SHIPYARD_PRIMARY_CHECKOUT_ROOT` is the literal captured at [step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson):
+**Pin it here, reusing step 0.55's fix (#1182)** — `SHIPYARD_PRIMARY_CHECKOUT_ROOT` doesn't survive this call's hermetic boundary; substitute the literal step 0.4 echoed to stderr, worktree-relative:
 
 ```bash
-printf '%s\n' "$SHIPYARD_PRIMARY_CHECKOUT_ROOT" > "$ORCH_WT/.shipyard-primary-root"
-export SHIPYARD_REPO_ROOT="$SHIPYARD_PRIMARY_CHECKOUT_ROOT"
+printf '%s\n' "<primary-root literal, 0.4>" > .shipyard-primary-root
+export SHIPYARD_REPO_ROOT="<primary-root literal, 0.4>"
 ```
 
 **Every subsequent orchestrator Bash block calling `shipyard-config.sh` (directly or via `resolve-dispatch-model.sh` / `flake-enforce.sh`) should re-derive and export it from the stash** — hermetic Bash-tool calls don't carry shell state forward (see [step 0.3](#03-claude_plugin_root-re-export-preamble-every-bash-tool-call)):
 
 ```bash
-SHIPYARD_REPO_ROOT=$(cat "$ORCH_WT/.shipyard-primary-root" 2>/dev/null)
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
 export SHIPYARD_REPO_ROOT
 ```
 
@@ -432,14 +431,15 @@ export SHIPYARD_REPO_ROOT
 
 **Phase-1 slice — wires the pin at its origin plus the one known-affected consumer** ([step 5.8's flake-registry enforcement](04-backlog-divert.md#58-enforce-the-flake-registry-chronic-flake-escalation)). Sweeping every other post-relocation call site across `steady-state.md` / `dispatch-rules.md` (the per-dispatch model resolution the issue's repro named) is a separate follow-up.
 
-**Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer both exists and changes the merged result:
+**Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer exists and changes the merged result (re-derived from stash files, not shell vars — #1182):
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-if [ -f "$SHIPYARD_PRIMARY_CHECKOUT_ROOT/.shipyard/config.local.json" ]; then
-  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$ORCH_WT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
-  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$SHIPYARD_PRIMARY_CHECKOUT_ROOT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
+PINNED_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
+if [ -n "$PINNED_ROOT" ] && [ -f "$PINNED_ROOT/.shipyard/config.local.json" ]; then
+  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$(pwd)" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
+  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$PINNED_ROOT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
   if [ "$UNPINNED_CONFIG" != "$PINNED_CONFIG" ]; then
     echo "warning: .shipyard/config.local.json in the primary checkout changes the effective config (issue #1059). SHIPYARD_REPO_ROOT is pinned for THIS session, but a call site that skips re-exporting it (see above) will still read the un-pinned config. Verify trust/auto-merge/model behavior this session." >&2
   fi
