@@ -36,7 +36,7 @@
      | `defer_reason_class` | Body marker (first line) | Issue [#519](https://github.com/mattsears18/shipyard/issues/519) / [#536](https://github.com/mattsears18/shipyard/issues/536) |
      |---|---|---|
      | `confirmed-non-shippable-as-single-PR` | `<!-- do-work-needs-decomposition -->` | #519 — consumed by `/decompose-epic` to identify epic-decomposition handoffs |
-     | `external-dependency` | `<!-- do-work-external-dependency -->` | #536 — dedupe sentinel + discriminator so humans can filter "blocked on upstream" vs other `needs-human-review` |
+     | `external-dependency` | `<!-- do-work-external-dependency -->` **(comment marker — as of [#1195](https://github.com/mattsears18/shipyard/issues/1195), step 4b below additionally writes the shared `<!-- do-work-blocked-until: YYYY-MM-DD -->` BODY marker for this class too, alongside the `agent-console` label)** | #536 — dedupe sentinel + discriminator so humans can filter "blocked on upstream" vs other `needs-human-review` |
      | `human-decision-required` | `<!-- do-work-human-decision-required -->` | #536 — dedupe sentinel + discriminator so humans can filter "needs a decision" vs other `needs-human-review` |
      | `human-decision-required` (classifier-denied sub-case) | `<!-- do-work-classifier-undispatchable -->` | #953 — same class, but this hand-back is synthesized by [`dispatch-rules.md`'s two-denial hard stop](../dispatch-rules.md#3-on-a-second-denial-stop-hand-back-to-the-human-never-a-third-attempt), never returned by a scope agent; the distinct marker records that **no worker ran at all** (dispatch itself was refused), as opposed to a scope agent's read of the issue's content |
      | `untrusted-author` | *(no marker)* | Not gated by `needs-human-review`; dedupe is not needed (trust-clearance defers are rare) |
@@ -183,7 +183,38 @@ $CURRENT_BODY"
      fi
      ```
 
-     No label is applied — not `needs-human-review`, not `agent-console`. The marker alone is the entire gating mechanism: the [step-4 client-side filter](04-backlog-divert.md#4-fetch--rank-the-backlog) drops the issue while `today < date` (UTC) and re-admits it the instant the date elapses, with zero further orchestrator involvement and zero human sign-off required — matching [#1161](https://github.com/mattsears18/shipyard/issues/1161)'s point that this class needs no human at all. Because the marker (not a label) is the gate, `time-gated` is also excluded from the [step 3a self-assign clearing](01c-label-recovery-refine.md#3-ensure-label-exists--recover-from-prior-session) label-based logic — if this defer path clears `@me`, do it as its own `gh issue edit --remove-assignee @me` call, same discipline as the labelled classes above.
+     No label is applied — not `needs-human-review`, not `agent-console`. The marker alone gates via the [step-4 client-side filter](04-backlog-divert.md#4-fetch--rank-the-backlog) — drops while `today < date`, re-admits at date elapsed.
+
+  4b. **Write a self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker** when `$DEFER_REASON_CLASS == "external-dependency"` ([#1195](https://github.com/mattsears18/shipyard/issues/1195)):
+
+     ```bash
+     export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+     SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null) || SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+     export SHIPYARD_REPO_ROOT
+     DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null || echo 14)
+     DAYS=${DAYS//[!0-9]/14}
+     DATE=$(date -u -d "+${DAYS} days" +%F 2>/dev/null || date -u -v+"${DAYS}"d +%F)
+
+     CURRENT_BODY=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body')
+     if echo "$CURRENT_BODY" | grep -q '<!-- do-work-blocked-until:'; then
+       EXISTING_DATE=$(echo "$CURRENT_BODY" | grep -oE '<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->' | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+       if [[ "$EXISTING_DATE" > "$DATE" ]]; then
+         NEW_BODY="$CURRENT_BODY"
+       else
+         NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s/<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->/<!-- do-work-blocked-until: ${DATE} -->/")
+       fi
+     else
+       NEW_BODY="<!-- do-work-blocked-until: ${DATE} -->
+
+$CURRENT_BODY"
+     fi
+     if [ "$NEW_BODY" != "$CURRENT_BODY" ]; then
+       gh issue edit <N> --repo <owner/repo> --body "$NEW_BODY"
+     fi
+     if ! gh issue view <N> --repo <owner/repo> --json body --jq '.body' | grep -q '<!-- do-work-blocked-until:'; then
+       echo "[scope-preflight] WARNING: #<N> do-work-blocked-until marker did not land"
+     fi
+     ```
 
   5. **Inline auto-decompose a mechanically-decomposable epic.** This step fires **only** when ALL of the following hold; otherwise skip it (the human handoff recorded by steps 1–4 is the final state, exactly as before #665):
 
