@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.22.10 — 2026-08-10
+
+The orchestrator's earliest spec reads — `dont.md`, `setup.md`, and `setup/00-config-worktree.md` — necessarily come from the stale PRIMARY checkout, because they're how the orchestrator learns to relocate into its own worktree in the first place. Step 0.4's dogfooding staleness check (#907) warns when that primary checkout is behind `origin/<default-branch>`, but the warning fired too late to cover those three already-read files, and nothing told the orchestrator to re-read them once step 0.5 relocated. Real repro: a session against a 59-commit-stale primary checkout hit 5 consecutive refused Bash calls executing the pre-#1181 form of step 0.3's preamble, because it never re-read the fixed version already sitting at `origin/main`. closes #1191
+
+- `plugins/shipyard/commands/do-work/setup/00-config-worktree.md` — new step 0.6, firing only when step 0.4's staleness check warned: re-read `dont.md`, `setup.md`, and this file fresh from the post-relocation `CLAUDE_PLUGIN_ROOT`, superseding the pre-relocation copies already in context. Step 0.4's staleness warning text now states explicitly that the already-read spec files are invalidated, not merely stale-going-forward.
+- `plugins/shipyard/commands/do-work/setup/00d-reread.md` — new deep-link fragment (same pattern as `00c-worktree-recovery.md`) carrying the full re-read procedure and rationale; kept out of the main file to stay under the setup/ token-budget cap (#994).
+- `plugins/shipyard/commands/do-work/setup.md` — router table gains the `00d-reread.md` row.
+
 ### 4.22.9 — 2026-08-10
 
 The operator-slice carve-out (and the phase-1 slicing path generally) let a scope pass dispatch a `phase_1_scope` naming a concrete artifact path without ever checking whether that path already existed on `origin/<default-branch>` — the scope-result freshness check verifies cached *decisions* aren't stale, the `Blocked by #N` filter resolves blocker *state*, but nothing checked deliverable *existence*. Real repro: an operator-slice scope pass verified both of an issue's named blockers were closed, then dispatched a worker to curate and commit a dataset file that had, in fact, merged the day before via a different PR — costing ~262k tokens / ~36 min before the worker found adjacent salvage work. closes #1187
