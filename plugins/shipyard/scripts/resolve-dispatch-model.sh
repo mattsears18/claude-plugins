@@ -61,6 +61,19 @@
 #        `opus`. Empty output (exit 0) for the cheapest tier (`haiku`, which
 #        has nowhere lower to fall back to) or an unrecognized family.
 #
+# Usage — config-layer source lookup (issue #1185):
+#   bash resolve-dispatch-model.sh --source <mode>
+#     -> prints which config layer `models.<mode>` actually resolved from —
+#        one of `local` / `repo` / `user` / `defaults` — via
+#        `shipyard-config.sh get --with-source`. `defaults` means no repo,
+#        user, or local layer configured an override for this mode; the
+#        value in play is shipyard's own built-in default. Callers that only
+#        care about "is this a genuinely-configured override" (as opposed to
+#        the ever-present built-in default) should treat `defaults` as "no
+#        override" even though the live resolution path above still returns
+#        a non-empty family for it. Same fail-open posture: an unreadable
+#        config or unknown mode prints nothing on stdout (exit 0).
+#
 # Why this is a *documentation* helper, not a dispatch-time resolver — read
 # this before wiring it into anything else
 # ---------------------------------------------------------------------------
@@ -182,11 +195,32 @@ main() {
     exit 0
   fi
 
+  if [ "${1:-}" = "--source" ]; then
+    if [ "$#" -ne 2 ]; then
+      echo "usage: $0 --source <mode>" >&2
+      exit 64
+    fi
+    local src_mode src_key script_dir
+    src_mode="$2"
+    if ! src_key="$(normalize_mode "$src_mode")"; then
+      echo "resolve-dispatch-model: unknown mode '${src_mode}'" >&2
+      echo "modes: issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate verify spike" >&2
+      exit 64
+    fi
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Fail-open: an unreadable config or a `get --with-source` error prints
+    # nothing rather than erroring the caller out.
+    bash "${script_dir}/shipyard-config.sh" get "models.${src_key}" --with-source 2>/dev/null \
+      | awk -F'\t' '{ print $2 }'
+    exit 0
+  fi
+
   local mode="${1:-}"
   if [ -z "$mode" ]; then
     echo "usage: $0 <mode>" >&2
     echo "       $0 --map <model-id>" >&2
     echo "       $0 --fallback-chain <family-or-model-id>" >&2
+    echo "       $0 --source <mode>" >&2
     echo "modes: issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate verify spike" >&2
     exit 64
   fi

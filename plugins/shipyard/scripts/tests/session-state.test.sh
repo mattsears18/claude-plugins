@@ -750,6 +750,97 @@ rm -rf "$tmp_root"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== bump-tokens — mode/model policy-consistency: suppress on built-in default (#1185)"
+# --------------------------------------------------------------------------
+# Every mode has a built-in `models.<mode>` entry, so `expected_family` is
+# non-empty even when NO repo/user/local layer configures an override for
+# it. Warning on a mismatch in that case makes the check fire on ordinary,
+# unconfigured dispatches — the check should only fire when there's a
+# genuinely-configured override to disagree with.
+
+tmphome=$(mktmphome)
+tmp_root=$(mktemp -d)
+# No shipyard.config.json at all — models.fix_checks_only resolves purely
+# from the built-in default (haiku).
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-default" --repo "o/r" >/dev/null
+
+err=$(SHIPYARD_REPO_ROOT="$tmp_root" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-default" \
+  --input 1000 \
+  --mode "fix-checks-only" --model "claude-opus-4-8" 2>&1 >/dev/null)
+assert_equals "$err" "" "mode/model consistency check stays silent when the mismatch is only against the built-in default, not a configured override"
+
+rm -rf "$tmp_root"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — mode/model policy-consistency: config root pinned from orchestrator worktree (#1185)"
+# --------------------------------------------------------------------------
+# Reproduces the #1185 repro directly: bump-tokens invoked with cwd inside a
+# fresh "orchestrator worktree" (a bare git repo carrying no
+# shipyard.config.json of its own, exactly like a fresh origin/<default-branch>
+# checkout) and NO SHIPYARD_REPO_ROOT explicitly passed. Without re-deriving
+# the pin from the `.shipyard-primary-root` stash, `resolve-dispatch-model.sh`
+# would resolve `models.<mode>` against the orchestrator worktree (no config
+# at all -> built-in default) instead of the primary checkout's real
+# committed override, producing a FALSE mismatch warning.
+
+tmphome=$(mktmphome)
+primary_root=$(mktemp -d)
+orch_wt=$(mktemp -d)
+git -C "$orch_wt" init -q
+cat > "$primary_root/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "issue_work": "claude-sonnet-4-6" } }
+JSON
+printf '%s\n' "$primary_root" > "$orch_wt/.shipyard-primary-root"
+
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-pin" --repo "o/r" >/dev/null
+
+# Billed against sonnet (matches the primary checkout's real override) ->
+# must stay silent. SHIPYARD_REPO_ROOT explicitly cleared so the call has to
+# fall back to the stash re-derivation, and cwd is the orchestrator worktree
+# so an un-pinned resolution would land on ITS (config-less) toplevel.
+err=$(cd "$orch_wt" && SHIPYARD_REPO_ROOT="" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-pin" \
+  --input 1000 \
+  --mode "issue-work" --model "claude-sonnet-4-6" 2>&1 >/dev/null)
+assert_equals "$err" "" "bump-tokens re-derives SHIPYARD_REPO_ROOT from the .shipyard-primary-root stash and correctly matches the primary checkout's override (no false warning)"
+
+# Billed against a genuinely different family (opus) -> the real override
+# (sonnet) is still visible after the pin, so the mismatch is REAL and must
+# still warn, citing the primary checkout's resolved value.
+err=$(cd "$orch_wt" && SHIPYARD_REPO_ROOT="" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-pin" \
+  --input 1000 \
+  --mode "issue-work" --model "claude-opus-4-8" 2>&1 >/dev/null)
+assert_contains "$err" "models.issue-work resolves to 'sonnet'" "a genuine mismatch against the pinned primary checkout's override still warns"
+assert_contains "$err" "$primary_root" "the warning names the config root the mismatch was resolved against (#1185 hardening)"
+
+# An explicitly-passed SHIPYARD_REPO_ROOT must NOT be clobbered by the stash
+# — point the stash at $primary_root (sonnet override) but pass an explicit
+# SHIPYARD_REPO_ROOT at a THIRD, unconfigured root; the explicit value wins,
+# so models.issue_work resolves to the built-in default (sonnet is also the
+# built-in default for issue_work, so use a mode whose default differs from
+# the primary checkout's override to make the two cases distinguishable).
+explicit_root=$(mktemp -d)
+cat > "$explicit_root/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "issue_work": "claude-haiku-4-5" } }
+JSON
+err=$(cd "$orch_wt" && SHIPYARD_REPO_ROOT="$explicit_root" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-pin" \
+  --input 1000 \
+  --mode "issue-work" --model "claude-haiku-4-5" 2>&1 >/dev/null)
+assert_equals "$err" "" "an explicitly-passed SHIPYARD_REPO_ROOT is authoritative and is not overridden by the .shipyard-primary-root stash"
+
+err=$(cd "$orch_wt" && SHIPYARD_REPO_ROOT="$explicit_root" SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "tok-pin" \
+  --input 1000 \
+  --mode "issue-work" --model "claude-sonnet-4-6" 2>&1 >/dev/null)
+assert_contains "$err" "models.issue-work resolves to 'haiku'" "the explicit SHIPYARD_REPO_ROOT's own config (haiku), not the stash's (sonnet), governs the mismatch check"
+
+rm -rf "$primary_root" "$orch_wt" "$explicit_root" "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== bump-tokens — input validation"
 # --------------------------------------------------------------------------
 

@@ -955,6 +955,31 @@ cmd_bump_tokens() {
   # config, a missing resolver script, or an unresolvable mode/model all skip
   # the check silently rather than block the bump — the token counts must
   # land either way.
+  #
+  # Re-derive the SHIPYARD_REPO_ROOT pin before resolving (issue #1185). This
+  # call is on the every-reconcile-turn hot path and is invoked from a fresh
+  # `Bash` tool call each time (shell state — including any export the
+  # orchestrator's own preamble made in a PRIOR call — does not survive
+  # across calls), so without this re-derivation `resolve-dispatch-model.sh`
+  # (via `shipyard-config.sh`) falls back to resolving config against cwd —
+  # post-relocation the orchestrator worktree, a fresh checkout that by
+  # construction can never contain the gitignored `.shipyard/config.local.json`
+  # layer. That silently drops a repo/user/local override back to shipyard's
+  # own built-in default and produces a FALSE mismatch warning against a
+  # dispatch that was in fact correct. Mirror the same stash-file idiom every
+  # other post-relocation call site uses (`setup/00-config-worktree.md` step
+  # 0.56) — guarded so an already-set SHIPYARD_REPO_ROOT (an explicit caller
+  # override, or a value inherited from this same process's environment)
+  # stays authoritative and is never clobbered.
+  if [[ -z "${SHIPYARD_REPO_ROOT:-}" ]]; then
+    local _pin_root _pin
+    _pin_root=$(git rev-parse --show-toplevel 2>/dev/null)
+    if [[ -n "$_pin_root" ]]; then
+      _pin=$(cat "${_pin_root}/.shipyard-primary-root" 2>/dev/null)
+      [[ -n "$_pin" ]] && export SHIPYARD_REPO_ROOT="$_pin"
+    fi
+  fi
+
   if [[ -n "$mode" && -n "$model" ]]; then
     local dispatch_model_resolver
     dispatch_model_resolver="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/resolve-dispatch-model.sh"
@@ -964,7 +989,20 @@ cmd_bump_tokens() {
       if [[ -n "$expected_family" ]]; then
         actual_family=$(bash "$dispatch_model_resolver" --map "$model" 2>/dev/null) || actual_family=""
         if [[ -n "$actual_family" && "$actual_family" != "$expected_family" ]]; then
-          echo "bump-tokens: WARNING — mode '${mode}' is billed against model '${model}' (family: ${actual_family}), but models.${mode} resolves to '${expected_family}' in the merged config. Either the dispatch didn't honor the configured override, or --model was reported incorrectly — this session's cost attribution for this mode may be wrong. See https://github.com/mattsears18/shipyard/issues/978" >&2
+          # Suppress rather than warn when the resolved value is merely
+          # shipyard's own built-in default (issue #1185) — every mode has
+          # a built-in `models.<mode>` entry, so `expected_family` is
+          # non-empty even with NO repo/user/local override configured. A
+          # mismatch against a genuinely-configured override is strong
+          # evidence something is wrong; a mismatch against the built-in
+          # default is the exact shape a lost config layer (or simply "no
+          # override was ever set") produces, and warning on it makes the
+          # check fire on every dispatch for a mode nobody overrode.
+          local expected_source
+          expected_source=$(bash "$dispatch_model_resolver" --source "$mode" 2>/dev/null) || expected_source=""
+          if [[ "$expected_source" != "defaults" ]]; then
+            echo "bump-tokens: WARNING — mode '${mode}' is billed against model '${model}' (family: ${actual_family}), but models.${mode} resolves to '${expected_family}' in the merged config rooted at ${SHIPYARD_REPO_ROOT:-$(pwd)}. Either the dispatch didn't honor the configured override, or --model was reported incorrectly — this session's cost attribution for this mode may be wrong. See https://github.com/mattsears18/shipyard/issues/978" >&2
+          fi
         fi
       fi
     fi

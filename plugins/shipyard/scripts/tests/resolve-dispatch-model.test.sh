@@ -378,5 +378,64 @@ bash "$RESOLVER" --fallback-chain >/dev/null 2>&1
 assert_equals "$?" "64" "--fallback-chain with no argument exits 64 (usage error)"
 
 echo
+echo "== (I) --source config-layer lookup (issue #1185)"
+
+# source_of <tmp-repo-root> <tmp-home> <mode> -> the config layer models.<mode>
+# actually resolved from (local/repo/user/defaults), via --with-source.
+source_of() { SHIPYARD_REPO_ROOT="$1" SHIPYARD_HOME="$2" bash "$RESOLVER" --source "$3" 2>/dev/null; }
+
+src_root="$(mktemp -d)"
+src_home="$(mktemp -d)"
+
+# No repo/user/local config at all -> the built-in default is in play.
+assert_equals "$(source_of "$src_root" "$src_home" fix-checks-only)" "defaults" \
+  "an unconfigured repo's models.fix_checks_only resolves from the 'defaults' layer"
+
+# Repo layer configures an override.
+cat > "$src_root/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "issue_work": "claude-sonnet-4-6" } }
+JSON
+assert_equals "$(source_of "$src_root" "$src_home" issue-work)" "repo" \
+  "a repo-configured models.issue_work resolves from the 'repo' layer"
+# A sibling mode left unconfigured in the same repo file still reads as defaults.
+assert_equals "$(source_of "$src_root" "$src_home" fix-rebase)" "defaults" \
+  "a mode absent from the repo config still resolves from 'defaults', not 'repo'"
+
+# Local layer wins over repo layer and reports as 'local'.
+mkdir -p "$src_root/.shipyard"
+cat > "$src_root/.shipyard/config.local.json" <<'JSON'
+{ "version": 1, "models": { "issue_work": "claude-haiku-4-5" } }
+JSON
+assert_equals "$(source_of "$src_root" "$src_home" issue-work)" "local" \
+  "a local-override models.issue_work resolves from the 'local' layer, not 'repo'"
+rm -f "$src_root/.shipyard/config.local.json" "$src_root/shipyard.config.json"
+
+# User-global layer (the default_models.* alias) reports as 'user'.
+cat > "$src_home/config.json" <<'JSON'
+{ "version": 1, "default_models": { "investigate": "claude-haiku-4-5" } }
+JSON
+assert_equals "$(source_of "$src_root" "$src_home" investigate)" "user" \
+  "a user-global default_models.investigate resolves from the 'user' layer"
+rm -f "$src_home/config.json"
+
+# Mode-name normalization applies here too (hyphenated == underscored).
+cat > "$src_root/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "fix_checks_only": "claude-opus-4-8" } }
+JSON
+assert_equals "$(source_of "$src_root" "$src_home" fix-checks-only)" "repo" \
+  "--source normalizes hyphenated mode names the same as the live resolution path"
+rm -f "$src_root/shipyard.config.json"
+
+# Unknown mode is a usage error, same as the live-resolution path.
+bash "$RESOLVER" --source not-a-mode >/dev/null 2>&1
+assert_equals "$?" "64" "--source with an unknown mode exits 64 (usage error)"
+
+# Missing argument is a usage error too.
+bash "$RESOLVER" --source >/dev/null 2>&1
+assert_equals "$?" "64" "--source with no argument exits 64 (usage error)"
+
+rm -rf "$src_root" "$src_home"
+
+echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"
 [[ $fail -eq 0 ]] || exit 1
