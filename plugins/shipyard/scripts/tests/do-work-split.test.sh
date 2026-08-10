@@ -2705,6 +2705,55 @@ assert_not_contains "$setup_path" \
   'Extract the first marker found in the body; a marker present but' \
   "setup.md step 4 no longer uses the ambiguous 'first marker found anywhere in the body' extraction (#1168, superseded)"
 
+# (S) The step-E invariant line has no operator_queue token, so a silently-
+# skipped operator layer is undetectable (issue #1193). An orchestrator that
+# never loads operate.md at all — never fires the preflight, never enqueues,
+# never drains — previously emitted a well-formed invariant line every turn
+# with no signal distinguishing "operator queue empty because it was drained"
+# from "operator layer was silently skipped for the entire session." Fix:
+# add `operator_q=<N>` (current operator_queue length) and
+# `operator=<active|skipped|unreachable>` (whether the preflight actually
+# ran and found a backend) to both invariant-line formats, mirroring the
+# unfiltered_open_count precedent from #332.
+assert_contains "$steady_state_path" \
+  'issues/1193' \
+  "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
+assert_contains "$steady_state_path" \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=<k>' \
+  "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
+assert_contains "$steady_state_path" \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=0' \
+  "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'are the per-turn evidence tokens for the [operator layer]' \
+  "steady-state.md documents what operator_q / operator mean (#1193)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  '`skipped`' \
+  "steady-state.md documents the operator=skipped value for --no-operate / --hands-off (#1193)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  '`unreachable`' \
+  "steady-state.md documents the operator=unreachable value for the no-backend-reachable degradation (#1193)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'A missing `operator=` token entirely is the exact contract violation' \
+  "steady-state.md treats a missing operator= token as a contract violation on par with a missing state= or tokens_attributed= token (#1193)"
+assert_contains "$operate_path" \
+  'operator=unreachable' \
+  "operate.md's Degradation section cross-references the operator=unreachable invariant-line value (#1193)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle; the embedded
+# '"'"' sequence splices a literal apostrophe into the single-quoted needle.
+assert_contains "$operate_path" \
+  'source of the invariant line'"'"'s `operator=` token' \
+  "operate.md documents that the preflight's outcome feeds the invariant-line operator= token (#1193)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
