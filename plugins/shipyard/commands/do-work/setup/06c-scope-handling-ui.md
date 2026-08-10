@@ -183,34 +183,28 @@ $CURRENT_BODY"
      fi
      ```
 
-     No label is applied — not `needs-human-review`, not `agent-console`. The marker alone is the entire gating mechanism: the [step-4 client-side filter](04-backlog-divert.md#4-fetch--rank-the-backlog) drops the issue while `today < date` (UTC) and re-admits it the instant the date elapses, with zero further orchestrator involvement and zero human sign-off required — matching [#1161](https://github.com/mattsears18/shipyard/issues/1161)'s point that this class needs no human at all. Because the marker (not a label) is the gate, `time-gated` is also excluded from the [step 3a self-assign clearing](01c-label-recovery-refine.md#3-ensure-label-exists--recover-from-prior-session) label-based logic — if this defer path clears `@me`, do it as its own `gh issue edit --remove-assignee @me` call, same discipline as the labelled classes above.
+     No label applied. The marker alone gates via the [step-4 client-side filter](04-backlog-divert.md#4-fetch--rank-the-backlog) — drops while `today < date`, re-admits at date elapsed.
 
-  4b. **`external-dependency` only — additionally write a self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` recheck marker into the body, ALONGSIDE the `agent-console` label from step 4** ([#1195](https://github.com/mattsears18/shipyard/issues/1195)). Run this step only when `$DEFER_REASON_CLASS == "external-dependency"`; skip it entirely for every other class (`time-gated` already wrote its own copy of the same marker in step 4a — never run both 4a and 4b for the same entry, since the classes are mutually exclusive).
-
-     **Why this class needed its own self-clearing marker.** Unlike `time-gated` (self-clears via the body marker below) and `confirmed-blocker-still-open` (self-clears via the `Blocked by #N` filter), an `external-dependency` defer previously persisted *nothing an automated filter could evaluate* — the diagnosis lived only in a session-local comment, so every session that revisited the issue (most concretely, the [proactive operator sweep](../operate/04-steady-state-hooks.md#d-hook--proactive-sweep--drain), which re-scans every open `agent-console`-labeled issue every tick) re-derived the identical "still blocked on `<upstream thing>`" conclusion from scratch. See [RATIONALE → why external-dependency gets its own recheck marker (#1195)](../../do-work-RATIONALE.md#step-6--why-external-dependency-gets-its-own-recheck-marker-issue-1195) for the repro this closes — a real issue re-litigated roughly 14 times over three weeks with zero new information each pass.
-
-     Unlike `time-gated`'s marker, this one is **entirely orchestrator-computed** — it does NOT depend on the scope agent supplying a date in `evidence_pointer`. Deriving the date from agent-supplied text would make the self-clearing behavior depend on prompt compliance, which this spec's own established posture treats as unreliable ("prompts are not contracts" — the same reasoning behind the per-class shape validator earlier in this Recording path). Instead, compute a fixed interval from today, via the `scope.external_dependency_recheck_days` config knob (default `14`):
+  4b. **Write a self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker** when `$DEFER_REASON_CLASS == "external-dependency"` ([#1195](https://github.com/mattsears18/shipyard/issues/1195)):
 
      ```bash
-     RECHECK_DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null)
-     case "$RECHECK_DAYS" in ''|*[!0-9]*) RECHECK_DAYS=14 ;; esac
-     RECHECK_DATE=$(date -u -d "+${RECHECK_DAYS} days" +%F 2>/dev/null || date -u -v+"${RECHECK_DAYS}"d +%F)
+     export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+     SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null) || SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+     export SHIPYARD_REPO_ROOT
+     DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null || echo 14)
+     DAYS=${DAYS//[!0-9]/14}
+     DATE=$(date -u -d "+${DAYS} days" +%F 2>/dev/null || date -u -v+"${DAYS}"d +%F)
 
      CURRENT_BODY=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body')
      if echo "$CURRENT_BODY" | grep -q '<!-- do-work-blocked-until:'; then
-       # A marker already exists (e.g. a prior external-dependency diagnosis
-       # already wrote one, or a human hand-wrote a time-gate marker) — extend
-       # it in place rather than stacking a second marker. Never shorten an
-       # existing later date: take the LATER of the two, so a fresh diagnosis
-       # can't accidentally shrink a longer-lived human-authored gate.
        EXISTING_DATE=$(echo "$CURRENT_BODY" | grep -oE '<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->' | head -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
-       if [[ "$EXISTING_DATE" > "$RECHECK_DATE" ]]; then
-         NEW_BODY="$CURRENT_BODY"   # existing gate already extends further out — leave it alone
+       if [[ "$EXISTING_DATE" > "$DATE" ]]; then
+         NEW_BODY="$CURRENT_BODY"
        else
-         NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s/<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->/<!-- do-work-blocked-until: ${RECHECK_DATE} -->/")
+         NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s/<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->/<!-- do-work-blocked-until: ${DATE} -->/")
        fi
      else
-       NEW_BODY="<!-- do-work-blocked-until: ${RECHECK_DATE} -->
+       NEW_BODY="<!-- do-work-blocked-until: ${DATE} -->
 
 $CURRENT_BODY"
      fi
@@ -218,11 +212,9 @@ $CURRENT_BODY"
        gh issue edit <N> --repo <owner/repo> --body "$NEW_BODY"
      fi
      if ! gh issue view <N> --repo <owner/repo> --json body --jq '.body' | grep -q '<!-- do-work-blocked-until:'; then
-       echo "[scope-preflight] WARNING: #<N> do-work-blocked-until recheck marker did not land — external-dependency issue will be fully re-litigated by the operator sweep instead of skipped until the recheck date"
+       echo "[scope-preflight] WARNING: #<N> do-work-blocked-until marker did not land"
      fi
      ```
-
-     **This marker does NOT replace the `agent-console` label — both apply.** The label is still what makes the issue drainable-by-`/do-work`-via-the-operator-phase and surfaced to `/my-turn`; the marker is a rate-limiter on how often the issue gets *re-evaluated*, not a change to *whether* it's gated. Concretely: the [step-4 dispatch filter](04-backlog-divert.md#4-fetch--rank-the-backlog) already excludes every `agent-console`-labeled issue from `raw_backlog` regardless of this marker (no behavior change there); the marker's payoff is that the [proactive operator sweep](../operate/04-steady-state-hooks.md#d-hook--proactive-sweep--drain) skips re-enqueueing an `agent-console` issue whose marker date is still in the future, instead of re-scanning and re-judging it every tick. If a later pass (human or worker) determines the issue actually has no operator action at all — the [`agent-console` → time-gated conversion pattern](../../do-work-RATIONALE.md#step-6--why-external-dependency-gets-its-own-recheck-marker-issue-1195) — removing the `agent-console` label lets the SAME marker fall through to full `time-gated`-style self-clearing via the step-4 filter with zero further changes needed, since the marker syntax is identical.
 
   5. **Inline auto-decompose a mechanically-decomposable epic.** This step fires **only** when ALL of the following hold; otherwise skip it (the human handoff recorded by steps 1–4 is the final state, exactly as before #665):
 
