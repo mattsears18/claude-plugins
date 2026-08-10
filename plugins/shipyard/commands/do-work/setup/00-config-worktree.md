@@ -128,11 +128,10 @@ if [ "$CLAUDE_PLUGIN_ROOT" = "$(pwd)/plugins/shipyard" ]; then
 warning: this repo's primary checkout is $SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) behind origin/$STALENESS_DEFAULT_BRANCH.
 
   CLAUDE_PLUGIN_ROOT resolved repo-local to commit $SHIPYARD_PLUGIN_ROOT_SHA.
-  Every spec file this session reads is that stale copy (issue #907). Run
-  'git pull --ff-only' in the primary checkout before trusting this session's
-  conclusions. Step 0.5's relocation re-resolves CLAUDE_PLUGIN_ROOT and now
-  runs its own post-relocation staleness assertion (issue #1167) — this warning
-  applies to steps 0.3/0.4 only, before that assertion.
+  Every spec file read this session is that stale copy, now INVALIDATED
+  (#907; step 0.6 re-reads it, #1191). Run 'git pull --ff-only'. Step 0.5
+  re-resolves CLAUDE_PLUGIN_ROOT and runs its own staleness assertion
+  (#1167) — 0.3/0.4 only.
 EOF
     fi
   fi
@@ -445,6 +444,10 @@ if [ -n "$PINNED_ROOT" ] && [ -f "$PINNED_ROOT/.shipyard/config.local.json" ]; t
   fi
 fi
 ```
+
+### 0.6 Re-read stale spec files (#1191)
+
+No-op unless step 0.4 warned of staleness — then these spec files are invalidated. See [`00d-reread.md`](./00d-reread.md).
 
 ### 0.7 Setup parallelization contract (fire-once-batch)
 
