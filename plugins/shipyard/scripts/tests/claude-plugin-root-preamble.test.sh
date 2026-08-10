@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Test: every bash code block in the /shipyard:do-work orchestrator + worker
-# spec tree that references ${CLAUDE_PLUGIN_ROOT} also carries the canonical
-# idempotent fallback-export preamble as its first non-blank line (or is a
-# bare script-invocation block immediately preceded by a preamble-only
-# block — the two-block idiom used in a few places, see (3) below).
+# spec tree that references ${CLAUDE_PLUGIN_ROOT} also carries a valid
+# preamble as its first non-blank line(s) — either the canonical compound
+# fallback-export (or a bare script-invocation block immediately preceded by
+# a preamble-only block — the two-block idiom used in a few places, see (3)
+# below), OR, for ORCHESTRATOR-PHASE files only (commands/do-work/**), the
+# post-relocation stash-read two-liner (issue #1181 — see below).
 #
 # Background — issue #354: $CLAUDE_PLUGIN_ROOT expands to the empty string
 # inside the Bash-tool subprocess shells the orchestrator uses. The very
@@ -57,10 +59,34 @@
 #   locate it — the circularity this whole preamble exists to avoid.
 #
 # This test is the regression guard: if anyone adds a new bash block that
-# uses ${CLAUDE_PLUGIN_ROOT} without the preamble at its top, the test
+# uses ${CLAUDE_PLUGIN_ROOT} without a valid preamble at its top, the test
 # fails. Existing blocks were swept by the issue #354 PR (then shrunk in
 # place by issue #883); new ones (or any block whose preamble got moved /
 # removed / reverted to the old four-layer form) regress here.
+#
+# --- Post-relocation stash-read form (issue #1181) --------------------------
+#
+# The compound preamble above is refused by the harness once the orchestrator
+# session is isolated in its own worktree ("this command is too complex to
+# verify that it stays inside the worktree") — so it is only valid PRE-
+# relocation: do-work/setup/00-config-worktree.md's steps 0.3, 0.4, and the
+# pre-EnterWorktree timing-start bracket at the top of step 0.5. Step 0.5
+# resolves CLAUDE_PLUGIN_ROOT post-relocation via a decomposed (non-compound)
+# sequence of plain commands and stashes the result to
+# `<orch-worktree>/.shipyard-plugin-root` — every other ORCHESTRATOR-PHASE
+# block (everything under commands/do-work/, recursively — steady-state.md,
+# drain.md, cleanup-summary.md, inline-trivial.md, dispatch-rules.md, and the
+# rest of setup/) reads it back with the plain, non-compound two-liner:
+#
+#   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+#   export CLAUDE_PLUGIN_ROOT
+#
+# WORKER-SIDE files (skills/worker-preamble/**, agents/issue-worker/**) are a
+# separate case and are NOT eligible for this stash-read form: a dispatched
+# worker runs in its own agent-* worktree with no .shipyard-plugin-root
+# stash of its own (it gets the resolved literal via its dispatch prompt
+# instead, per issue #965) — the compound block there is the worker's own
+# fallback for when that literal is missing, and stays required.
 #
 # --- File discovery (issue #910) -------------------------------------------
 #
@@ -140,6 +166,18 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 PREAMBLE_EOF
 )
 
+# The post-relocation stash-read preamble (issue #1181) — the ONLY other
+# valid form, and only for orchestrator-phase files (see ORCH_PHASE_DIR
+# below). Two lines: a `cat` of the step-0.5 stash, then a plain export.
+# shellcheck disable=SC2016  # literal text — must NOT expand $(...)
+EXPECTED_STASH_LINE1='CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)'
+EXPECTED_STASH_LINE2='export CLAUDE_PLUGIN_ROOT'
+
+# Orchestrator-phase scope: everything under commands/do-work/ (recursively).
+# Worker-side files (skills/worker-preamble/**, agents/issue-worker/**) are
+# NOT in this directory and stay compound-preamble-only.
+ORCH_PHASE_DIR="$repo_root/plugins/shipyard/commands/do-work"
+
 pass=0
 fail=0
 GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
@@ -211,7 +249,7 @@ fi
 # (3) Walk every bash code block in every discovered file, IN FILE ORDER.
 # For each block that references ${CLAUDE_PLUGIN_ROOT}, the block passes if
 # EITHER:
-#   (a) its own first non-blank line is the canonical preamble
+#   (a) its own first non-blank line is the canonical compound preamble
 #       (the common, single-block idiom), OR
 #   (b) the block is a bare script-invocation block (no preamble of its
 #       own) immediately preceded — in the same file, skipping only prose
@@ -219,10 +257,16 @@ fi
 #       canonical preamble line and nothing else (the two-block idiom used
 #       by skills/worker-preamble/SKILL.md's step-0 / mid-session-anchoring
 #       sections, which document the preamble once and then show two
-#       different follow-up commands that reuse it).
+#       different follow-up commands that reuse it), OR
+#   (c) — ORCHESTRATOR-PHASE FILES ONLY (issue #1181) — its own first two
+#       non-blank lines are the post-relocation stash-read two-liner
+#       (`CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root ...)` then
+#       `export CLAUDE_PLUGIN_ROOT`). NOT a valid form for worker-side files
+#       (skills/worker-preamble/**, agents/issue-worker/**) — those keep (a)
+#       or (b) only.
 #
 # Walking is done by an awk one-liner that emits one line per bash block:
-# "<block_start_line>|<has_ref 0/1>|<is_preamble_only 0/1>|<first_non_blank_line>"
+# "<block_start_line>|<has_ref 0/1>|<is_preamble_only 0/1>|<first_non_blank_line>|<second_non_blank_line>"
 walk_blocks() {
   local file="$1"
   awk -v expected="$EXPECTED_PREAMBLE" '
@@ -233,6 +277,7 @@ walk_blocks() {
       in_block = 1
       block_start = NR
       first_line = ""
+      second_line = ""
       first_line_num = 0
       has_ref = 0
       nonblank_count = 0
@@ -245,7 +290,7 @@ walk_blocks() {
         stripped = first_line
         sub(/^[ \t]+/, "", stripped)
         is_preamble_only = (nonblank_count == 1 && stripped == expected) ? 1 : 0
-        printf "%d|%d|%d|%s\n", block_start, has_ref, is_preamble_only, first_line
+        printf "%d|%d|%d|%s|%s\n", block_start, has_ref, is_preamble_only, first_line, second_line
       }
       in_block = 0
       next
@@ -261,6 +306,8 @@ walk_blocks() {
         if (first_line == "") {
           first_line = $0
           first_line_num = NR
+        } else if (second_line == "") {
+          second_line = $0
         }
       }
     }
@@ -271,23 +318,34 @@ offending_blocks=0
 total_ref_blocks=0
 for f in "${FILES[@]}"; do
   [[ -f "$f" ]] || continue
+  case "$f" in
+    "$ORCH_PHASE_DIR"/*) is_orch_phase=1 ;;
+    *)                   is_orch_phase=0 ;;
+  esac
   prev_is_preamble_only=0
-  while IFS='|' read -r fence_line has_ref is_preamble_only first_line; do
+  while IFS='|' read -r fence_line has_ref is_preamble_only first_line second_line; do
     if (( has_ref )); then
       total_ref_blocks=$((total_ref_blocks + 1))
       stripped_first="$first_line"
       # strip leading whitespace for comparison (preamble may be indented
       # to match the fence indent, e.g. inside a numbered list item).
       stripped_first="${stripped_first#"${stripped_first%%[![:space:]]*}"}"
+      stripped_second="$second_line"
+      [[ -n "$stripped_second" ]] && stripped_second="${stripped_second#"${stripped_second%%[![:space:]]*}"}"
       if [[ "$stripped_first" == "$EXPECTED_PREAMBLE" ]]; then
-        : # (a) inline preamble — pass
+        : # (a) inline compound preamble — pass
       elif (( prev_is_preamble_only )); then
         : # (b) two-block idiom — pass
+      elif (( is_orch_phase )) && [[ "$stripped_first" == "$EXPECTED_STASH_LINE1" && "$stripped_second" == "$EXPECTED_STASH_LINE2" ]]; then
+        : # (c) post-relocation stash-read two-liner, orchestrator-phase only — pass
       else
         offending_blocks=$((offending_blocks + 1))
-        assert_fail "$f: bash block at line $fence_line uses \${CLAUDE_PLUGIN_ROOT} but is not preceded by the canonical preamble (own first line, or an immediately preceding preamble-only block)"
-        printf '         expected: %s\n' "$EXPECTED_PREAMBLE"
-        printf '         got:      %s\n' "$first_line"
+        assert_fail "$f: bash block at line $fence_line uses \${CLAUDE_PLUGIN_ROOT} but is not preceded by a valid preamble (own first line, an immediately preceding preamble-only block, or — orchestrator-phase files only — the stash-read two-liner)"
+        printf '         expected either: %s\n' "$EXPECTED_PREAMBLE"
+        if (( is_orch_phase )); then
+          printf '                     or: %s / %s\n' "$EXPECTED_STASH_LINE1" "$EXPECTED_STASH_LINE2"
+        fi
+        printf '         got:             %s\n' "$first_line"
       fi
     fi
     prev_is_preamble_only=$is_preamble_only
@@ -295,7 +353,7 @@ for f in "${FILES[@]}"; do
 done
 
 if (( offending_blocks == 0 )); then
-  assert_pass "all $total_ref_blocks bash blocks using \${CLAUDE_PLUGIN_ROOT} across ${#FILES[@]} scanned files carry the canonical preamble"
+  assert_pass "all $total_ref_blocks bash blocks using \${CLAUDE_PLUGIN_ROOT} across ${#FILES[@]} scanned files carry a valid preamble"
 fi
 
 # (4) Sanity check — the preamble itself must actually work. Run it in a
@@ -393,6 +451,31 @@ if [[ -n "$sandbox" && -d "$sandbox" ]]; then
   rm -rf "$sandbox"
 else
   assert_fail "could not create sandbox for malformed-installed_plugins.json sanity check (#883)"
+fi
+
+# (7) The post-relocation stash-read two-liner (issue #1181) must actually
+# work: given a `.shipyard-plugin-root` stash file in cwd containing a
+# resolved path, the two-liner reads it back into $CLAUDE_PLUGIN_ROOT
+# unchanged. This is the runtime contract the docs encode for every
+# orchestrator-phase block from step 0.5 onward — if the stash-read literal
+# text drifts from what step 0.5 actually writes, this catches it.
+stash_sandbox=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-1181)
+if [[ -n "$stash_sandbox" && -d "$stash_sandbox" ]]; then
+  printf '%s\n' "$stash_sandbox/plugins/shipyard" > "$stash_sandbox/.shipyard-plugin-root"
+  stash_resolved=$(env -i HOME="$HOME" PATH="$PATH" bash -c "
+    cd '$stash_sandbox'
+    $EXPECTED_STASH_LINE1
+    $EXPECTED_STASH_LINE2
+    echo \"\$CLAUDE_PLUGIN_ROOT\"
+  ")
+  if [[ "$stash_resolved" == "$stash_sandbox/plugins/shipyard" ]]; then
+    assert_pass "post-relocation stash-read two-liner reads back .shipyard-plugin-root unchanged (issue #1181)"
+  else
+    assert_fail "post-relocation stash-read two-liner should read back the stash file unchanged (got '$stash_resolved', expected '$stash_sandbox/plugins/shipyard')"
+  fi
+  rm -rf "$stash_sandbox"
+else
+  assert_fail "could not create sandbox for stash-read sanity check (#1181)"
 fi
 
 echo

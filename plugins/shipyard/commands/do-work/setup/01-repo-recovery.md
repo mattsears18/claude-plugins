@@ -25,7 +25,8 @@ This is a **warning, not a behavior change** — the orchestrator does not flip 
 **The condition lives in exactly one place.** Do **not** re-derive the two-shape rule here. It is one executable script — [`scripts/detect-ungated-admin-direct-merge.sh`](../../../scripts/detect-ungated-admin-direct-merge.sh) — which owns the whole rule (both shapes, the `#645` ruleset-aware fallback, the `#479` numeric normalize, and the fail-safe posture that an unreadable signal resolves toward *ungated*). This step calls it:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 if [ "$verdict" = "ungated" ]; then
   echo "[setup] WARNING (#438/#465): \`gh pr merge --auto\` will SILENTLY DIRECT-MERGE on this repo (no queue) — you have admin/maintain and either allow_auto_merge=false (#438) or the default branch has zero required status checks (#465, fires even when allow_auto_merge=true). Shipyard's merge call sites gate on this automatically (#720): workers block on the PR's own checks, and the orchestrator-turn sites defer to drain's merge lander. But at --concurrency >= 2, version/CHANGELOG coordination across in-flight PRs still cannot hold: the first PR to merge advances main and re-DIRTYs siblings. Recommend --concurrency 1 here, or add a required status check (and/or enable allow_auto_merge) so --auto actually queues. version_coordination.serialize_drain_rebase (drain phase) mitigates the CHANGELOG cascade but not the steady-state leapfrog."
@@ -79,7 +80,8 @@ A **worker** can afford a multi-minute `--watch` — it owns a dispatch slot and
 **Cheap, cached alongside the other repo-config preflight reads above (step 1.3).** GitHub blocks `enablePullRequestAutoMerge` for an OAuth-app token when the PR's diff touches `.github/workflows/*`, unless the token carries the `workflow` scope — `repo` alone is not enough. This step is the **proactive** half of the fix (a one-time session-start warning, before any workflow-touching PR is opened); [#812](https://github.com/mattsears18/shipyard/issues/812) separately landed the **reactive** half (a worker-side failure report). See [RATIONALE → Step 1.35 reactive vs proactive](../../do-work-RATIONALE.md#step-135--reactive-vs-proactive-workflow-scope-warning-812-716) for how the two halves fit together.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 
 verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
 if [ "$verdict" = "warn" ]; then
@@ -118,7 +120,8 @@ fi
 **The read lives in exactly one place** — [`scripts/detect-ci-runner-capacity.sh`](../../../scripts/detect-ci-runner-capacity.sh), the same single-executable-source-of-truth pattern as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config)'s merge-shape detector. It reads `repos/{owner}/{repo}/actions/runners` for the self-hosted runner pool's online/idle counts and `gh run list --status queued` for the current repo-wide queue depth, and fails safe toward `unknown` on any unreadable signal — never toward a fabricated pool size.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 CI_POOL_LINE=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-runner-capacity.sh" <owner/repo> 2>/dev/null || echo unknown)
 CI_POOL_SHAPE=$(printf '%s' "$CI_POOL_LINE" | awk '{print $1}')
 CI_POOL_TOTAL=0
@@ -153,7 +156,8 @@ Follow-up to [step 1.36](#136-detect-ci-executor-pool-capacity-and-clamp-toward-
 **The read lives in exactly one place** — [`scripts/detect-ci-cheap-path.sh`](../../../scripts/detect-ci-cheap-path.sh)'s repo-shape mode, the same single-executable-source-of-truth pattern as steps 1.3 and 1.36's detectors. It scans `.github/workflows/*.yml` / `*.yaml` in the checked-out repo (a local file read — no network call, unlike the other two detectors) for any `paths-ignore:` glob list and reports the union, deduplicated. **Deliberately narrow**: only `paths-ignore:` (an exclude list, directly invertible: "the diff matches the ignore list" ⇒ "this workflow doesn't even run") counts as a cheap path. A workflow that instead uses an include-only `paths:` allowlist is NOT treated as evidence of a cheap path — its implicit complement isn't safely invertible without also knowing every other path in the repo. A repo with no `paths-ignore:` anywhere reports `no-cheap-path` honestly rather than guessing one — the bias is a no-op on such a repo, exactly the "should probably be a no-op on a repo where every PR runs the full CI matrix" design question the originating issue raised.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 CI_CHEAP_LINE=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-cheap-path.sh" "<repo-checkout>/.github/workflows" 2>/dev/null || echo no-cheap-path)
 CI_CHEAP_GLOBS=""
 if [ "${CI_CHEAP_LINE%% *}" = "cheap-path-available" ]; then
@@ -172,7 +176,8 @@ fi
 Stand up the durable JSON mirror (see [Session state file](../../do-work.md#session-state-file) and the full [schema + helper reference](../session-state-file.md)). One-shot setup write — every subsequent mutation routes through `session-state.sh update`.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # <session-id> is the orchestrator's session identifier — the same value
 # step 0.5 used in the orchestrator-worktree path. Stable across the run.
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" init \
@@ -187,7 +192,8 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 **Immediately after `init` returns successfully**, write through the CI-capacity observation step 1.36 computed (`CI_POOL_SHAPE` / `CI_POOL_TOTAL` / `CI_POOL_QUEUED`) plus [step 1.37](#137-detect-ci-cheap-path-availability-1157)'s `CI_CHEAP_GLOBS` — unconditionally, regardless of either value, so the end-of-session summary and steady-state.md step C always have a `.ci_capacity.shape` / `.ci_capacity.cheap_ci_globs` to branch on:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update \
   --session-id "<session-id>" \
   --set ".ci_capacity = { shape: \"${CI_POOL_SHAPE}\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0}, cheap_ci_globs: \"${CI_CHEAP_GLOBS:-}\" }"
@@ -206,7 +212,8 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 **Sweep `$SHIPYARD_HOME/sessions/` for orphan files left behind by prior sessions that crashed or exited without running [`cleanup-summary.md`'s step 7 → step 8 flush + cleanup chain](../cleanup-summary.md#end-of-session-cleanup).** Without this sweep, any session that doesn't terminate via the happy-path cleanup strands its per-session ledger on disk forever — the cross-session reports at `/shipyard:cost report` then under-count by full sessions. See [RATIONALE → Step 1.6 orphan session-file regression](../../do-work-RATIONALE.md#step-16--orphan-session-file-regression-227) for the production repro (issue #227).
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Find session files that aren't the current session and haven't been
 # modified in the last 30 minutes (the 30-min floor is a race-safety
 # margin against a concurrent /do-work session that's about to flush its
@@ -255,7 +262,8 @@ Both helpers are idempotent and exit 0 on already-flushed / already-reaped sessi
 **Orphan atomic-write `.tmp` sweep (issue #858).** The sweep above only discovers stale `*.json` session files — it has no way to discover a `.tmp.<pid>` leftover whose target `.json` never successfully landed (a crash between `atomic_write`'s `cat > "$tmp"` and its `mv -f "$tmp" "$target"`, most commonly during `session-state.sh init`). That file matches no session id the sweep above could hand to `cleanup --session-id`, so under the loop alone it would linger forever. `cost-history.sh`'s reconcile-rewrite path (`mktemp "${session_target}.XXXXXX"` / `.err.XXXXXX`) and `flake-registry.sh`'s prune rewrite (`<path>.tmp.$$`) have the identical structural gap, with no sweep anywhere for either. [`scripts/sweep-orphan-tmp.sh`](../../../scripts/sweep-orphan-tmp.sh) closes all three in one pass, right after the loop above, in the same background bash group:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-tmp.sh" sweep \
   --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}"
 ```
@@ -293,7 +301,8 @@ When a prior session crashed *between* step 7→8 (cost-history flush + session-
 The discovery uses [`session-identity.sh find-orphan-orchestrators`](../../../scripts/session-identity.sh), which applies the same liveness gate as step 1.6 — `is-active` exits 0 if the owning session's PID is alive, exit 1 otherwise (missing file, missing/null pid, dead pid). Both the worktree-sweep and the session-file-sweep treat "file missing" as inactive: the common case for the bug is that prior cleanup got far enough to flush + delete the session file but stopped short of reaping its own worktree.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # (Pseudocode — the canonical implementation lives in step 0.7's
 # background group. This snippet illustrates the per-orphan action.)
 while read -r orph_path; do
@@ -334,7 +343,8 @@ The fallback to raw `rm -rf` is load-bearing: `git worktree remove` fails when t
 **Timing instrumentation (issue #238).** Bracket this step:
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_1_7_trusted_authors 2>/dev/null || true
 # ... run resolution logic ...
@@ -371,7 +381,8 @@ GitHub returns **two different login shapes** for the same GH App account depend
 The two strings have nothing in common after lowercasing, which silently broke bot-author trust before [#296](https://github.com/mattsears18/shipyard/issues/296) — see [RATIONALE → GH App alias normalization](../../do-work-RATIONALE.md#gh-app-alias-normalization--why-it-was-needed-296) for the failure story. The fix is alias normalization at allowlist-load time. The helper `${CLAUDE_PLUGIN_ROOT}/scripts/trusted-authors-normalize.sh` reads the cleaned set and, for every `<name>[bot]` or `app/<name>` entry, **adds the other shape** to the set. So a file with `sentry[bot]` produces `{sentry[bot], app/sentry}`; a file with `app/sentry` produces `{app/sentry, sentry[bot]}`. Either form matches the GraphQL `author.login` value the orchestrator compares against. Human logins (no `[bot]` suffix, no `app/` prefix) pass through unchanged.
 
 ```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 # Branch 1 (override file present) — read + normalize in one pipeline:
 allowlist_file=".shipyard/trusted-authors.txt"
 trusted_authors=$(
