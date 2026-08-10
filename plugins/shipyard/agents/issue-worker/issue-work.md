@@ -56,6 +56,12 @@ Bail with `blocked` if any of:
 - **Any open PR references this issue with a closing keyword** — don't open a duplicate. Return: `blocked: PR #<M> already open for this issue`.
 - **Any open PR already has head branch `do-work/issue-<N>`** (the second query above), even without a closing keyword. This is almost always either a live sibling worktree mid-dispatch, or a native-auto-opened draft PR left over from a worker that pushed then bailed before `gh pr create` (see the worker-preamble cross-reference above). Don't open a second PR against the same branch — return `blocked: PR #<M> already open on canonical branch do-work/issue-<N> — verify it carries --label shipyard and a closing keyword before retrying` so a human (or a fresh dispatch once the branch is free) can patch or replace it rather than racing it.
 
+### 0.5 Verify dispatch-time scope-boundary framing against the issue's live comment thread ([#1179](https://github.com/mattsears18/shipyard/issues/1179))
+
+**Run when the dispatch prompt carries an earlier-pass scope-boundary assertion** — Operator-residual/Verification-slice (§6.5/§6.6), Phase-1-slice, or ad hoc "CRITICAL SCOPE BOUNDARY" framing. **Absent, skip.**
+
+**When present**, read [`issue-work-scope-boundary-recheck.md`](./issue-work-scope-boundary-recheck.md): diff it against step 0's `comments` — it can go stale; the live issue wins on a contradiction.
+
 ### 1. Self-assign (soft lock)
 
 ```bash
@@ -732,6 +738,7 @@ When blocked → return:
 ## Don't
 
 - Don't open a duplicate PR. Pre-flight check (step 0) exists for this reason.
+- **Don't skip §0.5 on scope-boundary framing ([#1179](https://github.com/mattsears18/shipyard/issues/1179))** — it can go stale; the live issue wins.
 - **Don't touch another worktree when `git checkout -B do-work/issue-<N>` fails on a name collision.** You cannot tell a dead scaffold from a live sibling worker's worktree without `cd`-ing into it, which worktree discipline forbids — no `git worktree remove`, no `git branch -D` on the other worktree's branch. Use the local-name/remote-name split in [§3](#3-sync--branch) instead (issue [#736](https://github.com/mattsears18/shipyard/issues/736)).
 - Don't merge manually unless auto-merge is unavailable AND all checks are green AND the user has explicitly authorized it for this run. Otherwise leave the PR ready and report.
 - **Don't close the dispatched issue when the dispatch prompt names an operator residual ([#851](https://github.com/mattsears18/shipyard/issues/851)).** An "Operator residual" Context paragraph means this PR ships only a phase-1 slice — the issue stays open for the handed-back operator/security action. Use a bare-URL reference, never `Closes`/`Fixes`/`Resolves #<N>`, and run [§6.5](#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851) rather than treating this as a normal resolving PR.
