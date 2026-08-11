@@ -92,6 +92,11 @@
       "type": ["string", "null"],
       "description": "For `reaped` outcomes, the short hash of the last commit the worker pushed before its worktree was reaped (or null / \"none\" if it never pushed). Mirrors the `(last push: <hash|none>)` suffix so a re-dispatch can tell whether any work survived on the remote."
     },
+    "worktree_path": {
+      "type": ["string", "null"],
+      "description": "Optional. The absolute path of the git worktree the worker actually ran in, self-reported from its own step-0 cwd fail-fast (`git rev-parse --show-toplevel` / `scripts/assert-worktree-cwd.sh`'s `toplevel=` diagnostic) — an absolute path here is correct and expected; this is a distinct field from any repo-relative path a worker names in prose per the #1220 narration convention. Lets the orchestrator's reconcile answer \"did this worker operate outside its own worktree?\" with a direct string comparison against the `worktreePath` it dispatched this work unit with, instead of inferring it from prose or content archaeology (#1221). Absent on a worker running an older prompt that doesn't populate it — degrades to no signal, exactly as before this field existed; never required. Detection/reporting only — `enforce-worktree-isolation.sh` already blocks the real violation at write time, so a mismatch here is an advisory, never a new enforcement gate.",
+      "minLength": 1
+    },
     "summary": {
       "type": ["string", "null"],
       "description": "Optional one-line human-readable summary for the orchestrator's end-of-session report. Not consumed by reconcile logic — provenance only."
