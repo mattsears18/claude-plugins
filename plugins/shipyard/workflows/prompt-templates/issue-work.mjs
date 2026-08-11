@@ -32,9 +32,10 @@ export function buildIssueWorkPrompt(unit, repoSlug) {
 
   lines.push(
     ``,
-    `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
-    `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,
-    `gating in step 6 of the per-mode spec.`,
+    `Work issue #${unit.number} in ${repoSlug} to completion. The \`shipyard\` label is already`,
+    `applied (self-assignment is config-gated via \`backlog.self_assign\`, default off — see`,
+    `worker-preamble). The originating issue's author trust is **${unit.trust}** — load-bearing`,
+    `for auto-merge gating in step 6 of the per-mode spec.`,
     `Branch: ${unit.branch}. Open a PR that closes the issue.`,
     ``,
     `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/issue-work.md\`.`,

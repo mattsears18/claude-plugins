@@ -22,9 +22,10 @@ export function buildSpikePrompt(unit, repoSlug) {
 
   lines.push(
     ``,
-    `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
-    `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,
-    `gating. Fan-out cap for follow-on sub-issues: **${unit.decomposeMaxSubissues}** (default 8).`,
+    `Work issue #${unit.number} in ${repoSlug} to completion. The \`shipyard\` label is already`,
+    `applied (self-assignment is config-gated via \`backlog.self_assign\`, default off — see`,
+    `worker-preamble). The originating issue's author trust is **${unit.trust}** — load-bearing`,
+    `for auto-merge gating. Fan-out cap for follow-on sub-issues: **${unit.decomposeMaxSubissues}** (default 8).`,
     `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/spike.md\`.`,
     `Branch: ${unit.branch}.`,
   )

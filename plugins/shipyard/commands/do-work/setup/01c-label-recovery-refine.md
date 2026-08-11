@@ -179,9 +179,11 @@ All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh 
 | Commits ahead, pushed, no PR open | Same `rev-list` > 0 AND `ls-remote` shows the branch AND `gh pr list --head` is empty | `(cd <path> && gh pr create --repo <owner/repo> --fill --label shipyard)` then enable auto-merge. `salvaged_count++`. |
 | Commits ahead, pushed, PR open | `gh pr list --head` returns a PR number | `gh pr view <M> --repo <owner/repo> --json statusCheckRollup --jq '[.statusCheckRollup \| group_by(.name) \| map(sort_by(.completedAt // .startedAt // "") \| last) \| .[] \| select((.conclusion // .status // "") \| test("FAILURE\|ERROR\|TIMED_OUT\|CANCELLED\|ACTION_REQUIRED"))] \| length'`. If count > 0 → push `{number: <M>, ...}` onto `failed_prs`. Otherwise leave alone — auto-merge will handle it. `salvaged_count++`. Latest-per-name projection per issue [#333](https://github.com/mattsears18/shipyard/issues/333) — a naïve `.statusCheckRollup[]` walk would false-positive on stale superseded FAILUREs. |
 | Branch is `[gone]` upstream | `git branch -v` shows `[gone]` next to the branch name | `(no-op — handled by end-of-session cleanup)` |
-| **Self-assigned with no worktree, no PR, no branch on origin** (issue [#303](https://github.com/mattsears18/shipyard/issues/303)) | After the worktree loop above, run `gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number` and for each result confirm `[ ! -d <repo-root>/.claude/worktrees/agent-* ]` doesn't claim it (no worktree-on-disk this loop already touched) AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `gh issue edit <N> --repo <owner/repo> --remove-assignee @me` (leave the `shipyard` label as provenance — it's not load-bearing for re-dispatch). `stale_assigns_count++`. Next dispatch retries from scratch. |
+| **Self-assigned with no worktree, no PR, no branch on origin** (issue [#303](https://github.com/mattsears18/shipyard/issues/303); gated on `backlog.self_assign`, config default `false` — issue [#1248](https://github.com/mattsears18/shipyard/issues/1248)) | After the worktree loop above, run `gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number` and for each result confirm `[ ! -d <repo-root>/.claude/worktrees/agent-* ]` doesn't claim it (no worktree-on-disk this loop already touched) AND `git ls-remote --heads origin do-work/issue-<N>` is empty | `gh issue edit <N> --repo <owner/repo> --remove-assignee @me` (leave the `shipyard` label as provenance — it's not load-bearing for re-dispatch). `stale_assigns_count++`. Next dispatch retries from scratch. |
 
 The fifth row closes a gap where prior sessions could leave the `@me` self-assign on an issue after their on-disk worktree was cleaned up — the first four rows only see issues whose worktree is still present, so this state otherwise survives unbounded across sessions. See [RATIONALE → Step 3c stale self-assign gap](../../do-work-RATIONALE.md#step-3c--the-stale-self-assign-gap-303) for the fuller failure mode (issue #303).
+
+**This entire row is gated on `backlog.self_assign` ([#1248](https://github.com/mattsears18/shipyard/issues/1248)).** The row exists solely to undo a self-assignment `/do-work` itself wrote — when `backlog.self_assign` is `false` (the default), the orchestrator never calls `--add-assignee @me` in the first place, so there is nothing this sweep could ever find: the `gh issue list --assignee @me` query would always come back empty (net effect: a wasted API call every session, forever). Skip the entire query + loop below when `backlog.self_assign` resolves `false`; run it unchanged when `true`.
 
 The row's action is intentionally conservative: clear the assignment only, leave the `shipyard` label (provenance — it tells the next session this issue went through `/do-work` before), let the normal step-4 backlog fetch pick the issue back up, and let the orchestrator's normal dispatch path arrange a fresh worktree. Don't touch the issue body, don't post a comment, don't close — the issue may genuinely still be workable and the prior session's `blocked` may have been transient.
 
@@ -286,29 +288,37 @@ done
 # conservative: clear the assignment only, leave the `shipyard` label as
 # provenance, and let the normal step-4 backlog fetch pick the issue up
 # on the next dispatch.
-for n in $(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null); do
-  # If a worktree for this issue exists, the loop above already handled it;
-  # skip. Extract issue numbers from every do-work worktree branch the same
-  # permissive way as the loop above (#739) so a collision-fallback local
-  # branch name (`do-work/issue-$n-<timestamp>`) is still recognized as
-  # "already handled" instead of falling through to the assignee-clear
-  # below on an issue whose worktree is alive, just suffixed.
-  if git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\/issue-/{print $2}' \
-    | sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\1|' | grep -qx "$n"; then
-    continue
-  fi
-  # If a do-work branch for this issue still exists on origin, leave it
-  # alone — it may belong to an open PR the `-linked:pr` filter missed
-  # (e.g., draft PR linked via a different reference shape). Conservative
-  # gate: only clear assignment when NOTHING in the dispatch artifacts
-  # exists for this issue anymore.
-  if [ -n "$(git ls-remote --heads origin "do-work/issue-$n" 2>/dev/null)" ]; then
-    continue
-  fi
-  gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
-  stale_assigns_count=$((stale_assigns_count + 1))
-  stale_assigns_numbers+=("$n")
-done
+#
+# Gated on backlog.self_assign (issue #1248) — when self-assign is off
+# (the default), /do-work never writes an @me assignment, so this sweep
+# has nothing to find; skip the query entirely rather than pay a
+# permanently-empty `gh issue list` every session.
+BACKLOG_SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
+if [ "$BACKLOG_SELF_ASSIGN" = "true" ]; then
+  for n in $(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null); do
+    # If a worktree for this issue exists, the loop above already handled it;
+    # skip. Extract issue numbers from every do-work worktree branch the same
+    # permissive way as the loop above (#739) so a collision-fallback local
+    # branch name (`do-work/issue-$n-<timestamp>`) is still recognized as
+    # "already handled" instead of falling through to the assignee-clear
+    # below on an issue whose worktree is alive, just suffixed.
+    if git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\/issue-/{print $2}' \
+      | sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\1|' | grep -qx "$n"; then
+      continue
+    fi
+    # If a do-work branch for this issue still exists on origin, leave it
+    # alone — it may belong to an open PR the `-linked:pr` filter missed
+    # (e.g., draft PR linked via a different reference shape). Conservative
+    # gate: only clear assignment when NOTHING in the dispatch artifacts
+    # exists for this issue anymore.
+    if [ -n "$(git ls-remote --heads origin "do-work/issue-$n" 2>/dev/null)" ]; then
+      continue
+    fi
+    gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
+    stale_assigns_count=$((stale_assigns_count + 1))
+    stale_assigns_numbers+=("$n")
+  done
+fi
 ```
 
 **3d.1. Auto-clear stale `blocked:ci` labels.** The label is sticky on purpose, but a new commit on the PR's head branch means the premise ("no movement since shipyard gave up") is no longer true. Auto-clear those PRs so they flow back into step 5's failing-PR snapshot for another 3 attempts. This sweep is the *only* place `blocked:ci` is removed by the orchestrator (step A applies; 3d.1 removes; no other step touches it).

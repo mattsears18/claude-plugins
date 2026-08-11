@@ -133,6 +133,14 @@ assert_equals "$("$helper" get models.verify)" "claude-opus-4-8" "get models.ver
 # literal here prevents an accidental flip back to 2.
 assert_equals "$("$helper" get concurrency.default)" "1" "get concurrency.default returns 1 (issue #268)"
 
+# backlog.respect_assignees / backlog.self_assign — issue #1248: on a
+# single-contributor repo (the common shipyard-marketplace case) neither the
+# assignee-based eligibility clause nor the self-assign write has a correct
+# use, so both default to false. A genuine multi-contributor repo opts back
+# in to the pre-#1248 behavior by setting both true.
+assert_equals "$("$helper" get backlog.respect_assignees)" "false" "get backlog.respect_assignees defaults to false (issue #1248)"
+assert_equals "$("$helper" get backlog.self_assign)" "false" "get backlog.self_assign defaults to false (issue #1248)"
+
 # dependencies.new_dep_version — issue #694: a worker introducing a NEW dependency
 # defaults to installing the latest stable version (with an unconditional peer/SDK
 # carve-out). The built-in default is latest-stable; asserting the literal here

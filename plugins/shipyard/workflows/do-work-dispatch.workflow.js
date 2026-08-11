@@ -1034,8 +1034,9 @@ function buildInvestigatePrompt(unit, repoSlug) {
 
   lines.push(
     ``,
-    `Work untriaged issue #${unit.number} in ${repoSlug} end-to-end. You are already`,
-    `self-assigned. The originating issue's author trust is **${unit.trust}** — load-bearing`,
+    `Work untriaged issue #${unit.number} in ${repoSlug} end-to-end. The \`shipyard\` label is`,
+    `already applied (self-assignment is config-gated via \`backlog.self_assign\`, default off —`,
+    `see worker-preamble). The originating issue's author trust is **${unit.trust}** — load-bearing`,
     `for auto-merge gating on the fixable-disposition path. \`triage.auto_close\` policy:`,
     `**${unit.triageAutoClose}**. Load the \`shipyard:worker-preamble\` skill, then`,
     `\`agents/issue-worker/investigate.md\`. Branch: ${unit.branch}.`,
@@ -1079,9 +1080,10 @@ function buildSpikePrompt(unit, repoSlug) {
 
   lines.push(
     ``,
-    `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
-    `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,
-    `gating. Fan-out cap for follow-on sub-issues: **${unit.decomposeMaxSubissues}** (default 8).`,
+    `Work issue #${unit.number} in ${repoSlug} to completion. The \`shipyard\` label is already`,
+    `applied (self-assignment is config-gated via \`backlog.self_assign\`, default off — see`,
+    `worker-preamble). The originating issue's author trust is **${unit.trust}** — load-bearing`,
+    `for auto-merge gating. Fan-out cap for follow-on sub-issues: **${unit.decomposeMaxSubissues}** (default 8).`,
     `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/spike.md\`.`,
     `Branch: ${unit.branch}.`,
   )
@@ -1144,9 +1146,10 @@ function buildIssueWorkPrompt(unit, repoSlug) {
 
   lines.push(
     ``,
-    `Work issue #${unit.number} in ${repoSlug} to completion. You are already self-assigned.`,
-    `The originating issue's author trust is **${unit.trust}** — load-bearing for auto-merge`,
-    `gating in step 6 of the per-mode spec.`,
+    `Work issue #${unit.number} in ${repoSlug} to completion. The \`shipyard\` label is already`,
+    `applied (self-assignment is config-gated via \`backlog.self_assign\`, default off — see`,
+    `worker-preamble). The originating issue's author trust is **${unit.trust}** — load-bearing`,
+    `for auto-merge gating in step 6 of the per-mode spec.`,
     `Branch: ${unit.branch}. Open a PR that closes the issue.`,
     ``,
     `Load the \`shipyard:worker-preamble\` skill, then \`agents/issue-worker/issue-work.md\`.`,

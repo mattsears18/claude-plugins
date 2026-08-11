@@ -126,6 +126,10 @@ DEFAULTS_JQ='{
   "trust": {
     "authors": []
   },
+  "backlog": {
+    "respect_assignees": false,
+    "self_assign": false
+  },
   "labels": {
     "session_stamp": "shipyard",
     "blocked": "blocked:agent",
