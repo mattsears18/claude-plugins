@@ -230,6 +230,13 @@ DEFAULTS_JQ='{
     "max_diagnostic_reads_per_item": 1,
     "disposition_call_detection": true,
     "assume_operator_enabled": true
+  },
+  "milestones": {
+    "enabled": false,
+    "fallback": "Ongoing maintenance",
+    "assign_on_file": true,
+    "prioritize_dispatch": true,
+    "sweep_on_loop_end": true
   }
 }'
 

@@ -521,6 +521,40 @@
         },
         "_comment": { "type": "string" }
       }
+    },
+    "milestones": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Top-level, opt-in roadmap-sequencing surface (issue #1239) — independent of every other config block. A `projects` (GitHub Projects v2) block was designed alongside this and deliberately dropped: a project board mostly restates issue state/labels shipyard already tracks natively, and Projects v2 needs the `project` OAuth scope `gh` doesn't grant by default. Phase AUTHORING is deliberately NOT part of this schema — there is no declarative `phases[]` array; naming phases and writing each one's bet is the dispatching agent's job (#1240-#1244), not config. Numbering contract: a milestone's sequence position is read back from a numeric title prefix `N · Title` (U+00B7 MIDDLE DOT, one space on each side) — the separator is fixed, not configurable, so it can't become a per-repo parsing surface for no benefit. The fallback milestone (`fallback` below) always holds the highest `N` and never completes. Every key below is read by exactly one of the four issues this config unblocks, so the feature degrades cleanly — a repo can take milestone assignment without milestone-ordered dispatch, or vice versa. When this block is absent entirely, or `enabled` is false, behavior is byte-for-byte identical to a repo with no `milestones` block at all: no GitHub Milestones API calls, no milestone reads, nothing in `/do-work`'s dispatch order or issue-filing path changes.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master opt-in switch. Every other key in this block is inert while false — shipyard runs against plenty of repos with no roadmap at all, and silently creating milestones in someone's repo on first run would be a hostile default. Set true (typically via `/shipyard:init`) to turn milestone-sequenced work on."
+        },
+        "fallback": {
+          "type": "string",
+          "default": "Ongoing maintenance",
+          "minLength": 1,
+          "description": "Title of the fallback milestone shipyard creates automatically when `enabled` is true and the repo has no phase an issue fits. The fallback never completes and always sorts last (i.e. it is created with the highest `N ·` prefix of any milestone in the repo) — an issue that matches no existing phase goes here immediately rather than sitting unmilestoned."
+        },
+        "assign_on_file": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, issue-filing paths (`/shipyard:file-issue`, the `*-auditor` agents) assign a milestone to every newly-filed issue — the fallback when no phase fits, else the phase the filer judges the issue belongs to. Has no effect while `enabled` is false."
+        },
+        "prioritize_dispatch": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, `/do-work`'s backlog ranking sorts by milestone sequence (the `N ·` prefix) before falling back to the existing P0 > P1 > P2 > unlabeled + staleness ordering — phase 1's issues dispatch before phase 2's regardless of label priority. Has no effect while `enabled` is false."
+        },
+        "sweep_on_loop_end": {
+          "type": "boolean",
+          "default": true,
+          "description": "When true, the `/do-work` orchestrator runs an end-of-loop sweep that keeps every open issue carrying a milestone (fallback for anything that fell through) and reports phase completion. Has no effect while `enabled` is false."
+        },
+        "_comment": { "type": "string" }
+      }
     }
   },
   "required": ["version"],

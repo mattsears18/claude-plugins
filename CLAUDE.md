@@ -161,6 +161,10 @@ Bootstrap (`/shipyard:init` — flags, `.gitignore` seeding, pre-write schema va
 
 Schemas live at `plugins/shipyard/schemas/shipyard.config.schema.json` (repo + local) and `plugins/shipyard/schemas/shipyard.user-config.schema.json` (user-global). Every load and every `set` validates the result before it lands; typos surface as clear errors rather than silent ignores.
 
+### Milestones (`milestones` config block — issue [#1239](https://github.com/mattsears18/shipyard/issues/1239))
+
+Top-level, opt-in roadmap-sequencing block (`enabled` defaults `false`) — independent of every other block, including any future GitHub Projects v2 (`projects`) block, which was designed alongside this and deliberately dropped (a project board mostly restates issue state/labels shipyard already tracks). Ordering is read back from a numeric title prefix `N · Title` (U+00B7 middle dot, spaced) — the separator is fixed, not configurable — and the fallback milestone (default title `Ongoing maintenance`, key `fallback`) always sorts last and never completes. `milestones.enabled == false`, or the block absent entirely, MUST be byte-for-byte inert — see [`do-work/dont.md`'s milestones bullet](plugins/shipyard/commands/do-work/dont.md) for the consumer-side guard. See [`do-work-RATIONALE.md → milestones config block`](plugins/shipyard/commands/do-work-RATIONALE.md#milestones-config-block--config-surface-only-scope-and-why-projects-projects-v2-was-dropped-issue-1239) for the full design writeup.
+
 ### Don't put secrets in any config layer
 
 The schema rejects keys matching `/token|secret|api_key|password|credential/i` regardless of where they appear. Move secrets to environment variables — even `.shipyard/config.local.json` (which is gitignored) is treated as if it could land in a backup or paste-buffer leak.
