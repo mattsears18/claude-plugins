@@ -2222,39 +2222,47 @@ assert_contains "$issue_work_path736" \
 # never finds the canonical remote push and either pushes a spurious second
 # remote branch + opens a duplicate PR, or fails to recognize an alive
 # suffixed worktree as "already handled" in the stale-assign row.
-setup_worktree_path739="$repo_root/plugins/shipyard/commands/do-work/setup/00b-parallelization-cache.md"
+#
+# As of #1202 (PR moving the step-0.45 pre-relocation sweeps out of the
+# background group), step 3c's executable form lives in
+# 01c-label-recovery-refine.md, not 00b-parallelization-cache.md — 00b's
+# background group narrowed to steps 1.6 + 3a only, and 3c's own section in
+# 01c gained the executable bash it previously lacked entirely (per PR
+# #1209's body: "Step 3c had no executable bash anywhere outside 00b's
+# background group ... Added the executable form to its own section").
+setup_worktree_path739="$repo_root/plugins/shipyard/commands/do-work/setup/01c-label-recovery-refine.md"
 
 assert_contains "$setup_worktree_path739" \
   "sed -E 's|^do-work/issue-([0-9]+).*|\\1|'" \
-  "00b-parallelization-cache.md §3c extracts the issue number permissively, tolerating a collision-fallback suffix (#739)"
+  "01c-label-recovery-refine.md §3c extracts the issue number permissively, tolerating a collision-fallback suffix (#739)"
 # shellcheck disable=SC2016
 # Literal needle — must NOT expand $n; this is markdown prose text.
 assert_contains "$setup_worktree_path739" \
   'canonical_branch="do-work/issue-$n"' \
-  "00b-parallelization-cache.md §3c derives the canonical remote branch name independent of the local worktree branch (#739)"
+  "01c-label-recovery-refine.md §3c derives the canonical remote branch name independent of the local worktree branch (#739)"
 # shellcheck disable=SC2016
 # Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
 assert_contains "$setup_worktree_path739" \
   'pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)' \
-  "00b-parallelization-cache.md §3c checks the remote for the canonical branch, not the local (possibly suffixed) branch (#739)"
+  "01c-label-recovery-refine.md §3c checks the remote for the canonical branch, not the local (possibly suffixed) branch (#739)"
 # shellcheck disable=SC2016
 # Literal needle — must NOT expand $path/$canonical_branch; this is markdown prose text.
 assert_contains "$setup_worktree_path739" \
   'git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch"' \
-  "00b-parallelization-cache.md §3c pushes the local worktree's commits under the canonical remote branch name (#739)"
+  "01c-label-recovery-refine.md §3c pushes the local worktree's commits under the canonical remote branch name (#739)"
 # shellcheck disable=SC2016
 # Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
 assert_contains "$setup_worktree_path739" \
   'open_pr=$(gh pr list --repo <owner/repo> --head "$canonical_branch"' \
-  "00b-parallelization-cache.md §3c looks up the open PR by the canonical branch name, not the local branch (#739)"
+  "01c-label-recovery-refine.md §3c looks up the open PR by the canonical branch name, not the local branch (#739)"
 # shellcheck disable=SC2016
 # Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
 assert_contains "$setup_worktree_path739" \
   'gh pr create --repo <owner/repo> --head "$canonical_branch" --fill --label shipyard' \
-  "00b-parallelization-cache.md §3c opens the fallback PR with an explicit --head against the canonical branch (#739)"
+  "01c-label-recovery-refine.md §3c opens the fallback PR with an explicit --head against the canonical branch (#739)"
 assert_contains "$setup_worktree_path739" \
   "sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\\1|' | grep -qx \"\$n\"" \
-  "00b-parallelization-cache.md §3c row-5 stale-assign check recognizes a collision-fallback worktree as already-handled (#739)"
+  "01c-label-recovery-refine.md §3c row-5 stale-assign check recognizes a collision-fallback worktree as already-handled (#739)"
 
 # ── Regression: scope-preflight re-gates issues already resolved via
 #    /resolve-decisions (#962) ──────────────────────────────────────────────

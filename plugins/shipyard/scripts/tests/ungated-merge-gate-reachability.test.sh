@@ -324,7 +324,12 @@ FIX_PR_BATCH_MD="$repo_root/plugins/shipyard/agents/issue-worker/fix-failing-prs
 INLINE_TRIVIAL_MD="$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
 DRAIN_MD="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 STEADY_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
-SETUP_WORKTREE_MD="$repo_root/plugins/shipyard/commands/do-work/setup/00b-parallelization-cache.md"
+# As of #1202 (PR moving the step-0.45 pre-relocation sweeps out of the
+# background group), step 3c's executable form — including this merge-arm
+# call site — lives in 01c-label-recovery-refine.md, not
+# 00b-parallelization-cache.md; see 00b's own text: "moved to
+# 00-config-worktree.md's new step 0.45 ... see there for their code".
+SETUP_WORKTREE_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01c-label-recovery-refine.md"
 SETUP_REPO_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md"
 INVESTIGATE_MD="$repo_root/plugins/shipyard/agents/issue-worker/investigate.md"
 

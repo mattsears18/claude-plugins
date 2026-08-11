@@ -63,10 +63,11 @@
 #
 # Candidates: every *.md file under commands/do-work/ (recursively, so a
 # future setup/ or operate/ sub-file is swept in automatically) MINUS
-# setup/00-config-worktree.md, which is excluded explicitly rather than
-# scanned-and-ignored — see the Scope paragraph below for why a scan would
-# false-positive there. A candidate with zero call-bearing bash blocks is a
-# no-op (nothing to check), so this glob is safe to keep wide.
+# setup/00-config-worktree.md and setup/01c-label-recovery-refine.md, both
+# excluded explicitly rather than scanned-and-ignored — see the Scope
+# paragraph below for why a scan would false-positive on each. A candidate
+# with zero call-bearing bash blocks is a no-op (nothing to check), so this
+# glob is safe to keep wide.
 #
 # Scope — explicitly NOT setup/00-config-worktree.md. That file's step 0.4
 # `shipyard-config.sh` reads run BEFORE step 0.5's relocation (against the
@@ -74,6 +75,16 @@
 # IS already the primary checkout) and step 0.56 is where the pin itself is
 # DEFINED, not consumed — sweeping that file would produce false positives
 # against reads that are correct exactly as written.
+#
+# Scope — also explicitly NOT setup/01c-label-recovery-refine.md ([#1202](https://github.com/mattsears18/shipyard/issues/1202)).
+# Steps 3b and 3c's canonical implementation moved into this file's own
+# sections and now runs pre-relocation, at step 0.45 — before step 0.5's
+# `EnterWorktree`, for the identical reason 00-config-worktree.md's step 0.4
+# is excluded above. Every `shipyard-config.sh` call site in this file (the
+# `worktree_reap.warn_threshold` / `worktree_reap.max_per_session` /
+# `auto_merge.method` reads) lives inside the 3b/3c pre-relocation bash
+# blocks, so sweeping the file would produce the same class of false
+# positive.
 #
 # Also explicitly NOT any agents/issue-worker/*.md file (out of SCAN_DIRS
 # entirely — the glob only walks commands/do-work/). Workers run in their
@@ -107,14 +118,25 @@ DO_WORK_DIR="$repo_root/plugins/shipyard/commands/do-work"
 # Mechanical discovery (issue #1105, converting the #354/#910 pattern
 # `claude-plugin-root-preamble.test.sh` already uses for the analogous
 # ${CLAUDE_PLUGIN_ROOT} preamble): every *.md file under commands/do-work/,
-# recursively, MINUS setup/00-config-worktree.md (excluded explicitly — see
-# the Scope note above for why a scan would false-positive there, not just
-# find nothing). A new commands/do-work/ file is covered automatically the
-# moment it grows a real call site — no hand-maintained array entry needed.
-EXCLUDE_FILE="$DO_WORK_DIR/setup/00-config-worktree.md"
+# recursively, MINUS the pre-relocation files below (excluded explicitly —
+# see the Scope notes above for why a scan would false-positive on each, not
+# just find nothing). A new commands/do-work/ file is covered automatically
+# the moment it grows a real call site — no hand-maintained array entry
+# needed.
+EXCLUDE_FILES=(
+  "$DO_WORK_DIR/setup/00-config-worktree.md"
+  "$DO_WORK_DIR/setup/01c-label-recovery-refine.md"
+)
+is_excluded() {
+  local candidate="$1" ex
+  for ex in "${EXCLUDE_FILES[@]}"; do
+    [[ "$candidate" == "$ex" ]] && return 0
+  done
+  return 1
+}
 FILES=()
 while IFS= read -r -d '' f; do
-  [[ "$f" == "$EXCLUDE_FILE" ]] && continue
+  is_excluded "$f" && continue
   FILES+=("$f")
 done < <(find "$DO_WORK_DIR" -type f -name '*.md' -print0 2>/dev/null | sort -z)
 
@@ -144,7 +166,7 @@ echo
 # files — including the file #1105 found this array had been missing —
 # was among them.
 if (( ${#FILES[@]} >= 20 )); then
-  assert_pass "discovery found ${#FILES[@]} candidate *.md files under commands/do-work/ (minus setup/00-config-worktree.md)"
+  assert_pass "discovery found ${#FILES[@]} candidate *.md files under commands/do-work/ (minus setup/00-config-worktree.md, setup/01c-label-recovery-refine.md)"
 else
   assert_fail "discovery found ${#FILES[@]} candidate *.md files under commands/do-work/ (expected >= 20 — DO_WORK_DIR or repo_root may be wrong)"
 fi
@@ -171,24 +193,27 @@ for canary in "${CANARY_FILES[@]}"; do
   fi
 done
 
-# (1b) The excluded file must still exist and still be excluded — a rename
-# of setup/00-config-worktree.md would silently stop excluding anything
-# (EXCLUDE_FILE just wouldn't match), re-introducing the false-positive scan
-# the Scope note above documents.
-if [[ -f "$EXCLUDE_FILE" ]]; then
-  assert_pass "setup/00-config-worktree.md (the excluded pre-relocation file) still exists at the expected path"
-else
-  assert_fail "setup/00-config-worktree.md (the excluded pre-relocation file) still exists at the expected path (renamed? EXCLUDE_FILE needs updating)"
-fi
-excluded_ok=1
-for f in "${FILES[@]}"; do
-  [[ "$f" == "$EXCLUDE_FILE" ]] && excluded_ok=0
+# (1b) Every excluded file must still exist and still be excluded — a rename
+# of either would silently stop excluding anything (EXCLUDE_FILES just
+# wouldn't match), re-introducing the false-positive scan the Scope notes
+# above document.
+for ex in "${EXCLUDE_FILES[@]}"; do
+  rel="${ex#"$repo_root"/}"
+  if [[ -f "$ex" ]]; then
+    assert_pass "$rel (the excluded pre-relocation file) still exists at the expected path"
+  else
+    assert_fail "$rel (the excluded pre-relocation file) still exists at the expected path (renamed? EXCLUDE_FILES needs updating)"
+  fi
+  excluded_ok=1
+  for f in "${FILES[@]}"; do
+    [[ "$f" == "$ex" ]] && excluded_ok=0
+  done
+  if (( excluded_ok )); then
+    assert_pass "$rel is excluded from the scanned FILES set"
+  else
+    assert_fail "$rel is excluded from the scanned FILES set (exclude filter regressed)"
+  fi
 done
-if (( excluded_ok )); then
-  assert_pass "setup/00-config-worktree.md is excluded from the scanned FILES set"
-else
-  assert_fail "setup/00-config-worktree.md is excluded from the scanned FILES set (exclude filter regressed)"
-fi
 
 # (2) Walk every bash code block in every scanned file, IN FILE ORDER. A
 # block that invokes shipyard-config.sh or resolve-dispatch-model.sh must
