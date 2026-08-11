@@ -160,6 +160,24 @@
 # row's terseness-trimmed shape (three trims, down from a fuller
 # trigger/scope description) needed the bump.
 #
+# issue-work.md's ceiling was raised 123000 -> 126000 by #1258 (2026-08-11):
+# step 3 ("Sync + branch") was prose-only, sandwiched between "read the
+# issue" and "implement" with no concrete gate — a worker with the entire
+# spec in context still drifted straight past the `git checkout -B` and
+# implemented on the harness's placeholder branch. The fix adds a short
+# load-bearing framing paragraph to step 3 plus a structural checkpoint at
+# the start of step 4 (its first action, immediately before the first
+# Edit/Write) that invokes the new scripts/assert-branch-switched.sh
+# predicate and hard-stops on anything but a `match` verdict — mirroring how
+# scripts/assert-worktree-cwd.sh backs the step-0 cwd fail-fast. A one-line
+# Don't-list mirror was added for discoverability. All three additions were
+# trimmed once already; the checkpoint's bash block still needs its own full
+# CLAUDE_PLUGIN_ROOT preamble line per claude-plugin-root-preamble.test.sh's
+# convention (a `${CLAUDE_PLUGIN_ROOT}`-using block must carry the preamble
+# in the same or an immediately preceding block — a prose "reuse the value
+# already resolved" note doesn't satisfy that scanner), which is most of
+# this raise's headroom.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -219,7 +237,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  123000 \
+  126000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \

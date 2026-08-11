@@ -109,6 +109,8 @@ If acceptance criteria are missing AND the title is too vague to infer reasonabl
 
 ### 3. Sync + branch
 
+**Do this before your first `Edit`/`Write` call of this dispatch, not just before you push ([#1258](https://github.com/mattsears18/shipyard/issues/1258)).** Same load-bearing standing as [step 0](#0-pre-flight-confirm-the-issue-is-still-workable)'s cwd fail-fast — step 0 alone doesn't cover this: it confirms the right *worktree*, not that you've moved off the harness's *placeholder branch* inside it. #1258's repro: a worker had this whole spec in context and still drifted from step 2 straight into implementation on the placeholder branch (`worktree-agent-<id>`), never running the checkout below. [Step 4](#4-implement) re-verifies this as its first action, right before the first `Edit`/`Write` — that's the actual enforcement; this paragraph is advance notice.
+
 You're already in your isolated worktree (worktree discipline rule applies — see `shipyard:worker-preamble`). Reset its checkout to a fresh branch off the repo's default — `git checkout -B` rewrites whatever placeholder branch the harness set up:
 
 ```bash
@@ -150,6 +152,15 @@ Branch name comes from the orchestrator's dispatch prompt and must be exactly `d
 **When the fallback fires** (`$LOCAL_BRANCH != $REMOTE_BRANCH`), the collision means a *different* on-disk worktree — dead scaffold or live sibling, you genuinely cannot tell which without violating worktree discipline by `cd`-ing into it — is holding `$REMOTE_BRANCH` locally. Leave it strictly alone for the rest of this dispatch. Its own lifecycle (a live worker's own return, or the orchestrator's orphan-triage sweep) is responsible for cleaning it up — not you, and not this session.
 
 ### 4. Implement
+
+**First action of this step, before any `Edit`/`Write` call — verify you actually left the placeholder branch ([#1258](https://github.com/mattsears18/shipyard/issues/1258)).** Placed here, not just at step 3, because this is the drift point #1258 documents — checkout instructions several paragraphs back are exactly what attention slides past mid-flow. Reuse the `CLAUDE_PLUGIN_ROOT` value already resolved at `shipyard:worker-preamble`'s step-0 ([#965](https://github.com/mattsears18/shipyard/issues/965)) — the `:-` fallback below is a no-op when it's already set:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-branch-switched.sh" "$(git rev-parse --show-toplevel)" "${LOCAL_BRANCH:-do-work/issue-<N>}"
+```
+
+`match` → proceed below. Anything else (`mismatch`/`error`) → **stop, no `Edit`/`Write` yet** — complete [step 3](#3-sync--branch) first (the diagnostic names the harness placeholder branch explicitly if that's the cause).
 
 - If the change touches behavior, **write the test first** — the test should encode the acceptance criteria. The superpowers `test-driven-development` skill applies if available.
 - Make the smallest change that satisfies the criteria. No drive-by refactors, no unrelated cleanups.
@@ -742,6 +753,7 @@ When blocked → return:
 ## Don't
 
 - Don't open a duplicate PR. Pre-flight check (step 0) exists for this reason.
+- **Don't call `Edit`/`Write` before verifying you're off the harness placeholder branch ([#1258](https://github.com/mattsears18/shipyard/issues/1258)).** Run [step 4](#4-implement)'s `assert-branch-switched.sh` check first and treat a `mismatch` verdict as a hard stop, not a note-to-self.
 - **Don't skip §0.5 on scope-boundary framing ([#1179](https://github.com/mattsears18/shipyard/issues/1179))** — it can go stale; the live issue wins.
 - **Don't touch another worktree when `git checkout -B do-work/issue-<N>` fails on a name collision.** You cannot tell a dead scaffold from a live sibling worker's worktree without `cd`-ing into it, which worktree discipline forbids — no `git worktree remove`, no `git branch -D` on the other worktree's branch. Use the local-name/remote-name split in [§3](#3-sync--branch) instead (issue [#736](https://github.com/mattsears18/shipyard/issues/736)).
 - Don't merge manually unless auto-merge is unavailable AND all checks are green AND the user has explicitly authorized it for this run. Otherwise leave the PR ready and report.
