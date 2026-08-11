@@ -141,6 +141,15 @@
 # cross-reference. issue-work.md was already 60 bytes under its prior
 # ceiling; the new bullet needed the bump.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 61000 -> 62000 by
+# #1240 (2026-08-11): a new fragments-table row for milestone-prohibition.md
+# (the worker-side half of shipyard:update-roadmap's orchestrator-only
+# boundary — a worker must never create/rename/renumber/reassign a
+# milestone) needed adding to the always-loaded fragments index. The file
+# had only 28 bytes of headroom left after #1220's last raise, so even the
+# row's terseness-trimmed shape (three trims, down from a fuller
+# trigger/scope description) needed the bump.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -205,7 +214,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  61000 \
+  62000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
