@@ -35,6 +35,16 @@
 #         - no stash + non-empty directory → fail closed, not emitted
 #         - no stash + genuinely empty directory → falls back to the
 #           name-embedded id, unchanged from pre-#1232 behavior
+#  36-38) issue #1234 — find-orphan-orchestrators --emit-resolved-id:
+#         - default output (no flag) is unchanged — bare path only, even
+#           when name and stash diverge
+#         - the divergent case pinned exactly: dir name embeds one dead
+#           id, stash names a DIFFERENT dead id → --emit-resolved-id
+#           emits the STASH id (the one actually tested for liveness),
+#           not the name-embedded one
+#         - the degenerate fallback case (#1232's test 35) still reports
+#           the name-embedded id as the "resolved" id when there's no
+#           stash to prefer
 #  67-75a) issue #513 — derive-session-id picks the NEWEST orchestrator-*
 #         worktree's stash (not the oldest orphan in listing order):
 #         - empty layout, single-worktree common case
@@ -381,6 +391,63 @@ mkdir -p "$fake_repo/.claude/worktrees/orchestrator-truly-empty-dead"
 result=$(run_find_orphans "current-sess")
 assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-truly-empty-dead" \
   "(35) no stash + genuinely empty directory → falls back to name-embedded id, still emitted"
+
+# --- find-orphan-orchestrators --emit-resolved-id (issue #1234) ---
+#
+# The step-1.6.5 reap loop's audit log used to log `reaped_session_id`
+# derived from the directory basename alone — correct only when the
+# directory name and the id this helper actually tested for liveness
+# (stash-first, per #1232) happen to agree. Once #1232 made the detector
+# prefer the stash, a candidate whose stash names a DIFFERENT dead
+# session than its directory name would still log the stale
+# name-embedded id. --emit-resolved-id closes that gap by letting the
+# caller read back the exact id the helper tested, instead of
+# re-deriving (and potentially drifting from) the same rule a second
+# time in the caller's own loop.
+
+echo
+echo "find-orphan-orchestrators --emit-resolved-id tests (issue #1234)"
+echo
+
+run_find_orphans_resolved() {
+  SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestrators \
+    --repo-root "$fake_repo" \
+    --current-session-id "$1" \
+    --emit-resolved-id 2>/dev/null
+}
+
+# --- (36) default output (no --emit-resolved-id) is byte-for-byte
+# unchanged even when the directory name and stash diverge — the flag
+# is additive/opt-in, not a format change for existing callers.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-name-embedded-dead-id"
+printf '%s\n' "stash-embedded-dead-id" \
+  > "$fake_repo/.claude/worktrees/orchestrator-name-embedded-dead-id/.shipyard-session-id"
+result=$(run_find_orphans "current-sess")
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-name-embedded-dead-id" \
+  "(36) default output (no flag) stays a bare path even when name and stash diverge"
+
+# --- (37) THE #1234 REPRO, pinned exactly: directory name embeds one
+# dead session id, the stash inside names a DIFFERENT dead session id.
+# --emit-resolved-id must emit the STASH id (the id actually tested for
+# liveness), never the name-embedded one.
+result=$(run_find_orphans_resolved "current-sess")
+assert_equals "$result" "$(printf '%s\t%s' \
+  "$fake_repo/.claude/worktrees/orchestrator-name-embedded-dead-id" \
+  "stash-embedded-dead-id")" \
+  "(37) #1234 repro: --emit-resolved-id emits the STASH id, not the name-embedded id, when they diverge"
+
+# --- (38) degenerate fallback case (mirrors test 35): no stash, genuinely
+# empty directory → the "resolved" id IS the name-embedded id (there's
+# nothing else to prefer), so --emit-resolved-id reports it explicitly
+# rather than leaving the second field blank.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-truly-empty-dead-resolved"
+result=$(run_find_orphans_resolved "current-sess")
+assert_equals "$result" "$(printf '%s\t%s' \
+  "$fake_repo/.claude/worktrees/orchestrator-truly-empty-dead-resolved" \
+  "truly-empty-dead-resolved")" \
+  "(38) no stash + genuinely empty directory → --emit-resolved-id reports the name-embedded fallback id"
 
 # --- derive-session-id (issue #513) ---
 #

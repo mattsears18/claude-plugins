@@ -23,11 +23,10 @@ The discovery uses [`session-identity.sh find-orphan-orchestrators`](../../../sc
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 cd "$(git rev-parse --show-toplevel)"
-while read -r orph_path; do
+while IFS=$'\t' read -r orph_path orph_session_id; do
   [ -z "$orph_path" ] && continue
   [ -d "$orph_path" ] || continue
   orph_name=$(basename "$orph_path")
-  orph_session_id="${orph_name#orchestrator-}"
   # Issue #284 — `worktree-reap.sh reap` handles BOTH the git-worktree-remove
   # attempt AND the rm -rf fallback internally, and emits the appropriate
   # action variant (`reaped-orphan-orchestrator` vs the `-raw-rm` suffix)
@@ -40,16 +39,19 @@ while read -r orph_path; do
     --reaped-session-id "$orph_session_id" \
     --phase "setup-1.6.5" 2>/dev/null || true
 done < <("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" find-orphan-orchestrators \
-           --repo-root "$(pwd)" --current-session-id "<session-id>" 2>/dev/null)
+           --repo-root "$(pwd)" --current-session-id "<session-id>" \
+           --emit-resolved-id 2>/dev/null)
 git worktree prune 2>/dev/null || true
 ```
+
+**`orph_session_id` is the RESOLVED id `find-orphan-orchestrators` itself tested for liveness — not re-derived from the directory basename ([#1234](https://github.com/mattsears18/shipyard/issues/1234)).** The `--emit-resolved-id` flag above makes the helper append that id (stash-first, name-embedded fallback only for a genuinely empty candidate — the exact rule described above) as a second, tab-separated field per line, which the `IFS=$'\t' read` splits into `orph_path` / `orph_session_id`. Before this flag existed, the caller re-derived `orph_session_id` from `basename "$orph_path"` alone — correct only when the directory name and the tested occupant happened to agree. Once [#1232](https://github.com/mattsears18/shipyard/issues/1232) made the detector prefer the stash over the name, a candidate whose stash names a *different*, genuinely-dead session than its directory name would still log the stale name-embedded id in `~/.shipyard/reap-audit.jsonl`'s `reaped_session_id` field — accurate for *which worktree* got reaped, inaccurate for *which session id justified the reap*. Emitting the resolved id from the single place that already computes it (rather than re-implementing the same stash-then-fallback rule a second time in this loop) keeps the two from drifting apart again.
 
 **Audit-log shape** — same `~/.shipyard/reap-audit.jsonl` as steps 3 / 3b, but with a distinct `action` value so the source is traceable. The helper emits these variants for us (issue #284 moved the JSONL writes into [`worktree-reap.sh reap`](../../../scripts/worktree-reap.sh) — see step 3b for the same pattern):
 
 - `action: "reaped-orphan-orchestrator"` — successful `git worktree remove --force`.
 - `action: "reaped-orphan-orchestrator-raw-rm"` — fallback when the worktree was unregistered with git (raw dir left after a crash); resolved via `rm -rf`. The helper chooses between these automatically; the caller passes the same `--action reaped-orphan-orchestrator` and the helper picks the right line based on which path actually succeeded.
 - `action: "reaped-orphan-orchestrator-failed"` — emitted only when BOTH `git worktree remove` and `rm -rf` failed (the dir is somehow non-removable — permissions, mount issue). Surfaces the failure for traceability rather than swallowing it silently.
-- Each line carries a `reaped_session_id` field (the embedded session id of the orphan) and `phase: "setup-1.6.5"` so a future debugger can correlate against the prior session's run.
+- Each line carries a `reaped_session_id` field (the RESOLVED occupant id `find-orphan-orchestrators --emit-resolved-id` tested for liveness — stash-first, name-embedded fallback only for a genuinely empty candidate; see [#1234](https://github.com/mattsears18/shipyard/issues/1234) — NOT necessarily the id embedded in the directory name) and `phase: "setup-1.6.5"` so a future debugger can correlate against the prior session's run.
 
 The fallback to raw `rm -rf` is load-bearing: `git worktree remove` fails when the worktree dir is on disk but `.git/worktrees/<name>/` metadata has already been pruned (or was never registered — e.g., a manual `mv` left an `orchestrator-*` dir without git tracking it). Without the fallback, the dir would linger across an unbounded number of subsequent `/do-work` sessions. See [RATIONALE → Step 1.6.5 production trace](../../do-work-RATIONALE.md#step-165--orphan-orchestrator-worktree-production-trace-280) for why this specific failure mode matters in practice.
 
