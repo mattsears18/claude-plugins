@@ -118,7 +118,7 @@ Sort the survivors (non-`needs-triage` issues only — `needs-triage` issues wer
 3. **Type**: `bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` > everything else.
 4. **Staleness**: oldest `updatedAt` first within the same tier — stale work counts.
 
-This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step) → loop ends immediately; report "backlog empty" and stop. Note: `investigate_candidates` being non-empty does NOT constitute a non-empty raw_backlog — the two queues are independent, and the loop continues even when `raw_backlog` is empty but `investigate_candidates` has entries (the step 1.5 dispatch step handles those).
+This ordered list is the initial `raw_backlog`. If empty AND no failing PRs exist (next step), build [`04f-completion-ledger.md`](./04f-completion-ledger.md) before reporting "backlog empty" — stop only once every open issue is bucketed, 0 unaccounted (#1250). `investigate_candidates` non-empty ≠ raw_backlog non-empty — loop continues when raw_backlog is empty but investigate_candidates has entries (step 1.5 handles those).
 
 ### 4.5 Divert checks (main CI + PR pileup)
 
