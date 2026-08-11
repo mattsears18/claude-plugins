@@ -437,5 +437,83 @@ assert_equals "$?" "64" "--source with no argument exits 64 (usage error)"
 rm -rf "$src_root" "$src_home"
 
 echo
+echo "== (J) internal .shipyard-primary-root stash fallback (issue #1059/#1263)"
+
+# Defense-in-depth for the exact repro in issue #1263: a caller invokes
+# this resolver from the orchestrator worktree WITHOUT re-exporting the
+# step-0.56 SHIPYARD_REPO_ROOT preamble first. Every documented dispatch
+# call site carries that preamble (mechanically verified by
+# shipyard-repo-root-preamble.test.sh), but a live orchestrator session's
+# actual tool calls aren't guaranteed to match the spec on every single
+# invocation — this exercises the internal ensure_repo_root_pin() fallback
+# that closes the gap regardless.
+fallback_home="$(mktemp -d)"
+primary_root="$(mktemp -d)"
+cat > "$primary_root/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "fix_checks_only": "claude-sonnet-5" } }
+JSON
+
+# The "worktree" must be a real git repo — ensure_repo_root_pin() resolves
+# it via `git rev-parse --show-toplevel`, same as the orchestrator's own
+# post-relocation worktree.
+fallback_wt="$(mktemp -d)"
+(
+  cd "$fallback_wt" || exit 1
+  git init -q
+  git config user.email test@example.com
+  git config user.name test
+  git commit -q --allow-empty -m init
+)
+printf '%s\n' "$primary_root" > "$fallback_wt/.shipyard-primary-root"
+
+# No SHIPYARD_REPO_ROOT exported at all — resolve_in() below intentionally
+# does NOT set it (unlike every other call in this file), simulating a
+# caller that skipped the preamble.
+resolved="$(
+  cd "$fallback_wt" || exit 1
+  unset SHIPYARD_REPO_ROOT
+  SHIPYARD_HOME="$fallback_home" bash "$RESOLVER" fix-checks-only 2>/dev/null
+)"
+assert_equals "$resolved" "sonnet" \
+  "no SHIPYARD_REPO_ROOT exported: resolver still honors the repo's models.fix_checks_only via the .shipyard-primary-root stash"
+
+# An explicitly-exported SHIPYARD_REPO_ROOT (the documented preamble, or any
+# other deliberate caller) still wins over the stash — the fallback must
+# never clobber an explicit value.
+other_root="$(mktemp -d)"
+cat > "$other_root/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "fix_checks_only": "claude-opus-4-8" } }
+JSON
+resolved="$(
+  cd "$fallback_wt" || exit 1
+  SHIPYARD_REPO_ROOT="$other_root" SHIPYARD_HOME="$fallback_home" bash "$RESOLVER" fix-checks-only 2>/dev/null
+)"
+assert_equals "$resolved" "opus" \
+  "an explicitly-exported SHIPYARD_REPO_ROOT is still authoritative over the .shipyard-primary-root stash"
+
+# No stash file present at all — falls through to plain git-toplevel
+# resolution (cwd itself), unchanged from before this fix.
+no_stash_wt="$(mktemp -d)"
+(
+  cd "$no_stash_wt" || exit 1
+  git init -q
+  git config user.email test@example.com
+  git config user.name test
+  git commit -q --allow-empty -m init
+)
+cat > "$no_stash_wt/shipyard.config.json" <<'JSON'
+{ "version": 1, "models": { "fix_checks_only": "claude-haiku-4-5" } }
+JSON
+resolved="$(
+  cd "$no_stash_wt" || exit 1
+  unset SHIPYARD_REPO_ROOT
+  SHIPYARD_HOME="$fallback_home" bash "$RESOLVER" fix-checks-only 2>/dev/null
+)"
+assert_equals "$resolved" "haiku" \
+  "no stash file and no SHIPYARD_REPO_ROOT: resolver falls back to plain git-toplevel resolution (unchanged prior behavior)"
+
+rm -rf "$fallback_home" "$primary_root" "$fallback_wt" "$other_root" "$no_stash_wt"
+
+echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"
 [[ $fail -eq 0 ]] || exit 1

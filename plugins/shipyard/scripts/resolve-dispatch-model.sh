@@ -172,7 +172,65 @@ normalize_mode() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# Internal SHIPYARD_REPO_ROOT pin fallback (issue #1059/#1263).
+#
+# Every `shipyard-config.sh get` call this script makes resolves the repo
+# root via `git rev-parse --show-toplevel` from cwd UNLESS SHIPYARD_REPO_ROOT
+# is already exported. Post-relocation (commands/do-work/setup/00-config-
+# worktree.md step 0.5), cwd for the rest of the orchestrator session is a
+# fresh `origin/<default-branch>` checkout with no gitignored files — so an
+# unpinned call here silently drops `.shipyard/config.local.json` (and any
+# `shipyard.config.json` override sitting only in the PRIMARY checkout) and
+# falls back to shipyard's own built-in per-mode default. Step 0.56
+# documents the fix as a re-export preamble the CALLER runs immediately
+# before invoking this script — and every documented call site under
+# commands/do-work/ carries it, mechanically verified by
+# scripts/tests/shipyard-repo-root-preamble.test.sh. But that only proves
+# the SPEC says to run the preamble; it can't prove a live orchestrator
+# session's actual tool calls did, every single time (issue #1263's repro:
+# a bare `resolve-dispatch-model.sh fix-checks-only` invocation from the
+# orchestrator worktree, preamble skipped, returned the built-in default
+# instead of the repo's configured override).
+#
+# Resolving the pin HERE — inside the one script every per-dispatch model
+# resolution funnels through, whether invoked directly from a dispatch
+# prompt's bash block or indirectly via session-state.sh's bump-tokens
+# consistency check — closes the class of bug regardless of whether the
+# calling context's own preamble ran. An explicitly-exported
+# SHIPYARD_REPO_ROOT (the documented preamble, or any other caller that set
+# it deliberately) always wins; this is a fallback for when it wasn't set at
+# all, never an override.
+#
+# Safe by construction, not merely by convention, for the "never propagate
+# into a dispatched worker" scope boundary step 0.56 requires: the
+# `.shipyard-primary-root` stash file is written only into the
+# orchestrator's OWN worktree (a plain `>` redirect at pin time, never
+# `git add`ed). A dispatched worker's `agent-*` worktree is a wholly
+# separate `git worktree add` checkout — worktrees share git objects with
+# each other, never untracked working-tree files — so this file
+# structurally cannot exist in a worker's own worktree. This function will
+# simply find nothing there and no-op, exactly like today.
+ensure_repo_root_pin() {
+  if [ -n "${SHIPYARD_REPO_ROOT:-}" ]; then
+    return 0
+  fi
+
+  local toplevel pinned
+  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [ -z "$toplevel" ] || [ ! -f "${toplevel}/.shipyard-primary-root" ]; then
+    return 0
+  fi
+
+  pinned="$(cat "${toplevel}/.shipyard-primary-root" 2>/dev/null)"
+  if [ -n "$pinned" ]; then
+    export SHIPYARD_REPO_ROOT="$pinned"
+  fi
+}
+
 main() {
+  ensure_repo_root_pin
+
   if [ "${1:-}" = "--map" ]; then
     if [ "$#" -ne 2 ]; then
       echo "usage: $0 --map <model-id>" >&2
