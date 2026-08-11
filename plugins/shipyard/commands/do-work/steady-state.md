@@ -21,6 +21,8 @@ Never end the turn with prose. No "Next: …" narration, no status recap, no "I'
 
 The agent's last line tells you what happened.
 
+**Invariant: only the agent's own terminal return line reconciles a slot — never a live PR-state read taken alone ([#1235](https://github.com/mattsears18/shipyard/issues/1235)).** A PR observed as `MERGED` with green checks (via step D's periodic refresh, the merge-method-drift check below, or any ad-hoc `gh pr view`/`gh issue view`) means the merge train finished, not that the dispatched worker's own post-push verification has completed — a `fix-checks-only` worker's normal tail (push → watch the rollup settle → verify → return) routinely overlaps with auto-merge firing. Do not treat a `MERGED` observation, by itself, as license to run this step's parse, release the slot in step B, or reap the worktree — the worker may still be executing, and doing so empties `.in_flight` (the very guard [`dont.md`](./dont.md#dont-conflate-pr-merged-with-worker-done-issue-1235) relies on) before the worker has actually returned. Wait for the worker's own terminal string, or a formal stall/crash detection ([A.0.5](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1s-return-string-parsing)).
+
 #### A.−1. Reconcile-once gate — skip phantom re-fires (MANDATORY — first thing in the turn)
 
 **This gate is the first thing the orchestrator does on a wake — before A.0's token attribution, before A.1's return-string parsing, before anything else.** Closes [#317](https://github.com/mattsears18/shipyard/issues/317).
@@ -1382,6 +1384,8 @@ For **spike work** (`spiked+shipped` / `spiked+needs-human-review` / `blocked` /
 The mid-session blocked-issue re-evaluation sweep ([#245](https://github.com/mattsears18/shipyard/issues/245)) was **removed** in [#521](https://github.com/mattsears18/shipyard/issues/521) along with the `blocked:agent-hard` label it reconciled. Its entire job was to auto-clear the redundant `blocked:agent-hard` label mid-session when a shipped PR closed a referenced blocker — but dependency-wait issues no longer carry a label. They are gated purely by the [`Blocked by #N` body-reference filter](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) (bucket 7 / step 4), which already stops dropping the issue the instant the referenced blocker closes. Step C's [lightweight backlog re-check](#c-dispatch-a-replacement-if-work-remains--mandatory-action) runs that filter on every dispatch, so a blocker that closes mid-session re-admits its dependents on the next dispatch turn with no targeted sweep — the body-ref filter is the complete mechanism. See [setup.md step 3d.2](./setup/01c-label-recovery-refine.md#3-ensure-label-exists--recover-from-prior-session) for the companion removal of session-start sub-sweep a.
 
 ### B. Release the slot
+
+**Never reach this step from a PR-state observation alone — only from this turn's already-parsed A.1 return ([#1235](https://github.com/mattsears18/shipyard/issues/1235); see the invariant at the top of step A).** By the time this step runs, step A has parsed a genuine terminal return string for the slot being released; that parse — never a live `MERGED` read taken on its own — is what licenses the removal below.
 
 Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
