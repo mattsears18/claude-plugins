@@ -77,12 +77,32 @@ trap 'rm -f "$setup_path"' EXIT
 # operator-phase content regardless of which operate/ sub-file it now lives in.
 steady_state_router_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
+# disk_space_guard_path (issue #1261): steady-state.md's own phase-file size
+# was already within ~150 bytes of the #611 cap on main, so the disk-space
+# backpressure check's full mechanism (bash + the #832/#836-safety
+# explanation) lives in this sibling fragment instead — steady-state.md
+# itself keeps only a short pointer paragraph. Folded into the same
+# concatenation as dispatch_rules_path/operate_path so content assertions
+# below keep finding it regardless of which physical file it lives in.
+disk_space_guard_path="$repo_root/plugins/shipyard/commands/do-work/disk-space-guard.md"
+# invariant_line_path (issue #1261): the step-E per-token "what it means /
+# when it's set / divergence smells" narrative (tokens_attributed,
+# last_fresh_fetch, unfiltered_open_count, me_assigned_open, operator_q/
+# operator, peers, and now disk_free_mb) moved to this sibling file for the
+# same #611 size-cap reason as disk_space_guard_path above — steady-state.md
+# itself keeps only the format templates, the state= definition, the
+# idle_reason enum, and the mandatory self-checks inline. Folded into the
+# same concatenation so the many pre-existing `assert_contains
+# "$steady_state_path" …` assertions below (added for #1193/#1194, written
+# when this content still lived inline) keep finding it regardless of which
+# physical file it now lives in.
+invariant_line_path="$repo_root/plugins/shipyard/commands/do-work/invariant-line.md"
 operate_router_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
 operate_dir="$repo_root/plugins/shipyard/commands/do-work/operate"
 operate_path="$(mktemp -t do-work-operate-concat.XXXXXX)"
 cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
 steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
-cat "$steady_state_router_path" "$dispatch_rules_path" "$operate_path" > "$steady_state_path" 2>/dev/null
+cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$invariant_line_path" "$operate_path" > "$steady_state_path" 2>/dev/null
 trap 'rm -f "$setup_path" "$operate_path" "$steady_state_path"' EXIT
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
@@ -204,6 +224,8 @@ assert_file_exists "$rationale_path" "commands/do-work-RATIONALE.md exists"
 assert_file_exists "$setup_router_path" "commands/do-work/setup.md exists (thin router)"
 assert_file_exists "$steady_state_router_path" "commands/do-work/steady-state.md exists (hot-path file)"
 assert_file_exists "$dispatch_rules_path" "commands/do-work/dispatch-rules.md exists (#616 reference split)"
+assert_file_exists "$disk_space_guard_path" "commands/do-work/disk-space-guard.md exists (#1261 sibling-split)"
+assert_file_exists "$invariant_line_path" "commands/do-work/invariant-line.md exists (#1261 sibling-split)"
 assert_file_exists "$drain_path" "commands/do-work/drain.md exists"
 assert_file_exists "$cleanup_path" "commands/do-work/cleanup-summary.md exists"
 assert_file_exists "$dont_path" "commands/do-work/dont.md exists"
@@ -2801,10 +2823,10 @@ assert_contains "$steady_state_path" \
   'issues/1193' \
   "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=<k>' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=0' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -2852,10 +2874,10 @@ assert_contains "$steady_state_path" \
   'issues/1194' \
   "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=<k>' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=0' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -2910,6 +2932,52 @@ assert_contains "$drain_path" \
 assert_contains "$dont_path" \
   "Don't hand-roll an ad-hoc \`gh issue list\` query mid-session" \
   "dont.md prohibits ad-hoc backlog queries that bypass the canonical wide-fetch + client-side filter (#1194)"
+
+# (U) A long session accumulates one agent-* worktree per dispatch; the
+# per-completion reap points (A.0.5/A.1/step B/dispatch-rules.md 2d) are
+# each individually correct, but a real session still accumulated ~20
+# worktrees over ~20 dispatches and drove a shared host to ENOSPC,
+# taking its self-hosted CI runner pool down with it (issue #1261). Fix:
+# a mid-session disk-space backpressure check at step C, before every
+# dispatch decision, that runs a bounded reap-stale sweep whenever free
+# space drops below worktree_reap.disk_free_floor_mb — reusing reap-stale
+# unmodified so the #832 in-flight guard and the #836 never-infer-from-
+# branch-name guard are enforced by construction, never re-derived here.
+assert_contains "$steady_state_path" \
+  'issues/1261' \
+  "steady-state.md cites issue #1261 as the source of the disk-space backpressure check"
+assert_contains "$steady_state_path" \
+  'Disk-space backpressure check' \
+  "steady-state.md step C documents the disk-space backpressure check"
+# shellcheck disable=SC2016
+# Dollar-sign variable refs here are literal characters inside a fenced
+# bash code block quoted in the markdown, not something this test script
+# expands.
+assert_contains "$steady_state_path" \
+  '"${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" disk-check' \
+  "steady-state.md step C probes free space via the worktree-reap.sh disk-check subcommand"
+assert_contains "$steady_state_path" \
+  'worktree_reap.disk_free_floor_mb' \
+  "steady-state.md step C reads the disk_free_floor_mb config knob"
+assert_contains "$steady_state_path" \
+  'must never weaken' \
+  "steady-state.md's disk-space check explicitly disclaims weakening #832/#836 to achieve its goal"
+assert_contains "$steady_state_path" \
+  'never blocks or delays dispatch itself' \
+  "steady-state.md's disk-space check is advisory-and-reclaim, never a dispatch-blocking hold (#1261)"
+assert_contains "$steady_state_path" \
+  'disk_free_mb=<N|"unknown">' \
+  "steady-state.md step E invariant line documents the disk_free_mb token shape (#1261)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  'A missing `disk_free_mb=` token entirely is a contract violation' \
+  "steady-state.md treats a missing disk_free_mb= token as a contract violation (#1261)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  '`operator_q=`, `operator=`, `peers=`, `disk_free_mb=`' \
+  "steady-state.md's token-presence self-check enumerates disk_free_mb= among the mandatory tokens (#1261)"
 
 echo
 if (( fail > 0 )); then
