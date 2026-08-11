@@ -554,6 +554,7 @@ Usage:
                         [--lock-pid <pid|null>] \
                         [--reaped-session-id <id>] [--phase <p>] \
                         [--skip-remove] [--force-evidence <reason>]
+  worktree-reap.sh disk-check --path <dir> [--floor-mb <N>]
 
 classify-lock — Prints one of: no-lock | dead | self-ancestor |
                           peer-alive-stale | peer-alive. peer-alive-stale
@@ -715,6 +716,18 @@ reap                    — Performs the worktree-remove (when applicable)
                                                     -raw-rm variant
                                                     (requires
                                                     --reaped-session-id).
+
+disk-check              — Issue #1261. Read-only free-space probe against
+                          the volume holding a given directory (the caller
+                          passes the worktree volume root). Prints
+                          `free_mb=<N|unknown> floor_mb=<F> low=<true|false>`
+                          and always exits 0 on well-formed args — never
+                          fails closed on an unreadable df result (see the
+                          disk_free_check docstring). --floor-mb defaults
+                          to 0, which disables the low=true trip entirely.
+                          steady-state.md's step C uses this to decide
+                          whether to run a mid-session reap-stale sweep
+                          before dispatching a replacement worker.
 
 Env vars:
   SHIPYARD_ORCHESTRATOR_PID  Explicit orchestrator PID for self-ancestor
@@ -1795,6 +1808,118 @@ sweep_tombstones_cmd() {
   else
     sweep_stray_tombstones "$repo_root/.claude/worktrees"
   fi
+  return 0
+}
+
+# Issue #1261 — mid-session disk-space backpressure signal. A long
+# /shipyard:do-work session accumulates one agent-* worktree per dispatch;
+# the per-completion reap points (A.0.5 / A.1 / step B / dispatch-rules.md
+# 2d) are each individually correct, but the #1261 repro showed the disk
+# can still fill mid-session regardless — 21 worktrees accumulated over
+# roughly one per dispatch in a single ~4h session despite every one of
+# those reap points existing and running. This subcommand is the backstop:
+# a cheap, read-only free-space probe steady-state.md's step C consults
+# BEFORE every dispatch decision, to trigger a reclaiming `reap-stale`
+# sweep whenever free space drops below a configurable floor — never a
+# replacement for the per-completion reap points, a defense-in-depth catch
+# for whatever gap lets them fall behind.
+#
+# Deliberately fails OPEN, not closed — this is the opposite posture from
+# `agent_return_recorded`-style destructive-action gates elsewhere in this
+# file. An unreadable `df` result must never itself become a reason to
+# withhold dispatch; the check exists purely to trigger a reclaim sweep
+# earlier than an actual ENOSPC failure would, so "can't tell" degrades to
+# "assume fine, dispatch proceeds" rather than stalling a session over a
+# transient/portability `df` hiccup.
+#
+# `df -Pk <path>` (not a bare `df -h`) is used deliberately: -P forces
+# POSIX single-line-per-filesystem output (avoids the long-device-name
+# line-wrap that a bare `df` can produce on Linux) and -k fixes the block
+# size at 1024 bytes on BOTH BSD/macOS and GNU/Linux `df`, so the "4th
+# field of line 2" parse is portable without needing the
+# `stat -c/-f`-style dual-flavor fallback the rest of this file uses
+# elsewhere (issue #825/#1207's cross-platform stat handling).
+#
+# Args:
+#   --path <dir>       (required) directory to probe — the caller passes
+#                       the worktree volume root (where .claude/worktrees
+#                       lives), not any specific worktree.
+#   --floor-mb <N>      (optional, default 0 — disables the low=true trip)
+#
+# Output (always exactly one line, always exit 0 on well-formed args):
+#   free_mb=<N|unknown> floor_mb=<F> low=<true|false>
+#
+# free_mb=unknown (df failed, path unreadable, or unparseable output) always
+# pairs with low=false — an unreadable signal is never treated as "low."
+#
+# Exit codes: 0 (probe attempted, output always emitted), 64 (bad usage —
+# missing --path, or a non-numeric --floor-mb).
+disk_free_check() {
+  local path=""
+  local floor_mb=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --path)
+        path="${2:-}"
+        shift 2
+        ;;
+      --path=*)
+        path="${1#--path=}"
+        shift
+        ;;
+      --floor-mb)
+        if [ -z "${2:-}" ] || ! [[ "$2" =~ ^[0-9]+$ ]]; then
+          echo "disk-check: --floor-mb requires a non-negative integer (got: ${2:-})" >&2
+          return 64
+        fi
+        floor_mb="$2"
+        shift 2
+        ;;
+      --floor-mb=*)
+        local fmb_val="${1#--floor-mb=}"
+        if ! [[ "$fmb_val" =~ ^[0-9]+$ ]]; then
+          echo "disk-check: --floor-mb requires a non-negative integer (got: $fmb_val)" >&2
+          return 64
+        fi
+        floor_mb="$fmb_val"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "disk-check: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "disk-check: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$path" ]; then
+    echo "disk-check: --path is required" >&2
+    return 64
+  fi
+
+  local avail_kb
+  avail_kb=$(df -Pk "$path" 2>/dev/null | awk 'NR==2{print $4}')
+
+  if [ -z "$avail_kb" ] || ! [[ "$avail_kb" =~ ^[0-9]+$ ]]; then
+    # --path doesn't exist yet, df isn't on PATH, or the output shape was
+    # unexpected — fail open (see docstring above).
+    echo "free_mb=unknown floor_mb=${floor_mb} low=false"
+    return 0
+  fi
+
+  local free_mb=$(( avail_kb / 1024 ))
+  local low="false"
+  if [ "$floor_mb" -gt 0 ] && [ "$free_mb" -lt "$floor_mb" ]; then
+    low="true"
+  fi
+  echo "free_mb=${free_mb} floor_mb=${floor_mb} low=${low}"
   return 0
 }
 
@@ -3011,6 +3136,13 @@ main() {
       # mapping and field semantics.
       shift
       reap_action "$@"
+      ;;
+    disk-check)
+      # Issue #1261 — mid-session disk-space backpressure probe. See
+      # disk_free_check's docstring for the full contract (fails open,
+      # never blocks dispatch on an unreadable df result).
+      shift
+      disk_free_check "$@"
       ;;
     -h|--help|help|"")
       usage

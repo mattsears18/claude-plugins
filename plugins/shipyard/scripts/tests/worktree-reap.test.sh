@@ -2689,6 +2689,96 @@ git_wt_intact=$(git -C "$rs_repo" worktree list --porcelain 2>/dev/null | grep -
 assert_equals "$git_wt_intact" "1" \
   "(112g) git itself still considers agent-live a registered worktree after the sweep"
 
+# ============================================================================
+# Issue #1261 — `disk-check` subcommand. Mid-session disk-space
+# backpressure probe steady-state.md's step C consults before every
+# dispatch decision, to trigger a reclaiming reap-stale sweep before the
+# disk actually fills — a backstop for whatever gap lets the ordinary
+# per-completion reap points (A.0.5/A.1/step B/dispatch-rules.md 2d) fall
+# behind. Deliberately fails OPEN on an unreadable df result (never a
+# reason to withhold dispatch), unlike the destructive-action gates
+# elsewhere in this file.
+# ============================================================================
+
+run_disk_check() {
+  bash "$helper" disk-check "$@"
+}
+
+# --- (113) --path is required ---
+result=$(run_disk_check --floor-mb 100 2>&1)
+rc=$?
+assert_exit_code "$rc" "64" \
+  "(113) disk-check without --path exits 64"
+
+# --- (114) --floor-mb must be a non-negative integer ---
+result=$(run_disk_check --path "$tmpdir" --floor-mb notanumber 2>&1)
+rc=$?
+assert_exit_code "$rc" "64" \
+  "(114) disk-check --floor-mb rejects a non-numeric value"
+
+# --- (115) unknown flag rejected ---
+result=$(run_disk_check --path "$tmpdir" --bogus-flag 2>&1)
+rc=$?
+assert_exit_code "$rc" "64" \
+  "(115) disk-check rejects an unknown flag"
+
+# --- (116) valid path, no --floor-mb (default 0) -> low is always false ---
+result=$(run_disk_check --path "$tmpdir")
+rc=$?
+assert_exit_code "$rc" "0" \
+  "(116) disk-check on a real path with no floor exits 0"
+case "$result" in
+  *"low=false"*) low_default_ok=1 ;;
+  *) low_default_ok=0 ;;
+esac
+assert_equals "$low_default_ok" "1" \
+  "(116a) disk-check defaults --floor-mb to 0, which never trips low=true"
+case "$result" in
+  free_mb=*' floor_mb=0 low=false') shape_ok=1 ;;
+  *) shape_ok=0 ;;
+esac
+assert_equals "$shape_ok" "1" \
+  "(116b) disk-check output shape is 'free_mb=<N> floor_mb=<F> low=<bool>'"
+
+# --- (117) an absurdly high floor trips low=true on a real, finite disk ---
+result=$(run_disk_check --path "$tmpdir" --floor-mb 999999999999)
+assert_exit_code "$?" "0" \
+  "(117) disk-check with a huge floor still exits 0 (advisory, never a usage error)"
+case "$result" in
+  *"low=true"*) low_true_ok=1 ;;
+  *) low_true_ok=0 ;;
+esac
+assert_equals "$low_true_ok" "1" \
+  "(117a) disk-check reports low=true once free space is below the floor"
+
+# --- (118) --floor-mb 0 explicitly -> never trips low=true regardless ---
+result=$(run_disk_check --path "$tmpdir" --floor-mb 0)
+case "$result" in
+  *"low=false"*) explicit_zero_ok=1 ;;
+  *) explicit_zero_ok=0 ;;
+esac
+assert_equals "$explicit_zero_ok" "1" \
+  "(118) disk-check --floor-mb 0 explicitly disables the low=true trip"
+
+# --- (119) an unreadable path fails OPEN: free_mb=unknown, low=false, exit 0 ---
+result=$(run_disk_check --path "/nonexistent-path-issue-1261-$$" --floor-mb 100)
+rc=$?
+assert_exit_code "$rc" "0" \
+  "(119) disk-check on an unreadable path still exits 0 (fails open)"
+assert_equals "$result" "free_mb=unknown floor_mb=100 low=false" \
+  "(119a) disk-check on an unreadable path reports free_mb=unknown, low=false — never a reason to withhold dispatch"
+
+# --- (120) --path=<val> / --floor-mb=<val> equals-form accepted ---
+result=$(run_disk_check --path="$tmpdir" --floor-mb=0)
+assert_exit_code "$?" "0" \
+  "(120) disk-check accepts the --flag=value form"
+case "$result" in
+  *"low=false"*) equals_form_ok=1 ;;
+  *) equals_form_ok=0 ;;
+esac
+assert_equals "$equals_form_ok" "1" \
+  "(120a) --flag=value form produces the same shape as the two-arg form"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
