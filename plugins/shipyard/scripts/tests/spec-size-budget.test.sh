@@ -118,6 +118,19 @@
 # (2026-08-09) — the new "Never create a credential" section (569 bytes) fit
 # inside the ~864 bytes of headroom left after #1135's last raise.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 60000 -> 61000 by
+# #1220 (2026-08-11): a new "File-path form" bullet in "Return-contract
+# discipline" states the expected path form (repo-relative, never
+# worktree- or primary-checkout-absolute) for any file paths a worker
+# names in its return — always-loaded because the ambiguity it closes
+# (a correct worker's return reading identically to an actual primary-
+# checkout isolation violation) can arise on any dispatch, in any mode,
+# not behind a rare/opt-in condition a fragment stub could gate on.
+# Trimmed twice (once to the terseness of the "Never create a credential"
+# section, once more after that still didn't fit) before touching this
+# ceiling; the file had only 39 bytes of headroom left after #1135's raise,
+# so even the trimmed ~700-byte bullet needed the bump.
+#
 # issue-work.md's ceiling was raised 120000 -> 121000 by #1166 (2026-08-09):
 # a P0 security-boundary fix — a worker minted a live GCP service-account key
 # to work around a missing credential rather than handing back — added a
@@ -192,7 +205,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  60000 \
+  61000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
