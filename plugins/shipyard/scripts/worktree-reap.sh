@@ -65,15 +65,19 @@
 #                          env var or `--orchestrator-pid` flag) or (b) our
 #                          own / an ancestor of ours (safe to reap —
 #                          orchestrator owns this lock)
-#       peer-alive-stale — lock PID is alive, is NOT self/ancestor, BUT the
-#                          lock file's mtime is older than the staleness
-#                          floor (default 60 min; `SHIPYARD_PEER_LOCK_STALE_MIN`
-#                          / `--peer-stale-min <N>`). Safe to reap — see
-#                          "Why a second gate" below (issue #755).
-#       peer-alive       — lock PID is alive, is NOT self/ancestor, AND the
-#                          lock file is within the staleness floor (defer —
-#                          likely a genuine peer agent or other instance
-#                          still running)
+#       peer-alive-stale — lock PID is alive, is NOT self/ancestor, AND
+#                          EITHER (a) the lock's own recorded `start <ctime>`
+#                          field disagrees with `ps -o lstart` for that PID
+#                          (PID-reuse suspected — issue #1207, see "Why a
+#                          third gate" below) OR (b) the lock file's mtime is
+#                          older than the staleness floor (default 60 min;
+#                          `SHIPYARD_PEER_LOCK_STALE_MIN` / `--peer-stale-min
+#                          <N>` — issue #755). Safe to reap either way.
+#       peer-alive       — lock PID is alive, is NOT self/ancestor, its
+#                          recorded start time (when present) is corroborated
+#                          by `ps -o lstart`, AND the lock file is within the
+#                          staleness floor (defer — likely a genuine peer
+#                          agent or other instance still running)
 #     Env vars:
 #       SHIPYARD_ORCHESTRATOR_PID — explicit orchestrator PID. Takes
 #                        precedence over the ancestor walk for the
@@ -82,6 +86,13 @@
 #       SHIPYARD_PEER_LOCK_STALE_MIN — peer-alive staleness floor in minutes
 #                        (default 60). Overridden by `--peer-stale-min <N>`
 #                        if both are set.
+#       SHIPYARD_LOCK_START_TOLERANCE_SEC — tolerance (in seconds, default
+#                        120) for the start-time cross-check below. A
+#                        difference within this window is still treated as
+#                        corroborated (absorbs sub-minute rounding between
+#                        when the harness recorded the start time and when
+#                        the OS itself considers the process to have
+#                        started).
 #     Exit codes:
 #       0  classification emitted
 #       64 bad usage (missing path, malformed flag value)
@@ -106,6 +117,45 @@
 # watches typically settle in 5-20 min — see `fix-checks-only.md` §6.a) and
 # well below the hours-to-days staleness a genuinely-orphaned worktree
 # exhibits, so a still-legitimately-running peer is never force-reaped.
+#
+# Why a third gate on `peer-alive` (issue #1207). The #755 gate above
+# corroborates liveness with the LOCK FILE's own mtime — a proxy signal
+# (is the lock still being touched). This gate corroborates it directly: the
+# harness's session-level lock format additionally records `(pid <N> start
+# <ctime>)`, and `ps -o lstart` reports the SAME still-alive PID's ACTUAL
+# start time. If a dead prior-session PID gets recycled by the OS onto an
+# unrelated live process before a reap sweep runs, `pid_alive` alone can't
+# tell — but the recycled process's real start time will essentially never
+# coincide with the time the original, now-dead process recorded in the
+# lock. A mismatch is strong, direct evidence the PID was reused.
+#
+# The catch, confirmed live against a real production lock during #1207's
+# investigation: the SAME still-live process's lock-recorded start time and
+# `ps -o lstart`'s reading of it can disagree by exactly the host's local
+# UTC offset —
+#   Lock file: ... (pid 52469 start Mon Aug 10 12:58:36 2026)
+#   ps -p 52469 -o lstart=:        Mon Aug 10 08:58:36 2026
+# — same process, same instant, 4 hours apart (EDT is UTC-4). A naive
+# string/epoch comparison would misclassify this genuinely-live process as
+# PID-reuse-stale: the OPPOSITE failure mode from the one this gate exists
+# to catch, and a strictly worse one — misclassifying a STALE lock as live
+# only defers a reap (wasted disk); misclassifying a LIVE lock as stale
+# enables reaping a running session's worktree (destructive, irreversible).
+#
+# Whether the harness always records this field in UTC, or only happens to
+# on some hosts (its own process environment's TZ, not a documented
+# contract), could not be established with confidence — so the comparison
+# (`lock_start_corroborates_ps()` below) does not assume either reading. It
+# accepts a match at EITHER interpretation: the lock's `start` field parsed
+# as UTC, or parsed as this host's own local zone (the same zone `ps
+# -o lstart` itself renders in) — plus a small tolerance window for
+# sub-second/sub-minute rounding. Only when NEITHER interpretation
+# corroborates `ps -o lstart` is a mismatch declared. Locks with no `start`
+# field at all (the common `claude agent <agent-id> (pid <N>)` shape, which
+# carries no start time to begin with) skip this gate entirely and fall
+# through to the #755 mtime gate unchanged — this is new corroboration on
+# top of the existing gates, not a replacement, and a no-op wherever the
+# harness doesn't record a start time.
 #
 # Callers should reap on `no-lock` / `dead` / `self-ancestor` /
 # `peer-alive-stale`, defer on `peer-alive` and `unknown`. Every existing
@@ -681,6 +731,161 @@ pid_alive() {
   ps -p "$pid" -o pid= >/dev/null 2>&1
 }
 
+# Issue #1207 — extract the `start <ctime>` field's VALUE from lock-file
+# CONTENT already read into a variable. `extract_lock_start()` below wraps
+# this for single-file call sites (classify-lock); `classify_all`'s Pass 1
+# calls this directly against content it already read, to avoid a second
+# file read per lock.
+#
+# Lock-file format: `... (pid <N> start <ctime>)`, where <ctime> is a
+# `ps -o lstart`-shaped string, e.g. `Mon Aug 10 12:58:36 2026`. NOT every
+# lock carries a `start` field — only the harness's session-level lock does
+# today (the common `claude agent <agent-id> (pid <N>)` shape has none) — so
+# an empty return is the expected, common case, not an error.
+extract_lock_start_from_content() {
+  local content="$1"
+  [ -n "$content" ] || return 0
+  # Anchor on `pid <N> start` rather than a bare `start ` (issue #1207
+  # CI-regression fix). A bare `start [^)]+\)` false-matches any lock whose
+  # agent-id happens to end in "start" — e.g. the common
+  # `agent-<id>-nostart (pid <N>)` shape used by this file's own no-start-field
+  # test fixture: "...nostart (pid 12345)" contains the literal substring
+  # "start (pid 12345)", which the bare pattern happily matches and extracts
+  # as if it were the ctime value. The extracted garbage ("(pid 12345") then
+  # fails to parse as a ctime on macOS/BSD `date` (both zone interpretations
+  # end up empty, so `lock_start_corroborates_ps()` still calls it
+  # "corroborated") but DOES parse on GNU `date -d` — which is why this
+  # shipped locally green and only broke on Linux CI: `expected: peer-alive,
+  # actual: peer-alive-stale`. Requiring the literal `pid <N> ` immediately
+  # before `start` mirrors extract_lock_pid()'s own `\(pid[[:space:]]+[0-9]+`
+  # anchor above and only matches the real `(pid <N> start <ctime>)` shape,
+  # never a coincidental "start" substring elsewhere in the lock content.
+  printf '%s' "$content" | grep -oE 'pid[[:space:]]+[0-9]+[[:space:]]+start [^)]+\)' 2>/dev/null \
+    | sed -E 's/^pid[[:space:]]+[0-9]+[[:space:]]+start //; s/\)[[:space:]]*$//' \
+    | head -1
+}
+
+# File-based wrapper around extract_lock_start_from_content() above, for
+# classify-lock's single-lock-file call sites.
+extract_lock_start() {
+  local lock_file="$1"
+  [ -f "$lock_file" ] || return 0
+  extract_lock_start_from_content "$(<"$lock_file")"
+}
+
+# Issue #1207 — parse a `ps -o lstart`-shaped ctime string
+# ("Mon Aug 10 12:58:36 2026") to epoch seconds, interpreting it in the zone
+# named by `$2` ("utc" or "local"). Prints the epoch on stdout and returns 0
+# on success; returns 1 (no stdout) when the string can't be parsed at all.
+#
+# Two independent parse strategies are tried, GNU first then BSD, mirroring
+# every other GNU/BSD dual-path already in this file (e.g. the `stat -c` /
+# `stat -f` fallback pair a few functions down). GNU `date -d` accepts the
+# ctime string directly; BSD/macOS `date -j -f` needs an explicit format
+# string. `TZ=<zone> date ...` reinterprets a zone-less input string AS that
+# zone before converting to epoch — this is the whole mechanism issue
+# #1207's fix rests on (verified against a real lock/`ps` pair during that
+# issue's investigation: `TZ=UTC date -j -f "%a %b %e %T %Y" "<lock start>"
+# +%s` reproduced the exact epoch the SAME process's actual start time
+# converts to).
+parse_ctime_epoch() {
+  local ctime_str="$1"
+  local zone="$2"
+  [ -n "$ctime_str" ] || return 1
+
+  local epoch=""
+  if [ "$zone" = "utc" ]; then
+    epoch=$(TZ=UTC date -d "$ctime_str" +%s 2>/dev/null)
+    if [ -z "$epoch" ]; then
+      epoch=$(TZ=UTC date -j -f "%a %b %e %T %Y" "$ctime_str" +%s 2>/dev/null)
+    fi
+  else
+    epoch=$(date -d "$ctime_str" +%s 2>/dev/null)
+    if [ -z "$epoch" ]; then
+      epoch=$(date -j -f "%a %b %e %T %Y" "$ctime_str" +%s 2>/dev/null)
+    fi
+  fi
+
+  [[ "$epoch" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$epoch"
+  return 0
+}
+
+# Issue #1207 — cross-check a lock's own recorded `start <ctime>` field
+# against `ps -o lstart` for the same (alive) PID. See the "Why a third
+# gate" comment near the top of this file for the full rationale, the
+# timezone-mismatch hazard, and why this fails safe.
+#
+# Args: $1 = the lock's recorded start-time string (may be empty — a lock
+#            with no `start` field), $2 = the pid to check against.
+#
+# Prints one token on stdout:
+#   corroborated — one of the two zone interpretations (UTC or this host's
+#                  local zone) matches `ps -o lstart` within tolerance, OR
+#                  nothing could be compared at all (no `start` field, `ps`
+#                  couldn't report `lstart`, or a timestamp failed to
+#                  parse) — "cannot confidently establish reuse" must NEVER
+#                  be treated as reuse (fail safe, not fail open — #1207's
+#                  explicit hazard: misclassifying a live lock as stale
+#                  enables reaping a running session's worktree).
+#   mismatch     — NEITHER interpretation matches; PID reuse is suspected.
+# Always returns 0 — this classifies, it never errors.
+lock_start_corroborates_ps() {
+  local lock_start="$1"
+  local pid="$2"
+  local tolerance="${SHIPYARD_LOCK_START_TOLERANCE_SEC:-120}"
+  [[ "$tolerance" =~ ^[0-9]+$ ]] || tolerance=120
+
+  if [ -z "$lock_start" ]; then
+    echo "corroborated"
+    return 0
+  fi
+
+  local ps_start
+  ps_start=$(ps -p "$pid" -o lstart= 2>/dev/null | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+  if [ -z "$ps_start" ]; then
+    echo "corroborated"
+    return 0
+  fi
+
+  local ps_epoch
+  ps_epoch=$(parse_ctime_epoch "$ps_start" local)
+  if [ -z "$ps_epoch" ]; then
+    echo "corroborated"
+    return 0
+  fi
+
+  local lock_epoch_utc lock_epoch_local
+  lock_epoch_utc=$(parse_ctime_epoch "$lock_start" utc) || lock_epoch_utc=""
+  lock_epoch_local=$(parse_ctime_epoch "$lock_start" local) || lock_epoch_local=""
+
+  if [ -z "$lock_epoch_utc" ] && [ -z "$lock_epoch_local" ]; then
+    echo "corroborated"
+    return 0
+  fi
+
+  local diff
+  if [ -n "$lock_epoch_utc" ]; then
+    diff=$(( ps_epoch - lock_epoch_utc ))
+    [ "$diff" -lt 0 ] && diff=$(( -diff ))
+    if [ "$diff" -le "$tolerance" ]; then
+      echo "corroborated"
+      return 0
+    fi
+  fi
+  if [ -n "$lock_epoch_local" ]; then
+    diff=$(( ps_epoch - lock_epoch_local ))
+    [ "$diff" -lt 0 ] && diff=$(( -diff ))
+    if [ "$diff" -le "$tolerance" ]; then
+      echo "corroborated"
+      return 0
+    fi
+  fi
+
+  echo "mismatch"
+  return 0
+}
+
 # Walk our own ancestor chain and emit each PID on its own line: self, parent,
 # grandparent, ... up to PID 1 (init) or until `ps` stops resolving.
 #
@@ -859,6 +1064,22 @@ classify_lock() {
     return 0
   fi
 
+  # Issue #1207 — third gate: cross-check the lock's own recorded start
+  # time against `ps -o lstart` for this (alive, non-self) pid BEFORE
+  # trusting PID liveness alone. See lock_start_corroborates_ps()'s
+  # docstring and the "Why a third gate" comment at the top of this file for
+  # the full rationale and the fail-safe posture. A mismatch is direct
+  # evidence of PID reuse — reap-eligible regardless of the lock file's own
+  # mtime freshness, so this short-circuits straight to peer-alive-stale
+  # rather than falling into the #755 mtime gate below.
+  local lock_start corroboration
+  lock_start=$(extract_lock_start "$lock_file")
+  corroboration=$(lock_start_corroborates_ps "$lock_start" "$lock_pid")
+  if [ "$corroboration" = "mismatch" ]; then
+    echo "peer-alive-stale"
+    return 0
+  fi
+
   # Issue #755 — second gate before committing to `peer-alive`. PID
   # liveness alone can't distinguish a genuine peer from a dead
   # prior-session PID the OS has since recycled onto an unrelated live
@@ -1019,6 +1240,11 @@ classify_all() {
   local names=()
   local lock_exists=()
   local lock_pids=()
+  # Issue #1207 — parallel array of each lock's recorded `start <ctime>`
+  # field (empty string when the lock has none, the common case). Extracted
+  # from `content` here, alongside the pid regex, so Pass 5's cross-check
+  # costs no additional file read.
+  local lock_starts=()
   local d name lock_file content pid
   while IFS= read -r d; do
     [ -z "$d" ] && continue
@@ -1041,9 +1267,11 @@ classify_all() {
       else
         pid=""
       fi
+      lock_starts+=("$(extract_lock_start_from_content "$content")")
     else
       lock_exists+=("0")
       pid=""
+      lock_starts+=("")
     fi
     lock_pids+=("$pid")
   done < <(find "$git_wt_dir" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | sort)
@@ -1176,19 +1404,32 @@ classify_all() {
       elif [[ "$self_ancestor_blob" == *$'\n'"$pid"$'\n'* ]]; then
         classification="self-ancestor"
       else
-        local lock_mtime now age_min
-        lock_mtime=$(stat -c %Y "$git_wt_dir/$name/locked" 2>/dev/null \
-          || stat -f %m "$git_wt_dir/$name/locked" 2>/dev/null)
-        now=$(date +%s 2>/dev/null || echo "")
-        if [ -n "$lock_mtime" ] && [ -n "$now" ]; then
-          age_min=$(( (now - lock_mtime) / 60 ))
-          if [ "$age_min" -ge "$peer_stale_min" ] 2>/dev/null; then
-            classification="peer-alive-stale"
+        # Issue #1207 — same third gate as classify_lock: cross-check this
+        # lock's recorded start time (already extracted into lock_starts[]
+        # in Pass 1, no extra file read) against `ps -o lstart` for this
+        # pid. This DOES pay one extra `ps -p` subprocess call, but only for
+        # locks that reach this branch (alive, not self/ancestor) — the same
+        # rare branch that already pays a per-lock `stat` call below, so it
+        # doesn't reintroduce the O(n) cost classify_all exists to avoid.
+        local corroboration
+        corroboration=$(lock_start_corroborates_ps "${lock_starts[$i]}" "$pid")
+        if [ "$corroboration" = "mismatch" ]; then
+          classification="peer-alive-stale"
+        else
+          local lock_mtime now age_min
+          lock_mtime=$(stat -c %Y "$git_wt_dir/$name/locked" 2>/dev/null \
+            || stat -f %m "$git_wt_dir/$name/locked" 2>/dev/null)
+          now=$(date +%s 2>/dev/null || echo "")
+          if [ -n "$lock_mtime" ] && [ -n "$now" ]; then
+            age_min=$(( (now - lock_mtime) / 60 ))
+            if [ "$age_min" -ge "$peer_stale_min" ] 2>/dev/null; then
+              classification="peer-alive-stale"
+            else
+              classification="peer-alive"
+            fi
           else
             classification="peer-alive"
           fi
-        else
-          classification="peer-alive"
         fi
       fi
     else
