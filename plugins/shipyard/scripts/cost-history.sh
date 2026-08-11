@@ -374,7 +374,12 @@ merge_session_records() {
             output:         (map(.value.output         // 0) | max),
             cache_read:     (map(.value.cache_read     // 0) | max),
             cache_creation: (map(.value.cache_creation // 0) | max),
-            estimated_usd:  (map(.value.estimated_usd  // 0) | max)
+            estimated_usd:  (map(.value.estimated_usd  // 0) | max),
+            # degraded_attribution_count (issue #1218) — same max-merge
+            # rationale as the session-level counter below: the fresh
+            # projection is a superset in the ordinary case, so max never
+            # loses a real count already recorded for this group.
+            degraded_attribution_count: (map(.value.degraded_attribution_count // 0) | max)
           }
         })
       | from_entries;
@@ -617,6 +622,14 @@ cmd_flush() {
           # for why folding total_tokens into --input with no marker
           # produces a confidently-wrong number.
           degraded_attribution_count: ($s.tokens.degraded_attribution_count // 0),
+          # by_model / by_mode each also carry a per-group
+          # degraded_attribution_count (issue #1218) — count of the
+          # matching per_invocation entries that landed via
+          # --degraded-total-only. Same self-contained-record rationale as
+          # the top-level degraded_attribution_count above: a reader of
+          # by_model.<x> alone (e.g. `/shipyard:cost report --by-model`)
+          # can otherwise see output: 0 for a model that in fact ran
+          # several invocations, all folded into input.
           by_model: (
             [ $s.tokens.per_invocation[]? | select(.model != null) ]
             | group_by(.model)
@@ -627,7 +640,8 @@ cmd_flush() {
                   output:         (map(.output // 0) | add // 0),
                   cache_read:     (map(.cache_read // 0) | add // 0),
                   cache_creation: (map(.cache_creation // 0) | add // 0),
-                  estimated_usd:  (map(.estimated_usd // 0) | add // 0)
+                  estimated_usd:  (map(.estimated_usd // 0) | add // 0),
+                  degraded_attribution_count: (map(select(.degraded == true)) | length)
                 }
               })
             | from_entries
@@ -642,7 +656,8 @@ cmd_flush() {
                   output:         (map(.output // 0) | add // 0),
                   cache_read:     (map(.cache_read // 0) | add // 0),
                   cache_creation: (map(.cache_creation // 0) | add // 0),
-                  estimated_usd:  (map(.estimated_usd // 0) | add // 0)
+                  estimated_usd:  (map(.estimated_usd // 0) | add // 0),
+                  degraded_attribution_count: (map(select(.degraded == true)) | length)
                 }
               })
             | from_entries
@@ -673,8 +688,21 @@ cmd_flush() {
           issue_number: ($k | tonumber),
           last_touched: $now,
           session_id: $s.session_id,
-          tokens: ($per_issue[$k] | del(.estimated_usd)),
+          tokens: ($per_issue[$k] | del(.estimated_usd) | del(.degraded_attribution_count)),
           estimated_usd: ($per_issue[$k].estimated_usd // 0),
+          # Pulled out to a top-level sibling of `tokens` (issue #1218) —
+          # same shape as the session ledger record top-level
+          # degraded_attribution_count below. Lets a reader of this ONE
+          # issue-ledger row tell "genuinely zero output" (degraded_
+          # attribution_count == 0) from "output/cache_read/cache_creation
+          # are undercounted by an unknown amount" (> 0) without opening
+          # the session ledger or the live session file. Old rows written
+          # before this field existed simply lack it — `// 0` reads them as
+          # 0 degraded (they predate --degraded-total-only ever landing for
+          # this issue, or the marker was simply not captured yet); this can
+          # under-report a pre-existing ambiguity but never crashes a
+          # reader doing arithmetic on the field.
+          degraded_attribution_count: ($per_issue[$k].degraded_attribution_count // 0),
           modes_used: (
             [ $invs[] | select(.issue == ($k | tonumber)) | .mode ]
             | map(select(. != null)) | unique
@@ -997,7 +1025,12 @@ cmd_report() {
                 output:         (map(.value.output         // 0) | add // 0),
                 cache_read:     (map(.value.cache_read     // 0) | add // 0),
                 cache_creation: (map(.value.cache_creation // 0) | add // 0),
-                estimated_usd:  (map(.value.estimated_usd  // 0) | add // 0)
+                estimated_usd:  (map(.value.estimated_usd  // 0) | add // 0),
+                # Windowed sum of the per-session-record degraded_attribution_count
+                # for this model (issue #1218) — old ledger rows without the
+                # field default to 0 via `// 0`, same posture as every other
+                # counter here.
+                degraded_attribution_count: (map(.value.degraded_attribution_count // 0) | add // 0)
               }
             })
           | from_entries
@@ -1012,7 +1045,8 @@ cmd_report() {
                 output:         (map(.value.output         // 0) | add // 0),
                 cache_read:     (map(.value.cache_read     // 0) | add // 0),
                 cache_creation: (map(.value.cache_creation // 0) | add // 0),
-                estimated_usd:  (map(.value.estimated_usd  // 0) | add // 0)
+                estimated_usd:  (map(.value.estimated_usd  // 0) | add // 0),
+                degraded_attribution_count: (map(.value.degraded_attribution_count // 0) | add // 0)
               }
             })
           | from_entries
@@ -1038,6 +1072,14 @@ cmd_report() {
       [ .[] | $issue_filter ]
       | group_by([.repo, .issue_number])
       | map(max_by(.last_touched))
+      # Normalize degraded_attribution_count to a concrete 0 (issue #1218)
+      # rather than leaving it absent/null on a row written before this
+      # field existed. Every consumer of this JSON array — the markdown
+      # by-issue renderer, a future dashboard, a direct jq pipe over
+      # --format json — can then do arithmetic or a > 0 check on the field
+      # without its own // 0 guard; a legacy row degrades gracefully to
+      # \"0 known-degraded\" rather than null.
+      | map(.degraded_attribution_count = (.degraded_attribution_count // 0))
       " "$issue_ledger")
   else
     issues='[]'
@@ -1256,7 +1298,8 @@ render_markdown_report() {
       | to_entries
       | sort_by(-.value.estimated_usd)
       | .[]
-      | "  " + .key + "  $" + (.value.estimated_usd | . * 100 | round / 100 | tostring)
+      | "  " + .key + "  $" + (.value.estimated_usd | . * 100 | round / 100 | tostring) +
+        (if (.value.degraded_attribution_count // 0) > 0 then "  [UNRELIABLE]" else "" end)
     '
   fi
 
@@ -1267,7 +1310,8 @@ render_markdown_report() {
       | to_entries
       | sort_by(-.value.estimated_usd)
       | .[]
-      | "  " + .key + "  $" + (.value.estimated_usd | . * 100 | round / 100 | tostring)
+      | "  " + .key + "  $" + (.value.estimated_usd | . * 100 | round / 100 | tostring) +
+        (if (.value.degraded_attribution_count // 0) > 0 then "  [UNRELIABLE]" else "" end)
     '
   fi
 
@@ -1281,7 +1325,8 @@ render_markdown_report() {
       | "  #" + (.issue_number | tostring) +
         "  " + .repo +
         "  $" + ((.estimated_usd // 0) | . * 100 | round / 100 | tostring) +
-        (if (.pr // null) != null then "  (PR #" + (.pr | tostring) + ")" else "" end)
+        (if (.pr // null) != null then "  (PR #" + (.pr | tostring) + ")" else "" end) +
+        (if (.degraded_attribution_count // 0) > 0 then "  [UNRELIABLE]" else "" end)
     '
   fi
 

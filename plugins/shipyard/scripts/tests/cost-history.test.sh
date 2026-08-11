@@ -1188,6 +1188,124 @@ fi
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== flush — per-issue ledger row disambiguates real output:0 from degraded-folded output:0 (#1218)"
+# --------------------------------------------------------------------------
+# The core regression this issue closes: before #1218, a per-issue ledger
+# row in cost-history-issues.jsonl carried NO marker at all for whether its
+# output/cache_read/cache_creation were genuinely zero or were folded into
+# .input by a --degraded-total-only bump — the only place that information
+# lived was the SESSION record's top-level degraded_attribution_count, a
+# different row in a different file, keyed only by session_id. A reader
+# holding just the issue row (the exact shape /shipyard:cost report --top
+# and --by-issue consume) had to cross-reference that other record to know
+# whether output:0 meant "genuinely no output" or "unknown, folded in".
+#
+# Two issues in the SAME session: #601 gets one real, non-degraded bump
+# with an explicit --output 0 (a genuinely-zero-output invocation — e.g. an
+# input/cache-only completion); #602 gets one --degraded-total-only bump
+# (output defaults to 0 because the harness <usage> block had no
+# breakdown). Both issue rows end up with tokens.output == 0 — the
+# regression is that degraded_attribution_count must still tell them apart,
+# reading each row ALONE with no cross-reference to the other issue, the
+# session record, or the per_invocation array.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "distinguish1" --repo "owner/repo" >/dev/null
+
+# Issue #601 — genuinely zero output, NOT degraded.
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "distinguish1" --issue 601 \
+  --input 5000 --output 0 --cache-read 0 --cache-creation 0 \
+  --mode issue-work --model claude-sonnet-5 >/dev/null
+
+# Issue #602 — output:0 only because the whole total folded into --input.
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "distinguish1" --issue 602 \
+  --input 7000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "distinguish1" >/dev/null
+
+row601=$(jq -c 'select(.issue_number == 601)' "$tmphome/cost-history-issues.jsonl")
+row602=$(jq -c 'select(.issue_number == 602)' "$tmphome/cost-history-issues.jsonl")
+
+out601_output=$(printf '%s' "$row601" | jq -r '.tokens.output')
+out601_degraded=$(printf '%s' "$row601" | jq -r '.degraded_attribution_count')
+out602_output=$(printf '%s' "$row602" | jq -r '.tokens.output')
+out602_degraded=$(printf '%s' "$row602" | jq -r '.degraded_attribution_count')
+
+assert_equals "$out601_output" "0" "issue #601 (genuinely zero output) row: tokens.output == 0"
+assert_equals "$out601_degraded" "0" "issue #601 (genuinely zero output) row: degraded_attribution_count == 0 — same record, no cross-reference needed"
+assert_equals "$out602_output" "0" "issue #602 (degraded-folded) row: tokens.output == 0 (identical to #601's — the field alone is ambiguous)"
+assert_equals "$out602_degraded" "1" "issue #602 (degraded-folded) row: degraded_attribution_count == 1 — disambiguates from #601 using only this row"
+
+# The two rows' tokens.output are equal, but degraded_attribution_count is
+# NOT — that inequality, read from each row alone, is the mechanical
+# distinction the issue asked for.
+if [[ "$out601_output" == "$out602_output" && "$out601_degraded" != "$out602_degraded" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "identical output:0 fields are mechanically distinguished by degraded_attribution_count alone"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (output601=%s output602=%s degraded601=%s degraded602=%s)\n' "$RED" "$RESET" "identical output:0 fields are mechanically distinguished by degraded_attribution_count alone" "$out601_output" "$out602_output" "$out601_degraded" "$out602_degraded"
+  fail=$((fail+1))
+fi
+
+# degraded_attribution_count must NOT leak into the tokens sub-object —
+# it's a top-level sibling on the issue row (same convention the session
+# ledger record already uses), so tokens.* stays the same fixed
+# {input,output,cache_read,cache_creation} shape every existing reader
+# already expects.
+tokens_keys=$(printf '%s' "$row602" | jq -r '.tokens | keys | sort | join(",")')
+assert_equals "$tokens_keys" "cache_creation,cache_read,input,output" "issue row's tokens sub-object keeps its original fixed shape — degraded_attribution_count lives at the top level, not inside tokens"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== flush — old-shaped issue ledger rows (no degraded_attribution_count field) still read as 0, not a crash (#1218)"
+# --------------------------------------------------------------------------
+# Backward compatibility: cost-history-issues.jsonl is append-only and
+# already holds rows written before this field existed. A reader doing
+# arithmetic on degraded_attribution_count (e.g. the report rollup's `add`)
+# must default a missing field to 0 rather than error on `null + number`.
+
+tmphome=$(mktmphome)
+mkdir -p "$tmphome"
+legacy_row='{"repo":"owner/repo","issue_number":9001,"last_touched":"2026-01-01T00:00:00Z","session_id":"legacy","tokens":{"input":1000,"output":200,"cache_read":0,"cache_creation":0},"estimated_usd":0.01,"modes_used":["issue-work"],"models_used":["claude-sonnet-5"],"pr":null}'
+printf '%s\n' "$legacy_row" > "$tmphome/cost-history-issues.jsonl"
+legacy_session='{"session_id":"legacy","repo":"owner/repo","started_at":"2026-01-01T00:00:00Z","ended_at":"2026-01-01T00:10:00Z","duration_seconds":600,"issues_worked":[9001],"prs_created":[],"tokens":{"input":1000,"output":200,"cache_read":0,"cache_creation":0},"estimated_usd":0.01,"unpriced_models":[],"degraded_attribution_count":0,"by_model":{},"by_mode":{},"setup":null}'
+printf '%s\n' "$legacy_session" > "$tmphome/cost-history.jsonl"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format json 2>&1)
+rc=$?
+assert_equals "$rc" "0" "report over a legacy issue row (no degraded_attribution_count field) does not error"
+
+legacy_degraded=$(printf '%s' "$out" | jq -r '.issues[0].degraded_attribution_count')
+assert_equals "$legacy_degraded" "0" "a legacy issue row missing the field reads degraded_attribution_count as 0 via // 0, not null"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== report — --by-issue tags an issue's row [UNRELIABLE] when its ledger row is degraded (#1218)"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "byissue-deg" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "byissue-deg" --issue 701 \
+  --input 9000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "byissue-deg" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --by-issue)
+assert_contains "$out" "#701" "by-issue report lists the degraded issue"
+issue_line=$(printf '%s' "$out" | grep '#701')
+assert_contains "$issue_line" "[UNRELIABLE]" "by-issue report tags issue #701's line [UNRELIABLE] since its ledger row is degraded"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo
 echo "== Summary"
 echo "  $pass passed, $fail failed"
