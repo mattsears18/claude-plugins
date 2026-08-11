@@ -258,7 +258,11 @@ When filling a slot, walk this decision tree:
      [ -z "$worktree_path" ] && continue
 
      classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
-     lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+     # Anchor on the literal `pid` keyword, not "first digit-run before a
+     # close-paren" — the latter misparses a real `(pid <N> start <ctime>)`
+     # lock as the ctime's trailing year (issue #1206). Same fix as
+     # `worktree-reap.sh`'s own `extract_lock_pid` helper.
+     lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
      [ -z "$lock_pid" ] && lock_pid="null"
 
      # no-lock / dead / self-ancestor / peer-alive — all safe to reap here
@@ -390,7 +394,12 @@ When filling a slot, walk this decision tree:
      branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
      [ "$branch_ref" = "do-work/issue-<N>" ] || continue
      classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
-     if [ "$classification" = "peer-alive" ]; then
+     # `unknown` (issue #1206 — lock file exists but couldn't be parsed) is
+     # treated identically to `peer-alive` here: fail closed. Skipping the
+     # candidate this dispatch turn is cheap and reversible; misclassifying
+     # a live peer's lock as available and racing it to push the same
+     # do-work/issue-<N> branch is not.
+     if [ "$classification" = "peer-alive" ] || [ "$classification" = "unknown" ]; then
        peer_locked=true
        break
      fi
@@ -398,7 +407,7 @@ When filling a slot, walk this decision tree:
    ```
 
    - `peer_locked=false` → no concurrent session is working this issue. Proceed to self-assign and dispatch.
-   - `peer_locked=true` → a live peer holds a lock on a `do-work/issue-<N>` worktree. Park the candidate: log `[concurrent-session-guard] #<N> skipped — peer-alive lock on do-work/issue-<N> worktree; issue already being worked by another /do-work instance.` and move to the next candidate in `ready_issues` (same as a hard-path collision — don't block the slot entirely, just skip this candidate). The issue will become available in the next session once the peer's worktree is reaped.
+   - `peer_locked=true` → a live peer holds a lock on a `do-work/issue-<N>` worktree, OR its lock couldn't be parsed at all (`unknown`, issue #1206 — treated the same, fail closed, rather than risking a race against a lock this check can't actually read). Park the candidate: log `[concurrent-session-guard] #<N> skipped — <classification> lock on do-work/issue-<N> worktree; issue already being worked by another /do-work instance (or its lock couldn't be confirmed safe).` and move to the next candidate in `ready_issues` (same as a hard-path collision — don't block the slot entirely, just skip this candidate). The issue will become available in the next session once the peer's worktree is reaped.
 
    **Author-trust computation (per-dispatch).** Before composing the prompt, compute `originating_author_trust` for the candidate:
 

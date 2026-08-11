@@ -408,7 +408,11 @@ if [ "$is_terminal" = "false" ]; then
     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
       classify-lock "$wt_dir/locked")
 
-    lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+    # Anchor on the literal `pid` keyword, not "first digit-run before a
+    # close-paren" — the latter misparses a real `(pid <N> start <ctime>)`
+    # lock as the ctime's trailing year (issue #1206). Same fix as
+    # `worktree-reap.sh`'s own `extract_lock_pid` helper.
+    lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
     [ -z "$lock_pid" ] && lock_pid="null"
 
     # Pre-reap recovery check (#493): before reaping, check whether the
@@ -1001,7 +1005,11 @@ For **issue work** (`shipped` / `blocked` / `errored`):
     # Extract the lock PID for the audit log (best effort; null literal
     # when the lock file is missing or unparseable). Same pattern as
     # cleanup-summary.md's reap loop.
-    lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+    # Anchor on the literal `pid` keyword, not "first digit-run before a
+    # close-paren" — the latter misparses a real `(pid <N> start <ctime>)`
+    # lock as the ctime's trailing year (issue #1206). Same fix as
+    # `worktree-reap.sh`'s own `extract_lock_pid` helper.
+    lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
     [ -z "$lock_pid" ] && lock_pid="null"
 
     # no-lock / dead / self-ancestor / peer-alive — all safe to reap here.
@@ -1386,8 +1394,12 @@ if [ -d "$wt_dir" ]; then
     classify-lock "$wt_dir/locked")
 
   # Extract the lock PID for the audit log (best effort; null literal
-  # when the lock file is missing or unparseable).
-  lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+  # when the lock file is missing or unparseable). Anchor on the literal
+  # `pid` keyword, not "first digit-run before a close-paren" — the latter
+  # misparses a real `(pid <N> start <ctime>)` lock as the ctime's trailing
+  # year (issue #1206). Same fix as `worktree-reap.sh`'s own
+  # `extract_lock_pid` helper.
+  lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
   [ -z "$lock_pid" ] && lock_pid="null"
 
   # no-lock / dead / self-ancestor / peer-alive — all safe to reap here.

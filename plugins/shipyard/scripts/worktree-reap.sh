@@ -11,11 +11,13 @@
 #
 # That liveness check has a bug: the harness writes the **orchestrator's**
 # PID into every dispatched agent's lock file (lock content is literally
-# `claude agent <agent-id> (pid <orchestrator-pid>)`). At end-of-session
-# cleanup the orchestrator is by definition still alive (it's the process
-# running cleanup), so a strict liveness check defers EVERY worktree the
-# orchestrator itself owns. The reporter saw 2 agent worktrees stuck because
-# the lock PID was the orchestrator's PID 53391 — alive, but not a peer.
+# `claude agent <agent-id> (pid <orchestrator-pid>)`, or for a session-level
+# lock `claude session <orchestrator-id> (pid <N> start <ctime>)` — see
+# issue #1206). At end-of-session cleanup the orchestrator is by definition
+# still alive (it's the process running cleanup), so a strict liveness check
+# defers EVERY worktree the orchestrator itself owns. The reporter saw 2
+# agent worktrees stuck because the lock PID was the orchestrator's PID
+# 53391 — alive, but not a peer.
 #
 # Issue #138 added a third classification — **self-ancestor** — that walks
 # the caller's own process-ancestor chain (self, parent, grandparent, …)
@@ -45,7 +47,19 @@
 #   classify-lock <lock-file-path> [--orchestrator-pid <N>]
 #     Emits one of (on stdout, single token, trailing newline):
 #       no-lock          — lock file doesn't exist (safe to reap)
-#       dead             — lock PID is dead (safe to reap, original semantics)
+#       dead             — lock PID was parsed AND is confirmed dead (safe to
+#                          reap, original semantics)
+#       unknown          — lock file exists and is non-empty, but no PID
+#                          could be parsed from it at all (issue #1206).
+#                          Fail CLOSED, not open: an unparseable lock is NOT
+#                          safe to reap — it might belong to a live peer
+#                          whose lock simply didn't match the expected
+#                          shape, and destroying it would be exactly the
+#                          data-destroying failure this classifier exists to
+#                          prevent. Treat identically to `peer-alive` at
+#                          every call site that gates a defer decision on
+#                          classification (see the "Callers should reap on"
+#                          paragraph below for which sites that is).
 #       self-ancestor    — lock PID is alive AND is either (a) the declared
 #                          orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`
 #                          env var or `--orchestrator-pid` flag) or (b) our
@@ -94,11 +108,45 @@
 # exhibits, so a still-legitimately-running peer is never force-reaped.
 #
 # Callers should reap on `no-lock` / `dead` / `self-ancestor` /
-# `peer-alive-stale`, defer on `peer-alive`. Every existing exact-string
-# `= "peer-alive"` check already defers ONLY on the fresh case and falls
-# through to "safe to reap" for anything else — so this new classification
-# flows through to every call site (setup 3b, steady-state §2d, drain
-# #370, step B, A.0.5, A.1, cleanup-summary) with no per-site change.
+# `peer-alive-stale`, defer on `peer-alive` and `unknown`. Every existing
+# exact-string `= "peer-alive"` check already defers ONLY on the fresh case
+# and falls through to "safe to reap" for anything else — that fallthrough
+# is exactly right for `peer-alive-stale` (issue #755, reap-eligible by
+# design), so THAT classification needed no per-site change when it was
+# added.
+#
+# `unknown` (issue #1206) is the OPPOSITE shape and does NOT get the same
+# free ride: it must be treated as NOT reap-eligible, so the fallthrough
+# that correctly extended `peer-alive-stale` to every caller would
+# incorrectly extend `unknown` too (an unparseable lock would silently reap
+# on every exact-string-only call site). Every call site that GATES a
+# defer/reap decision on the classification (as opposed to merely labeling
+# an unconditional reap for the audit log) was updated alongside this change
+# to also match `unknown`, identically to how it already treats
+# `peer-alive`:
+#   - `dispatch-rules.md`'s per-dispatch concurrent-session guard (the
+#     `peer_locked` check, distinct from that same file's §2d — see below)
+#   - `cleanup-summary.md` step 3.1's generic per-worktree sweep
+#   - `drain.md`'s pre-dispatch head-branch reap
+#   - `reap_session_worktrees()` in this file (cleanup-summary.md step 3.0's
+#     targeted this-session reap)
+#   - `reap_stale()` in this file, built on `classify_all` (the
+#     session-start bulk sweep invoked from `00b-parallelization-cache.md`'s
+#     background group — see `classify-all`'s own docstring below, which
+#     carries the matching `unknown` fix for its independent PID-extraction
+#     path)
+# The sites that reap UNCONDITIONALLY regardless of classification
+# (`dispatch-rules.md` §2d, steady-state.md's step B / A.0.5 / A.1) needed
+# no logic change — they already reap every verdict; only the audit-log
+# label they attach changes, and `unknown` is a meaningfully MORE accurate
+# label for those than the previous `dead` mislabel was.
+#
+# NOT changed: `setup/01c-label-recovery-refine.md`'s own "3b. Reap stale
+# agent worktrees" narrative section still shows a standalone per-worktree
+# `classify-lock` loop predating issue #836 — its own "Background step" note
+# says the canonical implementation lives in `00b-parallelization-cache.md`'s
+# background group (the `reap-stale` call this docstring already covers), so
+# that narrative code block is not live and was left as-is.
 #
 #   classify-all --repo-root <path> [--orchestrator-pid <N>]
 #        [--peer-stale-min <N>]
@@ -116,9 +164,14 @@
 #     caller implementing a bounded, oldest-first reap can consume the
 #     output directly.
 #
-#     Classification vocabulary is `classify-lock`'s PLUS one extra state,
-#     `no-lock-recent` (issue #1147) — see that issue's writeup below for
-#     why: a harness-provisioned `isolation: "worktree"` dispatch (the
+#     Classification vocabulary is `classify-lock`'s (including `unknown`,
+#     issue #1206 — `classify_all` parses the lock PID with its own
+#     independent pure-bash regex rather than calling `extract_lock_pid`,
+#     for the batching reasons in Pass 1's comment below, so it carried the
+#     SAME anchor-on-close-paren bug and needed the SAME fix + the SAME
+#     fail-closed `unknown` verdict on an unparseable lock) PLUS one extra
+#     state, `no-lock-recent` (issue #1147) — see that issue's writeup below
+#     for why: a harness-provisioned `isolation: "worktree"` dispatch (the
 #     default Agent-tool shape since #830) never writes a shipyard lock
 #     file, so a currently-running worker's worktree classifies identically
 #     to `no-lock` under the plain PID-liveness check `classify-lock` alone
@@ -594,19 +647,31 @@ EOF
 
 # Extract the lock PID from a lock file.
 #
-# Lock-file format (set by the Claude Code harness):
+# Lock-file format (set by the Claude Code harness) — the PID may be
+# followed by additional fields (issue #1206: real harness locks were found
+# to also carry a `start <ctime>` field between the PID and the closing
+# paren):
 #   claude agent <agent-id> (pid <N>)
+#   claude session <orchestrator-id> (pid <N> start <ctime>)
 #
 # Returns the numeric PID on stdout, or empty string if no PID can be parsed.
 # Robust to: missing file, malformed content, multiple PID-like tokens (takes
-# the first one — the harness format only ever has one).
+# the first one — the harness format only ever has one), and trailing fields
+# after the PID (start time, or any future field the harness adds).
 extract_lock_pid() {
   local lock_file="$1"
   [ -f "$lock_file" ] || return 0
-  # `\(pid <N>\)` is the canonical shape. The grep below matches `pid <N>)`
-  # and strips the trailing `)`; matches `<N>)` for the first decimal
-  # sequence followed by a close-paren.
-  grep -oE '[0-9]+\)' "$lock_file" 2>/dev/null | tr -d ')' | head -1
+  # Anchor on the literal `pid` keyword rather than on "first digit-run
+  # before a close-paren" (issue #1206). The pre-#1206 regex,
+  # `grep -oE '[0-9]+\)'`, assumed the PID was immediately followed by `)` —
+  # true only for the idealized `(pid <N>)` shape. Real harness locks write
+  # `(pid <N> start <ctime>)`, and a ctime's own trailing token is always a
+  # 4-digit year followed by `)` (e.g. `... 2026)`), so the old regex's
+  # FIRST match was the ctime's year, not the PID — deterministically wrong
+  # for every real lock file, not merely an edge case. Anchoring on `pid`
+  # makes the parse independent of whatever trails the number.
+  grep -oE '\(pid[[:space:]]+[0-9]+' "$lock_file" 2>/dev/null \
+    | grep -oE '[0-9]+' | head -1
 }
 
 # Is `pid` alive? Returns 0 (alive) / 1 (dead-or-unknown).
@@ -752,10 +817,21 @@ classify_lock() {
   local lock_pid
   lock_pid=$(extract_lock_pid "$lock_file")
 
-  # Lock file exists but has no parseable PID — treat as dead (the original
-  # semantics didn't trip the liveness check either when extraction failed).
+  # Lock file exists but has no parseable PID — fail CLOSED, not open
+  # (issue #1206). The original semantics treated an extraction failure as
+  # `dead` (reap-eligible), on the reasoning that a missing PID can't trip
+  # the liveness check either way — but that reasoning silently assumed
+  # extraction failure is rare and content-empty. It is neither: every real
+  # harness lock (`(pid <N> start <ctime>)`) failed to extract under the
+  # pre-#1206 regex, so this branch was live on the majority of production
+  # locks, converting a routine parse gap into the default destructive
+  # verdict. An unparseable lock might belong to a live peer whose lock
+  # simply doesn't match the expected shape — `unknown` says exactly that,
+  # and callers that gate a defer decision on `peer-alive` treat `unknown`
+  # identically (see the `classify-lock` docstring above for the callers
+  # updated to do so).
   if [ -z "$lock_pid" ]; then
-    echo "dead"
+    echo "unknown"
     return 0
   fi
 
@@ -952,7 +1028,15 @@ classify_all() {
     if [ -f "$lock_file" ]; then
       lock_exists+=("1")
       content=$(<"$lock_file")
-      if [[ "$content" =~ \(pid[[:space:]]+([0-9]+)\) ]]; then
+      # Anchor on `(pid <N>` only — do NOT also require an immediate `)`
+      # (issue #1206). The prior pattern, `\(pid[[:space:]]+([0-9]+)\)`,
+      # required the digits to be followed IMMEDIATELY by the closing paren
+      # — true only for the idealized `(pid <N>)` shape. Real harness locks
+      # write `(pid <N> start <ctime>)`, where a `start <ctime>` field sits
+      # between the PID and the paren, so the old pattern never matched a
+      # real lock at all and `pid` silently fell through to empty on every
+      # one of them (see the empty-`pid` branch below, also fixed by #1206).
+      if [[ "$content" =~ \(pid[[:space:]]+([0-9]+) ]]; then
         pid="${BASH_REMATCH[1]}"
       else
         pid=""
@@ -1081,7 +1165,11 @@ classify_all() {
         classification="no-lock-recent"
       fi
     elif [ -z "$pid" ]; then
-      classification="dead"
+      # Lock file exists (lock_exists[i]=1) but no PID could be parsed from
+      # it — fail CLOSED, not open (issue #1206), mirroring classify_lock's
+      # own `unknown` verdict. `reap_stale` (this function's caller) defers
+      # on `unknown` exactly as it already defers on `peer-alive`.
+      classification="unknown"
     elif [[ "$alive_blob" == *$'\n'"$pid"$'\n'* ]]; then
       if [ -n "$orchestrator_pid" ] && [ "$pid" = "$orchestrator_pid" ]; then
         classification="self-ancestor"
@@ -1934,9 +2022,14 @@ reap_session_worktrees() {
     lock_pid=$(extract_lock_pid "$lock_file")
     [ -z "$lock_pid" ] && lock_pid="null"
 
-    if [ "$classification" = "peer-alive" ]; then
-      # A still-running peer holds the lock — defer, same posture as the
-      # generic sweep. Left for step B / A.0.5 / next-session setup-3b.
+    if [ "$classification" = "peer-alive" ] || [ "$classification" = "unknown" ]; then
+      # A still-running peer holds the lock (peer-alive), OR the lock
+      # couldn't be parsed at all (unknown, issue #1206 — fail closed,
+      # treated the same as peer-alive rather than falling through to a
+      # reap) — defer either way, same posture as the generic sweep. Left
+      # for step B / A.0.5 / next-session setup-3b. `--reason` carries the
+      # ACTUAL classification so the audit line doesn't misreport an
+      # `unknown` defer as `peer-alive`.
       printf 'deferred: %s\n' "$name"
       if [ "$dry_run" -eq 0 ]; then
         reap_action \
@@ -1944,7 +2037,7 @@ reap_session_worktrees() {
           --worktree-path "$worktree_path" \
           --worktree-name "$name" \
           --session-id "$session_id" \
-          --reason "peer-alive" \
+          --reason "$classification" \
           --phase "cleanup-session-targeted" \
           --lock-pid "$lock_pid" \
           >/dev/null 2>&1 || true
@@ -2222,13 +2315,15 @@ reap_stale() {
 
     worktree_path="$repo_root/.claude/worktrees/$name"
 
-    # Defer on peer-alive (a genuine cross-session peer, alive and fresh)
-    # OR no-lock-recent (issue #1147 — a no-lock candidate whose worktree
+    # Defer on peer-alive (a genuine cross-session peer, alive and fresh),
+    # no-lock-recent (issue #1147 — a no-lock candidate whose worktree
     # directory was touched within the staleness floor, presumed live in
-    # the absence of a lock file to check). `--reason` carries the ACTUAL
+    # the absence of a lock file to check), OR unknown (issue #1206 — the
+    # lock file exists but couldn't be parsed at all; fail closed rather
+    # than falling through to a reap). `--reason` carries the ACTUAL
     # classification into the audit line rather than a hardcoded
-    # "peer-alive" that would misreport a no-lock-recent defer.
-    if [ "$classification" = "peer-alive" ] || [ "$classification" = "no-lock-recent" ]; then
+    # "peer-alive" that would misreport a no-lock-recent or unknown defer.
+    if [ "$classification" = "peer-alive" ] || [ "$classification" = "no-lock-recent" ] || [ "$classification" = "unknown" ]; then
       printf 'deferred: %s\n' "$name"
       deferred_count=$((deferred_count + 1))
       if [ "$dry_run" -eq 0 ]; then
