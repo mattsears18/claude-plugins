@@ -127,13 +127,27 @@ For each remaining candidate, dispatch a **decomposition worker** in parallel �
 >
 > **Step C — create the sub-issues and mutate the parent (decomposable + confident path).**
 >
-> Create the sub-issues in dependency order (parents of the chain first, so the `Blocked by #<sibling>` references resolve to real numbers). For each:
+> Create the sub-issues in dependency order (parents of the chain first, so the `Blocked by #<sibling>` references resolve to real numbers). Before creating any of them, resolve the parent's milestone **once** (issue [#1242](https://github.com/mattsears18/shipyard/issues/1242)) — a sub-issue inherits its parent epic's phase by construction, never a phase the worker infers on its own:
+>
+> ```bash
+> CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
+> MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
+> MILESTONES_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+> PARENT_MILESTONE=""
+> if [ "$MILESTONES_ENABLED" = "true" ] && [ "$MILESTONES_ASSIGN" = "true" ]; then
+>   PARENT_MILESTONE=$(gh issue view <N> --repo <owner/repo> --json milestone --jq '.milestone.title // empty' 2>/dev/null)
+> fi
+> ```
+>
+> When `PARENT_MILESTONE` is non-empty, pass `--milestone "$PARENT_MILESTONE"` on every sub-issue's `gh issue create` below. When it's empty — `milestones.enabled`/`assign_on_file` is off, the parent carries no milestone, or the read errored — omit the flag entirely on every child. **Never look up or guess a different milestone for a child than the one the parent already carries** — this is filing metadata inherited from a decision already made, not a new milestone decision the worker is making (see `shipyard:worker-preamble`'s [`milestone-prohibition.md`](../skills/worker-preamble/milestone-prohibition.md) fragment for why that distinction matters).
+>
+> For each sub-issue:
 >
 > 1. Before creating sub-issues, ensure the `shipyard` provenance label exists in the target repo (idempotent):
 >    ```bash
 >    gh label create shipyard --repo <owner/repo> --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true
 >    ```
->    Create the issue: `gh issue create --repo <owner/repo> --label shipyard --title "<title>" --body "<body>"`. The `shipyard` label is the provenance stamp applied to every shipyard-created artifact (issues AND PRs) — sub-issues are no exception. The body MUST include, on their own lines:
+>    Create the issue: `gh issue create --repo <owner/repo> --label shipyard --title "<title>" --body "<body>" ${PARENT_MILESTONE:+--milestone "$PARENT_MILESTONE"}`. The `shipyard` label is the provenance stamp applied to every shipyard-created artifact (issues AND PRs) — sub-issues are no exception. The body MUST include, on their own lines:
 >    - A `Blocked by #<prev>` line for every sub-task it depends on (this is what `/do-work`'s bucket-7 blocker-state gating reads to sequence them — an issue whose `Blocked by #M` target is still OPEN is held out of dispatch until M lands). The FIRST sub-task in the chain has no `Blocked by` line.
 >    - A `Part of #<N>` line linking back to the parent epic (provenance; not a closing keyword).
 >    - The sentinel `<!-- do-work-decompose-agent -->` is NOT required in sub-issue *bodies* (it's a comment sentinel) — but DO inherit the parent's priority label (`P0`/`P1`/`P2`) via `--label` so the children rank the same as the epic did.
@@ -183,6 +197,7 @@ Per-epic output format:
 #<N> [<title>]
   Evidence class: <Multi-PR sequence: | Missing dependency: | Multi-service coordination: | Body cites <artifact>: | (none found)>
   Decision: <decompose | escalate>
+  Inherited milestone (decompose only, milestones.enabled+assign_on_file only): <parent's title | (none — parent unmilestoned)>
   Would create (decompose only): <K> sub-issues:
     1. <title>  (no blockers)
     2. <title>  (Blocked by #1)
@@ -239,3 +254,4 @@ Omit sub-blocks whose count is zero.
 - Don't remove `needs-human-review` or the `<!-- do-work-needs-decomposition -->` trigger marker on the escalate path. Removing them would hide the epic from `/my-turn`'s human queue — the exact failure `#498` fixed. Neither the decompose-success path nor the escalate path removes the label or trigger marker under the [#519](https://github.com/mattsears18/shipyard/issues/519) re-key; the `<!-- do-work-decompose-agent -->` idempotency comment is the only thing that gates re-processing.
 - Don't dispatch a decomposition worker with `isolation: "worktree"`. These don't modify code — a worktree is wasted overhead.
 - Don't create sub-issues in `--dry-run` mode and then "just do the mutations" yourself. Dry-run is dry-run; re-run without the flag to commit.
+- Don't assign a sub-issue a milestone other than the parent's own, and don't create a milestone for a sub-issue whose parent has none. The only milestone decision in scope here is inheriting what the parent already carries (issue [#1242](https://github.com/mattsears18/shipyard/issues/1242)) — matching a phase, authoring a new one, or picking a different fallback is `shipyard:update-roadmap`'s job.
