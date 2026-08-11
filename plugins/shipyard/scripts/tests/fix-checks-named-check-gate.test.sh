@@ -174,6 +174,16 @@ assert_section_before "$fix_checks_path" \
   "## Fix-loop" \
   "gate section precedes the Fix-loop section"
 
+# (issue #1211, the deferred half of #1205) — the gate's own
+# `head_matches_pushed`/`headRefOid` check IS the source of the head SHA the
+# green return contract now requires citing. Pin that the gate explicitly
+# tells the worker to reuse $PUSHED_SHA as that citation rather than
+# re-deriving or re-querying it.
+# shellcheck disable=SC2016
+assert_contains "$fix_checks_path" \
+  '`$PUSHED_SHA` above IS the head-SHA the return contract'\''s `@<head-SHA>` citation requires' \
+  "gate instructs reusing \$PUSHED_SHA as the return contract's head-SHA citation (#1211)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

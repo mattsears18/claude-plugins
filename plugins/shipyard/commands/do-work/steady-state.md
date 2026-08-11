@@ -1199,6 +1199,8 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 
 **If either check trips**, do not take the claimed disposition (whichever one it is — `green`, `noop`, `pending`, or `dirty`) at face value. Run the same live `gh pr view` spot-check the `green` path below already runs (latest-per-name rollup + `mergeStateStatus`) and classify off that live result instead of the worker's claim. Log `[fix-checks-fabrication-tell] PR #<M> return failed pre-check (<future-timestamp|self-contradiction>): "<offending fragment>" — forcing live verification regardless of claimed disposition.` This costs one extra `gh pr view` call only on the rare return that trips a tell — every ordinary honest return (the overwhelming majority) is unaffected, and the documented `pending`/`dirty` non-second-guessing behavior below is unchanged when neither check trips.
 
+**A third, structural tell — scoped to `green`/`noop` only, since only those returns carry a citable SHA ([#1211](https://github.com/mattsears18/shipyard/issues/1211)).** See the "Head-SHA citation check" under the `green #<M>` bullet below: a `green`/`noop` return's `@<head-SHA>` token is mechanically compared against the PR's live `headRefOid` on the SAME `gh pr view` call the trust-but-verify spot-check already makes. This doesn't widen `pending`/`dirty`'s non-second-guessing default (neither carries a SHA to check) — it's an additional, cheap, string-comparison-only integrity signal on top of the two prose-scanning checks above, for the one disposition pair that's already unconditionally live-verified regardless.
+
 - **green #<M>** / **noop: already green #<M>** — PR is fine, continue. (PR is already in `session_prs` from whenever it was first opened or first fixed — no re-add needed.) **Refresh the cost-tracking comment** for `<M>` so the cumulative total includes this fix-checks dispatch's tokens (A.0 bumped them into `.tokens.per_pr[<M>]`). Same edit-or-create semantics as the `shipped` hook:
 
   ```bash
@@ -1240,19 +1242,26 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
 
   No-ops on a PR that never had a sentinel comment posted (no existing comment to update, no `shipped` event to anchor a fresh post — `EXISTING` is empty and the create path posts the first comment with just this fix-checks pass's tokens). Same comment-post-error policy as the `shipped` hook: log `[cost-comment] PR #<M> refresh failed: <reason>; continuing` and proceed.
 
+  **Head-SHA citation check ([#1211](https://github.com/mattsears18/shipyard/issues/1211)) — run BEFORE the trust-but-verify spot-check below, on the same `gh pr view` call.** As of #1211, a `green #<M> @<head-SHA> (...)` / `noop: already green #<M> @<head-SHA> (...)` return carries the full head SHA (`headRefOid`) the worker observed the rollup at. Extract it from the worker's raw return (the token immediately after `#<M>`, e.g. `@a1b2c3d4...`):
+
+  - **SHA present** — fold `headRefOid` into the SAME query the trust-but-verify spot-check already runs (zero extra round-trips; see below) and compare mechanically. **A mismatch is treated exactly like a fabrication-tell trip** — do not take ANY part of the claimed disposition at face value; classify strictly off the live `latest` result the spot-check below computes anyway (never off the worker's claim). Log `[fix-checks-sha-mismatch] PR #<M> cited head SHA <cited> but the PR's live head is <actual> — treating the claim as unverified, classifying from live rollup/mergeStateStatus.` This is a structural, string-comparison-only check — cheaper than re-deriving the rollup, and it catches a plausible-looking fabricated citation with no rollup-count or timestamp tell of its own (the residual gap #1205's two string-scan pre-checks left open).
+  - **SHA absent** (a pre-#1211 worker prompt, or a malformed return) — do NOT reject the return outright and do NOT skip verification. Log `[fix-checks-sha-missing] PR #<M> green/noop return omitted the head-SHA citation (pre-#1211 shape or malformed) — proceeding on the unconditional live spot-check below (unchanged behavior).` The trust-but-verify spot-check already runs unconditionally on every `green`/`noop` return regardless of citation, so a SHA-less return is never trusted further than a cited-and-matching one — fail toward MORE verification, never less.
+
   **Trust-but-verify before accepting `green`.** The agent's `green` claim is load-bearing — downstream code treats green PRs as settled. Spot-check the **latest run per check name** (issue [#333](https://github.com/mattsears18/shipyard/issues/333) — `statusCheckRollup` returns every check run for the head SHA including superseded runs; a stale FAILURE entry that's been re-triggered and now passes would incorrectly downgrade the worker's correct `green` claim to `failing` and re-queue the PR for a pointless second fix-checks dispatch):
 
   ```bash
-  # Latest entry per check name BEFORE the walk.
-  latest=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus --jq '
+  # Latest entry per check name BEFORE the walk. headRefOid rides along in the
+  # same call so the head-SHA citation check above costs zero extra round-trips.
+  latest=$(gh pr view <M> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus,headRefOid --jq '
     {mergeStateStatus: .mergeStateStatus,
+     headRefOid: .headRefOid,
      checks: [.statusCheckRollup
               | group_by(.name)
               | map(sort_by(.completedAt // .startedAt // "") | last)
               | .[]]}')
   ```
 
-  Then classify (checking `mergeStateStatus` FIRST, before ever reading `latest.checks`):
+  Then classify (checking `mergeStateStatus` FIRST, before ever reading `latest.checks`) — this classification is unconditional and identical whether the SHA citation matched, mismatched, or was absent; the citation check above is an integrity/audit signal layered on top, never a gate that changes which branch fires:
   - **`mergeStateStatus == "DIRTY"` → downgrade to `dirty #<M>`**, regardless of what `latest.checks` contains. Do NOT label `blocked:ci`, do NOT push onto `failed_prs`. Append `<M>` to `session_prs` (if not already there). **Add `<M>` to `dirty_fix_checks_prs`** ([#1060](https://github.com/mattsears18/shipyard/issues/1060) — feeds the deadlock-signature detection in the `blocked rebase` reconcile below). Log: `[fix-checks-verify] downgraded #<M> green→dirty: PR conflicts with default branch, no merge ref (#1015); drain's fix-rebase will reconcile.` A DIRTY PR's rollup is empty by construction (no merge ref, so no check ever queued) — checking this first is what stops the empty-rollup rule below from vacuously accepting a `green` claim that was never actually backed by any check running.
   - Every entry `conclusion in {SUCCESS, SKIPPED, NEUTRAL}` (or empty rollup, and NOT DIRTY per the check above) → accept `green`.
   - Any `state in {PENDING, IN_PROGRESS, QUEUED, EXPECTED}` or `conclusion == null` while `status != "completed"` → **downgrade to `pending`**. Do NOT label `blocked:ci`. Do NOT push onto `failed_prs`. Append `<M>` to `session_prs` (if not already there). Log: `[fix-checks-verify] downgraded #<M> green→pending: <n> checks still running (<sample-check-name>); drain will reconcile.`

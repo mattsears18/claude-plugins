@@ -418,6 +418,7 @@ const workerReturnSchema = {
     policy_override: { type: ['string', 'null'] },
     gate_narrowing: { type: ['string', 'null'] },
     checks: { type: ['string', 'null'], enum: ['green', 'pending', 'failing', null] },
+    head_sha: { type: ['string', 'null'] },
     disposition: {
       type: ['string', 'null'],
       enum: ['fix', 'needs-human-review', 'auto-close-noise', 'duplicate', 'verified', null],

@@ -71,6 +71,10 @@
       "enum": ["green", "pending", "failing", null],
       "description": "One-shot snapshot of the PR's check rollup at return time (latest run per check name, per #333) — the structured form of the return-string `checks: …` suffix. NEVER a wait: the worker returns on green|pending|failing alike (#707). Null when no PR is involved."
     },
+    "head_sha": {
+      "type": ["string", "null"],
+      "description": "For a fix-checks-only `green`/`noop` outcome: the PR's full head commit SHA (`headRefOid`) the worker observed the rollup at — the structured form of the free-text `@<head-SHA>` token (#1211, the deferred half of #1205). Load-bearing for the orchestrator's step-A reconcile: a `green`/`noop` outcome whose `head_sha` doesn't match the PR's live `headRefOid` is treated exactly like a #1205 fabrication-tell trip — classified strictly off a live `gh pr view` spot-check, never off the claim. NOT schema-required (a green/noop outcome without it is still schema-valid, matching the free-text shape's own backward-compatible transition-window handling) — a missing value forces the SAME unconditional live spot-check green/noop already always gets, so omitting it never earns LESS scrutiny than citing it. Null/absent for every other mode/outcome combination."
+    },
     "disposition": {
       "type": ["string", "null"],
       "enum": ["fix", "needs-human-review", "auto-close-noise", "duplicate", "verified", null],
