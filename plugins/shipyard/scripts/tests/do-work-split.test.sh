@@ -2727,10 +2727,10 @@ assert_contains "$steady_state_path" \
   'issues/1193' \
   "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=<k>' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=0' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -2778,10 +2778,10 @@ assert_contains "$steady_state_path" \
   'issues/1194' \
   "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=<k>' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · dispatched_this_turn=0' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
