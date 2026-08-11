@@ -4,6 +4,8 @@
 
 ### 1. Resolve repo + user
 
+> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** these three reads now execute PRE-relocation, as part of [step 0.45](00-config-worktree.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — this section documents the commands; 0.45 is where they actually fire, ahead of `EnterWorktree`.
+
 These three reads are part of the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — fire them in parallel with steps 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5, not serially before them.
 
 ```bash
@@ -17,6 +19,8 @@ Cache all three for the session.
 (The trusted-author allowlist used by step 4's filter and step 7's `originating_author_trust` computation is populated separately by [step 1.7 below](#17-resolve-trusted-author-allowlist).)
 
 ### 1.3 Detect the silent-direct-merge repo shape (admin + ungated-merge config)
+
+> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this detector's read and the `$EFFECTIVE_CONCURRENCY` clamp now execute PRE-relocation, as part of [step 0.45](00-config-worktree.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — [step 1.5](#15-initialise-the-session-state-file)'s `session-state.sh init --concurrency` needs this clamp's output, and 1.5 itself moved pre-relocation to unblock the [1.6.5](#165-reap-orphan-orchestrator-worktrees) / [3b](01c-label-recovery-refine.md#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) sweeps. **One resolution detail changes with the timing:** the `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` line below reads a stash file step 0.5 writes — it doesn't exist yet at this pre-relocation point. Use the pre-relocation compound preamble (step 0.3's form) instead. Everything else — the detector call, the clamp logic — is unchanged.
 
 Closes issues [#438](https://github.com/mattsears18/shipyard/issues/438) and [#465](https://github.com/mattsears18/shipyard/issues/465). When the dispatching user has admin permissions, the worker's `gh pr merge --auto` can silently fall through to a **direct merge** instead of queuing (the `merged-direct` outcome documented in `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.5 — fragment [`auto-merge.md`](../../../skills/worker-preamble/auto-merge.md) — and issue [#340](https://github.com/mattsears18/shipyard/issues/340)). At `--concurrency ≥ 2` this produces the **steady-state leapfrog**: the first PR to direct-merge advances `main`'s version and changes the top-of-file CHANGELOG entry, re-DIRTYing every other in-flight PR even when distinctly versioned (the cascade the [drain CHANGELOG-serialization gate](../drain.md#drain-protocol) addresses). See [RATIONALE → Step 1.3 mechanics](../../do-work-RATIONALE.md#step-13--silent-direct-merge-version-coordination-mechanics-438-465) for the full two-part breakdown.
 
@@ -115,6 +119,8 @@ fi
 
 ### 1.36 Detect CI executor pool capacity and clamp toward it ([#1141](https://github.com/mattsears18/shipyard/issues/1141))
 
+> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this detector's read and the second `$EFFECTIVE_CONCURRENCY` clamp now execute PRE-relocation, as part of [step 0.45](00-config-worktree.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — same reason as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config) above, and the same `CLAUDE_PLUGIN_ROOT` resolution-detail change applies: use the pre-relocation compound preamble (step 0.3's form), not the `.shipyard-plugin-root` stash below (doesn't exist yet at this point). Everything else is unchanged.
+
 `--concurrency N` bounds how many **workers** the orchestrator keeps in flight. It says nothing about how many **CI runs** those workers generate, or whether the repo's CI executor can absorb them. On a repo whose CI runs on a small, fixed self-hosted runner pool — a maintainer's own Macs is the observed case — worker throughput and CI-landing throughput decouple: the session dispatches happily while the queue behind the runners grows without bound, and the session's own landing-based termination condition ([`do-work.md`'s completion contract](../../do-work.md)) becomes unreachable purely on CI capacity, not correctness. See [RATIONALE → CI executor pool capacity repro](../../do-work-RATIONALE.md#step-136--ci-executor-pool-capacity-repro-1141) for the session that motivated this.
 
 **The read lives in exactly one place** — [`scripts/detect-ci-runner-capacity.sh`](../../../scripts/detect-ci-runner-capacity.sh), the same single-executable-source-of-truth pattern as [step 1.3](#13-detect-the-silent-direct-merge-repo-shape-admin--ungated-merge-config)'s merge-shape detector. It reads `repos/{owner}/{repo}/actions/runners` for the self-hosted runner pool's online/idle counts and `gh run list --status queued` for the current repo-wide queue depth, and fails safe toward `unknown` on any unreadable signal — never toward a fabricated pool size.
@@ -173,6 +179,8 @@ fi
 
 ### 1.5 Initialise the session state file
 
+> **Execution timing ([#1202](https://github.com/mattsears18/shipyard/issues/1202)):** this `session-state.sh init` call (and its `.ci_capacity` write-through) now executes PRE-relocation, as part of [step 0.45](00-config-worktree.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202) — before `EnterWorktree`, so the [1.6.5](#165-reap-orphan-orchestrator-worktrees) / [3b](01c-label-recovery-refine.md#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) sweeps (which now also run pre-relocation) have a session-state file to consult for [step 3b's `.in_flight` guard](#165-reap-orphan-orchestrator-worktrees) by the time they run. Use the pre-relocation `CLAUDE_PLUGIN_ROOT` form (step 0.3's compound preamble) here, NOT the `.shipyard-plugin-root` stash below — that stash is a step-0.5-and-later artifact that doesn't exist yet at this point in the session. Commands are otherwise unchanged; only the execution point (and that one resolution detail) moved.
+
 Stand up the durable JSON mirror (see [Session state file](../../do-work.md#session-state-file) and the full [schema + helper reference](../session-state-file.md)). One-shot setup write — every subsequent mutation routes through `session-state.sh update`.
 
 ```bash
@@ -207,7 +215,7 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 
 ### 1.6 Reap orphan session files (cost-ledger recovery)
 
-> **Background step.** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. The canonical code lives in the background group above; this section documents the intent, race-safety rules, and skip condition. Do NOT duplicate the implementation here.
+> **Background step — stays post-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)).** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. The canonical code lives in the background group above; this section documents the intent, race-safety rules, and skip condition. Do NOT duplicate the implementation here. **Unlike [step 1.6.5](#165-reap-orphan-orchestrator-worktrees) immediately below, this sweep does NOT move pre-relocation** — it's pure `$SHIPYARD_HOME/sessions/*.json` file housekeeping with no `git -C <other-worktree>` operations, so the worktree-isolation guard never has a reason to fire on it, and there's no benefit to running it any earlier than it already does.
 
 **Sweep `$SHIPYARD_HOME/sessions/` for orphan files left behind by prior sessions that crashed or exited without running [`cleanup-summary.md`'s step 7 → step 8 flush + cleanup chain](../cleanup-summary.md#end-of-session-cleanup).** Without this sweep, any session that doesn't terminate via the happy-path cleanup strands its per-session ledger on disk forever — the cross-session reports at `/shipyard:cost report` then under-count by full sessions. See [RATIONALE → Step 1.6 orphan session-file regression](../../do-work-RATIONALE.md#step-16--orphan-session-file-regression-227) for the production repro (issue #227).
 
@@ -254,7 +262,7 @@ Regression coverage: [`scripts/tests/sweep-orphan-tmp.test.sh`](../../../scripts
 
 ### 1.6.5 Reap orphan orchestrator worktrees
 
-> **Background step.** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. The canonical code lives in the background group above; this section documents the intent, race-safety rules, and skip condition. Do NOT duplicate the implementation here.
+> **MOVED pre-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)) — no longer part of the post-relocation background group; this section is now the canonical implementation.** This sweep's `git -C <other-worktree>` operations and `worktree-reap.sh reap --worktree-path <other-worktree>` calls are refused outright by the harness's worktree-isolation guard once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` call has isolated the session (*"this command redirects git to the shared checkout via -C. Refusing it"*) — and the mandatory pre-reap inspection for unpushed work ([#838](https://github.com/mattsears18/shipyard/issues/838)) is exactly the kind of `git -C` read the guard blocks, so there is no safe degradation available at runtime: the guard doesn't merely block the reap, it blocks the safety check that makes reaping safe. [Step 0.5's `EnterWorktree` call was itself mandated (#844)](00-config-worktree.md#05-move-into-the-orchestrators-worktree) to fix a *different* problem (a background-job session's `Edit`/`Write` calls being refused pre-isolation) — so the two fixes were in direct, unresolvable conflict as long as this sweep ran after relocation. The fix: run it BEFORE relocation instead, at [step 0.45](00-config-worktree.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), while cwd is still the primary checkout and the guard has no isolated session to enforce against.
 
 **Sweep `.claude/worktrees/` for `orchestrator-<dead-session-id>/` directories left behind by prior sessions that crashed before reaching [`cleanup-summary.md`'s step 6 (orchestrator-worktree reap)](../cleanup-summary.md#end-of-session-cleanup).** Companion to [step 1.6](#16-reap-orphan-session-files-cost-ledger-recovery), which reaps orphan session *files*; this step reaps the *worktrees* themselves. Neither sweep was sufficient on its own:
 
@@ -265,12 +273,15 @@ When a prior session crashed *between* step 7→8 (cost-history flush + session-
 
 The discovery uses [`session-identity.sh find-orphan-orchestrators`](../../../scripts/session-identity.sh), which applies the same liveness gate as step 1.6 — `is-active` exits 0 if the owning session's PID is alive, exit 1 otherwise (missing file, missing/null pid, dead pid). Both the worktree-sweep and the session-file-sweep treat "file missing" as inactive: the common case for the bug is that prior cleanup got far enough to flush + delete the session file but stopped short of reaping its own worktree.
 
+**Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble** (the `.shipyard-plugin-root` stash below is a step-0.5-and-later artifact and doesn't exist yet at this point in the session — this section is now the canonical implementation, executed at [step 0.45](00-config-worktree.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202)):
+
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-# (Pseudocode — the canonical implementation lives in step 0.7's
-# background group. This snippet illustrates the per-orphan action.)
+cd "$(git rev-parse --show-toplevel)"
 while read -r orph_path; do
+  [ -z "$orph_path" ] && continue
+  [ -d "$orph_path" ] || continue
   orph_name=$(basename "$orph_path")
   orph_session_id="${orph_name#orchestrator-}"
   # Issue #284 — `worktree-reap.sh reap` handles BOTH the git-worktree-remove
@@ -283,11 +294,10 @@ while read -r orph_path; do
     --worktree-name "$orph_name" \
     --session-id "<session-id>" \
     --reaped-session-id "$orph_session_id" \
-    --phase "setup-1.6.5"
+    --phase "setup-1.6.5" 2>/dev/null || true
 done < <("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" find-orphan-orchestrators \
-           --repo-root "$(git rev-parse --show-toplevel)" \
-           --current-session-id "<session-id>")
-git worktree prune
+           --repo-root "$(pwd)" --current-session-id "<session-id>" 2>/dev/null)
+git worktree prune 2>/dev/null || true
 ```
 
 **Audit-log shape** — same `~/.shipyard/reap-audit.jsonl` as steps 3 / 3b, but with a distinct `action` value so the source is traceable. The helper emits these variants for us (issue #284 moved the JSONL writes into [`worktree-reap.sh reap`](../../../scripts/worktree-reap.sh) — see step 3b for the same pattern):
@@ -301,7 +311,7 @@ The fallback to raw `rm -rf` is load-bearing: `git worktree remove` fails when t
 
 **Skip condition.** Like step 1.6, this sweep is skipped entirely when `SHIPYARD_KEEP_SESSIONS=1` — the user is explicitly opting to keep historical state, and worktree dirs are part of that state.
 
-**Concurrency safety.** Because this step runs in the same background group as 1.6 (which already excludes the current session by id), there's no race against the orchestrator's own worktree — the helper filters `<current-session-id>` from its output before emitting paths. A concurrent peer `/do-work` orchestrator in another terminal *can* race here: if peer A is the dead session whose worktree we want to reap, and peer B started up at the exact same wall-clock second, peer B's `is-active` check might see A's pid as alive (because A hasn't yet finished crashing) and skip the reap. That's the conservative outcome — A's worktree gets cleaned up by the next session that starts after A's pid is actually gone. The race never produces a wrongful reap.
+**Concurrency safety.** This step's discovery (`find-orphan-orchestrators`) already excludes the current session by id, so there's no race against the orchestrator's own worktree regardless of whether it runs pre-relocation (this step, per #1202) or in the same pass as [step 1.6](#16-reap-orphan-session-files-cost-ledger-recovery) (its pre-#1202 position) — the helper filters `<current-session-id>` from its output before emitting paths either way. A concurrent peer `/do-work` orchestrator in another terminal *can* race here: if peer A is the dead session whose worktree we want to reap, and peer B started up at the exact same wall-clock second, peer B's `is-active` check might see A's pid as alive (because A hasn't yet finished crashing) and skip the reap. That's the conservative outcome — A's worktree gets cleaned up by the next session that starts after A's pid is actually gone. The race never produces a wrongful reap.
 
 ### 1.7 Resolve trusted-author allowlist
 
