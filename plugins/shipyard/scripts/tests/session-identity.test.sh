@@ -25,6 +25,16 @@
 #         - multiple orphans → multiple lines
 #         - bad-usage cases (missing flags, unknown flag, positional arg)
 #         - --flag=value form parity with --flag value form
+#  31-35) issue #1232 — find-orphan-orchestrators reads the OCCUPANT
+#         (.shipyard-session-id stash), not the directory name:
+#         - the exact repro: dead name-embedded id, live stash id → not
+#           emitted (whether the stash names the current session or a
+#           different still-alive one)
+#         - a readable stash naming a genuinely dead session → still
+#           emitted (the fix doesn't stop reaping real orphans)
+#         - no stash + non-empty directory → fail closed, not emitted
+#         - no stash + genuinely empty directory → falls back to the
+#           name-embedded id, unchanged from pre-#1232 behavior
 #  67-75a) issue #513 — derive-session-id picks the NEWEST orchestrator-*
 #         worktree's stash (not the oldest orphan in listing order):
 #         - empty layout, single-worktree common case
@@ -279,6 +289,98 @@ result=$(SHIPYARD_HOME="$fake_shipyard_home" bash "$helper" find-orphan-orchestr
   --repo-root="$fake_repo" --current-session-id=current-sess 2>/dev/null)
 assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-equals-form-orphan" \
   "(30) --flag=value form accepted for both flags"
+
+# --- find-orphan-orchestrators: stash-first occupant resolution (issue #1232) ---
+#
+# The live repro this closes: a session runs inside an orchestrator
+# worktree named for an EARLIER, now-dead session (EnterWorktree reuses
+# the existing worktree when a second /do-work runs in an already-
+# isolated Claude session, under a freshly-derived session id — the
+# directory NAME and the live OCCUPANT diverge from that moment on). The
+# pre-#1232 helper classified the directory as an orphan purely from its
+# name, reaping a LIVE session's own cwd out from under it. The fix
+# reads `.shipyard-session-id` (the occupant) instead of trusting the
+# name, and fails closed (skips, never emits) when that stash can't be
+# read and the directory isn't otherwise empty.
+
+echo
+echo "find-orphan-orchestrators: stash-first occupant resolution (issue #1232)"
+echo
+
+# --- (31) THE #1232 REPRO, pinned exactly: dir name embeds a DEAD
+# session id, but the stash inside names the CURRENT (live) session.
+# Must NOT be emitted — this is the destructive false-positive the
+# issue reports.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-dead-name-embedded-id"
+printf '%s\n' "current-sess" \
+  > "$fake_repo/.claude/worktrees/orchestrator-dead-name-embedded-id/.shipyard-session-id"
+result=$(run_find_orphans "current-sess")
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(31) #1232 repro: name embeds a dead id but stash names the LIVE current session → not emitted"
+
+# --- (32) generalized repro: dir name embeds a dead id, but the stash
+# names a DIFFERENT session (not the current one) that is itself still
+# alive (session file present, PID alive). Must NOT be emitted — proves
+# the fix reads the stash for the general liveness check, not merely as
+# a current-session shortcut.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-dead-name-embedded-id-2"
+printf '%s\n' "other-live-session" \
+  > "$fake_repo/.claude/worktrees/orchestrator-dead-name-embedded-id-2/.shipyard-session-id"
+cat > "$fake_shipyard_home/sessions/other-live-session.json" <<EOF
+{"session_id":"other-live-session","pid":$$}
+EOF
+result=$(run_find_orphans "current-sess")
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(32) stash names a different but still-live session → not emitted (general stash-priority, not just current-session)"
+
+# --- (33) genuinely abandoned: the stash IS readable and names a dead
+# session (no session file at all). Must still be emitted — the fix
+# does not make the sweep stop reaping real orphans when the stash is
+# trustworthy.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-genuinely-dead-name"
+printf '%s\n' "genuinely-dead-stash-id" \
+  > "$fake_repo/.claude/worktrees/orchestrator-genuinely-dead-name/.shipyard-session-id"
+result=$(run_find_orphans "current-sess")
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-genuinely-dead-name" \
+  "(33) readable stash names a genuinely dead session (no session file) → still emitted"
+
+# --- (34) fail-closed on ambiguity: NO stash file, but the directory is
+# otherwise non-empty (simulates a real checkout — some other file
+# present). Must NOT be emitted even though the name-embedded id's
+# session file is missing (the pre-#1232 behavior would have emitted
+# this). A missed reap only costs disk; a wrong reap costs a running
+# session's work.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-no-stash-nonempty"
+: > "$fake_repo/.claude/worktrees/orchestrator-no-stash-nonempty/some-checked-out-file"
+result=$(run_find_orphans "current-sess")
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(34) no stash + non-empty directory → fail closed, not emitted (#1232 ambiguity guard)"
+
+# --- (34a) fail-closed on ambiguity: stash file present but EMPTY, and
+# nothing else in the directory besides that empty stash file. The
+# directory is non-empty (the empty stash file itself counts), so this
+# must fail closed too, not fall back to the name-embedded id.
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-empty-stash-only"
+: > "$fake_repo/.claude/worktrees/orchestrator-empty-stash-only/.shipyard-session-id"
+result=$(run_find_orphans "current-sess")
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(34a) empty stash file present (directory non-empty) → fail closed, not emitted"
+
+# --- (35) degenerate case preserved: NO stash file AND the directory is
+# otherwise completely empty → falls back to the name-embedded id, same
+# as the pre-#1232 behavior (nothing to lose — this is what tests
+# 20/21/23/24/25/30 above already exercise, pinned explicitly here for
+# the #1232 fallback rule itself).
+reset_fake_layout
+mkdir -p "$fake_repo/.claude/worktrees/orchestrator-truly-empty-dead"
+result=$(run_find_orphans "current-sess")
+assert_equals "$result" "$fake_repo/.claude/worktrees/orchestrator-truly-empty-dead" \
+  "(35) no stash + genuinely empty directory → falls back to name-embedded id, still emitted"
 
 # --- derive-session-id (issue #513) ---
 #

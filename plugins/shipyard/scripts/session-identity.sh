@@ -73,14 +73,41 @@
 #     just not far enough to reap its own worktree). Either way, the
 #     worktree dir lingers indefinitely.
 #
+#     Issue #1232 — the id this subcommand tests for liveness is the
+#     OCCUPANT of the candidate directory, read from
+#     `<candidate>/.shipyard-session-id`, NOT the id embedded in the
+#     directory NAME. A directory's name only records who created it; a
+#     later session can be live inside it (EnterWorktree refuses to
+#     create a second isolated worktree for an already-isolated session,
+#     so a second /do-work in one already-isolated context must reuse the
+#     existing worktree under a fresh session id — the name and the
+#     occupant diverge for the rest of that session's life). Trusting the
+#     name alone reaped a LIVE session's own cwd out from under it. This
+#     mirrors the convention `derive-session-id` above already depends on
+#     (#365/#513) — it never trusted the name either.
+#
 #     This subcommand emits one line per orphan orchestrator worktree
 #     path, where "orphan" means:
 #       (a) name matches `.claude/worktrees/orchestrator-*`, AND
-#       (b) embedded session id is NOT the current session id, AND
-#       (c) the owning session is INACTIVE — either the session file
-#           is missing from $SHIPYARD_HOME/sessions/<id>.json, OR
-#           `session-state.sh is-active` returns non-zero (PID dead,
-#           unparseable, or null).
+#       (b) the id to test — the candidate's `.shipyard-session-id`
+#           stash when it's present and readable, else (only when the
+#           directory is otherwise empty — see the fail-closed rule
+#           below) the id embedded in the directory name — is NOT the
+#           current session id, AND
+#       (c) the owning session (per that same id) is INACTIVE — either
+#           the session file is missing from
+#           $SHIPYARD_HOME/sessions/<id>.json, OR `session-state.sh
+#           is-active` returns non-zero (PID dead, unparseable, or null).
+#
+#     Fail-closed on ambiguity (#1232): when the stash is missing,
+#     unreadable, or empty AND the directory contains anything else, the
+#     candidate is skipped outright — never emitted — rather than falling
+#     back to the (possibly-stale) name-embedded id. This mirrors the
+#     fail-closed `unknown` verdict #1206 gave `classify-lock`: a missed
+#     reap only costs disk; a wrong reap destroys a running session's
+#     uncommitted work. The name-embedded-id fallback only fires for a
+#     candidate that is ALSO genuinely empty (no stash and nothing else
+#     in it) — a degenerate case with nothing to lose either way.
 #
 #     The caller is responsible for the actual `git worktree remove
 #     --force` + audit-log write. This helper just enumerates candidates
@@ -133,10 +160,17 @@ derive-session-id       — Issue #513. Prints THIS session's id by reading
 find-orphan-orchestrators — Emits one path per line for each orphan
                           orchestrator worktree under
                           <repo-root>/.claude/worktrees/orchestrator-*
-                          whose embedded session id is NOT
+                          whose OCCUPANT — the id in its
+                          `.shipyard-session-id` stash, not the
+                          directory name (#1232) — is NOT
                           <current-session-id> AND whose owning session
                           is inactive (session file missing OR PID dead).
-                          Empty stdout when there are no orphans.
+                          Falls back to the name-embedded id only when
+                          the stash is missing/unreadable AND the
+                          directory is otherwise empty; any other
+                          unreadable-stash candidate is skipped (fail
+                          closed, never emitted). Empty stdout when there
+                          are no orphans.
 
 Env vars:
   SHIPYARD_HOME              Override session-file lookup root for
@@ -264,12 +298,32 @@ derive_session_id() {
 # the `.claude/worktrees/orchestrator-<dead-session-id>` case.
 #
 # An orphan, for this helper's purposes, is a worktree directory whose
-# basename matches `orchestrator-*` AND whose embedded session id is
-# NOT the current session AND whose owning session is inactive (file
-# missing OR PID dead). The "or" branch matters: a prior session that
-# crashed AFTER session-state cleanup but BEFORE worktree reap (step 7
-# → step 6 reordering in cleanup-summary.md) leaves no session file
-# behind, but the worktree dir still exists.
+# basename matches `orchestrator-*` AND whose OCCUPANT id is NOT the
+# current session AND whose owning session is inactive (file missing OR
+# PID dead). The "or" branch matters: a prior session that crashed AFTER
+# session-state cleanup but BEFORE worktree reap (step 7 → step 6
+# reordering in cleanup-summary.md) leaves no session file behind, but
+# the worktree dir still exists.
+#
+# Issue #1232 — "occupant id" means the candidate's own
+# `.shipyard-session-id` stash, read fresh on every call, NOT the id
+# embedded in its directory name. `EnterWorktree` refuses to create a
+# second isolated worktree for an already-isolated session, so a second
+# /do-work in one already-isolated Claude session reuses the existing
+# `orchestrator-<old-id>` directory under a brand-new session id — from
+# that moment the name and the live occupant are permanently out of
+# sync. Trusting the name alone made this helper classify a LIVE
+# session's own cwd as reap-eligible (verified repro: the sweep returned
+# a running orchestrator's worktree while that session was still inside
+# it). `derive-session-id` above never made this mistake — it has always
+# read the stash exclusively (#365/#513); this subcommand now does too.
+# When the stash is missing/unreadable/empty, fall back to the
+# name-embedded id ONLY if the directory has nothing else in it either
+# (a genuinely empty candidate has nothing to lose from the pre-#1232
+# behavior); otherwise fail closed and skip the candidate rather than
+# guess — a missed reap costs disk, a wrong reap costs a running
+# session's uncommitted work (same posture as #1206's `unknown`
+# verdict for `classify-lock`).
 #
 # We emit paths instead of reaping in-place so:
 #   1. The caller controls the audit-log shape (the spec wants
@@ -342,18 +396,48 @@ find_orphan_orchestrators() {
   self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   local session_state_sh="$self_dir/session-state.sh"
 
-  local entry name session_id session_file
+  local entry name name_embedded_id session_id session_file stash stash_id
   for entry in "$orch_root"/orchestrator-*; do
     # No-glob-match fallthrough: bash leaves the literal pattern when
     # nothing matches. Guard with `-d` so we silently skip.
     [ -d "$entry" ] || continue
 
     name=$(basename "$entry")
-    # Strip the `orchestrator-` prefix to recover the session id.
-    session_id="${name#orchestrator-}"
+    # Strip the `orchestrator-` prefix to recover the NAME-embedded id —
+    # who CREATED this worktree, not necessarily who's in it now.
+    name_embedded_id="${name#orchestrator-}"
+
+    # Issue #1232 — read the OCCUPANT, not the label. Prefer the
+    # candidate's own `.shipyard-session-id` stash (the same convention
+    # derive-session-id already trusts exclusively) over the
+    # name-embedded id for BOTH the current-session exclusion below and
+    # the liveness check that follows.
+    stash="$entry/.shipyard-session-id"
+    stash_id=""
+    if [ -f "$stash" ] && [ -r "$stash" ]; then
+      stash_id="$(tr -d '[:space:]' < "$stash" 2>/dev/null)"
+    fi
+
+    if [ -n "$stash_id" ]; then
+      session_id="$stash_id"
+    else
+      # No readable/non-empty stash. Fail closed on ambiguity: only fall
+      # back to the (possibly stale) name-embedded id when the directory
+      # is otherwise completely empty — a candidate that never got a
+      # stash written AND holds no other content has nothing to lose
+      # either way. Any other non-empty candidate without a readable
+      # stash is left alone rather than guessed at (#1232) — a missed
+      # reap costs disk, a wrong reap costs a running session's
+      # uncommitted work.
+      if [ -n "$(ls -A "$entry" 2>/dev/null)" ]; then
+        continue
+      fi
+      session_id="$name_embedded_id"
+    fi
 
     # Skip our own worktree — never reap the running session out from
-    # under itself.
+    # under itself. Compares against the OCCUPANT id resolved above, not
+    # the raw directory name.
     [ "$session_id" = "$current_session_id" ] && continue
 
     session_file="$sessions_dir/$session_id.json"
