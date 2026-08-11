@@ -229,6 +229,65 @@ else
   bad "shadowed-grep regression (clean tree): expected exit 0 + OK, got exit $status: $out"
 fi
 
+# ── (9)-(11): the known-rewrites exemption (issue #1215) — fix-rebase.md's
+# §4.6 version-coordination carve-out deliberately rewrites specific PR-added
+# lines (a manifest `.version` row, a CHANGELOG heading) as part of a
+# sanctioned, deterministic resolution. A blanket per-file exemption for that
+# case would blind the guard to real corruption elsewhere in the same file —
+# these tests pin the narrower, per-LINE exemption: the caller-declared
+# rewrite is excused, but every OTHER added line in the same file is still
+# required to survive verbatim. Reuses the base_sha/feature_sha fixture
+# above, whose feature commit added exactly two lines to f.txt:
+# 'added-a' and 'added-b'. ───────────────────────────────────────────────────
+
+known_rewrites="$work/known-rewrites.tsv"
+printf 'f.txt\tadded-a\n' > "$known_rewrites"
+
+# ── (9) The known-rewrite is exempted, and the OTHER added line ('added-b')
+# genuinely did survive — must still pass clean, even though 'added-a' was
+# rewritten to something else entirely. ─────────────────────────────────────
+git -C "$repo" checkout -q -b rebased-known-rewrite-clean main
+printf 'zzz\nline1\nline2\nline3\nadded-a-renumbered\nadded-b\n' > "$repo/f.txt"
+git -C "$repo" add f.txt
+git -C "$repo" commit -q -m "rebased: added-a renumbered (sanctioned), added-b intact"
+
+out="$(cd "$repo" && bash "$script" "$base_sha" "$feature_sha" "$known_rewrites" 2>&1)"
+status=$?
+if [[ $status -eq 0 && "$out" == OK:* ]]; then
+  ok "known-rewrite exemption: renamed 'added-a' exempted, exit 0 OK (untouched 'added-b' still verified present)"
+else
+  bad "known-rewrite exemption: expected exit 0 + OK, got exit $status: $out"
+fi
+
+# ── (10) The core pairing this issue exists to pin: the SAME known-rewrites
+# file (still only exempting 'added-a') must NOT mask a genuine corruption of
+# the OTHER added line ('added-b' missing) in the very same file — proving
+# the exemption is narrowed to exactly the declared line, never the whole
+# file. ──────────────────────────────────────────────────────────────────────
+git -C "$repo" checkout -q -b rebased-known-rewrite-corrupted main
+printf 'zzz\nline1\nline2\nline3\nadded-a-renumbered\n' > "$repo/f.txt"
+git -C "$repo" add f.txt
+git -C "$repo" commit -q -m "rebased: added-a renumbered (sanctioned), added-b MISSING (real corruption)"
+
+out="$(cd "$repo" && bash "$script" "$base_sha" "$feature_sha" "$known_rewrites" 2>&1)"
+status=$?
+if [[ $status -eq 1 && "$out" == CORRUPTED:*f.txt* ]]; then
+  ok "known-rewrite exemption does not mask corruption elsewhere in the same file: exit 1, CORRUPTED names f.txt"
+else
+  bad "known-rewrite exemption over-masked corruption: expected exit 1 + CORRUPTED:...f.txt..., got exit $status: $out"
+fi
+
+# ── (11) A known-rewrites file named on the command line but missing on disk
+# is a usage error, not a silent no-op exemption — fail loud (exit 2), same
+# posture as every other "can't establish a trustworthy result" case. ───────
+out="$(cd "$repo" && git checkout -q rebased-clean && bash "$script" "$base_sha" "$feature_sha" "$work/does-not-exist.tsv" 2>&1)"
+status=$?
+if [[ $status -eq 2 && "$out" == INDETERMINATE:* ]]; then
+  ok "missing known-rewrites file: exit 2, INDETERMINATE verdict (fails loud, not a silent no-op)"
+else
+  bad "missing known-rewrites file: expected exit 2 + INDETERMINATE:..., got exit $status: $out"
+fi
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

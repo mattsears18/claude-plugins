@@ -213,6 +213,19 @@ if [[ -f "$fix_rebase_path" ]]; then
     "5.8. **Assert every line the PR's own commit added is still present verbatim" \
     "6. **Push the rebased branch.**" \
     "§5.8 lands before §6 (the force-push)"
+
+  # (5) Issue #1215: §5.8's invocation must pass the §4.6-recorded
+  # known-rewrites file when present, so the version-coordination carve-out's
+  # sanctioned renumbering doesn't perpetually trip this guard — but the
+  # unconditional two-arg call must still be the literal call site (preserved
+  # via optional-argument expansion, not replaced) so a dispatch where §4.6
+  # never fired runs byte-for-byte the original check.
+  assert_contains "$fix_rebase_path" 'CANDIDATE_KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"' \
+    "fix-rebase.md's §5.8 invocation looks for the §4.6-recorded known-rewrites file"
+  assert_contains "$fix_rebase_path" '${KNOWN_REWRITES:+"$KNOWN_REWRITES"}' \
+    "fix-rebase.md's §5.8 invocation passes the known-rewrites file only when it exists"
+  assert_contains "$fix_rebase_path" 'byte-for-byte the pre-#1215 unconditional check' \
+    "fix-rebase.md documents that the no-known-rewrites-file path is unchanged from before #1215"
 fi
 
 echo

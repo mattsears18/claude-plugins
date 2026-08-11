@@ -153,6 +153,39 @@ This is the one structured exception to step 4's "both sides edited the same JSO
    2. **Write the resolved manifest.** Set the `.version` row to `next_free`. Take main's side for every other key (there are none in conflict per gate 3, so a plain `git checkout --theirs "$vc_manifest"` followed by a single `jq`-set of the version row is the cleanest mechanical resolution — or hand-edit the one conflicted line to the computed value and delete the markers).
    3. **Re-number + reorder the CHANGELOG entry (when coordinated).** This PR's CHANGELOG block keeps its prose but its `### <old-version> — <date>` heading is renumbered to `### <next-free-version> — <date>`, and the block is placed **newest-first**: above main's newly-merged top entry. The result must be strictly descending by version with no out-of-order or duplicate `###` headings. (A naïve CHANGELOG "take both" concat would leave this PR's stale lower-versioned entry *below* main's — that out-of-order entry is exactly the bug the issue calls out; re-number + hoist to the top fixes it.)
    4. `git add "$vc_manifest"` (and `"$vc_changelog"` when coordinated), then `git rebase --continue`.
+   5. **Record the exact PR-added lines this resolution deliberately rewrites, so step 5.8's line-survival guard doesn't misread the sanctioned renumbering as corruption ([#1215](https://github.com/mattsears18/shipyard/issues/1215)).** Step 5.8 asserts every line the PR's own commit(s) added is still present verbatim, somewhere, in the post-rebase file — and this resolution *intentionally* violates that for exactly two lines: the manifest `.version` row (bumped from the PR's stale pre-allocated version to `next_free`) and the CHANGELOG's own top-of-file heading (renumbered to match). Left unhandled, step 5.8 will flag both coordinated files as `CORRUPTED` on **every** dispatch that takes this path — not a rare edge case, since every PR cuts a release on a coordination-enabled repo, so a sibling merge DIRTYs the version row on essentially every concurrent PR.
+
+      The fix is NOT to exempt either coordinated file wholesale — that would blind 5.8 to genuine corruption elsewhere in the same file (e.g. one of the CHANGELOG entry's own untouched body lines silently mangled by the merge, or a source-of-truth key elsewhere in the manifest). Instead, write the *specific* pre-rebase added-line text this step is about to replace to a known-rewrites file, using the git refs (unaffected by the working-tree writes in items 2–3 above, so this can run at any point in this step):
+
+      ```bash
+      WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+      mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+      printf '*\n' > "$WORKTREE_PATH/.shipyard-scratch/.gitignore"  # self-ignoring (worker-preamble § "Scratch directory")
+
+      KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"
+      : > "$KNOWN_REWRITES"
+
+      # The manifest's PR-added line contains its pre-allocated version string
+      # ($pr_version, computed in item 1 above) — extract it from the
+      # pre-rebase diff so the recorded text is exactly what ADDED_LINES will
+      # compute, never a hand-reconstructed guess.
+      manifest_line=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_manifest" \
+        | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' \
+        | grep -F -- "$pr_version" || true)
+      [ -n "$manifest_line" ] && printf '%s\t%s\n' "$vc_manifest" "$manifest_line" >> "$KNOWN_REWRITES"
+
+      # The CHANGELOG's PR-added heading is the top-of-file `### <version>`
+      # line — gate 4 above already confirmed the only conflict is the
+      # top-of-file insert, so this is unambiguous.
+      if [ -n "$vc_changelog" ]; then
+        changelog_line=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_changelog" \
+          | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' \
+          | grep -E '^### ' | head -1 || true)
+        [ -n "$changelog_line" ] && printf '%s\t%s\n' "$vc_changelog" "$changelog_line" >> "$KNOWN_REWRITES"
+      fi
+      ```
+
+      **If either extraction comes back empty** (the `grep` found no matching added line — an unexpected shape for a resolution that just passed all four eligibility gates), leave that file's entry out of `$KNOWN_REWRITES` rather than guessing. Step 5.8 then checks that file's full added-line set unexempted, which is the safe direction: it can only make the guard *stricter* on a shape it doesn't recognize, never looser. A stricter-than-necessary bail here is recoverable (a human rebases by hand); a loosened exemption on the wrong lines is not.
 
    After resolving, fall through to step 5 (clean-tree check) and **step 5.5 (the [#436](https://github.com/mattsears18/shipyard/issues/436) conflict-marker assertion) — which is non-negotiable here**: the version-row + CHANGELOG hand-resolution is precisely the "take both, drop the markers" shape that can leave a stray `=======` / `>>>>>>>` line behind. Step 5.5's `git grep` for surviving markers is the safety net that turns a botched re-number into a clean `blocked rebase` instead of a poisoned force-push. Do not skip it.
 
@@ -229,7 +262,18 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
    MERGE_BASE=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH")
 
-   VERIFY_OUTPUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" 2>&1)
+   # If §4.6 fired this dispatch and recorded a known-rewrites file (item 5
+   # of its resolution recipe), pass it as the third argument so the two
+   # specific lines it deliberately rewrote are narrowly exempted — every
+   # other line either coordinated file added is still checked normally.
+   # When §4.6 never fired (or its extraction came back empty), no such file
+   # exists and this call is byte-for-byte the pre-#1215 unconditional check.
+   WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+   KNOWN_REWRITES=""
+   CANDIDATE_KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"
+   [ -f "$CANDIDATE_KNOWN_REWRITES" ] && KNOWN_REWRITES="$CANDIDATE_KNOWN_REWRITES"
+
+   VERIFY_OUTPUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" ${KNOWN_REWRITES:+"$KNOWN_REWRITES"} 2>&1)
    VERIFY_STATUS=$?
 
    if [ "$VERIFY_STATUS" != "0" ]; then
@@ -243,7 +287,9 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
    **Why exact-line matching, not a semantic diff.** The check deliberately doesn't try to understand the file's structure or meaning — that would require per-file domain knowledge, which is exactly what this guard must NOT hard-code. Exact verbatim survival of every added line is a cheap, universal, false-positive-resistant proxy: legitimate further edits from other trivial-conflict resolution (step 4) still leave the PR's own added lines intact, because those lines were never in conflict in the first place. A false positive here (an added line legitimately reworded by a later, unrelated commit already on the PR branch before this rebase) is rare and cheap to recover from — one `blocked rebase` and a human eyeballs the diff; a false negative (silent corruption slipping through) is the failure mode from #983, with no error signal at all and a real functional regression landing behind a green CI run.
 
-   **Why this runs unconditionally, for every touched file, regardless of path.** Unlike step 4.6's manifest/CHANGELOG carve-out, this guard makes no attempt to classify a file as "safe" up front — a file this PR modified only lightly can be just as vulnerable to a mismatched-context splice as a file it changed heavily, and pre-selecting "files worth checking" would reintroduce the exact per-file judgment this guard exists to avoid. The cost of checking every touched file is a handful of cheap `git diff` / `sort` / `comm` calls — far below the cost of a silent regression landing on `main`.
+   **Why this runs unconditionally, for every touched file, regardless of path — with exactly one narrow, per-line exception ([#1215](https://github.com/mattsears18/shipyard/issues/1215)).** Unlike step 4.6's manifest/CHANGELOG carve-out, this guard makes no attempt to classify a *file* as "safe" up front — a file this PR modified only lightly can be just as vulnerable to a mismatched-context splice as a file it changed heavily, and pre-selecting "files worth checking" would reintroduce the exact per-file judgment this guard exists to avoid. The cost of checking every touched file is a handful of cheap `git diff` / `sort` / `comm` calls — far below the cost of a silent regression landing on `main`.
+
+   The one exception is item 5 of step 4.6's resolution recipe: when that carve-out fires, it *by construction* rewrites the manifest `.version` row and the CHANGELOG's own top-of-file heading away from what the PR's commits originally added — a deliberate, sanctioned edit, not corruption, but indistinguishable from corruption to a guard that only ever compares "was this exact line added, is it still here verbatim." Rather than weakening this guard to skip `vc_manifest`/`vc_changelog` wholesale (which would blind it to real corruption elsewhere in either file — e.g. an untouched CHANGELOG body line silently mangled by the same rebase), step 4.6 item 5 records the *exact two lines* it is about to rewrite, and this step passes that record to `verify-added-lines-survived.sh` as an optional third argument. The script only ever exempts the specific line text named — every other line either coordinated file's PR commits added is still required to survive verbatim, exactly as before. When step 4.6 never fired (the common non-coordination-carve-out path, or a plain clean rebase with no conflicts at all), no known-rewrites file exists and this call is byte-for-byte the original unconditional, file-blind check — the exception only ever narrows the guard for the one call site that both introduces the rewrite and can prove exactly what it rewrote.
 
 6. **Push the rebased branch.** This is a fast-forward-incompatible operation (rebase rewrites commit SHAs), so a force push with lease is required. You're in detached HEAD (per step 1), so push `HEAD` explicitly to the remote branch ref rather than relying on an upstream:
    ```bash
@@ -251,6 +297,8 @@ This is the one structured exception to step 4's "both sides edited the same JSO
    ```
 
    `--force-with-lease` (not plain `--force`) refuses the push if someone else pushed to the branch between your `git fetch` and your `git push` — it checks the remote ref (`refs/heads/$HEAD_REF`, resolved from the push destination) against your locally-known `origin/$HEAD_REF`, which step 1's fetch established as the baseline. That's the safety net against clobbering a concurrent author push — bail with `blocked rebase #<M>: head branch moved during rebase — retry next session` if the lease check rejects.
+
+   If step 4.6's item 5 wrote a `.shipyard-scratch/vc-known-rewrites.tsv`, clean it up now (best-effort, non-blocking per worker-preamble § "Scratch directory"): `rm -rf "$WORKTREE_PATH/.shipyard-scratch" 2>/dev/null || true`.
 
 7. **Return one line.** No `gh pr edit`, no `gh pr merge --auto` re-call (auto-merge was already armed when the PR was opened; rebasing doesn't un-arm it), no `--watch`, and — per `shipyard:worker-preamble` § "Return-contract discipline" ([#529](https://github.com/mattsears18/shipyard/issues/529)) — no arming a `run_in_background` process / `Monitor` / background-waiter and returning a non-terminal narrative before it resolves. Run the rebase synchronously to a terminal state and return exactly one of the strings below. The drain phase's next per-poll snapshot will see the PR transition out of DIRTY:
    - `rebased #<M>` — rebase succeeded, branch was force-pushed, drain phase resumes monitoring it.
