@@ -4,9 +4,9 @@
 
 ### 3. Ensure label exists + recover from prior session
 
-**3a. Ensure required labels exist** (idempotent).
+#### 3a. Ensure required labels exist (idempotent)
 
-> **Background step.** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. Labels are guaranteed to exist by the time the first dispatched agent applies one (the background group typically finishes well before the first worker fires). The canonical label list and `gh label create` calls live in the background group above.
+> **Background step — stays post-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)).** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. Labels are guaranteed to exist by the time the first dispatched agent applies one (the background group typically finishes well before the first worker fires). The canonical label list and `gh label create` calls live in the background group above. **Unlike [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) / [3c](#3c-orphan-worktree-triage) below, this step doesn't move pre-relocation** — `gh label create` never touches a worktree path, so the worktree-isolation guard has no reason to fire on it.
 
 The `shipyard` label is the session stamp; `P0`/`P1`/`P2` are the priority tiers; `user-feedback`/`needs-human-review`/`needs-triage` drive the [refinement pipeline](#35-refine-pending-issues); `needs-human-review` also doubles as the scope-agent epic-handoff surfacing label (applied by [step 6's Deferred recording path](06-scope-preflight.md#6-initial-scope-pre-flight) when the scope agent confirms an issue is non-shippable as a single PR, distinguished from other `needs-human-review` issues by the `<!-- do-work-needs-decomposition -->` body marker that [`/decompose-epic`](../../decompose-epic.md) consumes to auto-shard); `blocked:agent-soft` / `blocked:ci` are shipyard's block-state circuit breakers (applied by step A on agent / fix-checks block, removed by step 3d.1 / 3d.2 sub-sweep c / next-session backlog re-fetch); `discussion` is a manually-applied, never-automated pause signal (a maintainer is engaged in the thread by hand — see CLAUDE.md § "Gate labels"). See [RATIONALE → Step 3 label-purpose provenance](../../do-work-RATIONALE.md#step-3--label-purpose-provenance-520) for the fold/elimination history behind each of these (`needs-refinement` eliminated #520, `blocked:agent-hard` eliminated #521):
 
@@ -70,91 +70,98 @@ gh label create discussion --repo <owner/repo> --description "A maintainer is en
 #                          from the blocked:* family above — don't conflate.
 ```
 
-**3b. Reap stale agent worktrees from dead Claude Code sessions.**
+#### 3b. Reap stale agent worktrees from dead Claude Code sessions
 
-> **Background step.** This step runs inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it does NOT block dispatch. Stale-worktree reaping affects future dispatch slot availability, not the first batch. The canonical implementation lives in the background group above.
+> **MOVED pre-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)) — no longer part of the post-relocation background group; this section is now the canonical implementation.** This sweep's `git -C <other-worktree>`-shaped operations against `agent-*` worktrees other than the orchestrator's own are refused outright once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` has isolated the session. It now runs synchronously at [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), before relocation — which is also where the `.in_flight` guard below gets a session-state file to read from (session-state init moved to the same step, ahead of this sweep, for exactly that reason). **Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble** (the `.shipyard-plugin-root` stash below is a step-0.5-and-later artifact and doesn't exist yet at this point in the session).
 
 The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting. Reap every agent worktree whose lock-holding PID is dead; skip ones owned by live PIDs (could be another active Claude Code instance) — **unless the lock is stale enough that a live PID is more likely a recycled one than a genuine peer** (issue [#755](https://github.com/mattsears18/shipyard/issues/755); see [`worktree-reap.sh`'s `classify-lock` docstring](../../../scripts/worktree-reap.sh) for the full rationale). `classify-lock` applies this staleness corroboration itself — no separate check is needed here.
+
+**Bulk classify + bounded/checkpointed removal, not a per-worktree loop (issue #836).** An earlier version of this sweep looped `classify-lock` once PER worktree (one full script re-invocation, each forking its own `ps`/`stat` subprocesses) and removed every reap-eligible one unbounded. On a repo with a large accumulated backlog (the #836 repro: 60 worktrees, ~1.6GB each, ~90GB total) that loop blew its time budget before classifying a single candidate. `worktree-reap.sh reap-stale` is the single executable source of truth for both the bulk classify (one `ps` call / one self-ancestor walk / one batched `stat` for the whole batch, instead of O(n) subprocess forks) and the bounded, checkpointed removal (reaps at most `worktree_reap.max_per_session` per session, oldest-first; the on-disk backlog left behind IS the checkpoint, so a session that can't clear it all still makes forward progress and the next session's sweep continues from there). See `scripts/worktree-reap.sh`'s `classify_all` / `reap_stale` docstrings for the full algorithm.
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
-reaped_stale=0
-deferred_stale=0
-# Issue #712 — worktrees the sweep TRIED to reap but couldn't. Silent-degrade
-# (the old `|| true` posture) is what let them accumulate unnoticed.
-unreaped_stale=0
-# Declare our orchestrator PID so classify-lock can short-circuit reliably
-# (issue #263). The harness writes our PID into every agent lock file;
-# without an explicit declaration, classify-lock's ancestor walk can fail
-# to find it whenever an intermediate harness layer returns empty PPID.
+
+# Threshold warning (issue #836 fix 4) — surface a large agent-* backlog
+# in the session banner even though the per-session cap means it won't
+# all clear in one pass. Two cheap reads gate the (potentially slower)
+# size probe: only pay for `du` when the count actually crosses the
+# threshold.
+wt_count=$(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | wc -l | tr -d ' ')
+warn_threshold=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.warn_threshold 2>/dev/null || echo "20")
+if [ "${wt_count:-0}" -gt 0 ] && [ "${wt_count:-0}" -ge "${warn_threshold:-20}" ] 2>/dev/null; then
+  # `find` (not a bare `.claude/worktrees/agent-*` glob) feeds `du -sk` so
+  # the zsh nomatch hazard the #335 comment above already documents for
+  # the `agent-*` find loop can't fire here either. Single `du` invocation
+  # over every path at once (not one call per worktree) — `du` walks the
+  # same file set either way, so batching is a pure subprocess-count win,
+  # same rationale as classify-all's batched `ps`/`stat`.
+  reclaimable_kb=$(find .claude/worktrees -maxdepth 1 -type d -name 'agent-*' -print0 2>/dev/null \
+    | xargs -0 du -sk 2>/dev/null | awk '{sum+=$1} END{print sum+0}')
+  reclaimable_human=$(( (reclaimable_kb + 1023) / 1024 ))
+  cat <<EOF
+⚠️  worktree backlog: ${wt_count} agent-* worktrees on disk (~${reclaimable_human} MB reclaimable),
+   at or above the ${warn_threshold}-worktree warn threshold (worktree_reap.warn_threshold).
+   This session's step-3b sweep reaps at most worktree_reap.max_per_session
+   of them (oldest-first) — the rest are left for subsequent sessions to
+   continue draining. See issue #836 if the backlog isn't shrinking session
+   over session.
+EOF
+fi
+
+# Detect the orchestrator's PID once and export it so classify-all's
+# self-ancestor short-circuit fires reliably (issue #263) — the harness
+# writes the orchestrator's PID into every dispatched agent's lock, and
+# without this declaration the ancestor walk can fail to find it whenever
+# an intermediate harness layer returns empty PPID.
 export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
-# Use `find` instead of a bare `agent-*` glob so the loop survives zsh's
-# default `nomatch` option when no agent worktrees exist
-# ([#335](https://github.com/mattsears18/shipyard/issues/335)). Bare globs
-# raise a fatal error under zsh; `find` exits 0 on no matches and the
-# loop body simply doesn't iterate.
-for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
-  [ -d "$wt_dir" ] || continue
-  name=$(basename "$wt_dir")
-  worktree_path=$(git worktree list --porcelain | awk -v n="$name" '/^worktree /{p=$2} /^branch /{b=$2} /^$/{if (p ~ n) print p}' | head -1)
-  [ -z "$worktree_path" ] && worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
-  [ -z "$worktree_path" ] && continue
 
-  classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
-    classify-lock "$wt_dir/locked")
+# In-flight guard (issue #832) — snapshot the set of agent-ids this
+# session currently has dispatched, BEFORE reap-stale ever consults
+# classification. In-flight membership is authoritative liveness; the
+# lock file's classification is only a fallback for worktrees THIS
+# session doesn't own (cross-session stragglers, which is what this
+# sweep exists to clean up). Branch name is NEVER a liveness signal —
+# see `commands/do-work/dont.md`'s "Don't reap a live-PID worktree"
+# bullet for why a name-based filter has a race window that would
+# delete an in-flight agent. At the pre-relocation execution point
+# (step 0.45), this session has typically dispatched nothing yet — but
+# the read is cheap and correct either way, and keeps this block
+# identical to the form used if a later session ever needs to re-run it.
+in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+  --session-id "<session-id>" --path .in_flight 2>/dev/null \
+  | jq -r '.[]?.agent_id // empty' 2>/dev/null)
+exclude_flags=()
+while IFS= read -r aid; do
+  [ -z "$aid" ] && continue
+  exclude_flags+=(--exclude-agent-id "$aid")
+done <<< "$in_flight_agent_ids"
 
-  if [ "$classification" = "peer-alive" ]; then
-    # Lock-holding PID is alive, not in our ancestor chain, AND the lock
-    # is fresh enough (within `classify-lock`'s staleness floor, default
-    # 60 min) that a genuine peer is plausible. Defer.
-    deferred_stale=$((deferred_stale + 1))
-    continue
-  fi
+max_per_session=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
 
-  # no-lock / dead / self-ancestor / peer-alive-stale — safe to reap.
-  # (`self-ancestor` is rare at startup since by definition we just
-  # launched, but covers the PID-recycling edge case where a stale lock
-  # happens to name our PID. `peer-alive-stale` (#755) is the second-gate
-  # override: the lock-holding PID is alive but the lock file's mtime is
-  # past the staleness floor, so a genuine peer is implausible and the
-  # more likely explanation is a dead prior-session PID the OS has since
-  # recycled onto an unrelated live process — the exact failure mode that
-  # left prior-session `agent-*` worktrees deferred indefinitely and
-  # forced manual `git worktree unlock` + move-aside + `prune`
-  # intervention every session before this gate existed.)
-  git worktree unlock "$worktree_path" 2>/dev/null
-  # Issue #712 — route the remove through `worktree-reap.sh reap`, which
-  # escalates plain `git worktree remove` → evidence-gated `--force` and emits a
-  # `reaped-failed` audit line (never a silent `reaped`) when the removal did
-  # not actually happen. A bare `git worktree remove --force` here is denied
-  # outright by Claude Code's auto-mode permission classifier
-  # ("[Irreversible Local Destruction]"), and because the call was fire-and-
-  # forget the denial was invisible — which is how stale worktrees accumulated
-  # to six unnoticed in the #712 repro. Count `reaped_stale` from the verified
-  # end state (path gone), not from the call's exit status.
-  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-    --action reaped \
-    --worktree-path "$worktree_path" \
-    --worktree-name "$name" \
-    --session-id "<session-id>" \
-    --classification "$classification" \
-    --phase "setup-3b-recovery" 2>/dev/null || true
-  if [ ! -e "$worktree_path" ]; then
-    reaped_stale=$((reaped_stale + 1))
-  else
-    unreaped_stale=$((unreaped_stale + 1))
-  fi
-done
-git worktree prune
+reap_output=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap-stale \
+  --repo-root "$(pwd)" \
+  --session-id "<session-id>" \
+  --max-per-session "${max_per_session:-10}" \
+  "${exclude_flags[@]}" 2>/dev/null)
+
+# The summary line is always the LAST line of reap-stale's output —
+# surface it verbatim so the reaped-vs-deferred-vs-remaining backlog is
+# visible rather than silent (issue #836 fix 2's "emit a one-line count").
+summary_line=$(printf '%s\n' "$reap_output" | tail -1)
+echo "[setup-3b] ${summary_line}"
+
+git worktree prune 2>/dev/null || true
 ```
 
-Record `reaped_stale`, `unreaped_stale`, and `deferred_stale` — all three surface in the end-of-session summary. A non-zero `unreaped_stale` means a reap was refused (auto-mode permission classifier, a dirty worktree carrying unpushed commits, or a filesystem error); the summary pairs the count with the `/clean_gone` remediation rather than degrading silently ([#712](https://github.com/mattsears18/shipyard/issues/712)).
+`reap-stale`'s summary line (`summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>`) is what surfaces in the end-of-session summary. A non-zero `unreaped` means a reap was refused (auto-mode permission classifier, a dirty worktree carrying unpushed commits, or a filesystem error); the summary pairs the count with the `/clean_gone` remediation rather than degrading silently ([#712](https://github.com/mattsears18/shipyard/issues/712)).
 
-**3c. Orphan worktree triage** — scan for `do-work/*` branches whose worktrees survived step 3b (legitimate orphans from THIS session, not dead-process leftovers).
+#### 3c. Orphan worktree triage
 
-> **Background step.** Both the discovery query and the handling (push / PR-create for orphans with commits) run inside the background bash group fired from [step 0.7](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch). Neither gates dispatch decisions. The discovery query is cheap; the expensive push/PR-create branch only fires when orphans exist. The canonical implementation lives in the background group above; this section documents the decision table and `salvaged_count` / `abandoned_count` / `stale_assigns_count` tracking semantics.
+Scan for `do-work/*` branches whose worktrees survived step 3b (legitimate orphans from THIS session, not dead-process leftovers).
+
+> **MOVED pre-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)) — no longer part of the post-relocation background group; this section is now the canonical implementation.** Both the discovery query and the handling (`git -C <path>` reads, `git worktree remove`, `git branch -D`, `git -C <path> push` — every one of them against a worktree other than the orchestrator's own) are refused once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` has isolated the session. It now runs synchronously at [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), before relocation, right after [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions). Neither gates dispatch decisions; the discovery query is cheap and the expensive push/PR-create branch only fires when orphans exist. **Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble**, same as [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) above.
 
 ```bash
 git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||'
@@ -177,6 +184,132 @@ All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh 
 The fifth row closes a gap where prior sessions could leave the `@me` self-assign on an issue after their on-disk worktree was cleaned up — the first four rows only see issues whose worktree is still present, so this state otherwise survives unbounded across sessions. See [RATIONALE → Step 3c stale self-assign gap](../../do-work-RATIONALE.md#step-3c--the-stale-self-assign-gap-303) for the fuller failure mode (issue #303).
 
 The row's action is intentionally conservative: clear the assignment only, leave the `shipyard` label (provenance — it tells the next session this issue went through `/do-work` before), let the normal step-4 backlog fetch pick the issue back up, and let the orchestrator's normal dispatch path arrange a fresh worktree. Don't touch the issue body, don't post a comment, don't close — the issue may genuinely still be workable and the prior session's `blocked` may have been transient.
+
+**Executable form** (the table above is the at-a-glance summary; this is what actually runs):
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
+stale_assigns_count=0
+declare -a stale_assigns_numbers
+git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||' | while read -r branch; do
+  path=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
+  [ -z "$path" ] && continue
+  # Issue #739 — extract the issue number permissively so a collision-
+  # fallback LOCAL branch name (`do-work/issue-<N>-<timestamp>`, produced
+  # by issue-work.md §3 when a prior worktree still held the canonical
+  # name — see #736/#738) still resolves to `<N>`, not the garbage
+  # compound string `<N>-<timestamp>`. `canonical_branch` is what the
+  # collision-fallback worker actually pushed to and opened its PR
+  # against (its own local checkout may be named differently), so every
+  # remote/PR lookup below must key off it, never off `$branch` verbatim.
+  n=$(echo "$branch" | sed -E 's|^do-work/issue-([0-9]+).*|\1|')
+  canonical_branch="do-work/issue-$n"
+  ahead=$(git -C "$path" rev-list --count "origin/<default-branch>..HEAD" 2>/dev/null || echo 0)
+  if [ "$ahead" -eq 0 ]; then
+    # Issue #712 — non-force FIRST, force only behind evidence. `git worktree
+    # remove` (no --force) refuses on a dirty tree, which is the exact safety
+    # property Claude Code's auto-mode permission classifier is protecting
+    # when it denies a bare `--force` as [Irreversible Local Destruction]. The
+    # `ahead -eq 0` test immediately above IS the preceding, explicit check
+    # that makes the escalation safe here: this worktree carries no commits
+    # beyond the base branch, so nothing being force-removed exists only here.
+    git worktree remove "$path" 2>/dev/null \
+      || git worktree remove --force "$path" 2>/dev/null
+    git branch -D "$branch" 2>/dev/null
+    gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
+  else
+    # Resolve against the CANONICAL remote branch name, not `$branch`
+    # verbatim — a collision-fallback worker's local branch carries a
+    # disambiguating suffix, but it pushes and opens its PR against
+    # `do-work/issue-<N>` (see issue-work.md §3/§5). Checking `$branch`
+    # here would never find that push, causing this sweep to push a
+    # second, spurious remote branch and then open a duplicate PR.
+    pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)
+    if [ -z "$pushed" ]; then
+      git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch" 2>/dev/null || true
+    fi
+    open_pr=$(gh pr list --repo <owner/repo> --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
+    if [ -z "$open_pr" ]; then
+      (cd "$path" && gh pr create --repo <owner/repo> --head "$canonical_branch" --fill --label shipyard 2>/dev/null) || true
+      pr_num=$(gh pr list --repo <owner/repo> --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
+      # #720: gate the arm behind the ungated-merge detector. This PR is a
+      # PRIOR session's orphaned branch, opened with `--fill` — nothing in this
+      # session ever reviewed its diff. On an ungated repo `--auto` is not a
+      # queue; it direct-merges that unreviewed work immediately, and the
+      # `2>/dev/null || true` makes it silent. Fail-safe: an unreadable verdict
+      # resolves to `ungated` (defer), never to an immediate merge.
+      if [ -n "$pr_num" ]; then
+        verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
+          <owner/repo> 2>/dev/null || echo ungated)
+        # Resolve the merge method from config — never hardcode --merge (#989).
+        auto_merge_method=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+        case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
+        if [ "$verdict" = "gated" ]; then
+          # Capture stderr instead of discarding it (#850) — the same
+          # missing-`workflow`-OAuth-scope block a worker's own arm can hit
+          # (worker-preamble auto-merge.md step 1.1, #812) can hit this
+          # setup-3c orphan-recovery arm too; `2>/dev/null || true` was
+          # previously swallowing it with zero visibility.
+          merge_arm_err=$(gh pr merge "$pr_num" --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
+          if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
+            echo "[setup-3c] PR #${pr_num} auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
+          fi
+        else
+          # Leave OPEN + unarmed. The PR carries `--label shipyard` (above),
+          # which is exactly the label drain's deferred-merge lander keys on —
+          # so it gets merged on the first poll its checks are green, with no
+          # `session_prs` plumbing needed. Do NOT block on `gh pr checks
+          # --watch` here — this would stall session start, once per orphan.
+          echo "[setup-3c] PR #${pr_num} left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
+        fi
+      fi
+    fi
+  fi
+done
+# The "[setup-3c] PR #<N> auto-merge arm blocked" line above runs inside
+# this piped `while read` loop (a subshell), so it cannot persist a value
+# back into the enclosing shell's own variables. That's fine —
+# workflow_scope_blocked_prs is orchestrator state (see do-work.md's
+# "Orchestrator state" section), not a literal shell variable spanning tool
+# calls: when this block's captured stdout is surfaced, append <N> to
+# workflow_scope_blocked_prs for every such line, exactly as
+# steady-state.md step A.1's shipped-handler already does from a worker's
+# return string (issue #812 / #850).
+
+# Row 5 — Stale @me self-assigns with no worktree, no PR, no branch
+# (issue #303). Catches the state the worktree loop above CAN'T see: a
+# prior session that left the @me assignment on an issue after its
+# on-disk worktree was already cleaned up. Without this sweep the
+# assignment survives indefinitely across sessions. Action is
+# conservative: clear the assignment only, leave the `shipyard` label as
+# provenance, and let the normal step-4 backlog fetch pick the issue up
+# on the next dispatch.
+for n in $(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null); do
+  # If a worktree for this issue exists, the loop above already handled it;
+  # skip. Extract issue numbers from every do-work worktree branch the same
+  # permissive way as the loop above (#739) so a collision-fallback local
+  # branch name (`do-work/issue-$n-<timestamp>`) is still recognized as
+  # "already handled" instead of falling through to the assignee-clear
+  # below on an issue whose worktree is alive, just suffixed.
+  if git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\/issue-/{print $2}' \
+    | sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\1|' | grep -qx "$n"; then
+    continue
+  fi
+  # If a do-work branch for this issue still exists on origin, leave it
+  # alone — it may belong to an open PR the `-linked:pr` filter missed
+  # (e.g., draft PR linked via a different reference shape). Conservative
+  # gate: only clear assignment when NOTHING in the dispatch artifacts
+  # exists for this issue anymore.
+  if [ -n "$(git ls-remote --heads origin "do-work/issue-$n" 2>/dev/null)" ]; then
+    continue
+  fi
+  gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
+  stale_assigns_count=$((stale_assigns_count + 1))
+  stale_assigns_numbers+=("$n")
+done
+```
 
 **3d.1. Auto-clear stale `blocked:ci` labels.** The label is sticky on purpose, but a new commit on the PR's head branch means the premise ("no movement since shipyard gave up") is no longer true. Auto-clear those PRs so they flow back into step 5's failing-PR snapshot for another 3 attempts. This sweep is the *only* place `blocked:ci` is removed by the orchestrator (step A applies; 3d.1 removes; no other step touches it).
 
