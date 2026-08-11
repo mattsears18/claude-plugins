@@ -808,14 +808,20 @@ assert_contains "$skill_path" "(./write-probe.md)" \
     "git-stash-prohibition.md explains the stash stack is shared across every concurrent worker (issue #845)"
   # shellcheck disable=SC2016
   # Literal grep needle — the shell snippet is matched verbatim, not expanded.
-  assert_contains "$git_stash_prohibition_path" 'git stash push -m "<agent-id-or-issue-N>: <reason>"' \
-    "git-stash-prohibition.md prescribes the isolating git stash push -m form (issue #845)"
+  assert_contains "$git_stash_prohibition_path" 'git stash push -u -m "<agent-id-or-issue-N>: <reason>"' \
+    "git-stash-prohibition.md prescribes the isolating git stash push -u -m form (issue #1224)"
   assert_contains "$git_stash_prohibition_path" "A bare \`git stash pop\` always takes \`stash@{0}\`" \
     "git-stash-prohibition.md forbids bare git stash pop and names the stash@{0} mechanism (issue #845)"
-  assert_contains "$git_stash_prohibition_path" "apply, not pop" \
-    "git-stash-prohibition.md prescribes apply-then-drop by matched ref, not pop (issue #845)"
-  assert_contains "$git_stash_prohibition_path" "\`apply\`-then-\`drop\` by matched ref is the only safe shape" \
-    "git-stash-prohibition.md states apply-then-drop by matched ref is the only safe shape (issue #845)"
+  assert_contains "$git_stash_prohibition_path" "apply by SHA, not pop" \
+    "git-stash-prohibition.md prescribes apply-then-drop by matched SHA, not pop (issue #1224)"
+  assert_contains "$git_stash_prohibition_path" "\`apply\`-then-\`drop\` by matched SHA/tag is the only safe shape" \
+    "git-stash-prohibition.md states apply-then-drop by matched SHA/tag is the only safe shape (issue #1224)"
+  assert_contains "$skill_path" "there is always a substitute" \
+    "SKILL.md pairs the git-stash prohibition with a concrete substitute (issue #1224)"
+  assert_contains "$skill_path" 'git commit -m "wip: <why>"' \
+    "SKILL.md leads with the WIP-commit substitute for shelving changes (issue #1224)"
+  assert_contains "$git_stash_prohibition_path" "WIP commit" \
+    "git-stash-prohibition.md's substitute section leads with a WIP commit (issue #1224)"
 
   # Issue #751 — "Never run a broad process kill" split the same way: the
   # core prohibition + PID-tracking rule + hook-enforcement note stay in
