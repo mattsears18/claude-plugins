@@ -1,0 +1,16 @@
+# A worker never touches the roadmap ([#1240](https://github.com/mattsears18/shipyard/issues/1240))
+
+`shipyard:update-roadmap` (the roadmap-authoring skill — assigns milestones, authors phases, checks bets, detects dependencies) is **orchestrator-only**. It must never be invoked from inside a dispatched worker's own turn, and a worker must never itself create, rename, renumber, or reassign a milestone, or edit a milestone description.
+
+**Why this belongs here, not only in the skill itself.** The skill's own file states the orchestrator-only rule, but that file is read by the *orchestrator*, not by the workers the rule constrains. `shipyard:worker-preamble` carries this rule as its own fragment for the same reason it carries 17 other prohibitions as dedicated fragment files (`git-stash-prohibition.md`, `compound-command-refusal.md`, `nvm-source-refusal.md`, and so on) instead of leaving each one stated once in whichever spec happens to describe the feature: a prohibition is only load-bearing if it lives where the constrained agent actually reads it. A rule stated only in the orchestrator's own skill is invisible to the worker it's meant to constrain.
+
+**Why it matters.** A dispatched worker runs in an isolated worktree scoped to a single issue — it has no view of the whole backlog, which is exactly the context milestone sequencing requires (which phase an issue belongs to depends on every *other* open issue's phase, not just this one). Two concurrent workers each deciding to create or renumber a milestone would race each other: one worker's renumber landing mid-read of another worker's cold-start scan produces an inconsistent roadmap neither worker can detect from inside its own worktree.
+
+**The one exception — filing metadata is not roadmap authorship.** A worker that files a follow-up issue (per `agents/issue-worker/issue-work.md` § "Implement" — new bugs spotted mid-implementation go to a new issue, never fixed inline) may stamp that new issue with **the parent issue's own existing milestone**, if the parent already carries one. This is not covered by the prohibition above: it's filing metadata inherited from a milestone assignment a human or the orchestrator already made, not a new milestone decision the worker is making on its own. A worker must NOT invent, guess, or infer a *different* milestone for a filed issue than the one its parent already carries, and must NOT assign any milestone to a filed issue whose parent has none.
+
+## Don't
+
+- Don't invoke `/shipyard:update-roadmap` (or otherwise run the `shipyard:update-roadmap` skill's procedure) from inside a dispatched `/shipyard:do-work` worker's turn — mode-issue-work, fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, and spike are all off-limits.
+- Don't create, rename, renumber, or reassign a GitHub Milestone from inside a worker's turn, for any reason — not even a milestone that looks obviously missing or obviously wrong.
+- Don't edit a milestone's description from inside a worker's turn — that's roadmap authorship (a phase's `BET:`/`DONE LOOKS LIKE:` text), reserved for the orchestrator-run skill.
+- **Do** stamp a filed follow-up issue with its parent's existing milestone when the parent has one — that's inherited filing metadata, not a milestone decision, and is explicitly in scope.
