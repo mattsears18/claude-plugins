@@ -118,6 +118,8 @@ Once all agents return — and after the reconciliation step above — present a
 
 Do not file any issues from the main session — that's each agent's job. The main session orchestrates and reports.
 
+**This command does NOT run the milestone roadmap sweep after filing ([#1243](https://github.com/mattsears18/shipyard/issues/1243)).** `/shipyard:do-work` wires `shipyard:update-roadmap` into its own end-of-loop sequence (see [`cleanup-summary.md`'s step 8.5](./do-work/cleanup-summary.md#end-of-session-cleanup)) so issues it bulk-files during a session don't sit unmilestoned indefinitely. `/shipyard:audit` deliberately does **not** get the same auto-wiring — a single audit run is typically much shorter and files far fewer findings per run than a multi-hour `/do-work` loop, so duplicating the gate/skip/non-fatal machinery here for a thinner benefit isn't worth it. If `milestones.enabled` is `true` for this repo, running `/shipyard:update-roadmap` after a bulk audit run (by hand, or on its own `/loop 1d /shipyard:update-roadmap` periodic cadence) is the **operator's** job, not this command's.
+
 ## Write the consolidated report to disk
 
 After emitting the chat summary, persist the same content to `./.shipyard/audits/<YYYY-MM-DD>-shipyard-audit.html` so it survives the session. Don't skip this step — the data is already in your context; the cost of writing it is one tool call and the value of having it on disk is large.
