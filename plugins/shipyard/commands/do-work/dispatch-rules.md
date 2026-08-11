@@ -371,6 +371,12 @@ When filling a slot, walk this decision tree:
    - Otherwise (no lockfile sections claimed, no hard/soft collisions): **run the concurrent-session guard** (see below), then claim the issue before dispatching — gated on `backlog.self_assign` (config default `false`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248)):
 
      ```bash
+     CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+     export CLAUDE_PLUGIN_ROOT
+     # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
+     SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
+     [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+     export SHIPYARD_REPO_ROOT
      SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
      if [ "$SELF_ASSIGN" = "true" ]; then
        gh issue edit <N> --repo <owner/repo> --add-assignee @me --add-label shipyard

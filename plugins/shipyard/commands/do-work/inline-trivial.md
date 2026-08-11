@@ -53,6 +53,12 @@ When a candidate passes all 7 rules, dispatch the inline path instead of a `Work
 Same as the normal dispatch path, **before** the first file write — self-assignment is gated on `backlog.self_assign` (config default `false`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248)); the `shipyard` label is always applied:
 
 ```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+# Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
+SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+export SHIPYARD_REPO_ROOT
 SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
 if [ "$SELF_ASSIGN" = "true" ]; then
   gh issue edit <N> --repo <owner/repo> --add-assignee @me --add-label shipyard
