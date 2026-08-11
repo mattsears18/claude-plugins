@@ -260,6 +260,40 @@ Regression coverage: [`scripts/tests/sweep-orphan-tmp.test.sh`](../../../scripts
 
 **Don't block the session on sweep failures** — log `[orphan-reap] <reason>` and proceed. Recovery of historical data is observational; the dispatch loop's job comes first. If `SHIPYARD_KEEP_SESSIONS=1` is set (per the [step 8 cleanup-summary opt-out](../cleanup-summary.md#end-of-session-cleanup)), skip the sweep entirely — the user explicitly opted into keeping session files as permanent records.
 
+### 1.65 Detect live peer sessions on this repo ([#1204](https://github.com/mattsears18/shipyard/issues/1204))
+
+**Synchronous — part of the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch), not step 1.6's fire-and-forget background group.** Its result gates [step 4](04-backlog-divert.md#4-fetch--rank-the-backlog)'s backlog filter, so it must complete before dispatch, unlike step 1.6's cost-ledger housekeeping.
+
+Nothing before this step looked for another `/shipyard:do-work` session working the SAME repo. Two sessions started minutes apart can fetch and rank the same deterministic backlog and dispatch a worker against the same issue at once — one merges a PR while the other's worker keeps implementing against an issue that already closed. Self-assign (step 1) doesn't catch this: both sessions assign as the same `gh`-authenticated user, so "don't work issues assigned to other users" sees its own login and passes.
+
+The session-state file at `$SHIPYARD_HOME/sessions/<id>.json` already carries everything needed: `.repo`, `.in_flight[].target`, and mtime as a liveness proxy. This step walks the same directory [step 1.6](#16-reap-orphan-session-files-cost-ledger-recovery) already globs (no second walk), applying its mtime-staleness convention in the opposite direction — a file is a LIVE peer candidate only when its mtime is fresh, not stale:
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+PEER_LINES=$("${CLAUDE_PLUGIN_ROOT}/scripts/detect-peer-sessions.sh" check \
+  --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
+  --repo "<owner/repo>" \
+  --current-session-id "<session-id>" 2>/dev/null || echo "summary: peers=0 claimed_targets=(none)")
+PEER_COUNT=$(printf '%s\n' "$PEER_LINES" | grep -o 'peers=[0-9]*' | tail -1 | cut -d= -f2)
+PEER_CLAIMED_TARGETS=$(printf '%s\n' "$PEER_LINES" | grep -o 'claimed_targets=.*' | tail -1 | cut -d= -f2-)
+[ "$PEER_CLAIMED_TARGETS" = "(none)" ] && PEER_CLAIMED_TARGETS=""
+```
+
+Write through unconditionally, holding the value for the rest of the session (same posture as `trusted_authors` — resolved once, never re-resolved mid-session):
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+PEER_TARGETS_JSON=$(printf '%s' "$PEER_CLAIMED_TARGETS" | jq -R 'split(",") | map(select(length>0) | tonumber)')
+"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "<session-id>" \
+  --set ".peer_sessions = { count: ${PEER_COUNT:-0}, claimed_targets: ${PEER_TARGETS_JSON}, checked_at: \"<iso-8601 UTC now>\" }"
+```
+
+`PEER_CLAIMED_TARGETS` feeds [step 4's drop rule](04-backlog-divert.md#4-fetch--rank-the-backlog) (mechanics + warn-and-continue policy: [`04e-peer-session-drop.md`](04e-peer-session-drop.md)). `PEER_COUNT` feeds [step E's invariant line](../steady-state.md#e-invariant-line-end-of-every-steady-state-turn) as `peers=<n>`.
+
+**Fail-safe.** Always exits 0, degrading to `peers=0 claimed_targets=(none)` on any read failure — never blocks dispatch. A stale peer file (past the freshness window, step 1.6's floor) is never live, so a dead-mid-flight peer can't permanently starve this session's backlog.
+
 ### 1.6.5 Reap orphan orchestrator worktrees
 
 > **MOVED pre-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)) — no longer part of the post-relocation background group; this section is now the canonical implementation.** This sweep's `git -C <other-worktree>` operations and `worktree-reap.sh reap --worktree-path <other-worktree>` calls are refused outright by the harness's worktree-isolation guard once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` call has isolated the session (*"this command redirects git to the shared checkout via -C. Refusing it"*) — and the mandatory pre-reap inspection for unpushed work ([#838](https://github.com/mattsears18/shipyard/issues/838)) is exactly the kind of `git -C` read the guard blocks, so there is no safe degradation available at runtime: the guard doesn't merely block the reap, it blocks the safety check that makes reaping safe. [Step 0.5's `EnterWorktree` call was itself mandated (#844)](00-config-worktree.md#05-move-into-the-orchestrators-worktree) to fix a *different* problem (a background-job session's `Edit`/`Write` calls being refused pre-isolation) — so the two fixes were in direct, unresolvable conflict as long as this sweep ran after relocation. The fix: run it BEFORE relocation instead, at [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), while cwd is still the primary checkout and the guard has no isolated session to enforce against.

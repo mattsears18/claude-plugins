@@ -53,6 +53,7 @@ Bucket each issue into exactly one category. Apply in order — first match wins
 |---|---|---|---|
 | 0.5 | **Untrusted author** | `author.login` is NOT in `trusted_authors` (see [step 1.7](01-repo-recovery.md#17-resolve-trusted-author-allowlist)). **Applied first** — strangers' issues never reach the dispatch queue, even if otherwise unlabeled. | `/my-turn` — the drop applies `needs-human-review` + a bounded, idempotent handoff comment (see [`04`'s bucket-0.5 handoff](./04-backlog-divert.md#4-fetch--rank-the-backlog), [#1079](https://github.com/mattsears18/shipyard/issues/1079)) |
 | 1 | **Assigned to others** | `assignees` contains a user other than `@me` | `/my-turn` — P2 housekeeping when the assignee is inactive >30d |
+| 1.5 | **Peer-claimed** | issue/PR number is in `.peer_sessions.claimed_targets` — a live peer `/shipyard:do-work` session on this repo already has it `in_flight` (see [step 1.65](./01-repo-recovery.md#165-detect-live-peer-sessions-on-this-repo-1204), [#1204](https://github.com/mattsears18/shipyard/issues/1204)) | `/do-work` (self-clearing — retried once the peer's claim ages out or resolves) |
 | 2 | **In flight** | issue number appears in the `linked:pr` set above | `/do-work` |
 | 3 | **Won't fix** | carries `wontfix` | nobody (by design) — no path forward |
 | 4 | **Discussion** | carries `discussion` | nobody (by design) — a maintainer is engaged in the thread by hand |
@@ -143,6 +144,7 @@ Agent-console (operator action)                  1   #Z
 Discussion                                       1   #G
 Won't fix                                        1   #X
 In flight (open PR)                              2   #I → PR #J, #K → PR #L
+Peer-claimed                                     1   #P → peer session <id>
 Assigned to others                               1   #M → @user
 
 Total open: <W + S>  (workable: <W>, skipped: <S>)
@@ -180,7 +182,7 @@ Unblock recommendations (work these in parallel while /do-work runs):
   - **Count** column: right-aligned, width = max(digit count across rows), clamped to a minimum of 5.
   - **Issues** column: width = max(content length across rendered rows), clamped to a minimum of 30 and a maximum of 80 characters. Content wider than the cap is NOT line-wrapped — the per-row truncation rule below handles overflow.
   - Column separator: **3 spaces** (visible gap without looking like a tab). Header divider: one `─` (U+2500) per character of the header label, separated by the same 3-space gaps.
-- **Row order**: `Workable` first, then `Untrusted author` (security-relevant skip, surfaced near top), `Blocked (label)`, `Blocked (body reference)`, `Needs-triage/design`, `Awaiting refinement`, `Awaiting human review`, `Agent-console (operator action)`, `Discussion`, `Won't fix`, `In flight`, `Assigned to others`.
+- **Row order**: `Workable` first, then `Untrusted author` (security-relevant skip, surfaced near top), `Blocked (label)`, `Blocked (body reference)`, `Needs-triage/design`, `Awaiting refinement`, `Awaiting human review`, `Agent-console (operator action)`, `Discussion`, `Won't fix`, `In flight`, `Peer-claimed`, `Assigned to others`.
 - **Issues column content.** Comma-separated issue numbers (with arrow-targets like `#G → PR #H` or `#I → @user`). Truncate after **10 numbers** with `, +<K> more`.
 - **`Total open` line** stays below the table; **`By priority` and `Top workable items`** stay above.
 
