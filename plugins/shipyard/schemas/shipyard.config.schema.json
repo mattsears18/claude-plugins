@@ -409,7 +409,7 @@
     "worktree_reap": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Controls the setup step-3b cross-session sweep of stale `agent-*` worktrees (issue #836). The sweep reaps at most `max_per_session` reap-eligible worktrees per session, oldest-first, via `worktree-reap.sh reap-stale` — the on-disk backlog itself is the checkpoint, so a session that can't clear the whole backlog still makes forward progress and a later session continues from where it left off. `warn_threshold` gates a one-time session-start advisory when the `agent-*` count is high enough that the backlog is worth a human's attention regardless of the per-session cap.",
+      "description": "Controls the setup step-3b cross-session sweep of stale `agent-*` worktrees (issue #836) and the mid-session disk-space backpressure guard (issue #1261). The sweep reaps at most `max_per_session` reap-eligible worktrees per session, oldest-first, via `worktree-reap.sh reap-stale` — the on-disk backlog itself is the checkpoint, so a session that can't clear the whole backlog still makes forward progress and a later session continues from where it left off. `warn_threshold` gates a one-time session-start advisory when the `agent-*` count is high enough that the backlog is worth a human's attention regardless of the per-session cap. `disk_free_floor_mb` gates the same `reap-stale` sweep running mid-session, before a dispatch, whenever free disk space drops below the floor.",
       "properties": {
         "max_per_session": {
           "type": "integer",
@@ -422,6 +422,12 @@
           "minimum": 0,
           "default": 20,
           "description": "When the number of `agent-*` worktrees still on disk at session start meets or exceeds this threshold, the setup step prints a one-time advisory naming the count and the reclaimable disk size, so a backlog large enough to matter (each worktree can carry its own `node_modules/`, easily 1+ GB) is visible even though the per-session reap cap means it won't all clear in one session. Set to 0 to always warn when any `agent-*` worktree exists; set very high to effectively disable the warning."
+        },
+        "disk_free_floor_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10240,
+          "description": "Issue #1261 — the mid-session disk-space backpressure floor (megabytes) checked at every steady-state step C dispatch decision via `worktree-reap.sh disk-check` against the volume holding `.claude/worktrees`. When free space drops below this floor, step C runs a bounded `reap-stale` sweep (respecting `.in_flight` exclusion per issue #832, never inferring liveness from branch name per issue #836) BEFORE dispatching a replacement worker — a backstop for whatever gap let the ordinary per-completion reap points (A.0.5 / A.1 / step B / dispatch-rules.md 2d) fall behind, not a replacement for any of them. The reading (post-sweep, if one ran) is surfaced as the invariant line's `disk_free_mb=` token regardless of whether the floor was crossed. Set to 0 to disable the guard (the check still reads and reports free space, but never triggers a sweep)."
         },
         "_comment": { "type": "string" }
       }

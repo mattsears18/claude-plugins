@@ -155,6 +155,13 @@ assert_equals "$("$helper" get dependencies.new_dep_version)" "latest-stable" "g
 assert_equals "$("$helper" get worktree_reap.max_per_session)" "10" "get worktree_reap.max_per_session returns 10 (issue #836)"
 assert_equals "$("$helper" get worktree_reap.warn_threshold)" "20" "get worktree_reap.warn_threshold returns 20 (issue #836)"
 
+# worktree_reap.disk_free_floor_mb — issue #1261: the mid-session disk-space
+# backpressure floor steady-state.md's step C checks before every dispatch
+# decision, triggering a reap-stale sweep whenever free space on the
+# worktree volume drops below this many megabytes. Asserting the literal
+# here prevents an accidental drift in the default (10 GiB).
+assert_equals "$("$helper" get worktree_reap.disk_free_floor_mb)" "10240" "get worktree_reap.disk_free_floor_mb returns 10240 (issue #1261)"
+
 # dispatch.substrate — RETIRED (#791). #787 scaffolded the Dynamic Workflows
 # substrate, #788/#789 wired all seven modes to it, and #790 flipped the built-in
 # default to "workflow" while retaining the legacy "agent" path for one release
@@ -914,11 +921,27 @@ assert_equals "$("$helper" get merge_gate.serialize)" "false" "local layer overr
 echo "== worktree_reap — bounded/checkpointed sweep + threshold warning (issue #836)"
 
 # A valid full block validates.
-echo '{"version":1,"worktree_reap":{"max_per_session":25,"warn_threshold":50}}' > "$repo/shipyard.config.json"
+echo '{"version":1,"worktree_reap":{"max_per_session":25,"warn_threshold":50,"disk_free_floor_mb":5120}}' > "$repo/shipyard.config.json"
 "$helper" validate --layer repo
 assert_exit_code "$?" 0 "worktree_reap accepts a full valid block"
 assert_equals "$("$helper" get worktree_reap.max_per_session)" "25" "repo override returns max_per_session"
 assert_equals "$("$helper" get worktree_reap.warn_threshold)" "50" "repo override returns warn_threshold"
+assert_equals "$("$helper" get worktree_reap.disk_free_floor_mb)" "5120" "repo override returns disk_free_floor_mb (issue #1261)"
+
+# disk_free_floor_mb: 0 is allowed (disables the mid-session guard, minimum: 0).
+echo '{"version":1,"worktree_reap":{"disk_free_floor_mb":0}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo
+assert_exit_code "$?" 0 "worktree_reap.disk_free_floor_mb accepts 0 (disables the guard)"
+
+# Schema rejects a negative disk_free_floor_mb.
+echo '{"version":1,"worktree_reap":{"disk_free_floor_mb":-1}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "worktree_reap.disk_free_floor_mb rejects a negative value"
+
+# Schema rejects a non-integer disk_free_floor_mb.
+echo '{"version":1,"worktree_reap":{"disk_free_floor_mb":"lots"}}' > "$repo/shipyard.config.json"
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "worktree_reap.disk_free_floor_mb rejects a non-integer"
 
 # max_per_session: 0 is allowed (disables removal, minimum: 0).
 echo '{"version":1,"worktree_reap":{"max_per_session":0}}' > "$repo/shipyard.config.json"
