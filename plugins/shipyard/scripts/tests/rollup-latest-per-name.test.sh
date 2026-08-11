@@ -239,6 +239,44 @@ JSON
 mixed_fails=$(echo "$ROLLUP_MIXED" | jq "$JQ_LATEST_PER_NAME")
 assert_equals "mixed rollup (one stale-then-pass + one genuinely-failing) → 1 failure on latest" "1" "$mixed_fails"
 
+# Fixture 11 (issue #1211, the deferred half of #1205): the fix-checks-only
+# green/noop return contract now cites the head SHA the rollup was observed
+# at (`@<head-SHA>`), captured via `.headRefOid` folded into the SAME
+# `gh pr view` call as the rollup — zero extra round-trips. Pin that adding
+# `headRefOid` to the query alongside the existing counts doesn't disturb
+# the passed/pending/failing counting this suite otherwise pins, and that
+# the SHA comes through verbatim.
+# shellcheck disable=SC2016  # literal jq variable references ($sha, $c), not shell expansion
+JQ_WITH_SHA='
+  .headRefOid as $sha |
+  [.statusCheckRollup
+   | group_by(.name)
+   | map(sort_by(.completedAt // .startedAt // "") | last)
+   | .[]
+   | (.conclusion // .status // "" | ascii_downcase)] as $c
+  | { sha: $sha,
+      passed:  ([$c[] | select(. == "success" or . == "skipped" or . == "neutral")] | length),
+      pending: ([$c[] | select(. == "" or . == "pending" or . == "in_progress" or . == "queued" or . == "expected")] | length),
+      failing: ([$c[] | select(. == "failure" or . == "error" or . == "timed_out" or . == "cancelled" or . == "action_required")] | length) }
+'
+ROLLUP_WITH_SHA=$(cat <<'JSON'
+{
+  "headRefOid": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+  "statusCheckRollup": [
+    {"name": "Lint",        "conclusion": "SUCCESS", "completedAt": "2026-05-24T17:00:00Z"},
+    {"name": "Unit Tests",  "conclusion": "SUCCESS", "completedAt": "2026-05-24T17:01:00Z"}
+  ]
+}
+JSON
+)
+sha_out=$(echo "$ROLLUP_WITH_SHA" | jq -c "$JQ_WITH_SHA")
+sha_extracted=$(echo "$sha_out" | jq -r '.sha')
+sha_passed=$(echo "$sha_out" | jq -r '.passed')
+assert_equals "headRefOid rides along in the same query, extracted verbatim (#1211)" \
+  "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2" "$sha_extracted"
+assert_equals "adding headRefOid to the query doesn't disturb the passed count (#1211)" \
+  "2" "$sha_passed"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

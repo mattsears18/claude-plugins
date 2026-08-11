@@ -699,6 +699,80 @@ assert_contains "$issue_work_path333" \
   'group_by(.name)' \
   "issue-work.md step 7 snapshot uses group_by(.name) projection (#333)"
 
+# (18.5) Head-SHA citation in the fix-checks-only green/noop return shape
+# (issue #1211 — the deferred half of #1205).
+#
+# #1205 landed two API-free pre-checks that force a live spot-check on a
+# fabrication tell, but deliberately deferred the harder, vocabulary-
+# changing half: requiring the head SHA the rollup was observed at in the
+# `green #<M>` / `noop: already green #<M>` return shape, so the
+# orchestrator can mechanically reject a citation against a SHA that isn't
+# the PR's current head via a plain string comparison — rather than only by
+# re-running the rollup query the worker itself ran. #1211's own body names
+# (at minimum) four files that must land the vocabulary change together:
+# fix-checks-only.md's return contract, dispatch-rules.md's prompt
+# template, steady-state.md's reconcile parsing, and dont.md's verification
+# bullet — plus the workflow-substrate's buildFixChecksOnlyPrompt builder
+# and the worker-return.schema.json structured-return schema (and its
+# hand-copied .js mirror), both covered by their own required-CI parity
+# checks (check-dispatch-prompt-parity.mjs / check-worker-return-schema-
+# parity.mjs).
+#
+# These assertions pin that every lockstep site actually carries the new
+# `@<head-SHA>` token (or the schema's `head_sha` field), and that the
+# reconcile documents BOTH halves of the design decision the issue asked
+# for explicitly: a cited-but-mismatched SHA is treated like a fabrication
+# tell, and a SHA-less (older-shape) return is NOT a hard parse failure —
+# it forces the same live verification, never less.
+fix_checks_path1211="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
+schema_path1211="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
+core_js_path1211="$repo_root/plugins/shipyard/workflows/do-work-dispatch.core.js"
+workflow_js_path1211="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
+prompt_template_path1211="$repo_root/plugins/shipyard/workflows/prompt-templates/fix-checks-only.mjs"
+
+assert_contains "$fix_checks_path1211" \
+  'green #<M> @<head-SHA> (rollup verified' \
+  "fix-checks-only.md return contract requires the @<head-SHA> citation on green (#1211)"
+assert_contains "$fix_checks_path1211" \
+  'noop: already green #<M> @<head-SHA> (rollup verified' \
+  "fix-checks-only.md return contract requires the @<head-SHA> citation on noop (#1211)"
+assert_contains "$fix_checks_path1211" \
+  'issues/1211' \
+  "fix-checks-only.md cites issue #1211"
+assert_contains "$dispatch_rules_path" \
+  'green #<M> @<head-SHA> (rollup verified' \
+  "dispatch-rules.md's fix-checks-only prompt template return-values list carries @<head-SHA> (#1211)"
+assert_contains "$dispatch_rules_path" \
+  'head_sha:"<40-char SHA>"' \
+  "dispatch-rules.md's structured-return translation table carries the head_sha field (#1211)"
+assert_contains "$steady_state_path" \
+  'Head-SHA citation check' \
+  "steady-state.md reconcile documents the head-SHA citation check (#1211)"
+assert_contains "$steady_state_path" \
+  'fix-checks-sha-mismatch' \
+  "steady-state.md logs a distinct advisory on a SHA mismatch, treated like a fabrication tell (#1211)"
+assert_contains "$steady_state_path" \
+  'fix-checks-sha-missing' \
+  "steady-state.md documents a SHA-less return as forcing verification, not a hard parse failure (#1211)"
+assert_contains "$dont_path" \
+  "Don't accept a \`green\`/\`noop\` citation whose head SHA doesn't match the PR's live head" \
+  "dont.md pins the SHA-mismatch / SHA-less handling (#1211)"
+assert_contains "$schema_path1211" \
+  '"head_sha"' \
+  "worker-return.schema.json declares the head_sha field (#1211)"
+assert_contains "$core_js_path1211" \
+  "head_sha: { type: ['string', 'null'] }" \
+  "do-work-dispatch.core.js's workerReturnSchema literal mirrors head_sha (#1211)"
+assert_contains "$workflow_js_path1211" \
+  "head_sha: { type: ['string', 'null'] }" \
+  "do-work-dispatch.workflow.js (generated) mirrors head_sha (#1211)"
+assert_contains "$prompt_template_path1211" \
+  '"head_sha"' \
+  "fix-checks-only.mjs's structured-return examples include head_sha (#1211)"
+assert_contains "$workflow_js_path1211" \
+  '"head_sha"' \
+  "do-work-dispatch.workflow.js (generated) mirrors the head_sha structured-return example (#1211)"
+
 # (19) Wide-fetch + client-side filter for the backlog (issue #332).
 #
 # The previous backlog-fetch shape used a server-side
