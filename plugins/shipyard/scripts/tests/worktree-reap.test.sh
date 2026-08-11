@@ -28,7 +28,9 @@
 #   1) no lock file        → `no-lock`
 #   2) lock with dead PID  → `dead`
 #   3) lock with malformed content (no PID)
-#                          → `dead` (extraction failed → treat as dead)
+#                          → `unknown` (issue #1206 — fail CLOSED, not
+#                                       `dead`; extraction failure must not
+#                                       default to the destructive verdict)
 #   4) lock with self PID  → `self-ancestor`  (THE bug-fix path)
 #   5) lock with parent PID
 #                          → `self-ancestor`  (ancestor walk works)
@@ -38,6 +40,11 @@
 #   7) bad usage           → exit 64
 #   8) regression guard: canonical lock format with peer/own PID
 #                          → `peer-alive` / `self-ancestor`
+#   8b-8d) issue #1206 — REAL harness lock shape `(pid <N> start <ctime>)`
+#                          (not the idealized `(pid <N>)` every test above
+#                          uses): live peer PID → `peer-alive` (the exact
+#                          repro — this used to misparse as `dead`), own PID
+#                          → `self-ancestor`, genuinely-dead PID → `dead`
 #   9) issue #263 — SHIPYARD_ORCHESTRATOR_PID env var matches lock PID
 #                          → `self-ancestor` (env-var short-circuit fires)
 #  10) issue #263 — SHIPYARD_ORCHESTRATOR_PID env var set but lock PID
@@ -234,13 +241,19 @@ else
 fi
 
 # --- (3) lock with malformed content (no parseable PID) ---
+# Issue #1206: this used to assert 'dead' (extraction-failed treated as
+# dead) — a fail-OPEN default for a destructive operation. An unparseable
+# lock might belong to a live peer whose lock simply doesn't match the
+# expected shape, so classify-lock must fail CLOSED instead: 'unknown',
+# treated identically to 'peer-alive' by every caller that gates a defer
+# decision on the classification.
 lock_malformed="$tmpdir/malformed.lock"
 cat > "$lock_malformed" <<EOF
 some other content with no pid syntax
 EOF
 result=$(run_classify "$lock_malformed")
-assert_equals "$result" "dead" \
-  "(3) malformed lock (no PID) → 'dead' (extraction-failed treated as dead)"
+assert_equals "$result" "unknown" \
+  "(3) malformed lock (no PID) → 'unknown' (fail closed, issue #1206 — NOT 'dead')"
 
 # --- (4) lock with self PID — THE bug-fix path ---
 # Use $$ (this shell's PID). The orchestrator's PID is the analog in
@@ -335,6 +348,60 @@ if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
 fi
 [ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
 wait "$sibling_pid" 2>/dev/null
+
+# --- (8b)-(8d) issue #1206 — REAL harness lock shape regression guard ---
+# Every test above (and the pre-#1206 production code) used the IDEALIZED
+# `(pid <N>)` shape from the doc comment. The actual Claude Code harness
+# writes an additional `start <ctime>` field between the PID and the
+# closing paren:
+#   claude session orchestrator-do-work-20260810T221957Z-35757 (pid 52469 start Mon Aug 10 12:58:36 2026)
+# The pre-#1206 extraction regex, `grep -oE '[0-9]+\)'`, matched the FIRST
+# digit-run immediately followed by `)` — for this shape that's the ctime's
+# trailing 4-digit YEAR, not the PID. Every one of these fixtures uses the
+# real shape verbatim (with a synthetic PID substituted in) so a regression
+# back to the old regex fails loudly here instead of only in production.
+real_shape_lock="$tmpdir/real-shape.lock"
+
+# (8b) REAL shape + a live sibling PID → 'peer-alive', NOT 'dead'. This is
+# the exact #1206 repro: a live peer session misclassified as dead because
+# the extraction grabbed the ctime's year (always a low-numbered, almost
+# certainly-dead "PID" like 2026) instead of the real PID.
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  printf 'claude session orchestrator-do-work-20260810T221957Z-35757 (pid %d start Mon Aug 10 12:58:36 2026)\n' \
+    "$sibling_pid" > "$real_shape_lock"
+  result=$(run_classify "$real_shape_lock")
+  assert_equals "$result" "peer-alive" \
+    "(8b) issue #1206 repro: REAL lock shape '(pid N start ctime)' with a LIVE peer PID → 'peer-alive' (NOT 'dead' — the ctime-year misparse this issue reports)"
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+
+# (8c) REAL shape + our own PID → 'self-ancestor', not 'peer-alive' and not
+# 'dead'. Confirms the anchored regex still correctly extracts a PID that
+# happens to be reapable via the ancestor walk, not just a peer.
+printf 'claude session orchestrator-test (pid %d start Mon Aug 10 12:58:36 2026)\n' "$$" \
+  > "$real_shape_lock"
+result=$(run_classify "$real_shape_lock")
+assert_equals "$result" "self-ancestor" \
+  "(8c) REAL lock shape with our OWN pid → 'self-ancestor' (anchored regex still finds the true PID, not the ctime year)"
+
+# (8d) REAL shape + a genuinely-dead PID → 'dead'. Confirms the fix doesn't
+# overcorrect into deferring on every real-shape lock regardless of
+# liveness — a real-shape lock naming a truly-dead PID must still reap.
+(true) &
+dead_pid_real_shape=$!
+wait "$dead_pid_real_shape" 2>/dev/null
+while ps -p "$dead_pid_real_shape" -o pid= >/dev/null 2>&1; do
+  sleep 0.05
+done
+printf 'claude session orchestrator-test (pid %d start Mon Aug 10 12:58:36 2026)\n' \
+  "$dead_pid_real_shape" > "$real_shape_lock"
+result=$(run_classify "$real_shape_lock")
+assert_equals "$result" "dead" \
+  "(8d) REAL lock shape with a genuinely-DEAD pid → 'dead' (still reap-eligible — the fix doesn't over-defer)"
 
 # --- (9) issue #263 — SHIPYARD_ORCHESTRATOR_PID matches lock PID ---
 # The core fix scenario: classify-lock is called from a context where the
@@ -1226,6 +1293,23 @@ kill "$sibling_pid" 2>/dev/null
 wait "$sibling_pid" 2>/dev/null
 sibling_pid=""
 
+# --- (63c) issue #1206 — unparseable lock (unknown) → deferred, worktree
+# kept. Same fail-closed posture as peer-alive: reap_session_worktrees must
+# NOT fall through to "safe to reap" on a lock it couldn't classify.
+reset_rsw_layout
+rsw_add_worktree malformed
+printf 'some other content with no pid syntax\n' \
+  > "$rsw_repo/.git/worktrees/agent-malformed/locked"
+result=$(run_rsw --agent-id malformed)
+assert_equals "$result" "deferred: agent-malformed" \
+  "(63c) issue #1206: unparseable (unknown) lock → deferred line (fail closed, NOT reaped)"
+[ -d "$rsw_repo/.claude/worktrees/agent-malformed" ] && unknown_kept=yes || unknown_kept=no
+assert_equals "$unknown_kept" "yes" \
+  "(63d) unknown lock → worktree NOT removed"
+unknown_reason=$(grep -o '"reason":"unknown"' "$rsw_audit_log" 2>/dev/null | head -1)
+assert_equals "$unknown_reason" '"reason":"unknown"' \
+  "(63e) unknown lock → audit line records reason unknown (not peer-alive)"
+
 # --- (64) SHIPYARD_ORCHESTRATOR_PID short-circuit → self-ancestor → reaped ---
 # Same live-non-ancestor PID as (63), but declared as the orchestrator PID:
 # classify-lock short-circuits to self-ancestor, so this session's own
@@ -1802,6 +1886,33 @@ expected=$(printf 'agent-dead dead 999999\nagent-nolock no-lock null\nagent-peer
 assert_equals "$result" "$expected" \
   "(92) classify-all: no-lock / dead / self-ancestor / peer-alive all resolved in one call"
 
+kill "$ca_sibling_pid" 2>/dev/null
+wait "$ca_sibling_pid" 2>/dev/null
+
+# --- (92a) issue #1206 — classify_all has its OWN independent PID-parsing
+# regex (a pure-bash `[[ =~ ]]` match, not `extract_lock_pid`, for the
+# batching reasons documented in Pass 1's comment) — it carried the SAME
+# anchor-on-close-paren bug as classify-lock's `extract_lock_pid`, but
+# manifested differently: `\(pid[[:space:]]+([0-9]+)\)` REQUIRED the digits
+# to be immediately followed by `)`, so a REAL `(pid <N> start <ctime>)`
+# lock never matched at all (pid stayed empty) rather than misparsing to
+# the ctime year. This exercises both: a real-shape lock naming a live PID
+# resolves to peer-alive (not the pre-#1206 `dead`), and a lock with no
+# parseable pid at all resolves to `unknown` (not `dead`).
+reset_ca_layout
+ca_add_worktree realpeer
+ca_add_worktree malformed
+(sleep 300) &
+ca_sibling_pid=$!
+sleep 0.05
+printf 'claude session orchestrator-do-work-20260810T221957Z-35757 (pid %s start Mon Aug 10 12:58:36 2026)\n' \
+  "$ca_sibling_pid" > "$ca_repo/.git/worktrees/agent-realpeer/locked"
+printf 'some other content with no pid syntax\n' \
+  > "$ca_repo/.git/worktrees/agent-malformed/locked"
+result=$(run_classify_all | sort)
+expected=$(printf 'agent-malformed unknown null\nagent-realpeer peer-alive %s' "$ca_sibling_pid")
+assert_equals "$result" "$expected" \
+  "(92a) issue #1206: classify-all with REAL '(pid N start ctime)' lock shape -> peer-alive (not dead); unparseable lock -> unknown (not dead)"
 kill "$ca_sibling_pid" 2>/dev/null
 wait "$ca_sibling_pid" 2>/dev/null
 

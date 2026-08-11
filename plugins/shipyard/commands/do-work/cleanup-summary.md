@@ -35,7 +35,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    ls -d .claude/worktrees/agent-*/ 2>/dev/null || echo "(no agent worktrees)"
    ```
 
-3. **Reap all agent worktrees from THIS session — classify the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. Run the helper [`scripts/worktree-reap.sh classify-lock <lock-file>`](../../scripts/worktree-reap.sh) against each worktree's lock file. It returns one of `no-lock` / `dead` / `self-ancestor` / `peer-alive`. Reap on the first three; defer only on `peer-alive`.
+3. **Reap all agent worktrees from THIS session — classify the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. Run the helper [`scripts/worktree-reap.sh classify-lock <lock-file>`](../../scripts/worktree-reap.sh) against each worktree's lock file. It returns one of `no-lock` / `dead` / `self-ancestor` / `peer-alive` / `unknown` (issue #1206 — lock exists but couldn't be parsed; fail closed). Reap on the first three; defer on `peer-alive` AND `unknown`.
 
    **3.0. Targeted this-session reap FIRST — by explicit agent-id, before the generic sweep ([#509](https://github.com/mattsears18/shipyard/issues/509)).** The generic loop below (step 3.1) iterates *every* `.git/worktrees/agent-*` directory; on a busy checkout with many accumulated cross-session worktrees it can stall before finishing, stranding this session's own shipped worktrees. See [RATIONALE → Targeted-reap-first ordering](../do-work-RATIONALE.md#step-3--targeted-reap-first-ordering-509) for the repro and the full explanation of why the targeted pass runs before the generic sweep.
 
@@ -109,23 +109,32 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
        classify-lock "$wt_dir/locked")
 
      # Extract the lock PID for the audit log (best effort; null literal
-     # when the lock file is missing or unparseable).
-     lock_pid=$(grep -oE '[0-9]+\)' "$wt_dir/locked" 2>/dev/null | tr -d ')' | head -1)
+     # when the lock file is missing or unparseable). Anchor on the literal
+     # `pid` keyword, not "first digit-run before a close-paren" — the
+     # latter misparses a real `(pid <N> start <ctime>)` lock as the
+     # ctime's trailing year (issue #1206). Same fix as `worktree-reap.sh`'s
+     # own `extract_lock_pid` helper.
+     lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
      [ -z "$lock_pid" ] && lock_pid="null"
 
-     if [ "$classification" = "peer-alive" ]; then
+     if [ "$classification" = "peer-alive" ] || [ "$classification" = "unknown" ]; then
        # Lock PID is alive AND not in our ancestor chain — a genuine peer
        # (another Claude Code instance's orchestrator, or a still-running
        # dispatched agent whose return hasn't been processed yet). Yanking
        # its worktree out from under it destroys in-flight or unpushed
-       # work product. Defer.
+       # work product. Defer. `unknown` (issue #1206 — the lock file exists
+       # but couldn't be parsed at all) gets the identical treatment: fail
+       # closed rather than falling through to "safe to reap" the way an
+       # unparseable lock used to. `--reason` carries the ACTUAL
+       # classification so the audit line doesn't misreport an `unknown`
+       # defer as `peer-alive`.
        deferred_live=$((deferred_live + 1))
        "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
          --action deferred \
          --worktree-path "$worktree_path" \
          --worktree-name "$name" \
          --session-id "<session-id>" \
-         --reason "peer-alive" \
+         --reason "$classification" \
          --lock-pid "$lock_pid" 2>/dev/null || true
        continue
      fi
