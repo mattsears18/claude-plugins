@@ -1,0 +1,430 @@
+#!/usr/bin/env bash
+# backlog-filter.sh — the executable, single-source-of-truth definition of
+# /shipyard:do-work's backlog eligibility filter (issue #1247).
+#
+# Background
+# ----------
+# The eligibility filter that decides which open issues /do-work may
+# dispatch against was, before this script existed, a six-clause predicate
+# expressed as PROSE and re-derived from scratch by an LLM at three
+# independent call-sites:
+#
+#   - commands/do-work/setup/04-backlog-divert.md step 4 (build raw_backlog)
+#   - commands/do-work/steady-state.md step C          (mid-session re-check)
+#   - commands/do-work/drain.md termination-assertion step 4 (fresh-fetch
+#     verification before ending the session)
+#
+# Three prose copies of the same predicate have already drifted TWICE:
+#   - #332 — a shorthand ("drop issues with no assignee") silently erased
+#     every self-assigned resumable-work issue.
+#   - #1194 — the same class of regression recurred one layer down, in a
+#     mid-drain ad-hoc re-derivation.
+# A third divergence was found (not yet regressed in production, but
+# already committed to the spec text): `needs-triage` is explicitly
+# excluded from the drop-label enumeration in setup.md (it's routed to
+# investigate_candidates instead) but was listed INSIDE the drop-label
+# enumeration in both steady-state.md and drain.md — the exact contradiction
+# a hand-rolled second copy cannot help but eventually produce.
+#
+# This script is the fix: ONE implementation of the classification/routing
+# decision, invoked identically at all three call-sites, so they cannot
+# disagree. The three .md files now mark their prose descriptions
+# non-normative and point here.
+#
+# Subcommands
+# -----------
+#
+#   classify --me <login> --trusted-authors <csv> [--closed-by-healthy-pr <csv>]
+#            [--peer-claimed <csv>] [--investigate-dispatch true|false]
+#            [--prioritize-label <label>] [--today YYYY-MM-DD]
+#     Reads a JSON array of issues on stdin — the exact projection setup.md
+#     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
+#     assignees: [login,...], author: {login}, createdAt, updatedAt}, ...].
+#     Emits one NDJSON line per issue on stdout:
+#       {"number":N,"verdict":"eligible"}
+#       {"number":N,"verdict":"route","reason":"investigate"}
+#       {"number":N,"verdict":"route","reason":"operator"}
+#       {"number":N,"verdict":"drop","reason":"<reason>"}
+#       {"number":N,"verdict":"gate","reason":"<label>"}
+#     Output ORDER: every "eligible" line first, in rank order (prioritized
+#     label tier, then P0>P1>P2>unlabeled, then bug>fix(*)>feat(*)>chore(*)>
+#     other, then oldest-updatedAt-first) — this is the same order setup.md
+#     step 4 sorts raw_backlog into. Then every "route":"investigate" line,
+#     in its own rank order (P0>P1>P2>unlabeled, then staleness — no
+#     prioritized-label or type tier, per 04d-investigate-routing.md). Then
+#     every remaining line (route:operator, drop:*, gate:*) in input order,
+#     as an audit trail. A caller that wants only the ranked eligible
+#     numbers does: `jq -r 'select(.verdict=="eligible") | .number'`.
+#     Exit 0 always (even on an empty input array — emits nothing).
+#
+#   closed-by-healthy-pr --repo <owner/repo> --me <login>
+#     Live-queries GitHub: the set of issue numbers with an OPEN PR,
+#     authored by --me, that (a) is currently healthy (mergeStateStatus in
+#     {CLEAN, HAS_HOOKS, UNSTABLE} — i.e. not blocked by failing checks) and
+#     (b) has this issue in closingIssuesReferences. This is the
+#     "closed-by-@me-authored-healthy-PR" drop clause's input set — it
+#     requires live network access (an open-PR query + a batched check
+#     rollup), so unlike `classify` it is NOT a pure function and is not
+#     fixture-tested; it is the thin, single-copy replacement for the `gh
+#     pr list` + gh-batch.sh + jq block that used to be written out in full
+#     in setup.md step 4 and silently assumed ("apply the same filter") at
+#     the other two call-sites.
+#     Prints a comma-separated, numerically-sorted, deduped list of issue
+#     numbers to stdout (empty output, not "(none)", when the set is empty
+#     — so `--closed-by-healthy-pr "$(...)"` composes directly).
+#     Exit codes: 0 success (even if the set is empty); 65 if `gh` or `jq`
+#     is missing, or gh-batch.sh can't be found alongside this script.
+#
+# Design note — why classify takes precomputed sets rather than doing its
+# own network I/O for --closed-by-healthy-pr / --peer-claimed: the
+# classification/routing DECISION is the part that has actually drifted
+# (see the #332/#1194/needs-triage history above) and is exactly what
+# needs to be fixture-testable against fixed inputs, byte-for-byte,
+# forever. The live network calls that produce those input sets are
+# comparatively simple, already had their own bugs fixed once each (#301's
+# closingIssuesReferences fix, #333's latest-per-name rollup fix) and
+# aren't where the drift has occurred. Keeping `classify` pure means its
+# test suite runs with no `gh` calls, no `--repo`, and no network at all.
+#
+# Why "Blocked by #N still open" needs no extra input: the wide-fetch
+# payload IS the complete set of this repo's currently-open issues (the
+# server-side fetch is `--state open`, no other filter) — so "is #N still
+# open" is answered by "does #N appear in this same payload's own `number`
+# list", with no separate per-reference `gh issue view` call required. A
+# referenced #N that has already closed (or was never an issue in this
+# repo) simply doesn't appear, and the issue is correctly treated as
+# unblocked.
+#
+# Exit codes: 0 success; 64 bad usage; 65 missing dependency (jq/gh).
+set -u
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh disable=SC1091
+source "${here}/lib/common.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  backlog-filter.sh classify --me <login> --trusted-authors <csv>
+      [--closed-by-healthy-pr <csv-of-numbers>] [--peer-claimed <csv-of-numbers>]
+      [--investigate-dispatch true|false] [--prioritize-label <label>]
+      [--today YYYY-MM-DD]
+    < wide-fetch-issue-json (array) on stdin
+
+  backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
+EOF
+}
+
+# _csv_to_json_number_array <csv> — "" -> [], "3,7,7,x" -> [3,7] (non-numeric
+# tokens dropped silently — defensive against a caller passing a stray
+# empty field from a trailing comma).
+_csv_to_json_number_array() {
+  local csv="$1"
+  jq -nc --arg csv "$csv" '
+    ($csv | split(",") | map(select(test("^[0-9]+$"))) | map(tonumber))
+  '
+}
+
+# _csv_to_json_lower_string_array <csv> — "" -> [], "Foo,bar" -> ["foo","bar"].
+_csv_to_json_lower_string_array() {
+  local csv="$1"
+  jq -nc --arg csv "$csv" '
+    ($csv | split(",") | map(select(length > 0)) | map(ascii_downcase))
+  '
+}
+
+# The symptom-shaped-body regex, verbatim from
+# setup/04d-investigate-routing.md's SYMPTOM_REGEX — kept as a single
+# source string here so a future edit to the signal only has to change one
+# place. jq's built-in regex engine (Oniguruma) accepts the same syntax.
+SYMPTOM_REGEX='(Traceback \(most recent call last\)|Fatal error:|Unhandled( Promise)? [Rr]ejection|Exception in thread|Segmentation fault|NullPointerException|panic:|Stack trace:|sentry\.io/(organizations|issues)/|[Ff]ingerprint:[[:space:]]*[0-9a-f]{8,}|at [A-Za-z0-9_.$]+ ?\([^)]*:[0-9]+:[0-9]+\))'
+
+# The jq classification program. Reads the wide-fetch array as `.` (top
+# level input), emits the ordered NDJSON stream described in the header
+# comment. Every dynamic input arrives via --arg/--argjson — no shell
+# interpolation inside the program string itself.
+# shellcheck disable=SC2016
+# NOTE on style: every function below takes its issue as a `$`-prefixed
+# (value) parameter, never a bare filter parameter. jq bare (non-$) function
+# parameters are dynamically-scoped filters re-evaluated against whatever
+# `.` happens to be at each point they are REFERENCED inside the function
+# body — not lexically-captured values — so a bare `issue` referenced from
+# inside a nested select()/map()/any() (where `.` has already changed to
+# some inner iteration variable) silently evaluates against the WRONG
+# value. `$`-parameters are evaluated once, at the call site, and behave
+# like ordinary bound values from then on, which is what every function
+# below actually needs.
+CLASSIFY_JQ='
+def lower: ascii_downcase;
+
+# Dispatch-gate labels that DROP an issue outright (never routed) — the
+# literal enumeration from setup.md step 4. needs-triage and agent-console
+# are deliberately absent: both are ROUTES, handled by their own clauses
+# below, never by this drop-on-label clause.
+def gate_labels: ["blocked:ci", "wontfix", "discussion", "needs-human-review", "tracking"];
+
+def priority_rank($issue):
+  if ($issue.labels | index("P0") != null) then 0
+  elif ($issue.labels | index("P1") != null) then 1
+  elif ($issue.labels | index("P2") != null) then 2
+  else 3
+  end;
+
+def type_rank($issue):
+  if ($issue.labels | index("bug") != null) then 0
+  elif ($issue.title | test("^fix\\(")) then 1
+  elif ($issue.title | test("^feat\\(")) then 2
+  elif ($issue.title | test("^chore\\(")) then 3
+  else 4
+  end;
+
+def prioritized_tier($issue; $plabel):
+  if ($plabel == "") then 0
+  elif ($issue.labels | index($plabel) != null) then 0
+  else 1
+  end;
+
+def matches_gate_label($issue):
+  [gate_labels[] | select(. as $g | $issue.labels | index($g) != null)] | first;
+
+def is_agent_console($issue):
+  ($issue.labels | index("agent-console") != null);
+
+def is_investigate_signal($issue; $re):
+  ($issue.labels | index("needs-triage") != null)
+  or (($issue.author.login // "") | test("\\[bot\\]$|^app/"))
+  or (($issue.body // "") | test($re; "i"));
+
+def is_untrusted($issue; $trusted):
+  (($issue.author.login // "") | lower) as $a | ($trusted | index($a)) == null;
+
+def is_peer_claimed($issue; $peer):
+  ($peer | index($issue.number) != null);
+
+def is_assigned_to_other($issue; $me):
+  ($issue.assignees | length) > 0
+  and ((($issue.assignees | map(lower)) | index($me)) == null);
+
+def blocked_by_open_issue($issue; $opennums):
+  (($issue.body // "") | [scan("(?i)blocked by #([0-9]+)")]) as $refs
+  | ($refs | map(.[0] | tonumber)) as $nums
+  | ($nums | any(. as $n | ($n != $issue.number) and ($opennums | index($n) != null)));
+
+def time_gate_future($issue; $today):
+  ($issue.body // "") as $b
+  | ($b | split("\n") | (.[0] // "")) as $first_line
+  # capture() produces NO output at all (an empty stream, not a null) when
+  # the string fails to match -- wrapping in [...] then `first` turns "zero
+  # outputs" into a real `null` we can bind and branch on below. Binding
+  # `capture(...)` directly via `as $cap` would otherwise make this entire
+  # function silently produce zero outputs on every non-matching (the
+  # overwhelmingly common) case -- every eligible issue would silently
+  # vanish from classify output, because this def is called from every
+  # classify_one and would swallow its own return value.
+  | ([$first_line | capture("^<!--\\s*do-work-blocked-until:\\s*(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})\\s*-->\\s*$")] | first) as $cap
+  | if ($cap == null) then false
+    else ($cap.d > $today)
+    end;
+
+def is_closed_by_healthy_pr($issue; $healthy):
+  ($healthy | index($issue.number) != null);
+
+def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $re; $opennums):
+  (matches_gate_label($issue)) as $gate_hit
+  | if is_untrusted($issue; $trusted) then
+      {number: $issue.number, verdict: "drop", reason: "untrusted-author"}
+    elif ($gate_hit != null) then
+      {number: $issue.number, verdict: "gate", reason: $gate_hit}
+    elif is_agent_console($issue) then
+      {number: $issue.number, verdict: "route", reason: "operator"}
+    elif is_investigate_signal($issue; $re) then
+      (if $investigate_dispatch then
+         {number: $issue.number, verdict: "route", reason: "investigate"}
+       else
+         {number: $issue.number, verdict: "drop", reason: "investigate-disabled"}
+       end)
+    elif is_peer_claimed($issue; $peer) then
+      {number: $issue.number, verdict: "drop", reason: "peer-claimed"}
+    elif is_assigned_to_other($issue; $me) then
+      {number: $issue.number, verdict: "drop", reason: "assigned-other"}
+    elif blocked_by_open_issue($issue; $opennums) then
+      {number: $issue.number, verdict: "drop", reason: "blocked-by-open-issue"}
+    elif time_gate_future($issue; $today) then
+      {number: $issue.number, verdict: "drop", reason: "time-gated"}
+    elif is_closed_by_healthy_pr($issue; $healthy) then
+      {number: $issue.number, verdict: "drop", reason: "closed-by-healthy-pr"}
+    else
+      {number: $issue.number, verdict: "eligible"}
+    end
+  | . + {
+      _priority_rank: priority_rank($issue),
+      _type_rank: type_rank($issue),
+      _prioritized_tier: prioritized_tier($issue; $prioritize_label),
+      _updatedAt: ($issue.updatedAt // "")
+    };
+
+. as $issues
+| ($issues | map(.number)) as $opennums
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $symptom_re; $opennums))) as $classified
+| (
+    ($classified | map(select(.verdict == "eligible"))
+      | sort_by([._prioritized_tier, ._priority_rank, ._type_rank, ._updatedAt]))
+    +
+    ($classified | map(select(.verdict == "route" and .reason == "investigate"))
+      | sort_by([._priority_rank, ._updatedAt]))
+    +
+    ($classified | map(select(
+        (.verdict != "eligible")
+        and (.verdict != "route" or .reason != "investigate")
+      )))
+  )
+| .[]
+| (if has("reason") then {number, verdict, reason} else {number, verdict} end)
+'
+
+cmd_classify() {
+  local me="" trusted_csv="" healthy_csv="" peer_csv="" investigate_dispatch="true"
+  local prioritize_label="" today=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --me) me="${2:-}"; shift 2 ;;
+      --trusted-authors) trusted_csv="${2:-}"; shift 2 ;;
+      --closed-by-healthy-pr) healthy_csv="${2:-}"; shift 2 ;;
+      --peer-claimed) peer_csv="${2:-}"; shift 2 ;;
+      --investigate-dispatch) investigate_dispatch="${2:-}"; shift 2 ;;
+      --prioritize-label) prioritize_label="${2:-}"; shift 2 ;;
+      --today) today="${2:-}"; shift 2 ;;
+      *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+
+  if [[ -z "$me" ]]; then
+    echo "classify: --me is required" >&2
+    usage
+    return 64
+  fi
+  if [[ -z "$trusted_csv" ]]; then
+    echo "classify: --trusted-authors is required (pass an explicit empty-safe value, not an omitted flag, if the trusted set is genuinely empty)" >&2
+    usage
+    return 64
+  fi
+  case "$investigate_dispatch" in
+    true|false) ;;
+    *) echo "classify: --investigate-dispatch must be true or false, got: $investigate_dispatch" >&2; return 64 ;;
+  esac
+  if [[ -z "$today" ]]; then
+    today="$(date -u +%F)"
+  fi
+  if ! [[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "classify: --today must be YYYY-MM-DD, got: $today" >&2
+    return 64
+  fi
+
+  require_jq "backlog-filter.sh"
+
+  local me_lower trusted_json healthy_json peer_json input
+  me_lower=$(printf '%s' "$me" | tr '[:upper:]' '[:lower:]')
+  trusted_json=$(_csv_to_json_lower_string_array "$trusted_csv")
+  healthy_json=$(_csv_to_json_number_array "$healthy_csv")
+  peer_json=$(_csv_to_json_number_array "$peer_csv")
+  input=$(cat)
+
+  if [[ -z "$input" ]]; then
+    input="[]"
+  fi
+
+  printf '%s' "$input" | jq -c \
+    --arg me "$me_lower" \
+    --argjson trusted "$trusted_json" \
+    --argjson healthy "$healthy_json" \
+    --argjson peer "$peer_json" \
+    --argjson investigate_dispatch "$investigate_dispatch" \
+    --arg prioritize_label "$prioritize_label" \
+    --arg today "$today" \
+    --arg symptom_re "$SYMPTOM_REGEX" \
+    "$CLASSIFY_JQ"
+}
+
+cmd_closed_by_healthy_pr() {
+  local repo="" me=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      --me) me="${2:-}"; shift 2 ;;
+      *) echo "closed-by-healthy-pr: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+  if [[ -z "$repo" ]]; then
+    echo "closed-by-healthy-pr: --repo is required" >&2
+    usage
+    return 64
+  fi
+  if [[ -z "$me" ]]; then
+    echo "closed-by-healthy-pr: --me is required" >&2
+    usage
+    return 64
+  fi
+  require_jq "backlog-filter.sh"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "closed-by-healthy-pr: gh is required but not installed" >&2
+    return 65
+  fi
+  local gh_batch="${here}/gh-batch.sh"
+  if [[ ! -f "$gh_batch" ]]; then
+    echo "closed-by-healthy-pr: gh-batch.sh not found alongside this script (expected $gh_batch)" >&2
+    return 65
+  fi
+
+  local open_pr_numbers
+  open_pr_numbers=$(gh pr list --repo "$repo" --state open --author "$me" --limit 200 \
+    --json number --jq '[.[].number] | join(" ")' 2>/dev/null)
+
+  if [[ -z "$open_pr_numbers" ]]; then
+    return 0
+  fi
+
+  bash "$gh_batch" pr-status --repo "$repo" --numbers "$open_pr_numbers" 2>/dev/null | jq -r '
+    [.[] | select(
+        .mergeStateStatus == "CLEAN"
+        or .mergeStateStatus == "HAS_HOOKS"
+        or .mergeStateStatus == "UNSTABLE"
+      )
+      | select(
+        ([(.statusCheckRollup // [])
+         | group_by(.name)
+         | map(sort_by(.completedAt // .startedAt // "") | last)
+         | .[]
+         | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or .conclusion == "TIMED_OUT")
+        ] | length) == 0
+      )
+      | .closingIssueNumbers[]
+    ] | unique | join(",")
+  '
+}
+
+main() {
+  local sub="${1:-}"
+  case "$sub" in
+    classify)
+      shift
+      cmd_classify "$@"
+      ;;
+    closed-by-healthy-pr)
+      shift
+      cmd_closed_by_healthy_pr "$@"
+      ;;
+    -h|--help|help|"")
+      usage
+      [ -z "$sub" ] && return 64
+      return 0
+      ;;
+    *)
+      echo "backlog-filter.sh: unknown subcommand: $sub" >&2
+      usage
+      return 64
+      ;;
+  esac
+}
+
+main "$@"
+exit $?
