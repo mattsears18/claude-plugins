@@ -15,6 +15,7 @@ Creates `shipyard.config.json` at the repo root (committed) and seeds `.gitignor
    - **Primary-checkout guard (default `off`).** Offer (opt-in) to install a Claude Code `PreToolUse` hook that fires when an `Edit` / `Write` / `git commit` runs in the repo's **primary checkout** rather than a linked git worktree — forcing each editing session into its own `git worktree`. This protects a user's *interactive* sessions from colliding in one shared working tree (the native `worktree.bgIsolation: "worktree"` setting only isolates *background* sessions; this extends the same protection to interactive ones). See [step 9.5 below](#95-optionally-install-the-primary-checkout-guard) for the full prompt + install logic. Issue [#482](https://github.com/mattsears18/shipyard/issues/482).
    - **Worktree-reap allowlist (default `off`).** Offer (opt-in) to append the worktree-reap commands to `settings.json`'s `permissions.allow`, so `/do-work`'s end-of-session worktree cleanup is pre-authorized rather than depending on Claude Code's auto-mode classifier permitting it each time. See [step 9.6 below](#96-optionally-pre-authorize-the-worktree-reap-commands) for the full prompt + install logic. Issue [#714](https://github.com/mattsears18/shipyard/issues/714).
    - **Adding-dependencies `CLAUDE.md` rule (default `off`).** Offer (opt-in) to append a short "look up the current stable version before introducing a new dependency" rule to the target repo's own `CLAUDE.md`, so a plain interactive Claude Code session on that repo — one with no shipyard skills loaded — inherits the same convention a `/shipyard:do-work` worker dispatch already gets from the `shipyard:adding-dependencies` skill. See [step 9.7 below](#97-optionally-append-the-adding-dependencies-rule-to-claudemd) for the full prompt + install logic. Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048).
+   - **Milestone-sequenced roadmap (default `off`).** Offer (opt-in) to turn on the `milestones` config block — shipyard-owned roadmap sequencing, independent of labels/priority. `enabled: false` (the default if declined) is genuinely inert: no milestone reads, no new API calls. See [step 9.8 below](#98-optionally-enable-milestone-sequenced-roadmap-work) for the full prompt + install logic. Issue [#1239](https://github.com/mattsears18/shipyard/issues/1239).
 4. **Write `shipyard.config.json`** at the repo root using the atomic-write helper in `plugins/shipyard/scripts/shipyard-config.sh`. Validates against the JSON schema before writing.
 5. **Append `.shipyard/*` to `.gitignore`** if neither that form nor the legacy bare `.shipyard/` form is already present. Creates `.gitignore` if it doesn't exist. **Never** modifies any other line — the addition is appended, with a leading newline if the file doesn't end in one, and an already-present legacy `.shipyard/` line is left as-is rather than rewritten (see step 6 below for why).
 6. **Create `.shipyard/`** as an empty directory (for session state, gh-cache, etc. — the helper scripts create subdirectories on demand).
@@ -42,6 +43,8 @@ Flags:
 - `--reap-allowlist-scope <global|repo>` — where the allow rules are written: `global` (`~/.claude/settings.json`) or `repo` (`.claude/settings.json`). Default `repo`. Only consulted when `--reap-allowlist on`.
 - `--dep-rule <off|pointer|inline>` — appends (or skips) the adding-dependencies convention to `CLAUDE.md` (issue [#1048](https://github.com/mattsears18/shipyard/issues/1048)). Default `off` (nothing written). `pointer` emits a one-liner pointing at the `shipyard:adding-dependencies` skill; `inline` emits a self-contained ~6-line summary for a repo without shipyard installed. See [step 9.7](#97-optionally-append-the-adding-dependencies-rule-to-claudemd).
 - `--dep-rule-scope <global|repo>` — where the `CLAUDE.md` rule is written: `global` (`~/.claude/CLAUDE.md`) or `repo` (repo `CLAUDE.md`). Default `repo`. Only consulted when `--dep-rule` is `pointer` or `inline`.
+- `--milestones <on|off>` — sets `milestones.enabled` (issue [#1239](https://github.com/mattsears18/shipyard/issues/1239)). Default `off` (block omitted entirely — no committed knob, no behavior change). See [step 9.8](#98-optionally-enable-milestone-sequenced-roadmap-work).
+- `--milestones-fallback <title>` — sets `milestones.fallback`. Default `Ongoing maintenance`. Only consulted when `--milestones on`.
 - `--force` — overwrite an existing `shipyard.config.json`. Without this, the command refuses to clobber.
 - `--dry-run` — print the resolved config to stdout and exit; don't touch the filesystem.
 - `--non-interactive` — never prompt. Use defaults for any field a flag didn't supply.
@@ -305,6 +308,40 @@ Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048), a follow-up 
 
 **Don't** hand-roll a different removal/migration path outside this step — the replace-in-place logic in point 2 is what makes a re-run (including a `pointer` ↔ `inline` mode switch) safe; don't bypass it with an ad hoc edit. Don't write the block without the sentinel pair — an unbounded append is exactly what makes a second `/shipyard:init` run duplicate the rule.
 
+### 9.8 Optionally enable milestone-sequenced roadmap work
+
+Issue [#1239](https://github.com/mattsears18/shipyard/issues/1239). This is **opt-in, default off** — do nothing unless the user picks `on` (interactively, or via `--milestones on`). When `--milestones off` (the default) or the user declines the prompt, skip this entire step, and — unlike steps 9.5–9.7, which always write *something* once a non-off mode is picked — also skip writing the `milestones` block to `shipyard.config.json` at all: an omitted block and an explicit `{"enabled": false}` block are behaviorally identical (every consumer checks `enabled` before doing anything), so the declined-by-default case stays a plain committed-config no-op rather than growing a redundant `false` entry.
+
+**This step is config-surface only.** `#1239` ships the schema block, the accessor defaults, and this offering — it does NOT wire dispatch ordering, milestone assignment on file, or the loop-end sweep. Those are `#1240`–`#1244`, each consuming exactly one key below. Enabling the block today does nothing observable until at least one of those lands; say so in the prompt.
+
+**The prompt (interactive).** Explain the tradeoff before asking:
+
+> shipyard can own your repo's roadmap sequencing — numbered phases (`1 · Foundation`, `2 · Polish`, …) that `/do-work` dispatches in order, ahead of label priority, once the milestone-consuming features land. This is a config-only opt-in right now: turning it on writes `milestones.enabled: true` but has no observable effect until a later shipyard release wires dispatch ordering / auto-assignment / the loop-end sweep to it. Turn it on?
+>   - **off** (default) — don't write the block.
+>   - **on** — write `milestones.enabled: true` with the default fallback title `Ongoing maintenance`.
+>
+> If **on**: what should the fallback milestone (for issues that fit no phase) be titled? [default: `Ongoing maintenance`]
+
+**Install logic** (only when the user opts in). One `set` call, mirroring the pattern [step 4](#implementation-what-the-assistant-should-do-when-this-command-runs) already uses for every other independent field:
+
+```bash
+if [[ "$MILESTONES" == "on" ]]; then
+  plugins/shipyard/scripts/shipyard-config.sh set milestones.enabled true --repo
+  # Only write fallback when it diverges from the schema default — same
+  # "don't bloat committed config with a redundant entry" discipline step 4
+  # already applies to concurrency.default.
+  if [[ -n "${MILESTONES_FALLBACK:-}" && "$MILESTONES_FALLBACK" != "Ongoing maintenance" ]]; then
+    plugins/shipyard/scripts/shipyard-config.sh set milestones.fallback "$MILESTONES_FALLBACK" --repo
+  fi
+fi
+```
+
+`assign_on_file`, `prioritize_dispatch`, and `sweep_on_loop_end` are left at their schema defaults (all `true`) rather than prompted individually — the common case for a repo opting in at all is "take the whole feature"; a maintainer who wants finer-grained control can set any of the three `false` afterward via `/shipyard:config set milestones.<key> false`.
+
+**Print a confirmation** naming what was written (or "declined — nothing written") and, when enabled, a one-line reminder that the feature has no effect yet on this shipyard version.
+
+**Don't** create any GitHub Milestones during `/shipyard:init` itself — this step only writes config. The fallback milestone (and any phase milestones) are created lazily by the consuming features once they land, not by `/shipyard:init`. Don't prompt for `assign_on_file` / `prioritize_dispatch` / `sweep_on_loop_end` individually in the interactive flow — that's more ceremony than the opt-in decision warrants; `/shipyard:config set` covers the rare case someone wants to peel one off.
+
 ## Don't
 
 - **Don't write committed config without schema validation.** Every `shipyard-config.sh set --repo` call validates before the atomic-write completes. Skipping that creates a footgun (typos in `auto_merge.policy`, etc.) that surfaces as a silent dispatch-time failure later.
@@ -320,6 +357,7 @@ Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048), a follow-up 
 - Issue [#482](https://github.com/mattsears18/shipyard/issues/482) — the primary-checkout guard offered in [step 9.5](#95-optionally-install-the-primary-checkout-guard).
 - Issue [#714](https://github.com/mattsears18/shipyard/issues/714) — the worktree-reap allowlist offered in [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands); follows [#712](https://github.com/mattsears18/shipyard/issues/712) / [#713](https://github.com/mattsears18/shipyard/issues/713), which made the reap non-force-first and made a denial visible.
 - Issue [#1048](https://github.com/mattsears18/shipyard/issues/1048) — the adding-dependencies `CLAUDE.md` rule offered in [step 9.7](#97-optionally-append-the-adding-dependencies-rule-to-claudemd); follows [#1045](https://github.com/mattsears18/shipyard/issues/1045), which shipped the underlying `shipyard:adding-dependencies` skill.
+- Issue [#1239](https://github.com/mattsears18/shipyard/issues/1239) — the `milestones` config block offered in [step 9.8](#98-optionally-enable-milestone-sequenced-roadmap-work); config-surface foundation for the milestone-sequencing work in issues #1240–#1244.
 - [`plugins/shipyard/scripts/worktree-reap.sh`](../scripts/worktree-reap.sh) — the reap helper whose commands [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands) pre-authorizes.
 - [`plugins/shipyard/skills/adding-dependencies/SKILL.md`](../skills/adding-dependencies/SKILL.md) — the skill [step 9.7](#97-optionally-append-the-adding-dependencies-rule-to-claudemd) points a `pointer`-mode `CLAUDE.md` rule at.
 - [`plugins/shipyard/hooks/guard-primary-checkout.sh`](../hooks/guard-primary-checkout.sh) — the guard hook (`off`/`warn`/`block` via `SHIPYARD_PRIMARY_GUARD`). Registered in the plugin's own `hooks.json` (default `warn`, issue [#741](https://github.com/mattsears18/shipyard/issues/741)); this init step additionally wires it into the user's `settings.json` via `${CLAUDE_PLUGIN_ROOT}` to let a user pin a stricter mode.

@@ -256,6 +256,25 @@ The loop checks hourly; `security` actually dispatches daily, `testing`/`functio
 
 End-of-session summary surfaces a `CI cost (#323):` block whenever any `ci.*` key is non-default OR any counter is non-zero, with a per-key breakdown and an `Estimated CI suites avoided this session: N` total. Detailed rationale and a worked example live in [`do-work-RATIONALE.md → CI-minute discipline`](./plugins/shipyard/commands/do-work-RATIONALE.md#ci-minute-discipline-issue-323).
 
+### Milestone-sequenced roadmap (`milestones` config block — issue [#1239](https://github.com/mattsears18/shipyard/issues/1239))
+
+`/do-work` ranks its backlog by `P0` > `P1` > `P2` > unlabeled, then staleness — a flat priority queue with no notion of *sequence*, so "urgent" and "comes first in the roadmap" are conflated. The top-level `milestones` block adds shipyard-owned roadmap sequencing, independent of every other config block: numbered phases (`1 · Foundation`, `2 · Polish`, …) that later dispatch and filing-time features can order by, plus a fallback milestone (default `Ongoing maintenance`) that never completes and always sorts last for issues that fit no phase.
+
+```json
+{
+  "version": 1,
+  "milestones": {
+    "enabled": true,
+    "fallback": "Ongoing maintenance",
+    "assign_on_file": true,
+    "prioritize_dispatch": true,
+    "sweep_on_loop_end": true
+  }
+}
+```
+
+**`enabled` defaults `false` and is the master switch** — every other key is inert while it's false, and a repo with no `milestones` block at all behaves identically. `/shipyard:init` offers to turn it on (step 9.8). **This issue ships the config surface only** — schema, accessor defaults, and the `/shipyard:init` offering. Each key is consumed by exactly one downstream feature landing separately: `assign_on_file` by issue-filing paths, `prioritize_dispatch` by `/do-work`'s backlog ranking, `sweep_on_loop_end` by an end-of-loop milestone-hygiene pass — so the feature degrades cleanly if only some of them land. See [`do-work-RATIONALE.md → milestones config block`](./plugins/shipyard/commands/do-work-RATIONALE.md#milestones-config-block--config-surface-only-scope-and-why-projects-projects-v2-was-dropped-issue-1239) for the full design-decision writeup, including why a GitHub Projects v2 (`projects`) block was designed alongside this and deliberately dropped.
+
 ## What's been hardened
 
 A non-exhaustive list of safety properties the orchestrator and workers carry today. Each bullet links to the PR or issue where the property landed:
