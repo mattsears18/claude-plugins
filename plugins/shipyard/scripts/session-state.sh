@@ -543,7 +543,8 @@ cmd_init() {
            output: 0,
            cache_read: 0,
            cache_creation: 0,
-           estimated_usd: 0
+           estimated_usd: 0,
+           degraded_attribution_count: 0
          },
          per_issue: {},
          per_pr: {},
@@ -1032,13 +1033,28 @@ cmd_bump_tokens() {
       echo "bump-tokens: --issue must be a positive integer (got: $issue)" >&2
       exit 64
     fi
+    # degraded_attribution_count (issue #1218) lives INSIDE this bucket
+    # object, not just at the session-level .tokens.degraded_attribution_count
+    # — the goal is that a reader holding only this bucket (e.g. the
+    # persisted per-issue ledger row cost-history.sh projects from it) can
+    # tell "genuinely zero output" from "output folded into input, unknown"
+    # without fetching a different record. A plain 0/1 counter (not a null
+    # on .output) is required here because this bucket accumulates across
+    # possibly many bump-tokens calls — some real, some degraded — and
+    # nulling .output on a degraded bump would destroy real output tokens
+    # already summed in from an earlier, non-degraded bump for the same
+    # issue. The counter composes correctly with the existing `+=`
+    # accumulation: it only ever increments, never nulls out real data.
     issue_branch='
-      | .tokens.per_issue[$issue] //= {input: 0, output: 0, cache_read: 0, cache_creation: 0, estimated_usd: 0}
+      | .tokens.per_issue[$issue] //= {input: 0, output: 0, cache_read: 0, cache_creation: 0, estimated_usd: 0, degraded_attribution_count: 0}
       | .tokens.per_issue[$issue].input          += $input
       | .tokens.per_issue[$issue].output         += $output
       | .tokens.per_issue[$issue].cache_read     += $cache_read
       | .tokens.per_issue[$issue].cache_creation += $cache_creation
       | .tokens.per_issue[$issue].estimated_usd  += $usd_delta
+      | (if $degraded == 1 then
+           .tokens.per_issue[$issue].degraded_attribution_count = ((.tokens.per_issue[$issue].degraded_attribution_count // 0) + 1)
+         else . end)
     '
   fi
 
@@ -1048,13 +1064,17 @@ cmd_bump_tokens() {
       echo "bump-tokens: --pr must be a positive integer (got: $pr)" >&2
       exit 64
     fi
+    # Same self-contained-bucket rationale as issue_branch above (issue #1218).
     pr_branch='
-      | .tokens.per_pr[$pr] //= {input: 0, output: 0, cache_read: 0, cache_creation: 0, estimated_usd: 0, issue: null}
+      | .tokens.per_pr[$pr] //= {input: 0, output: 0, cache_read: 0, cache_creation: 0, estimated_usd: 0, issue: null, degraded_attribution_count: 0}
       | .tokens.per_pr[$pr].input          += $input
       | .tokens.per_pr[$pr].output         += $output
       | .tokens.per_pr[$pr].cache_read     += $cache_read
       | .tokens.per_pr[$pr].cache_creation += $cache_creation
       | .tokens.per_pr[$pr].estimated_usd  += $usd_delta
+      | (if $degraded == 1 then
+           .tokens.per_pr[$pr].degraded_attribution_count = ((.tokens.per_pr[$pr].degraded_attribution_count // 0) + 1)
+         else . end)
     '
     # If an --issue was provided alongside --pr, cross-link them so a future
     # PR-targeted read can resolve the corresponding issue without a GitHub
@@ -1105,6 +1125,7 @@ cmd_bump_tokens() {
     | .tokens.per_invocation = (.tokens.per_invocation | if length > 200 then .[-200:] else . end)
     | (if $degraded == 1 then
          .tokens.degraded_attribution_count = ((.tokens.degraded_attribution_count // 0) + 1)
+         | .tokens.totals.degraded_attribution_count = ((.tokens.totals.degraded_attribution_count // 0) + 1)
        else . end)
     | .updated_at = $now
   '
@@ -1180,10 +1201,10 @@ cmd_read_tokens() {
   # is the authoritative one where it's available.)
   local unpriced_jq
   if [[ -n "$pr" ]]; then
-    scope_jq='.tokens.per_pr[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0, issue:null}'
+    scope_jq='.tokens.per_pr[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0, issue:null, degraded_attribution_count:0}'
     unpriced_jq='[.tokens.per_invocation[]? | select(.pr == ($key | tonumber)) | select(.unpriced == true) | .model] | unique'
   elif [[ -n "$issue" ]]; then
-    scope_jq='.tokens.per_issue[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0}'
+    scope_jq='.tokens.per_issue[$key] // {input:0, output:0, cache_read:0, cache_creation:0, estimated_usd:0, degraded_attribution_count:0}'
     unpriced_jq='[.tokens.per_invocation[]? | select(.issue == ($key | tonumber)) | select(.unpriced == true) | .model] | unique'
   else
     scope_jq='.tokens.totals'
@@ -1261,6 +1282,11 @@ cmd_read_tokens() {
          \" model(s) in this scope are missing from the pricing table, so their spend is booked as \$0.00: \" +
          (\$unpriced | map(\"\`\" + . + \"\`\") | join(\", \")) +
          \". Add them to \`PRICING_JQ\` in \`scripts/session-state.sh\` (see issue #728).\n\n\"
+       else \"\" end) +
+      (if (\$scope.degraded_attribution_count // 0) > 0 then
+         \"> ⚠️ **UNRELIABLE — Output tokens / cache read / cache creation for this scope are undercounted.** \" +
+         ((\$scope.degraded_attribution_count // 0) | tostring) +
+         \" dispatch(es) in this scope used the total-tokens-only fallback (no input/output/cache breakdown from the harness), so their whole token total was folded into Input tokens above. This is not a lower or upper bound on Output/Cache figures — it depends on the real input/output/cache mix, which is exactly what is missing (see issue #1035, #1218).\n\n\"
        else \"\" end) +
       \"_Posted automatically by \`/shipyard:do-work\` for cost-tracking. Edit-or-create idempotency keyed on the HTML sentinel comment above._\n\"
     " "$target"

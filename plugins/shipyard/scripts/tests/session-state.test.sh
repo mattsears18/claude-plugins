@@ -1417,6 +1417,20 @@ assert_equals "$out" "true" "degraded bump stamps per_invocation[1].degraded = t
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.degraded_attribution_count")
 assert_equals "$out" "1" "degraded_attribution_count increments by 1 per degraded bump"
 
+# Bucket-level degraded_attribution_count (issue #1218) — the per_pr and
+# totals buckets each carry their OWN counter, self-contained on the same
+# object as input/output/cache_read/cache_creation, so a reader holding
+# only .tokens.per_pr["285"] (or .tokens.totals) can tell "output is
+# genuinely 500" apart from "output is undercounted by an unknown amount"
+# without also fetching .tokens.degraded_attribution_count or scanning
+# per_invocation.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.per_pr[\"285\"].degraded_attribution_count")
+assert_equals "$out" "1" "per_pr bucket carries its own degraded_attribution_count (issue #1218)"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.per_pr[\"285\"].output")
+assert_equals "$out" "500" "per_pr bucket's real output (500, from the non-degraded bump) is preserved — the degraded bump did not zero or null it out"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.totals.degraded_attribution_count")
+assert_equals "$out" "1" "totals bucket carries its own degraded_attribution_count, mirroring the session-level counter (issue #1218)"
+
 # A second degraded bump should bring the counter to 2.
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-degraded" \
@@ -1487,6 +1501,77 @@ out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" -
 assert_equals "$out" "99758" "rejected --input 0 bump did not mutate totals.input (still 87413 + 12345 = 99758 from prior successes)"
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-degraded" --path ".tokens.degraded_attribution_count")
 assert_equals "$out" "2" "rejected --input 0 bump did not increment degraded_attribution_count (still 2)"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens/read-tokens — per_issue bucket disambiguates real output:0 from degraded-folded output:0 (#1218)"
+# --------------------------------------------------------------------------
+# Two issues in the same session: #601 gets one real, non-degraded bump
+# with an explicit --output 0 (genuinely zero output tokens); #602 gets one
+# --degraded-total-only bump (output defaults to 0 because the whole total
+# folded into --input). Both buckets end up with .output == 0 — the
+# regression is that .degraded_attribution_count, read from the SAME
+# bucket object, still tells them apart with no other lookup.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "distinguish-live" --repo "o/r" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "distinguish-live" --issue 601 \
+  --input 5000 --output 0 --cache-read 0 --cache-creation 0 \
+  --mode issue-work --model claude-sonnet-5 >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "distinguish-live" --issue 602 \
+  --input 7000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "distinguish-live" --path '.tokens.per_issue["601"].output')
+assert_equals "$out" "0" "issue #601 (genuinely zero output) bucket: .output == 0"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "distinguish-live" --path '.tokens.per_issue["601"].degraded_attribution_count')
+assert_equals "$out" "0" "issue #601 bucket: .degraded_attribution_count == 0 — no other lookup needed to know this 0 is real"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "distinguish-live" --path '.tokens.per_issue["602"].output')
+assert_equals "$out" "0" "issue #602 (degraded-folded) bucket: .output == 0 (same literal value as #601)"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "distinguish-live" --path '.tokens.per_issue["602"].degraded_attribution_count')
+assert_equals "$out" "1" "issue #602 bucket: .degraded_attribution_count == 1 — disambiguates from #601 using only this bucket"
+
+# read-tokens --format json --issue defaults degraded_attribution_count to 0
+# for an issue that has never been bumped at all (the //= default object),
+# so a never-touched issue reads as unambiguously "0 real, 0 degraded"
+# rather than a missing field.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "distinguish-live" --issue 999 --format json | jq -r '.degraded_attribution_count')
+assert_equals "$out" "0" "read-tokens --issue for a never-bumped issue defaults degraded_attribution_count to 0, not null/missing"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== read-tokens --format comment — UNRELIABLE advisory appears only in scope with a degraded bump (#1218)"
+# --------------------------------------------------------------------------
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "comment-deg" --repo "o/r" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "comment-deg" --issue 801 --pr 802 \
+  --input 3000 --mode issue-work --model claude-sonnet-5 >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "comment-deg" --issue 803 --pr 804 \
+  --input 6000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+
+clean_comment=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "comment-deg" --pr 802 --format comment)
+if [[ "$clean_comment" == *"UNRELIABLE"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "clean PR's cost-tracking comment does NOT mention UNRELIABLE"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "clean PR's cost-tracking comment does NOT mention UNRELIABLE"
+  pass=$((pass+1))
+fi
+
+degraded_comment=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "comment-deg" --pr 804 --format comment)
+assert_contains "$degraded_comment" "UNRELIABLE" "degraded PR's cost-tracking comment surfaces the UNRELIABLE advisory"
+assert_contains "$degraded_comment" "1 dispatch(es)" "degraded PR's advisory names the affected dispatch count"
 
 rm -rf "$tmphome"
 
