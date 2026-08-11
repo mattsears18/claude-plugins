@@ -290,7 +290,17 @@
 #       acted-upon worktree, followed by exactly one summary line:
 #       `summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>`.
 #       `remaining` is the count left on disk purely because the cap was
-#       reached — the backlog a future session will continue from.
+#       reached — the backlog a future session will continue from. As of
+#       issue #1223 it is derived from a fresh on-disk check taken AFTER
+#       the sweep, not from the loop's own running tally, so a future
+#       regression that fails to leave a capped worktree alone (or
+#       otherwise diverges from what the loop assumed happened) surfaces
+#       here instead of silently under-reporting.
+#     Also runs a self-healing sweep of stranded *.reap-dead-* tombstones
+#     (issue #1223) BEFORE classification, unconditionally — see
+#     sweep_stray_tombstones' docstring; its would-sweep-tombstone: /
+#     tombstone-swept: / tombstone-sweep-failed: lines precede the
+#     reaped:/deferred:/summary: lines above and carry no summary field.
 #     --dry-run emits the same lines/summary WITHOUT removing anything or
 #     writing audit-log entries.
 #     Exit codes:
@@ -536,6 +546,7 @@ Usage:
                                           [--agent-id <id> ...] [--dry-run]
   worktree-reap.sh report-unreaped --repo-root <path> \
                                    [--current-session-id <id>]
+  worktree-reap.sh sweep-tombstones --repo-root <path> [--dry-run]
   worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator> \
                         --worktree-path <path> --worktree-name <name> \
                         --session-id <id> [--actor-pid <pid>] \
@@ -634,13 +645,36 @@ report-unreaped         — Issue #712. Post-sweep verification. Emits one
                           <repo-root>/.claude/worktrees after the reap sweeps
                           ran, excluding orchestrator-<current-session-id>
                           (still live, reaped last) and *.reap-dead-* scratch
-                          dirs (already pruned; background unlink in flight).
+                          dirs (already pruned; unlink synchronous as of
+                          issue #1223, so a lingering one here means a sweep
+                          is either mid-flight or its delete partially
+                          failed — see sweep-tombstones below to clean
+                          those up explicitly).
                           Empty stdout when everything was reaped. This is the
                           ONLY mechanism that catches a reap denied by Claude
                           Code's auto-mode permission classifier — the denial
                           kills the whole Bash tool call, so no reap-audit line
                           is ever written; only an after-the-fact filesystem
                           probe can see it.
+
+sweep-tombstones        — Issue #1223. Deletes any *.reap-dead-<pid>-<ts>
+                          tombstone directories found directly under
+                          <repo-root>/.claude/worktrees — stranded remains of
+                          a pre-#1223 fast_worktree_remove, which backgrounded
+                          its bulk delete under a false assumption about
+                          process lifetime and could leave the renamed-aside
+                          tree on disk forever. Safe unconditionally: the
+                          `.reap-dead-` naming is a scratch marker this tool
+                          alone generates, so the glob can never match a live
+                          worktree. reap-stale already runs this
+                          automatically at the start of every sweep; exposed
+                          standalone here for manual cleanup of a host that
+                          accumulated tombstones before upgrading, and for
+                          direct testing. Emits tombstone-swept: <name> /
+                          tombstone-sweep-failed: <name> per directory
+                          actually processed. --dry-run emits
+                          would-sweep-tombstone: <name> instead, without
+                          removing anything.
 
 reap                    — Performs the worktree-remove (when applicable)
                           and writes one append-only JSONL line to
@@ -1536,12 +1570,27 @@ worktree_force_is_safe() {
 #                                             now missing, so prune drops the
 #                                             registration and frees the branch
 #                                             immediately)
-#   4. rm -rf <wt>.reap-dead-... &           (backgrounded bulk delete — the
-#                                             only expensive step, detached so
-#                                             it can't stall the caller)
+#   4. rm -rf <wt>.reap-dead-...             (the only expensive step —
+#                                             foregrounded and verified, see
+#                                             issue #1223 below)
 #
-# Steps 1-3 are synchronous and fast (a rename + a prune, independent of the
-# tree size); only the recursive unlink is backgrounded. Note the fast path
+# Issue #1223 — step 4 used to be `rm -rf ... &` + `disown`, on the theory
+# that a backgrounded delete "reparents to init on shell exit and finishes."
+# That's false for the orchestrator's actual callers: its Bash tool calls
+# are short-lived hermetic shells that exit the instant the command
+# returns, and `reap-stale` fans out one such backgrounded delete PER
+# worktree in a tight loop before returning. A multi-worktree sweep could
+# therefore report `reaped=N` — the rename succeeded and the branch was
+# freed, both true — while most of those N recursive deletes were still
+# mid-flight when the shell exited and got killed with it, reclaiming none
+# of the disk they were tombstoning. The repro: a 42-worktree sweep over
+# ~86 GiB reported `reaped=42 ... remaining=0` while reclaiming only ~1.4
+# GiB — the signature of partially-completed async deletes, not a missing
+# delete (which would reclaim exactly zero). Step 4 is now synchronous:
+# this function does not return success until the tombstone is verified
+# gone. Steps 1-3 are independent of the tree size (a rename + a prune);
+# step 4's wall-clock cost now scales with tree size, same as the
+# pre-existing slow-path ladder below always has. Note the fast path
 # needs no `--force` at all — that matters for #712 (see below).
 #
 # Slow-path ladder (#712) — when the rename can't be performed (path missing,
@@ -1559,11 +1608,16 @@ worktree_force_is_safe() {
 # When neither succeeds the directory survives and we return 1 — the caller
 # records the failure instead of silently swallowing it.
 #
-# Returns 0 when the directory is no longer at <worktree_path> (renamed away
-# or removed); returns 1 when the directory still exists after every attempt,
-# so callers that need a last-resort escalation (the orphan-orchestrator raw
-# rm -rf path) — or that need to record an unreaped worktree (#712) — can
-# detect that the fast path declined.
+# Returns 0 when the directory is no longer at <worktree_path> AND the
+# tombstoned bytes are verified actually gone (issue #1223 — a rename alone
+# no longer counts as success on the fast path: "the branch was freed" and
+# "the disk was reclaimed" are different claims, and this function's return
+# value now asserts both); returns 1 when the directory still exists at
+# <worktree_path> after every attempt, OR when a rename succeeded but the
+# subsequent recursive delete left something behind under the tombstoned
+# name. Callers that need a last-resort escalation (the orphan-orchestrator
+# raw rm -rf path) — or that need to record an unreaped worktree (#712) —
+# use this to detect that the fast path declined.
 #
 # Args: <worktree-path> [force-evidence]
 #   force-evidence — optional non-empty string naming a check the CALLER
@@ -1591,18 +1645,34 @@ fast_worktree_remove() {
   fi
 
   # Rename the (potentially huge) dir aside on the same filesystem so `mv` is
-  # an instant relink, then prune to free the branch, then background the
-  # recursive unlink. `$$` + epoch keeps the scratch name unique across
+  # an instant relink, then prune to free the branch, then delete the
+  # renamed-aside tree. `$$` + epoch keeps the scratch name unique across
   # concurrent reaps.
   local dead_epoch dead_path
   dead_epoch=$(date +%s 2>/dev/null || echo 0)
   dead_path="${worktree_path}.reap-dead-$$-${dead_epoch}"
   if mv "$worktree_path" "$dead_path" 2>/dev/null; then
     git worktree prune 2>/dev/null || true
-    # Detach the bulk delete so it outlives this short-lived shell without
-    # job-control chatter; it reparents to init on shell exit and finishes.
-    rm -rf "$dead_path" >/dev/null 2>&1 &
-    disown 2>/dev/null || true
+    # Issue #1223 — foregrounded and verified. This used to background the
+    # bulk delete (`rm -rf ... &` + `disown`) on the assumption it "reparents
+    # to init on shell exit and finishes" — false for the orchestrator's
+    # short-lived hermetic Bash-tool shells, which kill a backgrounded child
+    # the instant the command returns. See the docstring above this function
+    # for the full repro. The branch is already freed by the `prune` above,
+    # so foregrounding this step only costs wall-clock time on the (rare)
+    # large-worktree case — it no longer risks reporting success over bytes
+    # that were never actually reclaimed.
+    rm -rf "$dead_path" >/dev/null 2>&1
+    if [ -e "$dead_path" ]; then
+      # Partial failure (e.g. a permission-denied file mid-tree) — the
+      # tombstone survives under its dead-name. Don't claim success: the
+      # caller's `[ -e "$worktree_path" ]` check would find the ORIGINAL
+      # path gone (it was renamed away) and wrongly count this as reaped,
+      # exactly the misreport #1223 exists to close. A stray tombstone left
+      # behind here is picked up by the next sweep's tombstone pass (see
+      # sweep_stray_tombstones below).
+      return 1
+    fi
     return 0
   fi
 
@@ -1618,6 +1688,114 @@ fast_worktree_remove() {
   fi
   git worktree prune 2>/dev/null || true
   [ ! -e "$worktree_path" ]
+}
+
+# Issue #1223 — self-healing sweep for stranded `*.reap-dead-<pid>-<ts>`
+# tombstones. Before this issue's fix, `fast_worktree_remove`'s bulk delete
+# was backgrounded and could be killed mid-flight by the orchestrator's
+# short-lived shell exiting, leaving the renamed-aside tree on disk forever
+# (nothing else in this codebase ever revisits a `.reap-dead-*` name). This
+# sweep is the cleanup path for damage already done on hosts that ran that
+# version — `fast_worktree_remove` itself is now synchronous, so it should
+# not normally produce new stragglers, but a partial-delete failure (e.g. a
+# permission-denied file mid-tree) can still leave one behind.
+#
+# Safe to run unconditionally, on every invocation, with no liveness check:
+# the `.reap-dead-` infix is a scratch marker this tool alone generates
+# (`<name>.reap-dead-<pid>-<epoch>`), and no live git worktree is ever
+# registered under a name containing it — every worktree this codebase
+# creates or classifies is named `agent-*` or `orchestrator-*` with no
+# `.reap-dead-` substring, so this glob can only ever match a directory
+# that was ALREADY tombstoned (branch already freed, registration already
+# pruned) by a prior `fast_worktree_remove` call. It cannot widen reap
+# eligibility — it never looks at classify-lock/classify-all output and
+# never touches anything git still considers a worktree.
+#
+# Prints one `tombstone-swept: <name>` line per directory actually removed,
+# `tombstone-sweep-failed: <name>` if a removal attempt leaves something
+# behind (surfaces rather than silently re-stranding it), or
+# `would-sweep-tombstone: <name>` under --dry-run (nothing is touched).
+# These lines carry no summary field of their own and are not written to
+# the reap-audit log — they precede reap_stale's own reaped:/deferred:/
+# summary: lines in that caller's stdout, and are distinguishable by
+# prefix. No JSONL audit entry: an already-tombstoned tree has no live
+# branch or classification left to describe; the `reaped` audit action's
+# `--classification` field would have nothing meaningful to carry.
+#
+# Args: <worktrees-dir> [--dry-run]
+sweep_stray_tombstones() {
+  local wt_dir="$1"
+  local dry_run="${2:-}"
+
+  [ -d "$wt_dir" ] || return 0
+
+  local path name
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    [ -d "$path" ] || continue
+    name="$(basename "$path")"
+    if [ "$dry_run" = "--dry-run" ]; then
+      printf 'would-sweep-tombstone: %s\n' "$name"
+      continue
+    fi
+    rm -rf "$path" >/dev/null 2>&1
+    if [ -e "$path" ]; then
+      printf 'tombstone-sweep-failed: %s\n' "$name"
+    else
+      printf 'tombstone-swept: %s\n' "$name"
+    fi
+  done < <(find "$wt_dir" -maxdepth 1 -mindepth 1 -type d -name '*.reap-dead-*' 2>/dev/null | sort)
+
+  return 0
+}
+
+# Issue #1223 — CLI wrapper for the `sweep-tombstones` subcommand: parses
+# --repo-root/--dry-run and delegates to sweep_stray_tombstones. Standalone
+# entry point for manual cleanup and direct testing; reap_stale already
+# calls sweep_stray_tombstones itself at the start of every sweep.
+sweep_tombstones_cmd() {
+  local repo_root=""
+  local dry_run=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "sweep-tombstones: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "sweep-tombstones: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "sweep-tombstones: --repo-root is required" >&2
+    return 64
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    sweep_stray_tombstones "$repo_root/.claude/worktrees" --dry-run
+  else
+    sweep_stray_tombstones "$repo_root/.claude/worktrees"
+  fi
+  return 0
 }
 
 # Issue #284 — single source of truth for reap-audit writes. Performs the
@@ -2353,14 +2531,22 @@ reap_session_worktrees() {
 #      Beyond the cap: left untouched, counted into the `remaining` total
 #      printed in the summary line — this session's forward progress.
 #
+# Also runs a self-healing sweep of stranded *.reap-dead-* tombstones
+# (issue #1223) before classification even starts — see
+# sweep_stray_tombstones' docstring. Its output lines precede everything
+# below and carry no summary field of their own.
+#
 # Output: one `reaped: <name>` / `unreaped: <name>` (issue #712 — reports
 # the VERIFIED end state, not the intent) / `deferred: <name>` line per
 # acted-upon worktree, followed by exactly one summary line:
 #   summary: reaped=<R> deferred=<D> remaining=<REMAIN>
 # `remaining` is the count of reap-eligible worktrees that were left on disk
 # because the cap was reached — the backlog a future session will continue
-# from. Empty-but-summary stdout (`summary: reaped=0 deferred=0 remaining=0`)
-# when there are no agent-* worktrees at all.
+# from. Issue #1223: derived from a fresh on-disk check taken AFTER the
+# sweep completes, not from the loop's own tally, so it can't silently
+# under-report a worktree the sweep believed it skipped but actually
+# touched. Empty-but-summary stdout (`summary: reaped=0 deferred=0
+# remaining=0`) when there are no agent-* worktrees at all.
 #
 # --dry-run emits the same lines/summary WITHOUT removing anything or
 # writing audit-log entries (mirrors reap-session-worktrees' --dry-run).
@@ -2480,6 +2666,19 @@ reap_stale() {
     return 64
   fi
 
+  # Issue #1223 — self-heal any *.reap-dead-* tombstones already stranded on
+  # this host (by a prior, buggy version of fast_worktree_remove, or by a
+  # partial-delete failure). Unconditional and safe — see
+  # sweep_stray_tombstones' docstring for why the naming pattern alone can
+  # never match a live worktree. Runs before classification so a sweep that
+  # is ALSO under --dry-run reports what it would sweep without touching
+  # anything.
+  if [ "$dry_run" -eq 1 ]; then
+    sweep_stray_tombstones "$repo_root/.claude/worktrees" --dry-run
+  else
+    sweep_stray_tombstones "$repo_root/.claude/worktrees"
+  fi
+
   # Issue #1147 — mandatory in-flight cross-check. `--exclude-agent-id` is
   # only as protective as every calling site remembering to compute and
   # pass it, and nothing enforced that — the repro that motivated this: a
@@ -2538,6 +2737,13 @@ reap_stale() {
   local unreaped_count=0
   local deferred_count=0
   local remaining_count=0
+  # Issue #1223 — names skipped purely because the cap was reached. These
+  # feed a FRESH on-disk recheck after the loop below, rather than trusting
+  # this tally on its own — see the recheck's comment for why: a summary
+  # line that only ever counts what a loop INTENDED can drift from what
+  # actually happened, and #1223's repro is exactly that drift (`remaining=0`
+  # printed while 59 directories sat on disk).
+  local -a capped_names=()
 
   local line name classification pid worktree_path
   while IFS= read -r line; do
@@ -2586,7 +2792,7 @@ reap_stale() {
     # sorted that way). Beyond the cap: leave untouched for a future
     # session — this IS the checkpoint (see docstring above).
     if [ "$attempt_count" -ge "$max_per_session" ]; then
-      remaining_count=$((remaining_count + 1))
+      capped_names+=("$name")
       continue
     fi
     attempt_count=$((attempt_count + 1))
@@ -2616,6 +2822,22 @@ reap_stale() {
       reaped_count=$((reaped_count + 1))
     fi
   done < <(classify_all "${classify_args[@]}")
+
+  # Issue #1223 — derive `remaining` from a FRESH on-disk check taken after
+  # the sweep, not from the loop's own running tally. In every path this
+  # function can take, a capped-out worktree is one the sweep above never
+  # attempted to touch, so this recheck and a naive tally always agree —
+  # but computing it this way means a future regression that DOES touch a
+  # capped worktree (or otherwise fails to leave it alone) surfaces here
+  # instead of being silently absorbed into a stale count, exactly the
+  # failure mode that let `remaining=0` print while 59 directories sat on
+  # disk in #1223's repro. Bash-3.2-safe empty-array expansion (no `set -u`
+  # unbound-variable error when nothing was capped).
+  local capped_name
+  for capped_name in "${capped_names[@]+"${capped_names[@]}"}"; do
+    [ -e "$repo_root/.claude/worktrees/$capped_name" ] && \
+      remaining_count=$((remaining_count + 1))
+  done
 
   printf 'summary: reaped=%s deferred=%s unreaped=%s remaining=%s\n' \
     "$reaped_count" "$deferred_count" "$unreaped_count" "$remaining_count"
@@ -2774,6 +2996,14 @@ main() {
       # silently degrading. See report_unreaped for the exclusion rules.
       shift
       report_unreaped "$@"
+      ;;
+    sweep-tombstones)
+      # Issue #1223 — standalone cleanup of stranded *.reap-dead-* tombstone
+      # dirs left by a pre-#1223 backgrounded bulk delete. See
+      # sweep_stray_tombstones' docstring for the safety argument (the
+      # naming pattern alone can never match a live worktree).
+      shift
+      sweep_tombstones_cmd "$@"
       ;;
     reap)
       # Issue #284 — single source of truth for reap-audit log writes.
