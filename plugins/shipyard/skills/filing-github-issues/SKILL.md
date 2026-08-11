@@ -90,6 +90,37 @@ gh label create P2 --repo <owner/repo> --color FBCA04 \
 
 Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the bucket you just assigned per `shipyard:audit-rubrics` — on **every** `gh issue create` you do, alongside `--label shipyard` and your `--label "audit:<dimension>"`. This is not optional and does not depend on whether `P0`/`P1`/`P2` already exist in the target repo's label list (unlike the "apply whichever of these actually exist" guidance for `bug`/`enhancement`/etc. under "Discover labels once" above) — severity labels are auto-created exactly like `audit:<dimension>` and `needs-triage`, because the severity bucket is the filing agent's own classification, not a repo-config decision.
 
+## Milestone assignment (gated on `milestones.enabled` + `milestones.assign_on_file`, issue [#1242](https://github.com/mattsears18/shipyard/issues/1242))
+
+**Read the gate once, at the start of the run, alongside the label-discovery calls above — never per finding:**
+
+```bash
+CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
+MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
+MILESTONES_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+```
+
+**When `MILESTONES_ENABLED` != `"true"` OR `MILESTONES_ASSIGN` != `"true"`, skip this entire section.** File exactly as you would without it — no `gh api .../milestones` call, no `--milestone` flag, nothing else changes. This must be byte-for-byte identical to running with no `milestones` block at all.
+
+**When both are `"true"`, fetch the open milestone list once for the whole run and cache it** — an audit filing 30 findings reads this once, not 30 times. **`--method GET` is not optional here** — `gh api` silently defaults to `POST` whenever any `-f` field is present, and a `POST` to the milestones endpoint with no `title` field fails with a confusing `422 "title" wasn't supplied` (it's attempting to *create* a milestone, not list them):
+
+```bash
+MILESTONES_FALLBACK=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
+MILESTONES_JSON=$(gh api repos/<owner>/<repo>/milestones --method GET --paginate -f state=open \
+  --jq '[.[] | {number, title, description}]' 2>/dev/null)
+```
+
+For each finding, before its `gh issue create`, choose a milestone:
+
+1. **If `MILESTONES_JSON` is empty, unset, or the `gh api` call errored** — file without a milestone. Note "no milestones configured yet" in your end-of-run summary. Do not retry, do not treat this as a filing failure.
+2. **Otherwise, match the finding against each milestone's `BET:` line (read from its `description`) — never against keywords in the finding's own title or the milestone's title.** A finding whose title contains "fix" or "bug" is not evidence it belongs in a maintenance-flavored fallback; read what the finding is actually about and compare it to what each phase's bet claims to cover. This is the same matching rule `shipyard:update-roadmap`'s unmilestoned sweep uses, so a filer and the sweep never disagree about where an issue belongs.
+3. **If no phase's bet plausibly covers the finding**, look for the milestone titled `MILESTONES_FALLBACK` in the cached list (its title reads `N · <fallback>` — match on the suffix after the `N · ` prefix). If it exists, use it. If it does NOT exist yet — the loop-end sweep hasn't cold-started the roadmap on this repo — file without a milestone. **Never create the fallback milestone yourself** (see below).
+4. When a milestone was chosen, add `--milestone "<its title>"` to the `gh issue create` call (`gh` resolves `--milestone` by title, not number). When none was chosen (empty list, no match, fallback absent), omit the flag entirely — don't pass an empty string.
+
+**A filer must never create a milestone.** Phase creation and the fallback milestone's own creation are `shipyard:update-roadmap`'s job — it sees the whole open backlog; a single filing agent sees one finding and would be authoring phases from a keyhole. If nothing in the cached list fits, file without one and let the next roadmap sweep place it.
+
+**Never fail a filing over a milestone.** A `gh api` error, an empty milestone list, or an inconclusive match are all reasons to file **without** a milestone, never reasons to skip filing the finding itself. This matters most here — the auditors file in bulk and unattended, and a lost finding is a much worse outcome than an unmilestoned one.
+
 ## `needs-triage` label (symptom-shaped findings — auto-investigated, NOT "skip this")
 
 `needs-triage` is investigate mode's entry signal — accepted-but-not-required alongside live detection during the migration window ([#1090](https://github.com/mattsears18/shipyard/issues/1090); see [`04d-investigate-routing.md`](../../commands/do-work/setup/04d-investigate-routing.md)) — it is **not** a "human must look before `/do-work` touches this" flag. Under the default config (`triage.investigate_dispatch: true`), a trusted-author issue carrying it is dispatched to investigate mode automatically. Reserve it for findings that genuinely need investigation before a fix can be written, not for findings that need a **decision**:
@@ -277,7 +308,7 @@ Only reference issue numbers you verified this session via `gh issue view N` or 
 
 ## Filing command (HEREDOC pattern)
 
-Always include `--label shipyard` (the provenance stamp — see "shipyard provenance label" above) and `--label "P<n>"` (the severity label — see "Severity label" above) alongside your other labels:
+Always include `--label shipyard` (the provenance stamp — see "shipyard provenance label" above) and `--label "P<n>"` (the severity label — see "Severity label" above) alongside your other labels. Add `--milestone "<title>"` only when the "Milestone assignment" section above resolved one for this finding — omit the flag entirely otherwise:
 
 ```bash
 gh issue create --repo <owner/repo> \
@@ -288,7 +319,8 @@ gh issue create --repo <owner/repo> \
   --body "$(cat <<'EOF'
 <body>
 EOF
-)"
+)" \
+  ${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"}
 ```
 
 HEREDOC with quoted `'EOF'` preserves backticks, dollar signs, and special chars in the body verbatim.
@@ -306,7 +338,8 @@ issue_url=$(gh issue create --repo <owner/repo> \
   --body "$(cat <<'EOF'
 <body>
 EOF
-)")
+)" \
+  ${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"})
 echo "filed: $issue_url"   # e.g. https://github.com/<owner>/<repo>/issues/152
 ```
 
@@ -334,6 +367,8 @@ This lets the orchestrator definitively attribute filed issues to a single audit
 
 Your end-of-run summary's "Filed N issues" list MUST report the **captured `gh issue create` URLs** from the section above — one line per issue, the verbatim URL (the number is derivable from it). Never a predicted number, never a number from a separate post-filing `gh issue list`. If a `gh issue create` failed, list that finding under a "Filing failures" line with the error instead of a number, so the orchestrator's reconciliation can tell a lost finding apart from a successfully-filed one.
 
+When "Milestone assignment" is gated on (both config keys `true`) and one or more findings this run filed **without** a milestone (empty milestone list, no phase matched and the fallback doesn't exist yet), add a one-line `Unmilestoned (N)` note to the summary naming the affected URLs — not a failure, just a signal the next `shipyard:update-roadmap` sweep has something to pick up.
+
 ## Don't
 
 - Don't comment on issues you didn't create unless the user explicitly asks — permission system may deny it.
@@ -342,3 +377,6 @@ Your end-of-run summary's "Filed N issues" list MUST report the **captured `gh i
 - Don't ask the user for approval before filing — file P0–P2 findings autonomously, report at the end.
 - Don't file taste / "would be nice" suggestions.
 - Don't file findings with no evidence (no screenshot, no DOM, no metric → don't file).
+- Don't create a milestone, even the fallback one, from inside a filing pass — see "Milestone assignment" above. Match against an existing phase's `BET:` or its already-existing fallback; if neither exists, file without one.
+- Don't skip a filing because the milestone lookup errored or nothing matched. File the finding without a milestone and note it — a lost finding is worse than an unmilestoned one.
+- Don't re-fetch the milestone list per finding. Cache it once at the start of the run alongside the label-discovery calls.

@@ -124,6 +124,26 @@ The default goal is an issue `/shipyard:do-work` can pick up **as-is**. Before f
 - **No gate label by default.** A dispatch-ready issue must NOT carry `needs-triage` or `needs-human-review` — those labels exclude it from `/do-work`'s dispatch fetch. Do not apply them when the research produced a concrete, actionable issue.
 - **Gate only when genuinely not ready.** If — after the research pass — the work truly can't be made dispatch-ready (it hinges on a product/design decision, depends on an external party, or is epic-sized and needs decomposition), then apply the appropriate gate label and **state the reason in the issue body and your return summary**. This is the exception, not the default; prefer resolving the ambiguity during research over punting it to a gate label. See the repo's label conventions (`needs-human-review` for human-decision/epic/external-dependency; `needs-triage` as the transitional parking label) before choosing.
 
+### 7.5 Assign a milestone (gated on `milestones.enabled` + `milestones.assign_on_file`, issue [#1242](https://github.com/mattsears18/shipyard/issues/1242))
+
+Read the gate once:
+
+```bash
+CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
+MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
+MILESTONES_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+```
+
+**If `MILESTONES_ENABLED` != `"true"` OR `MILESTONES_ASSIGN` != `"true"`, skip this step entirely** — file exactly as today, no `--milestone` flag. Otherwise, fetch the repo's open milestones once. **`--method GET` is required** — `gh api` defaults to `POST` whenever a `-f` field is present, and a bare `POST` to the milestones endpoint fails with `422 "title" wasn't supplied` instead of listing anything:
+
+```bash
+MILESTONES_FALLBACK=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
+MILESTONES_JSON=$(gh api repos/<owner>/<repo>/milestones --method GET --paginate -f state=open \
+  --jq '[.[] | {number, title, description}]' 2>/dev/null)
+```
+
+Follow the same matching rule [`shipyard:filing-github-issues`](../skills/filing-github-issues/SKILL.md#milestone-assignment-gated-on-milestonesenabled--milestonesassign_on_file-issue-1242) documents: match the issue against each milestone's `BET:` line (from its `description`), never against keywords in the issue's title. If a phase fits, use its title. If none fits, use the milestone titled `MILESTONES_FALLBACK` **only if it already exists** in `MILESTONES_JSON`. If `MILESTONES_JSON` is empty, the `gh api` call errored, or no phase fits and the fallback doesn't exist yet — file without a milestone; this is never a filing failure, and never a reason to create a milestone yourself (that's `shipyard:update-roadmap`'s job).
+
 ### 8. File the issue
 
 Ensure the `shipyard` provenance label exists first (idempotent — never errors if already present):
@@ -172,9 +192,12 @@ issue_url=$(gh issue create --repo "$REPO" \
   --label "<P0|P1|P2>" \
   --label "<other applicable labels from gh label list>" \
   --title "<conventional-commit title>" \
-  --body-file "$SCRATCH_ROOT/.shipyard-scratch/issue-body.md")
+  --body-file "$SCRATCH_ROOT/.shipyard-scratch/issue-body.md" \
+  ${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"})
 rm -rf "$SCRATCH_ROOT/.shipyard-scratch"
 ```
+
+`$MILESTONE_TITLE` is whatever step 7.5 resolved (empty when the feature is off, no milestone list, or no match — in which case the `${MILESTONE_TITLE:+...}` expansion drops the flag entirely rather than passing an empty string).
 
 ### 9. Return the issue URL
 
@@ -214,3 +237,5 @@ Do NOT prompt the user to enter values interactively for these failure modes —
 - **Don't apply a gate label by default.** A researched, dispatch-ready issue must not carry `needs-triage` or `needs-human-review` — those exclude it from `/do-work`. Apply a gate label only in the exception case where the research showed the work genuinely can't be made ready, and state the reason. Prefer resolving ambiguity during the research pass over punting it to a gate.
 - **Don't skip the research pass** unless the user passed `--quick`. The dispatch-ready outcome depends on the issue citing real codebase ground truth — file claims you freshly confirmed this session, never assumptions.
 - **Do apply the `shipyard` label** — it is the provenance stamp on every artifact shipyard creates (issues AND PRs, per [#573](https://github.com/mattsears18/shipyard/issues/573)). Use the ensure-then-label pattern: run `gh label create shipyard --repo "$REPO" --description "Worked on by /shipyard:do-work" --color 5319E7 2>/dev/null || true` before the `gh issue create` call, then pass `--label shipyard` on the create. See the `shipyard:filing-github-issues` skill's "shipyard provenance label" section for the full pattern including the verify step.
+- **Don't create a milestone.** Step 7.5's milestone assignment only ever picks among already-existing phases (matched against their `BET:`) or the already-existing fallback — never author a new phase or the fallback milestone from this command. If nothing fits, file without one.
+- **Don't fail the filing over a milestone lookup.** An error, an empty milestone list, or no matching phase are all reasons to file without `--milestone`, never reasons to abort the filing.
