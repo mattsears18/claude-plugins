@@ -107,6 +107,21 @@ if [[ -f "$fix_rebase" ]]; then
   # The manifest_version_jq config key must be read so non-.version manifests work.
   assert_contains "$fix_rebase" 'manifest_version_jq' \
     "fix-rebase.md reads manifest_version_jq (not hardcoded .version)"
+
+  # Issue #1215: §4.6's resolution must record which specific PR-added lines
+  # it deliberately rewrites, so §5.8's line-survival guard doesn't misread
+  # the sanctioned renumbering as corruption on every coordination-carve-out
+  # dispatch.
+  assert_contains "$fix_rebase" 'issues/1215' \
+    "fix-rebase.md links to the known-rewrites carve-out fix (#1215)"
+  assert_contains "$fix_rebase" '5. **Record the exact PR-added lines this resolution deliberately rewrites' \
+    "fix-rebase.md §4.6 resolution has a step 5 that records known rewrites"
+  assert_contains "$fix_rebase" 'vc-known-rewrites.tsv' \
+    "fix-rebase.md names the known-rewrites scratch file"
+  # The recorded exemption must be per-LINE, not per-FILE — the whole point
+  # is that other added lines in the same coordinated file are still checked.
+  assert_contains "$fix_rebase" 'per-line exception' \
+    "fix-rebase.md documents the exemption as per-line, not per-file"
 fi
 
 if [[ -f "$dispatch_rules" ]]; then

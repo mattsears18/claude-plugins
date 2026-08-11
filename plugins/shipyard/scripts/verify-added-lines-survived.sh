@@ -42,13 +42,31 @@
 #      actually works here.
 #
 # Usage:
-#   verify-added-lines-survived.sh <merge-base-ref> <head-ref>
+#   verify-added-lines-survived.sh <merge-base-ref> <head-ref> [known-rewrites-file]
 #
 # Must be run with $PWD inside the git working tree whose CURRENT state (the
 # post-rebase result being verified) is on disk — the "final" side of the
 # comparison reads $PWD's on-disk files, not any git ref. <head-ref> is the
 # PRE-rebase head (e.g. `origin/$HEAD_REF`, untouched until the force-push);
 # <merge-base-ref> is typically `git merge-base <head-ref> <base-ref>`.
+#
+# [known-rewrites-file] (optional, issue #1215): a narrow, explicit exemption
+# for lines the CALLER already knows it deliberately rewrote — e.g.
+# fix-rebase.md's §4.6 version-coordination carve-out, which intentionally
+# renumbers a version-coordinated manifest's `.version` row and the PR's own
+# CHANGELOG heading as part of a sanctioned, deterministic conflict
+# resolution. Without this file, those two lines would ALWAYS read as
+# "corrupted" (they are, by construction, no longer verbatim-present) even
+# though the caller can prove exactly why. Format: TSV, one entry per line,
+# `<path>\t<exact-added-line-text>`. Each entry names one specific line — not
+# a whole file — that is exempted from the survival check for that path. This
+# is deliberately narrower than exempting the whole file: every OTHER line
+# the PR added to that same file (e.g. a CHANGELOG entry's own body lines,
+# left untouched by the caller's rewrite) is still checked normally, so real
+# corruption elsewhere in a coordinated file is still caught. A path/line
+# pair with no matching entry in ADDED_LINES is a harmless no-op (the caller
+# named something this script never saw as added) — never a way to loosen
+# the check beyond exactly the lines named.
 #
 # Exit status:
 #   0 — verified clean: every line <head-ref>'s own commits added (relative
@@ -75,9 +93,14 @@ done
 
 MERGE_BASE="${1:-}"
 HEAD_REF="${2:-}"
+KNOWN_REWRITES_FILE="${3:-}"
 
 if [ -z "$MERGE_BASE" ] || [ -z "$HEAD_REF" ]; then
-  die_indeterminate "usage: verify-added-lines-survived.sh <merge-base-ref> <head-ref>"
+  die_indeterminate "usage: verify-added-lines-survived.sh <merge-base-ref> <head-ref> [known-rewrites-file]"
+fi
+
+if [ -n "$KNOWN_REWRITES_FILE" ] && [ ! -f "$KNOWN_REWRITES_FILE" ]; then
+  die_indeterminate "known-rewrites file '$KNOWN_REWRITES_FILE' was named but does not exist"
 fi
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
@@ -95,6 +118,18 @@ missing_lines() {
   comm -23 \
     <(printf '%s' "$needles" | sort -u) \
     <(printf '%s' "$haystack" | sort -u)
+}
+
+# Known-rewrites lookup (issue #1215): return the exact added-line text the
+# caller pre-declared as an intentional, sanctioned rewrite for path $1 —
+# empty when no known-rewrites file was given, or when it has no entry for
+# this path. Uses awk's field-length arithmetic (not a naive `cut -f2-`) so
+# an entry whose rewritten line text itself contains a literal tab survives
+# intact rather than being truncated at the first embedded tab.
+known_rewrites_for() {
+  local path="$1"
+  [ -n "$KNOWN_REWRITES_FILE" ] || return 0
+  awk -F'\t' -v p="$path" '$1 == p { print substr($0, length($1) + 2) }' "$KNOWN_REWRITES_FILE"
 }
 
 # --- Self-check: prove the comparison mechanism actually works in THIS
@@ -148,6 +183,19 @@ while IFS= read -r f; do
     }
   ')
   [ -n "$ADDED_LINES" ] || continue
+
+  # Narrow the required set to exclude only the specific lines the caller
+  # pre-declared as an intentional, sanctioned rewrite for this exact path
+  # (issue #1215) — every OTHER line this PR added to the same file is still
+  # required to survive verbatim below. This is a per-LINE exemption, not a
+  # per-FILE one: a known-rewrites entry can only ever narrow ADDED_LINES,
+  # never the haystack it's checked against, so it cannot mask corruption
+  # elsewhere in the same file.
+  REWRITES=$(known_rewrites_for "$f")
+  if [ -n "$REWRITES" ]; then
+    ADDED_LINES=$(missing_lines "$ADDED_LINES" "$REWRITES")
+    [ -n "$ADDED_LINES" ] || continue
+  fi
 
   MISSING=$(missing_lines "$ADDED_LINES" "$(cat -- "$f")")
   if [ -n "$MISSING" ]; then
