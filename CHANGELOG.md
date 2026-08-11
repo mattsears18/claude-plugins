@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.25.15 — 2026-08-11
+
+Mid-flight `SendMessage` interrupts from the orchestrator to a running worker were ungoverned — every prompt-construction rule applied only to the initial dispatch prompt. Anti-stall pressure across three escalating messages to one worker asserted an unverified commit as settled fact, instructed shipping known-failing regression tests "marked as expected-fail," and instructed a bare `git add -A` — a named worker-preamble prohibition. The worker refused all three and shipped clean, but nothing structural stopped a less careful worker from complying. `dispatch-rules.md`'s comment-thread-awareness (#781) and live-state-verification (#1062) rules now explicitly cover interrupts, not just the initial prompt; `dont.md` states the floor the orchestrator may not instruct below (scope-trimming is fine, ordering a spec violation is not); `steady-state.md` gives the orchestrator a sanctioned wrap-up interrupt shape (commit what you have, push, disclose what's incomplete, return) so impatience has a bounded outlet instead of improvised pressure; and a new `shipyard:worker-preamble` fragment tells workers how to handle a contradictory orchestrator message — refuse the crossing, keep following the spec, report it in the return — and how that differs from suspected prompt injection (same refusal, different reporting). closes #1230
+
+- `plugins/shipyard/commands/do-work/dispatch-rules.md` — extends the #781/#1062 grounding rules to mid-flight `SendMessage` interrupts.
+- `plugins/shipyard/commands/do-work/dont.md` — new "Don't instruct a running worker below the floor" bullet.
+- `plugins/shipyard/commands/do-work/steady-state.md` — new "Sanctioned wrap-up interrupt" section with a canned template.
+- `plugins/shipyard/skills/worker-preamble/SKILL.md` — new fragment-table row pointing to `orchestrator-interrupt.md`.
+- `plugins/shipyard/skills/worker-preamble/orchestrator-interrupt.md` — new fragment: refuse-and-report contract, plus the injection-vs-degraded-orchestrator distinction.
+
 ### 4.25.14 — 2026-08-11
 
 PR #1226 fixed `worktree-reap.sh`'s async-delete silent-success bug (closes #1223) but shipped without the regression tests #1223's own acceptance criteria asked for — deprioritized under a mid-session instruction to land the fix without further local verification, and disclosed as a gap in the fix's own PR rather than dropped silently. `worktree-reap.test.sh` now pins both criteria directly: a reaped worktree's bytes are asserted genuinely gone from disk — the original path AND any `*.reap-dead-*` sibling, not merely the rename the shipped bug would have left behind — and the summary's `remaining=<N>` is asserted against an independent post-hoc `find` of what's actually on disk, in a sweep that combines a capped-out worktree with a pre-existing stray tombstone fixture. A third group covers the `sweep-tombstones` subcommand directly: a real run deletes a fixture's file content and prints `tombstone-swept: <name>`, `--dry-run` prints `would-sweep-tombstone: <name>` and touches nothing, and a genuine `git worktree add`-registered worktree survives a sweep untouched. Test-only — no behavior change to `worktree-reap.sh` itself. closes #1227

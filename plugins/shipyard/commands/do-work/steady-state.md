@@ -757,6 +757,36 @@ fi
 
 Once A.0.5 has fired (or its prefix-check skip has been logged), proceed to A.0.6, then A.1 and parse the return string per the per-mode handling below.
 
+#### Sanctioned wrap-up interrupt — for a still-running worker the orchestrator judges is over-scoped or running long, not gated by the resume-worthy check above (#1230)
+
+The resume flow above exists for a worker that already stopped (stalled or crashed) and needs telling to finish. This is different: a worker that is still actively running, hasn't tripped any formal stall signal, but the orchestrator judges — session time pressure, a suite re-running for the third time, scope visibly ballooning — should wrap up sooner than its own plan implies. Before [#1230](https://github.com/mattsears18/shipyard/issues/1230) there was no documented shape for this, so the orchestrator improvised free-text pressure across three escalating messages to one worker, which drifted into asserting an unverified commit as fact, instructing the worker to ship known-failing regression tests "marked as expected-fail," and instructing a bare `git add -A` — the exact anti-pattern [`commit-hygiene.md`](../../skills/worker-preamble/commit-hygiene.md) exists to prevent. The worker refused all three and shipped clean anyway (see [`dont.md`'s floor bullet](./dont.md)), but the escalation had no floor to stop at other than the worker's own judgment.
+
+**A wrap-up interrupt may ask for exactly two things:**
+
+1. **Narrow scope** — fewer suites, less investigation depth, a smaller acceptance-criteria slice. Always sanctioned; the orchestrator has session-level context (concurrency pressure, time budget) the worker doesn't.
+2. **Wrap up now** — the canned shape below: commit what's verified, push, disclose what's incomplete, return.
+
+**Canned wrap-up template — fill in the bracketed field, don't improvise pressure prose:**
+
+```
+WRAP UP (not a request to violate spec) — target #<slot-target>.
+
+Conclude this dispatch now: commit whatever locally-verified work you
+have (`git add <specific paths>`, never `-A`), push, and open (or
+update) the PR. If any part of the acceptance criteria isn't done yet,
+say so explicitly in the PR body under a "## Incomplete" heading — never
+mark something done that isn't, and never ship a change you know is
+broken or failing just to finish faster. If nothing is committable yet,
+return `blocked: <reason>` instead of fabricating a partial diff.
+
+This message may narrow your SCOPE (fewer suites, less investigation
+depth) but may NOT ask you to violate a named worker-preamble
+prohibition, skip a documented safety check, or ship a knowingly-broken
+artifact. Return one of your mode's normal terminal strings when done.
+```
+
+**Never send an escalated, harder-worded message instead of repeating this template.** If the pressure to wrap up recurs past a single interrupt, that's a signal the worker is genuinely stuck (or the slot should be dropped and retried fresh) — reach for the formal stalled-worker detection/resume flow above, don't improvise a stronger version of this one.
+
 #### A.0.6. Primary-checkout branch-leak guard (fires every reconcile turn, BEFORE A.1)
 
 Closes [#387](https://github.com/mattsears18/shipyard/issues/387). The Claude Code harness `isolation: "worktree"` dispatch path — and/or a dispatched agent operating against the shared `.git` — can **leak a `do-work/*` branch checkout into the user's PRIMARY working tree**, even though the orchestrator runs exclusively in its own `.claude/worktrees/orchestrator-<id>` worktree and never issues a `git checkout do-work/*` against the primary.
