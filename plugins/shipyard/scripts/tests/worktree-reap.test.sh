@@ -2560,6 +2560,135 @@ last_line=$(printf '%s\n' "$result" | tail -1)
 assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
   "(109) missing session-state file -> auto-derive is a silent no-op, sweep still succeeds"
 
+# ============================================================================
+# Issue #1223 / #1227 — regression coverage for the async-delete
+# silent-success bug. `fast_worktree_remove` used to background its bulk
+# `rm -rf` (`... & ; disown`) on the theory it "reparents to init and
+# finishes" — false for the orchestrator's short-lived hermetic Bash-tool
+# shells, which exit (and kill their background children) the instant the
+# command returns. A 42-worktree `reap-stale` sweep over ~86 GiB reported
+# `summary: ... remaining=0` — the strongest possible "all clear" — while
+# reclaiming only ~1.4 GiB; the other ~85 GiB sat on disk renamed to
+# `<name>.reap-dead-<pid>-<ts>` tombstones nothing ever revisited. The fix
+# (this PR ships tests only, not the fix — see PR #1226) foregrounds and
+# verifies the delete and re-derives `remaining` from a fresh on-disk count
+# rather than the loop's own tally.
+#
+# Both tests below intentionally check MORE than "the worktree path is
+# gone" — that check alone is exactly the assertion the shipped bug would
+# still have passed (the `mv` in step 2 of fast_worktree_remove makes the
+# ORIGINAL path disappear regardless of whether the subsequent delete of
+# the renamed-aside tombstone ever completed). Asserting tombstone absence
+# and an independent on-disk recount is what actually pins the fix.
+#
+#   110) a reaped worktree's bytes are genuinely gone — no `*.reap-dead-*`
+#        sibling survives anywhere under .claude/worktrees/, not merely the
+#        original path
+#   111) `remaining=<N>` in the summary line matches an independent
+#        post-hoc `find` of what's actually still on disk, in a sweep that
+#        combines a capped-out (over-the-limit) worktree with a
+#        pre-existing stray `*.reap-dead-*` tombstone fixture
+#   112) the `sweep-tombstones` subcommand directly: a real run deletes a
+#        fixture tombstone's actual file content and prints
+#        `tombstone-swept: <name>`; `--dry-run` prints
+#        `would-sweep-tombstone: <name>` and touches nothing; a genuine
+#        `git worktree add`-registered worktree is never touched by a
+#        sweep (the `*.reap-dead-*` glob is a tool-generated marker no live
+#        worktree name can ever contain)
+# ============================================================================
+
+echo
+echo "worktree-reap.sh issue #1223/#1227 regression tests (tombstone deletion)"
+echo
+
+run_sweep_tombstones() {
+  bash "$helper" sweep-tombstones --repo-root "$rs_repo" "$@" 2>/dev/null
+}
+
+# --- (110) reaped worktree's bytes are genuinely gone, not just renamed ---
+reset_rs_layout
+rs_add_worktree ttt
+rs_backdate_nolock ttt
+result=$(run_rs)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+  "(110) real run reaps the single eligible worktree"
+[ -d "$rs_repo/.claude/worktrees/agent-ttt" ] && orig_kept=yes || orig_kept=no
+assert_equals "$orig_kept" "no" \
+  "(110a) the original worktree path is gone"
+tombstone_count=$(find "$rs_repo/.claude/worktrees" -maxdepth 1 -mindepth 1 -type d \
+  -name '*reap-dead*' 2>/dev/null | wc -l | tr -d ' ')
+assert_equals "$tombstone_count" "0" \
+  "(110b) no *.reap-dead-* tombstone directory survives anywhere on disk (the exact #1223 miss)"
+
+# --- (111) `remaining` matches an independent on-disk recount, with a ---
+# --- capped worktree AND a pre-existing stray tombstone both in play  ---
+# The tombstone fixture pre-dates this run (simulating a straggler left by
+# a prior, buggy sweep) — proving `remaining` is derived by re-walking
+# .claude/worktrees/ after the sweep rather than trusting the loop's own
+# running tally, exactly the derivation #1223's fix changed (see
+# reap_stale's own docstring in worktree-reap.sh).
+reset_rs_layout
+rs_add_worktree older
+rs_add_worktree newer
+backdate_minutes "$rs_repo/.claude/worktrees/agent-older" 120
+backdate_minutes "$rs_repo/.claude/worktrees/agent-newer" 90
+mkdir -p "$rs_repo/.claude/worktrees/agent-ghost.reap-dead-99999-123456"
+echo "leftover bytes" > "$rs_repo/.claude/worktrees/agent-ghost.reap-dead-99999-123456/marker.txt"
+result=$(run_rs --max-per-session 1)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=1" \
+  "(111) cap=1 with a pre-existing stray tombstone also in the directory -> remaining=1"
+ondisk_eligible=$(find "$rs_repo/.claude/worktrees" -maxdepth 1 -mindepth 1 -type d \
+  -name 'agent-*' ! -name '*reap-dead*' 2>/dev/null | wc -l | tr -d ' ')
+assert_equals "$ondisk_eligible" "1" \
+  "(111a) independent post-hoc count of real worktree dirs on disk agrees with the printed remaining=1"
+[ -d "$rs_repo/.claude/worktrees/agent-ghost.reap-dead-99999-123456" ] && ghost_kept=yes || ghost_kept=no
+assert_equals "$ghost_kept" "no" \
+  "(111b) the pre-existing stray tombstone was itself swept in the same run, not left to inflate remaining"
+ghost_swept_line=$(printf '%s\n' "$result" | grep -c "tombstone-swept: agent-ghost.reap-dead-99999-123456" || true)
+assert_equals "$ghost_swept_line" "1" \
+  "(111c) the tombstone sweep emitted its own tombstone-swept: line for the stray fixture"
+
+# --- (112) sweep-tombstones subcommand, direct coverage ---
+reset_rs_layout
+mkdir -p "$rs_repo/.claude/worktrees/agent-fixture.reap-dead-11111-222222"
+echo "leftover bytes" > "$rs_repo/.claude/worktrees/agent-fixture.reap-dead-11111-222222/marker.txt"
+result=$(run_sweep_tombstones)
+assert_equals "$result" "tombstone-swept: agent-fixture.reap-dead-11111-222222" \
+  "(112) real run prints tombstone-swept: <name> for the fixture"
+[ -d "$rs_repo/.claude/worktrees/agent-fixture.reap-dead-11111-222222" ] && fixture_kept=yes || fixture_kept=no
+assert_equals "$fixture_kept" "no" \
+  "(112a) the fixture's actual file content and directory are both gone, not just re-tallied"
+
+# --- (112b) --dry-run touches nothing ---
+reset_rs_layout
+mkdir -p "$rs_repo/.claude/worktrees/agent-fixture2.reap-dead-33333-444444"
+result=$(run_sweep_tombstones --dry-run)
+assert_equals "$result" "would-sweep-tombstone: agent-fixture2.reap-dead-33333-444444" \
+  "(112c) --dry-run prints would-sweep-tombstone: <name>"
+[ -d "$rs_repo/.claude/worktrees/agent-fixture2.reap-dead-33333-444444" ] && dry_fixture_kept=yes || dry_fixture_kept=no
+assert_equals "$dry_fixture_kept" "yes" \
+  "(112d) --dry-run leaves the fixture directory untouched"
+
+# --- (112e) a genuine, git-registered live worktree is never touched by a ---
+# --- sweep — the *.reap-dead-* glob is a tool-generated marker that a real ---
+# --- worktree name can never contain (agent-*/orchestrator-* naming has no ---
+# --- 'reap-dead' substring anywhere in this codebase's id-generation) ---
+reset_rs_layout
+rs_add_worktree live
+mkdir -p "$rs_repo/.claude/worktrees/agent-onlytombstone.reap-dead-55555-666666"
+result=$(run_sweep_tombstones)
+[ -d "$rs_repo/.claude/worktrees/agent-live" ] && live_kept=yes || live_kept=no
+assert_equals "$live_kept" "yes" \
+  "(112e) the live, git-registered worktree survives the sweep untouched"
+live_mentioned=$(printf '%s\n' "$result" | grep -c "agent-live" || true)
+assert_equals "$live_mentioned" "0" \
+  "(112f) the sweep's output never names the live worktree — only the tombstone matched"
+git_wt_intact=$(git -C "$rs_repo" worktree list --porcelain 2>/dev/null | grep -c "agent-live" || true)
+assert_equals "$git_wt_intact" "1" \
+  "(112g) git itself still considers agent-live a registered worktree after the sweep"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
