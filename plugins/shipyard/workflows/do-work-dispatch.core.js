@@ -426,6 +426,7 @@ const workerReturnSchema = {
     blocked_reason: { type: ['string', 'null'] },
     blocked_stage: { type: ['string', 'null'] },
     last_push: { type: ['string', 'null'] },
+    worktree_path: { type: ['string', 'null'] },
     summary: { type: ['string', 'null'] },
   },
   allOf: [
