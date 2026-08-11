@@ -2882,10 +2882,28 @@ assert_contains "$steady_state_path" \
   'never re-derive it here or hand-roll a shorthand substitute' \
   "steady-state.md step C's lightweight backlog re-check warns against a hand-rolled shorthand filter (#1194)"
 # shellcheck disable=SC2016
+# Dollar-sign variable refs here are literal characters inside a fenced bash
+# code block quoted in the markdown, not something this test script expands.
+assert_contains "$steady_state_path" \
+  '"${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
+  "steady-state.md step C stamps the invariant-line tokens via the executable backlog-filter.sh summary subcommand, not prose alone (#1246)"
+assert_contains "$steady_state_path" \
+  'issues/1246' \
+  "steady-state.md step C cites issue #1246 as the source of the mechanical stamping code"
+# shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
 assert_contains "$drain_path" \
-  'Also stamp `me_assigned_open`' \
+  'narrows that same wide-fetch payload to the count of issues assigned to the gh-authenticated user' \
   "drain.md termination-assertion step 4 stamps me_assigned_open (#1194)"
+# shellcheck disable=SC2016
+# Dollar-sign variable refs here are literal characters inside a fenced bash
+# code block quoted in the markdown, not something this test script expands.
+assert_contains "$drain_path" \
+  '"${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
+  "drain.md termination-assertion step 4 stamps the invariant-line tokens via the executable backlog-filter.sh summary subcommand, not prose alone (#1246)"
+assert_contains "$drain_path" \
+  'issues/1246' \
+  "drain.md termination-assertion step 4 cites issue #1246 as the source of the mechanical stamping code"
 assert_contains "$drain_path" \
   'recurred client-side in a mid-drain ad-hoc query as recently as' \
   "drain.md's never-re-derive caution cross-references the #1194 ad-hoc-query regression"

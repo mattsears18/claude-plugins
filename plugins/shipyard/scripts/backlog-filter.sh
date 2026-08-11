@@ -75,6 +75,26 @@
 #     Exit codes: 0 success (even if the set is empty); 65 if `gh` or `jq`
 #     is missing, or gh-batch.sh can't be found alongside this script.
 #
+#   summary --me <login>
+#     < wide-fetch-issue-json (array) on stdin — the exact same payload
+#     `classify` reads, passed BEFORE classification runs.
+#     Emits the `unfiltered_open_count` / `me_assigned_open` invariant-line
+#     tokens (issue #1246) as a single JSON object on stdout:
+#       {"unfiltered_open_count":36,"me_assigned_open":16}
+#     `unfiltered_open_count` is simply the input array's length;
+#     `me_assigned_open` is the count of issues whose `assignees` array
+#     contains --me (case-insensitive). A deliberately separate subcommand
+#     from `classify` rather than a line folded into its NDJSON stream —
+#     `classify`'s output contract (one line per input issue, in a
+#     documented rank order) is depended on verbatim by three call-sites
+#     and their fixture tests; appending a summary line there would change
+#     that contract for every existing consumer. Kept here (not computed
+#     ad hoc by each caller) for the same reason `classify` itself exists:
+#     the caller already holds the pre-filter payload, so this is the
+#     single place the count is computed, rather than three independent
+#     `jq 'length'` / assignee-matching one-liners that could drift.
+#     Exit 0 always (even on an empty input array — emits count 0/0).
+#
 # Design note — why classify takes precomputed sets rather than doing its
 # own network I/O for --closed-by-healthy-pr / --peer-claimed: the
 # classification/routing DECISION is the part that has actually drifted
@@ -112,6 +132,9 @@ Usage:
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
+
+  backlog-filter.sh summary --me <login>
+    < wide-fetch-issue-json (array) on stdin
 EOF
 }
 
@@ -402,6 +425,46 @@ cmd_closed_by_healthy_pr() {
   '
 }
 
+# cmd_summary — the unfiltered_open_count / me_assigned_open invariant-line
+# tokens (issue #1246). Reads the same wide-fetch payload `classify` reads,
+# BEFORE classification runs, so a regression in the classifier itself is
+# visible as a "raw_backlog=0 but unfiltered_open_count=29" divergence
+# rather than silently indistinguishable from a genuinely empty backlog.
+cmd_summary() {
+  local me=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --me) me="${2:-}"; shift 2 ;;
+      *) echo "summary: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+
+  if [[ -z "$me" ]]; then
+    echo "summary: --me is required" >&2
+    usage
+    return 64
+  fi
+
+  require_jq "backlog-filter.sh"
+
+  local me_lower input
+  me_lower=$(printf '%s' "$me" | tr '[:upper:]' '[:lower:]')
+  input=$(cat)
+
+  if [[ -z "$input" ]]; then
+    input="[]"
+  fi
+
+  printf '%s' "$input" | jq -c --arg me "$me_lower" '
+    {
+      unfiltered_open_count: length,
+      me_assigned_open:
+        (map(select(((.assignees // []) | map(ascii_downcase)) | index($me) != null))
+         | length)
+    }
+  '
+}
+
 main() {
   local sub="${1:-}"
   case "$sub" in
@@ -412,6 +475,10 @@ main() {
     closed-by-healthy-pr)
       shift
       cmd_closed_by_healthy_pr "$@"
+      ;;
+    summary)
+      shift
+      cmd_summary "$@"
       ;;
     -h|--help|help|"")
       usage

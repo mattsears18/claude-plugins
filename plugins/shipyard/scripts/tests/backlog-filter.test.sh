@@ -115,6 +115,10 @@ assert_equals "$rc" "64" "(8) closed-by-healthy-pr missing --repo exits 64"
 out=$(bash "$helper" closed-by-healthy-pr --repo acme/widgets 2>&1); rc=$?
 assert_equals "$rc" "64" "(9) closed-by-healthy-pr missing --me exits 64"
 
+out=$(bash "$helper" summary </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(9a) summary missing --me exits 64"
+assert_contains "$out" "--me is required" "(9a) summary missing --me explains why"
+
 # --- empty input -------------------------------------------------------------
 
 out=$(printf '%s' '[]' | classify); rc=$?
@@ -303,6 +307,33 @@ fixture_grouping='[
 out=$(printf '%s' "$fixture_grouping" | classify)
 order=$(order_of "$out" | paste -sd, -)
 assert_equals "$order" "1503,1502,1501" "(43) output groups eligible first, investigate second, everything else last"
+
+# --- summary — unfiltered_open_count / me_assigned_open (issue #1246) -------
+# The invariant-line tokens the orchestrator stamps at drain.md's
+# termination step 4 and steady-state.md step C, from the SAME wide-fetch
+# payload classify reads, BEFORE classification runs.
+
+out=$(printf '%s' '[]' | bash "$helper" summary --me "test-me")
+assert_equals "$out" '{"unfiltered_open_count":0,"me_assigned_open":0}' "(44) summary on an empty array returns both counts as 0"
+
+out=$(printf '' | bash "$helper" summary --me "test-me")
+assert_equals "$out" '{"unfiltered_open_count":0,"me_assigned_open":0}' "(45) summary on genuinely empty stdin (not even '[]') defaults to an empty array, same as classify"
+
+fixture_summary='[
+  {"number":2001,"assignees":["Alice"]},
+  {"number":2002,"assignees":["bob"]},
+  {"number":2003,"assignees":[]},
+  {"number":2004,"assignees":["alice","carol"]}
+]'
+out=$(printf '%s' "$fixture_summary" | bash "$helper" summary --me "ALICE")
+assert_equals "$out" '{"unfiltered_open_count":4,"me_assigned_open":2}' "(46) summary counts total issues and case-insensitively matches --me against assignees (alone or alongside others)"
+
+out=$(printf '%s' "$fixture_summary" | bash "$helper" summary --me "nobody")
+assert_equals "$out" '{"unfiltered_open_count":4,"me_assigned_open":0}' "(47) summary: unfiltered_open_count is unaffected by who --me is; me_assigned_open is 0 when --me matches no assignee"
+
+fixture_summary_missing_assignees='[{"number":2101},{"number":2102,"assignees":["alice"]}]'
+out=$(printf '%s' "$fixture_summary_missing_assignees" | bash "$helper" summary --me "alice")
+assert_equals "$out" '{"unfiltered_open_count":2,"me_assigned_open":1}' "(48) summary tolerates an issue object with no assignees key at all (defensive // [])"
 
 echo
 echo "----------------------------------------"
