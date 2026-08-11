@@ -62,13 +62,17 @@ Bail with `blocked` if any of:
 
 **When present**, read [`issue-work-scope-boundary-recheck.md`](./issue-work-scope-boundary-recheck.md): diff it against step 0's `comments` — it can go stale; the live issue wins on a contradiction.
 
-### 1. Self-assign (soft lock)
+### 1. Self-assign (gated on `backlog.self_assign`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248))
 
 ```bash
-gh issue edit <N> --repo <owner/repo> --add-assignee @me
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
+if [ "$SELF_ASSIGN" = "true" ]; then
+  gh issue edit <N> --repo <owner/repo> --add-assignee @me
+fi
 ```
 
-Soft lock against a parallel `/do-work` instance. If assignment fails (insufficient permissions on the repo), continue anyway and note it in the return summary.
+Config default `false` — the orchestrator's own dispatch-time claim (`dispatch-rules.md`, before this worker was ever spawned) already applied the same gate, so this call is normally a redundant no-op re-assertion when `self_assign: true`, and a genuine no-op when `false`. It's kept here as the safety net for a worker spec run outside the orchestrator's normal dispatch path (e.g. a hand-invoked mode shim). This was previously documented as a "soft lock against a parallel `/do-work` instance" — that claim only holds across *different* GitHub identities; a second same-identity session sees its own self-assigned issue as `assignee == @me` (the resumable-work case [#332](https://github.com/mattsears18/shipyard/issues/332) protects) and dispatches it anyway, so no lock actually occurs for the common single-operator case. The real collision guard — unaffected by this flag — is the orchestrator's concurrent-session worktree/PID lock (`dispatch-rules.md`'s "Concurrent-session guard"). The `shipyard` label (provenance, always applied) is stamped by the orchestrator before dispatch regardless of this setting — not repeated here. If assignment fails (insufficient permissions on the repo), continue anyway and note it in the return summary.
 
 ### 2. Read the issue carefully
 

@@ -143,6 +143,25 @@ assert_equals "$(verdict_of "$out" 102)" "eligible" "(12) #1194: self-assigned (
 assert_equals "$(verdict_of "$out" 103)" "drop:assigned-other" "(13) #1194: other-assigned issue drops"
 assert_equals "$(verdict_of "$out" 104)" "eligible" "(14) #1194: self+other assigned issue is still eligible (me is among assignees)"
 
+# --- #1248: --respect-assignees gates the assigned-other clause -------------
+# When the flag is omitted entirely, the script defaults to "true" (preserves
+# the #1194-fixed predicate above for any caller that hasn't been updated
+# yet). Real callers (setup.md step 4, steady-state.md step C, drain.md's
+# termination assertion) always pass the resolved `backlog.respect_assignees`
+# config value explicitly -- config default is "false".
+
+out=$(printf '%s' "$fixture_assignees" | classify --respect-assignees true)
+assert_equals "$(verdict_of "$out" 103)" "drop:assigned-other" "(14a) #1248: explicit --respect-assignees true reproduces the #1194 predicate"
+
+out=$(printf '%s' "$fixture_assignees" | classify --respect-assignees false)
+assert_equals "$(verdict_of "$out" 101)" "eligible" "(14b) #1248: --respect-assignees false -- unassigned issue is eligible"
+assert_equals "$(verdict_of "$out" 102)" "eligible" "(14c) #1248: --respect-assignees false -- self-assigned issue is eligible"
+assert_equals "$(verdict_of "$out" 103)" "eligible" "(14d) #1248: --respect-assignees false -- other-assigned issue is ALSO eligible (the clause never runs)"
+assert_equals "$(verdict_of "$out" 104)" "eligible" "(14e) #1248: --respect-assignees false -- self-plus-other assigned issue is eligible"
+
+out=$(bash "$helper" classify --me x --trusted-authors a --respect-assignees maybe </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(14f) #1248: invalid --respect-assignees exits 64"
+
 # --- #332 regression: closed-PR does not lock the issue ---------------------
 # The regression: excluding every issue that ever had ANY linked PR
 # (including closed/abandoned ones) erased resumable work. This filter

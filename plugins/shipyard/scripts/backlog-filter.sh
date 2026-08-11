@@ -37,6 +37,7 @@
 #   classify --me <login> --trusted-authors <csv> [--closed-by-healthy-pr <csv>]
 #            [--peer-claimed <csv>] [--investigate-dispatch true|false]
 #            [--prioritize-label <label>] [--today YYYY-MM-DD]
+#            [--respect-assignees true|false]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
 #     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
 #     assignees: [login,...], author: {login}, createdAt, updatedAt}, ...].
@@ -52,6 +53,15 @@
 #     step 4 sorts raw_backlog into. Then every "route":"investigate" line,
 #     in its own rank order (P0>P1>P2>unlabeled, then staleness — no
 #     prioritized-label or type tier, per 04d-investigate-routing.md). Then
+#     `--respect-assignees` (issue #1248) gates the "drop:assigned-other"
+#     clause. Default `true` when the flag is omitted entirely (preserves
+#     the #1194-fixed predicate for a caller that hasn't been updated yet).
+#     Real callers should always pass the resolved `backlog.respect_assignees`
+#     config value explicitly (config default: `false` — on a single-
+#     contributor repo, the common shipyard-marketplace case, "assigned to
+#     someone else" has no correct exclusion to make). When `false`, an
+#     issue's `assignees` array never affects its verdict — self-assigned,
+#     unassigned, and other-assigned issues are all equally eligible.
 #     every remaining line (route:operator, drop:*, gate:*) in input order,
 #     as an audit trail. A caller that wants only the ranked eligible
 #     numbers does: `jq -r 'select(.verdict=="eligible") | .number'`.
@@ -128,7 +138,7 @@ Usage:
   backlog-filter.sh classify --me <login> --trusted-authors <csv>
       [--closed-by-healthy-pr <csv-of-numbers>] [--peer-claimed <csv-of-numbers>]
       [--investigate-dispatch true|false] [--prioritize-label <label>]
-      [--today YYYY-MM-DD]
+      [--today YYYY-MM-DD] [--respect-assignees true|false]
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
@@ -252,7 +262,7 @@ def time_gate_future($issue; $today):
 def is_closed_by_healthy_pr($issue; $healthy):
   ($healthy | index($issue.number) != null);
 
-def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $re; $opennums):
+def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees):
   (matches_gate_label($issue)) as $gate_hit
   | if is_untrusted($issue; $trusted) then
       {number: $issue.number, verdict: "drop", reason: "untrusted-author"}
@@ -268,7 +278,7 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
        end)
     elif is_peer_claimed($issue; $peer) then
       {number: $issue.number, verdict: "drop", reason: "peer-claimed"}
-    elif is_assigned_to_other($issue; $me) then
+    elif ($respect_assignees and is_assigned_to_other($issue; $me)) then
       {number: $issue.number, verdict: "drop", reason: "assigned-other"}
     elif blocked_by_open_issue($issue; $opennums) then
       {number: $issue.number, verdict: "drop", reason: "blocked-by-open-issue"}
@@ -288,7 +298,7 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
 
 . as $issues
 | ($issues | map(.number)) as $opennums
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $symptom_re; $opennums))) as $classified
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by([._prioritized_tier, ._priority_rank, ._type_rank, ._updatedAt]))
@@ -307,7 +317,7 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
 
 cmd_classify() {
   local me="" trusted_csv="" healthy_csv="" peer_csv="" investigate_dispatch="true"
-  local prioritize_label="" today=""
+  local prioritize_label="" today="" respect_assignees="true"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --me) me="${2:-}"; shift 2 ;;
@@ -317,6 +327,7 @@ cmd_classify() {
       --investigate-dispatch) investigate_dispatch="${2:-}"; shift 2 ;;
       --prioritize-label) prioritize_label="${2:-}"; shift 2 ;;
       --today) today="${2:-}"; shift 2 ;;
+      --respect-assignees) respect_assignees="${2:-}"; shift 2 ;;
       *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
     esac
   done
@@ -334,6 +345,10 @@ cmd_classify() {
   case "$investigate_dispatch" in
     true|false) ;;
     *) echo "classify: --investigate-dispatch must be true or false, got: $investigate_dispatch" >&2; return 64 ;;
+  esac
+  case "$respect_assignees" in
+    true|false) ;;
+    *) echo "classify: --respect-assignees must be true or false, got: $respect_assignees" >&2; return 64 ;;
   esac
   if [[ -z "$today" ]]; then
     today="$(date -u +%F)"
@@ -365,6 +380,7 @@ cmd_classify() {
     --arg prioritize_label "$prioritize_label" \
     --arg today "$today" \
     --arg symptom_re "$SYMPTOM_REGEX" \
+    --argjson respect_assignees "$respect_assignees" \
     "$CLASSIFY_JQ"
 }
 

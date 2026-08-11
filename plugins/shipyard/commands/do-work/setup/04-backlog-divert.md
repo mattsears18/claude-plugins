@@ -67,7 +67,7 @@ Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preser
 
   `investigate_candidates` is a separate ordered list (FIFO, priority order within the list: `P0` > `P1` > `P2` > unlabeled, then staleness — no prioritized-label or type tier). It is populated here and consumed by the steady-state decision tree's step 1.5. Like `raw_backlog`, it starts empty at the top of step 4 and is finalized before step 4.5.
 - **Drop peer-claimed issues/PRs** ([#1204](https://github.com/mattsears18/shipyard/issues/1204), passed to the script as `--peer-claimed`). See [`04e-peer-session-drop.md`](./04e-peer-session-drop.md): drop candidates in `.peer_sessions.claimed_targets` (step 1.65).
-- Drop issues assigned to a user **other than** the gh-authenticated user. `@me`-assigned issues (alone or alongside other assignees) PASS — that's the resumable-work case (a prior session self-assigned the issue but didn't ship it), and the entire point of [#332](https://github.com/mattsears18/shipyard/issues/332)'s rework is to keep that case visible to the dispatch queue.
+- **Drop issues assigned to a user other than the gh-authenticated user — gated on `backlog.respect_assignees` (config default `false`), issue [#1248](https://github.com/mattsears18/shipyard/issues/1248).** `@me`-assigned issues (alone or alongside other assignees) PASS regardless of this setting — that's the resumable-work case (a prior session self-assigned the issue but didn't ship it), and the entire point of [#332](https://github.com/mattsears18/shipyard/issues/332)'s rework is to keep that case visible to the dispatch queue. When `backlog.respect_assignees` is `false` (the default — the common single-contributor-repo shape this marketplace mostly serves), this clause doesn't run at all: an issue assigned to anyone, or no one, is equally eligible. The clause's only genuine upside is on a multi-contributor repo where "assigned to someone else" is a meaningful "not mine" signal — set `backlog.respect_assignees: true` to restore that. See [`scripts/backlog-filter.sh`](../../../scripts/backlog-filter.sh)'s `--respect-assignees` flag.
 - Drop issues whose body contains `Blocked by #N` where #N is present in this same wide-fetch payload (i.e. still open — the payload IS the complete open-issue universe, so no separate per-reference `gh issue view` call is needed).
 - **Drop issues whose body's FIRST LINE is a `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker whose date is still in the future ([#1161](https://github.com/mattsears18/shipyard/issues/1161))** — the **time-gate**, compared against `--today` (defaults to `date -u +%F`). Self-clearing: no label, no sweep, the issue re-enters the workable queue the instant the date elapses on the next fetch. **Position discipline, line 1 only ([#1168](https://github.com/mattsears18/shipyard/issues/1168))** — a marker anywhere else (mid-paragraph, backticked, fenced, or quoted) is NOT live and MUST NOT gate dispatch; it's always written on line 1, never mid-body. An unparseable date on line 1 fails open (not blocked).
 
@@ -93,6 +93,7 @@ CLOSED_HEALTHY_CSV=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" closed-by
   --repo <owner/repo> --me "$ME_LOGIN")
 
 INVESTIGATE_DISPATCH=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
+RESPECT_ASSIGNEES=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.respect_assignees 2>/dev/null || echo "false")
 
 # $fetched_issues_json is the wide-fetch array from the top of this step.
 # $TRUSTED_AUTHORS_CSV is trusted_authors (step 1.7), comma-joined, lowercased.
@@ -103,7 +104,8 @@ CLASSIFIED=$(printf '%s' "$fetched_issues_json" | "${CLAUDE_PLUGIN_ROOT}/scripts
   --closed-by-healthy-pr "$CLOSED_HEALTHY_CSV" \
   --peer-claimed "$PEER_CLAIMED_CSV" \
   --investigate-dispatch "$INVESTIGATE_DISPATCH" \
-  --prioritize-label "<--prioritize-label CLI arg value, or empty string if not passed>")
+  --prioritize-label "<--prioritize-label CLI arg value, or empty string if not passed>" \
+  --respect-assignees "$RESPECT_ASSIGNEES")
 
 raw_backlog=$(printf '%s\n' "$CLASSIFIED" | jq -r 'select(.verdict == "eligible") | .number')
 investigate_candidates=$(printf '%s\n' "$CLASSIFIED" | jq -r 'select(.verdict == "route" and .reason == "investigate") | .number')

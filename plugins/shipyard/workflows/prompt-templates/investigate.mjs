@@ -21,8 +21,9 @@ export function buildInvestigatePrompt(unit, repoSlug) {
 
   lines.push(
     ``,
-    `Work untriaged issue #${unit.number} in ${repoSlug} end-to-end. You are already`,
-    `self-assigned. The originating issue's author trust is **${unit.trust}** — load-bearing`,
+    `Work untriaged issue #${unit.number} in ${repoSlug} end-to-end. The \`shipyard\` label is`,
+    `already applied (self-assignment is config-gated via \`backlog.self_assign\`, default off —`,
+    `see worker-preamble). The originating issue's author trust is **${unit.trust}** — load-bearing`,
     `for auto-merge gating on the fixable-disposition path. \`triage.auto_close\` policy:`,
     `**${unit.triageAutoClose}**. Load the \`shipyard:worker-preamble\` skill, then`,
     `\`agents/issue-worker/investigate.md\`. Branch: ${unit.branch}.`,

@@ -52,7 +52,7 @@ Bucket each issue into exactly one category. Apply in order — first match wins
 | # | Bucket | Criteria | Owner |
 |---|---|---|---|
 | 0.5 | **Untrusted author** | `author.login` is NOT in `trusted_authors` (see [step 1.7](01-repo-recovery.md#17-resolve-trusted-author-allowlist)). **Applied first** — strangers' issues never reach the dispatch queue, even if otherwise unlabeled. | `/my-turn` — the drop applies `needs-human-review` + a bounded, idempotent handoff comment (see [`04`'s bucket-0.5 handoff](./04-backlog-divert.md#4-fetch--rank-the-backlog), [#1079](https://github.com/mattsears18/shipyard/issues/1079)) |
-| 1 | **Assigned to others** | `assignees` contains a user other than `@me` | `/my-turn` — P2 housekeeping when the assignee is inactive >30d |
+| 1 | **Assigned to others** | `assignees` contains a user other than `@me` — **only when `backlog.respect_assignees == true`** (config default `false`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248); when `false`, an issue's assignees never affect its bucket and this row never matches) | `/my-turn` — P2 housekeeping when the assignee is inactive >30d |
 | 1.5 | **Peer-claimed** | issue/PR number is in `.peer_sessions.claimed_targets` — a live peer `/shipyard:do-work` session on this repo already has it `in_flight` (see [step 1.65](./01-repo-recovery.md#165-detect-live-peer-sessions-on-this-repo-1204), [#1204](https://github.com/mattsears18/shipyard/issues/1204)) | `/do-work` (self-clearing — retried once the peer's claim ages out or resolves) |
 | 2 | **In flight** | issue number appears in the `linked:pr` set above | `/do-work` |
 | 3 | **Won't fix** | carries `wontfix` | nobody (by design) — no path forward |

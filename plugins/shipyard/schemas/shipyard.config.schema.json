@@ -63,6 +63,24 @@
         "_comment": { "type": "string" }
       }
     },
+    "backlog": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Controls the assignee clause of /shipyard:do-work's backlog eligibility filter (issue #1248). Both keys default to the single-contributor-repo shape: assignees are ignored for dispatch eligibility, and /do-work never writes an assignment itself. A genuine multi-contributor repo — where 'assigned to someone else' is a meaningful 'not mine' signal — sets both to true to restore the pre-#1248 behavior.",
+      "properties": {
+        "respect_assignees": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, scripts/backlog-filter.sh classify drops an issue assigned to anyone OTHER than --me (self-assigned and unassigned issues always pass regardless of this flag). When false (default), the assignee clause is skipped entirely — any open issue is dispatch-eligible no matter who (if anyone) it's assigned to. The clause only has upside on a genuine multi-contributor repo; on a single-contributor repo (the common shipyard-marketplace case) it has no correct exclusion to make; the #1194 erasure came from a shorthand version of the same clause. Does not affect the `Blocked by #N` / gate-label / trust / peer-claimed / time-gate / closed-by-healthy-pr clauses — those are unconditional."
+        },
+        "self_assign": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, /do-work self-assigns a candidate issue to @me before dispatching (`gh issue edit <N> --add-assignee @me`), in addition to always stamping the `shipyard` session-stamp label. When false (default), no assignment call is made — the `shipyard` label alone carries provenance and human visibility. The self-assign was originally documented as a 'soft-lock against parallel /do-work instances', but that claim only holds across different GitHub identities: a second same-identity session evaluates its own self-assigned issue as `assignee == @me` and dispatches it anyway, so no lock actually occurs for the common single-operator case. The real collision guard is the concurrent-session worktree/PID lock (see dispatch-rules.md), which is unaffected by this flag. Set true only on a genuine multi-contributor repo that wants @me-assignment as a visible claim marker independent of the lock."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "labels": {
       "type": "object",
       "additionalProperties": false,

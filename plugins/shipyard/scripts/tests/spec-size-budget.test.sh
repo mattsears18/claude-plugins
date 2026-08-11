@@ -141,6 +141,16 @@
 # cross-reference. issue-work.md was already 60 bytes under its prior
 # ceiling; the new bullet needed the bump.
 #
+# issue-work.md's ceiling was raised 121000 -> 123000 by #1248 (2026-08-11):
+# the backlog.self_assign config option (defaulting false) gates the
+# self-assignment step in step 1 of every dispatch — a ~300-byte
+# CLAUDE_PLUGIN_ROOT + SHIPYARD_REPO_ROOT preamble is now required before the
+# bash block that reads the config (same preamble pattern already used in
+# dispatch-rules.md, inline-trivial.md, and worker-preamble fragments), so
+# the step can execute reliably. The preamble is load-bearing for the new
+# feature and cannot be reasonably shortened without compromising the
+# multi-layer config resolution it performs.
+#
 # skills/worker-preamble/SKILL.md's ceiling was raised 61000 -> 62000 by
 # #1240 (2026-08-11): a new fragments-table row for milestone-prohibition.md
 # (the worker-side half of shipyard:update-roadmap's orchestrator-only
@@ -209,7 +219,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  121000 \
+  123000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \

@@ -29,7 +29,7 @@ The orchestrator's rule list — load-bearing prohibitions across every phase. T
 
 **Dispatch hygiene:**
 
-- Don't work on issues assigned to other users — soft-lock via `gh api user` check.
+- Don't work on issues assigned to other users when `backlog.respect_assignees == true` — checked via `gh api user`. This clause is config-gated (default `false`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248)): on the default config, assignees don't affect eligibility at all and this rule doesn't apply.
 - Don't merge manually. Use `--auto`. Auto-merge waits for green.
 - Don't disable required checks or weaken branch protection to make a PR pass.
 - Don't re-dispatch the same issue. Once the agent returns `blocked`, label it and never queue it again.

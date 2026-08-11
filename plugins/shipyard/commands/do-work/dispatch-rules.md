@@ -99,11 +99,11 @@ When filling a slot, walk this decision tree:
 
    **For `investigate` dispatches** — `mode: investigate` (Sonnet-pinned). Prompt template (mirrored by `buildInvestigatePrompt`):
 
-   > **`mode: investigate`** — Work untriaged issue #<N> in `<owner/repo>` end-to-end. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating on the fixable-disposition path. `triage.auto_close` policy: **`<triage_auto_close>`**. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/investigate.md`.** Branch: `do-work/issue-<N>`.
+   > **`mode: investigate`** — Work untriaged issue #<N> in `<owner/repo>` end-to-end. The `shipyard` label is already applied (self-assignment is config-gated via `backlog.self_assign`, default off — see worker-preamble). The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating on the fixable-disposition path. `triage.auto_close` policy: **`<triage_auto_close>`**. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/investigate.md`.** Branch: `do-work/issue-<N>`.
    >
    > Return values: `investigated+fixed #<N> via PR #<M> (auto-merge: ..., checks: ...)`, `investigated+needs-human-review #<N> (label applied)`, `investigated+closed-noise #<N>`, `investigated+duplicate #<N> of #<K>`, or `blocked: <reason>`.
 
-   Self-assign the issue before dispatching (`gh issue edit <N> --add-assignee @me --add-label shipyard`) — same soft-lock as issue-work mode.
+   Claim the issue before dispatching — same claim rule as issue-work mode (see the collision-tier walkthrough above): always `--add-label shipyard`; `--add-assignee @me` only when `backlog.self_assign` resolves `true`.
 
 2. **`failed_prs` non-empty?** → pop the front entry. Path-collision rules don't apply (you're working an existing PR's branch, not a new path claim).
 
@@ -368,7 +368,24 @@ When filling a slot, walk this decision tree:
      > **No-op when `concurrency == 1`.** At C=1 there are no peer slots and no contention on any lockfile section — the section-collision check always resolves to "no collision." Skip the `lockfile_sections` claim-and-check pass entirely. Don't record `lockfile_sections` in the `in_flight` entry and don't check against them in step C. The scope pre-flight still returns `lockfile_sections` in its ready shape so the session-state schema remains valid, but the orchestrator simply ignores the field at dispatch time.
 
      If the candidate's `lockfile_sections` is non-empty, treat each section as an additional claim and check against the union of in-flight `lockfile_sections`. Blocked by section collision only when at least one section appears in some in-flight worker's set — disjoint sections co-run. The candidate must also pass the hard/soft path-collision rules; section-collision is additional to, not a replacement for, file-path checks. Generated lockfiles (`package-lock.json` / `pnpm-lock.yaml` / `go.sum` / `Cargo.lock`) are never claimed as sections. See [RATIONALE → Section-aware lockfile collision](../do-work-RATIONALE.md#dispatch-rules--section-aware-lockfile-collision).
-   - Otherwise (no lockfile sections claimed, no hard/soft collisions): **run the concurrent-session guard** (see below), then self-assign the issue first (`gh issue edit <N> --add-assignee @me --add-label shipyard`) **before** dispatching, to soft-lock against parallel `/do-work` instances and stamp the `shipyard` label.
+   - Otherwise (no lockfile sections claimed, no hard/soft collisions): **run the concurrent-session guard** (see below), then claim the issue before dispatching — gated on `backlog.self_assign` (config default `false`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248)):
+
+     ```bash
+     CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+     export CLAUDE_PLUGIN_ROOT
+     # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
+     SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
+     [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+     export SHIPYARD_REPO_ROOT
+     SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
+     if [ "$SELF_ASSIGN" = "true" ]; then
+       gh issue edit <N> --repo <owner/repo> --add-assignee @me --add-label shipyard
+     else
+       gh issue edit <N> --repo <owner/repo> --add-label shipyard
+     fi
+     ```
+
+     **The `shipyard` label is always stamped, unconditionally — it's provenance, not the collision guard.** The `--add-assignee @me` call is gated because it was originally documented as a "soft-lock against parallel `/do-work` instances," but that claim only holds across *different* GitHub identities: a second same-identity session evaluates its own self-assigned issue as `assignee == @me` (the resumable-work case [#332](https://github.com/mattsears18/shipyard/issues/332) exists to protect) and dispatches it anyway — no lock occurs. The genuine collision guard is the **concurrent-session guard** immediately below (a local worktree/PID lock check), which is unaffected by this flag either way. When `backlog.self_assign` is `false` (the default — the common single-contributor-repo shape), skipping the write also means there is nothing for [`01c-label-recovery-refine.md`'s stale-assignment recovery row](./setup/01c-label-recovery-refine.md#3c-orphan-worktree-triage) to clean up when a session dies mid-dispatch. Set `backlog.self_assign: true` on a genuine multi-contributor repo that wants `@me`-assignment as a visible claim marker independent of the lock.
 
    **Concurrent-session guard (per-dispatch, before self-assign).** Check whether any peer Claude Code instance (a different orchestrator PID) already holds a live lock on any `agent-*` worktree that targets the same issue number `<N>`. This prevents two parallel `/do-work` sessions from independently dispatching against the same issue and racing to push to the same `do-work/issue-<N>` branch.
 
@@ -551,7 +568,7 @@ When filling a slot, walk this decision tree:
 
    Prompt template:
 
-   > **`mode: spike`** — Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating. Fan-out cap for follow-on sub-issues: **`<decompose_max_subissues>`** (default 8). **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/spike.md`.** Branch: `do-work/issue-<N>`.
+   > **`mode: spike`** — Work issue #<N> in `<owner/repo>` to completion. The `shipyard` label is already applied (self-assignment is config-gated via `backlog.self_assign`, default off — see worker-preamble). The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating. Fan-out cap for follow-on sub-issues: **`<decompose_max_subissues>`** (default 8). **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/spike.md`.** Branch: `do-work/issue-<N>`.
    >
    > Return values: `spiked+shipped #<N> via PR #<M> (...)`, `spiked+needs-human-review #<N> (label applied)`, or `blocked: <reason>` (full vocabulary in spike.md step 11).
 
@@ -559,7 +576,7 @@ When filling a slot, walk this decision tree:
 
    **If not spike-shaped (the common case)** → dispatch `mode: issue-work` (Sonnet 5 per the table above). Prompt template (mirrored by `buildIssueWorkPrompt`):
 
-   > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. You are already self-assigned. The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating in step 6 of the per-mode spec. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/issue-work.md`.** Branch: `do-work/issue-<N>`. Open a PR that closes the issue.
+   > **`mode: issue-work`** — Work issue #<N> in `<owner/repo>` to completion. The `shipyard` label is already applied (self-assignment is config-gated via `backlog.self_assign`, default off — see worker-preamble). The originating issue's author trust is **`<originating_author_trust>`** — load-bearing for auto-merge gating in step 6 of the per-mode spec. **Load the `shipyard:worker-preamble` skill, then `agents/issue-worker/issue-work.md`.** Branch: `do-work/issue-<N>`. Open a PR that closes the issue.
    >
    > Return values: `shipped #<N> via PR #<M> (...)` or `blocked: <reason>` (full vocabulary in issue-work.md step 8).
 
