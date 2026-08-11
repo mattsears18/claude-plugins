@@ -72,7 +72,15 @@
 #     4. Force-reaps the worktree unconditionally (no-lock/dead/
 #        self-ancestor/peer-alive all reap here — issue #771's rationale)
 #        via worktree-reap.sh's single-source-of-truth reap helper, then
-#        `git worktree prune`.
+#        `git worktree prune`. That reap passes
+#        `--bypass-return-check` (issue #1237): worktree-reap.sh otherwise
+#        refuses to reap an `agent-*` worktree without a persisted
+#        `.returned_agent_ids` record proving the agent's own terminal
+#        return reached the orchestrator's reconcile — a record a crashed
+#        worker by definition never wrote. The bypass is hardcoded, not a
+#        flag on this script's own command line, because step 2 above
+#        returns early on every terminal case: EVERY reap this script
+#        performs is the documented crash-recovery exception.
 #     5. Prints exactly one result line to stdout so the caller's
 #        SEPARATE, later verify-the-reap-happened call (issue #1274 — a
 #        classifier denial of THIS call kills the whole tool call before
@@ -543,6 +551,20 @@ cmd_reap() {
   # lock is exactly the failure mode #358 documents, not a signal to wait.
   # The audit-log entry records the actual classification so the override
   # is traceable.
+  #
+  # --bypass-return-check (issue #1237): worktree-reap.sh's reconciled-return
+  # gate refuses `reap --action reaped` on an `agent-*` worktree unless this
+  # session's persisted `.returned_agent_ids` records that agent's own
+  # terminal return. This IS the crash path — control only reaches here on
+  # the `terminal=false` branch, i.e. precisely when the worker stopped
+  # WITHOUT a terminal return (crash, stall-watchdog kill, exhausted
+  # resume), so steady-state.md's A.1 return-record write never ran for this
+  # agent and never will. Requiring the record here would not harden
+  # anything; it would break the crash recovery A.0.5 exists to provide.
+  # The reason string is fixed rather than a caller-supplied flag: every
+  # reap this script performs is by construction this same exception (the
+  # `terminal=true` path returns early having reaped nothing), so exposing
+  # it on the command line would only add a way for A.0.5 to get it wrong.
   "${here}/worktree-reap.sh" reap \
     --action reaped \
     --worktree-path "$worktree_path" \
@@ -550,6 +572,7 @@ cmd_reap() {
     --session-id "${SESSION_ID:-unknown}" \
     --classification "$classification" \
     --lock-pid "$lock_pid" \
+    --bypass-return-check "crash-recovery reap (#1237) — worker never reached a terminal return" \
     --phase "$phase" 2>/dev/null || true
   git worktree prune 2>/dev/null || true
 

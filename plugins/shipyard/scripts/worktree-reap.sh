@@ -428,7 +428,7 @@
 #        --session-id <id> [--actor-pid <pid>]
 #        [--classification <c>] [--reason <r>] [--lock-pid <pid>]
 #        [--reaped-session-id <id>] [--phase <p>]
-#        [--skip-remove]
+#        [--skip-remove] [--bypass-return-check <reason>]
 #     Argv shape deliberately diverges from its siblings (issue #1305).
 #     classify-all / reap-stale / reap-orphan-branches / reap-session-worktrees
 #     / report-unreaped all take `--repo-root <path>` because each SWEEPS a
@@ -439,6 +439,64 @@
 #     discovery mechanism) — there is no repo to sweep, only a specific
 #     worktree to record the outcome for. This is not an accidental
 #     inconsistency; do not "fix" it by adding a --repo-root alias here.
+#
+#     Reconciled-return gate (issue #1237) — `--action reaped` only, and
+#     only when `--worktree-name` matches `agent-*` (an actual dispatched
+#     agent's worktree; the orchestrator's own `orchestrator-*` self-reap
+#     is a different object with no "did an agent return" question to ask).
+#     Before removing anything, the helper requires PROOF that the owning
+#     agent's own terminal return already reached the orchestrator's
+#     reconcile — not merely that some other signal (a PR going `MERGED`,
+#     a green rollup) looked like completion. The proof is a persisted
+#     record: `session-state.sh read --session-id <id> --path
+#     '.returned_agent_ids["<agent-id>"]'` must resolve to a non-empty
+#     value. `steady-state.md`'s A.1 writes that record, once, for every
+#     mode, BEFORE any of A.1's own per-mode reap calls run — so the two
+#     same-turn reaps (A.1's `shipped`-immediate reap, step B's per-
+#     completion reap) and every later-turn reap that targets an already-
+#     reconciled worker's residual worktree (dispatch-rules.md §2d,
+#     drain.md's mirror) all satisfy the gate without any change to their
+#     own call sites. Missing session file, missing key, or an empty read
+#     ⇒ REFUSE (fail closed — issue #1206's precedent: an ambiguous signal
+#     is not a green light).
+#
+#     `--bypass-return-check <reason>` is the explicit, audited escape
+#     hatch for the documented exceptions where the invariant does not
+#     apply BY DESIGN — the agent this reap targets never reached (and, in
+#     the crash-recovery case, structurally cannot reach) its own terminal
+#     return:
+#       - `crash-recovery-reap.sh` (steady-state.md's A.0.5 crash-recovery
+#         reap, extracted to its own script by issue #1291) — the whole
+#         premise of A.0.5 is a worker that stopped WITHOUT a terminal
+#         return (crash, stall-watchdog kill, exhausted resume). Requiring
+#         a returned-record here would defeat the crash-recovery path
+#         A.0.5 exists to provide. Because that script reaps ONLY on its
+#         `terminal=false` branch — its `terminal=true` path returns
+#         early having reaped nothing — every reap it performs is by
+#         construction a crash-recovery reap, so it passes a fixed
+#         bypass reason internally rather than exposing a flag its
+#         caller would have to remember to set.
+#       - `reap-stale` (cross-session sweep — issue #836) — targets
+#         worktrees that may belong to a DIFFERENT, already-dead session
+#         whose own `.returned_agent_ids` this process never reads; no
+#         single `--session-id` applies.
+#       - `reap-session-worktrees` (cleanup-summary.md's end-of-session
+#         targeted pass) — its own caller-documented contract unions
+#         `reconciled_agent_ids` (returned) with any still-`in_flight`
+#         agent-id as a defensive catch-all for an incompletely-released
+#         slot; the latter may legitimately not have returned yet.
+#     All three callers above pass a fixed, self-documenting reason string
+#     when they call into the single-target `reap --action reaped`
+#     internally — the caller never has to think about it.
+#
+#     A refused reap performs NO removal, writes an `"action":
+#     "reap-refused"` audit-log line (best-effort, same fire-and-forget
+#     posture as every other audit write here) and returns exit 1 — the
+#     caller's own established `2>/dev/null || true` fire-and-forget
+#     posture at every spec call site means a refusal degrades to "the
+#     worktree is left in place for a later, correctly-gated sweep," never
+#     a spec-block abort.
+#
 #     Issue #284 — single source of truth for worktree-reap audit-log
 #     writes. Previously the audit-log `printf >> $REAP_AUDIT_LOG` was
 #     inlined at three call sites (setup.md 1.6.5 / 3b, cleanup-summary.md
@@ -563,7 +621,8 @@ Usage:
                         [--classification <c>] [--reason <r>] \
                         [--lock-pid <pid|null>] \
                         [--reaped-session-id <id>] [--phase <p>] \
-                        [--skip-remove] [--force-evidence <reason>]
+                        [--skip-remove] [--force-evidence <reason>] \
+                        [--bypass-return-check <reason>]
   worktree-reap.sh disk-check --path <dir> [--floor-mb <N>]
 
 classify-lock — Prints one of: no-lock | dead | self-ancestor |
@@ -709,6 +768,17 @@ reap                    — Performs the worktree-remove (when applicable)
                                                     (requires
                                                     --classification,
                                                     --lock-pid).
+                            reap-refused         — issue #1237. Emitted in
+                                                    place of `reaped` when
+                                                    --worktree-name matches
+                                                    agent-* and no returned-
+                                                    record exists in this
+                                                    session's
+                                                    .returned_agent_ids AND
+                                                    --bypass-return-check
+                                                    was not passed. NO
+                                                    removal is attempted.
+                                                    Exit 1.
                             reaped-failed        — issue #712. Emitted in
                                                     place of `reaped` when
                                                     the remove did NOT
@@ -782,6 +852,8 @@ Env vars:
 Exit codes:
   0  classification emitted (classify-lock) / audit-log write attempted
      (reap) / enumeration succeeded, output may be empty (other sweeps)
+  1  reap --action reaped refused — no recorded agent return and no
+     --bypass-return-check (issue #1237); no removal was attempted
   64 usage error (missing path, malformed flag, missing required flag)
 EOF
 }
@@ -1990,6 +2062,54 @@ disk_free_check() {
 # the write inside a single helper subcommand makes it impossible for
 # the orchestrator to skip — the helper is the only thing that performs
 # the reap, so the audit line happens as part of the same transaction.
+
+# agent_return_recorded <session-id> <agent-id>
+#
+# Issue #1237 — the mechanical half of the "a merged PR is not a signal
+# the dispatched worker is done" invariant (issue #1235). Prints "1" on
+# stdout and returns 0 when this session's persisted state records that
+# <agent-id>'s own terminal return already reached the orchestrator's
+# reconcile (steady-state.md A.1 write-through of
+# `.returned_agent_ids["<agent-id>"]`); prints "0" and returns 1 in every
+# other case — missing session file, missing key, empty value, or the
+# `session-state.sh` call itself failing. All of those are the SAME
+# "cannot prove it" outcome and are treated identically: fail closed
+# (issue #1206's precedent — an unparseable/absent signal is not a green
+# light), never fail open on a lookup error.
+#
+# Resolves session-state.sh relative to this script's own directory —
+# same convention every other cross-script call in this file already uses
+# (see the `session-identity.sh` delegation at the bottom of this file).
+agent_return_recorded() {
+  local session_id="$1"
+  local agent_id="$2"
+  local this_dir
+  this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local session_state="$this_dir/session-state.sh"
+
+  if [ ! -f "$session_state" ]; then
+    # Can't even locate the helper — cannot prove anything. Fail closed.
+    printf '0'
+    return 1
+  fi
+
+  local returned_at
+  returned_at=$("$session_state" read --session-id "$session_id" \
+    --path ".returned_agent_ids[\"$agent_id\"] // empty" 2>/dev/null)
+  # A missing session file, a missing key, or jq's `// empty` all surface
+  # as empty stdout here — every one of those is "cannot prove the agent
+  # returned," and they are deliberately NOT distinguished from each
+  # other: the caller only needs a boolean, and treating a lookup failure
+  # as anything other than "not proven" would be exactly the fail-open
+  # mistake this gate exists to prevent.
+  if [ -n "$returned_at" ] && [ "$returned_at" != "null" ]; then
+    printf '1'
+    return 0
+  fi
+  printf '0'
+  return 1
+}
+
 reap_action() {
   local action=""
   local worktree_path=""
@@ -2010,6 +2130,11 @@ reap_action() {
   # rev-list check). Empty by default: the helper then derives force-safety
   # itself via worktree_force_is_safe.
   local force_evidence=""
+  # Issue #1237 — explicit, audited opt-out from the reconciled-return gate
+  # (see the `reap` subcommand's docstring above for the full contract and
+  # the three documented exception classes). Empty by default: the gate is
+  # enforced unless a caller deliberately names a reason it doesn't apply.
+  local bypass_return_check=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2104,6 +2229,14 @@ reap_action() {
         ;;
       --force-evidence=*)
         force_evidence="${1#--force-evidence=}"
+        shift
+        ;;
+      --bypass-return-check)
+        bypass_return_check="${2:-}"
+        shift 2
+        ;;
+      --bypass-return-check=*)
+        bypass_return_check="${1#--bypass-return-check=}"
         shift
         ;;
       --)
@@ -2233,6 +2366,27 @@ reap_action() {
         echo "reap: --classification is required when --action=reaped" >&2
         return 64
       fi
+
+      # Reconciled-return gate (issue #1237). Only applies to an actual
+      # dispatched agent's worktree (--worktree-name matching agent-*) —
+      # the orchestrator's own orchestrator-* self-reap (cleanup-summary.md)
+      # has no "did an agent return" question to ask and is out of scope by
+      # construction, not by override. See the `reap` subcommand's docstring
+      # above for the full contract and the three documented
+      # --bypass-return-check exception classes.
+      case "$worktree_name" in
+        agent-*)
+          if [ -z "$bypass_return_check" ]; then
+            local return_agent_id="${worktree_name#agent-}"
+            if ! agent_return_recorded "$session_id" "$return_agent_id" >/dev/null; then
+              echo "reap: refusing to reap ${worktree_name} — no recorded return for this agent in session ${session_id}'s .returned_agent_ids (issue #1237). This reap would fire before the worker's own terminal return reached the orchestrator's reconcile. If this is a documented exception (crash-recovery, a cross-session sweep, an end-of-session catch-all), pass --bypass-return-check <reason>." >&2
+              emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reap-refused\",\"reason\":$(json_str "no-recorded-return")$phase_suffix}"
+              return 1
+            fi
+          fi
+          ;;
+      esac
+
       # Perform the actual worktree remove unless the caller explicitly
       # asks us to skip (used when the caller has already removed it).
       #
@@ -2673,6 +2827,13 @@ reap_session_worktrees() {
       continue
     fi
 
+    # --bypass-return-check (#1237): this targeted sweep's own contract
+    # (see the caller docstring above / cleanup-summary.md) unions
+    # reconciled_agent_ids with any still-in_flight agent-id as a
+    # defensive catch-all for an incompletely-released slot — the latter
+    # may legitimately not have a .returned_agent_ids record yet, so this
+    # end-of-session pass is a documented exception, not the in-session
+    # hot path the gate exists to close.
     reap_action \
       --action reaped \
       --worktree-path "$worktree_path" \
@@ -2681,6 +2842,7 @@ reap_session_worktrees() {
       --classification "$classification" \
       --phase "cleanup-session-targeted" \
       --lock-pid "$lock_pid" \
+      --bypass-return-check "end-of-session targeted sweep (#1237) — may include an in-flight straggler by design" \
       >/dev/null 2>&1 || true
 
     # Issue #712 — report what ACTUALLY happened, not what we intended. The
@@ -3006,6 +3168,10 @@ reap_stale() {
       continue
     fi
 
+    # --bypass-return-check (#1237): reap-stale is a CROSS-SESSION sweep —
+    # a worktree it reaps may belong to a different, already-dead
+    # session's state file, which this `--session-id` doesn't read. No
+    # single session's .returned_agent_ids applies here by construction.
     reap_action \
       --action reaped \
       --worktree-path "$worktree_path" \
@@ -3014,6 +3180,7 @@ reap_stale() {
       --classification "$classification" \
       --phase "setup-3b" \
       --lock-pid "$pid" \
+      --bypass-return-check "cross-session stale-worktree sweep (#1237) — worktree may belong to a different, already-dead session" \
       >/dev/null 2>&1 || true
 
     # Issue #712 — report the verified end state, not the intent.

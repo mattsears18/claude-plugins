@@ -170,13 +170,20 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      # Counting `reaped_worktrees` requires us to know whether the remove
      # actually succeeded. Probe `git worktree list` for the path after
      # the helper returns: if it's gone, increment.
+     #
+     # --bypass-return-check (#1237): this is the straggler pass — by
+     # definition it targets worktrees the targeted reap-session-worktrees
+     # pass above did NOT already reach (cross-session leftovers, and any
+     # this-session worktree whose id wasn't in session_agent_ids), so a
+     # .returned_agent_ids record is not guaranteed to exist here.
      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
        --action reaped \
        --worktree-path "$worktree_path" \
        --worktree-name "$name" \
        --session-id "<session-id>" \
        --classification "$classification" \
-       --lock-pid "$lock_pid" 2>/dev/null || true
+       --lock-pid "$lock_pid" \
+       --bypass-return-check "end-of-session straggler sweep (#1237)" 2>/dev/null || true
      if ! git worktree list | awk -v n="$name" '$0 ~ n {found=1} END{exit !found}'; then
        reaped_worktrees=$((reaped_worktrees + 1))
      fi

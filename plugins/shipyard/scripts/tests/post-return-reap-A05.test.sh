@@ -278,11 +278,36 @@ reap_out=$(bash "$worktree_reap_path" reap \
   --phase "reconcile-A.0.5" \
   --skip-remove 2>&1)
 reap_rc=$?
-if [[ $reap_rc -eq 0 ]]; then
-  printf '  %sPASS%s  reap --phase reconcile-A.0.5 subcommand returns exit 0\n' "$GREEN" "$RESET"
+if [[ $reap_rc -eq 1 ]]; then
+  printf '  %sPASS%s  reap --phase reconcile-A.0.5 with NO --bypass-return-check is refused (issue #1237 — no session-state fixture exists here)\n' "$GREEN" "$RESET"
   pass=$((pass+1))
 else
-  printf '  %sFAIL%s  reap --phase reconcile-A.0.5: expected exit 0, got %d (output: %s)\n' "$RED" "$RESET" "$reap_rc" "$reap_out"
+  printf '  %sFAIL%s  reap --phase reconcile-A.0.5 without bypass: expected exit 1, got %d (output: %s)\n' "$RED" "$RESET" "$reap_rc" "$reap_out"
+  fail=$((fail+1))
+fi
+
+# The A.0.5 crash-recovery reap is a documented issue #1237 exception — the
+# crashed/stalled agent never reached a terminal return, so it can never
+# have a .returned_agent_ids record. steady-state.md's A.0.5 block passes
+# --bypass-return-check accordingly; this is the regression pin that the
+# real call site still works once that flag is supplied.
+rm -f "$tmp_shipyard_home/reap-audit.jsonl"
+reap_out_bypassed=$(bash "$worktree_reap_path" reap \
+  --action reaped \
+  --worktree-path "/tmp/nonexistent-358-test" \
+  --worktree-name "agent-test-358" \
+  --session-id "test-session-358" \
+  --classification "self-ancestor" \
+  --lock-pid 0 \
+  --phase "reconcile-A.0.5" \
+  --bypass-return-check "crash-recovery reap (#1237) — worker never reached a terminal return" \
+  --skip-remove 2>&1)
+reap_bypassed_rc=$?
+if [[ $reap_bypassed_rc -eq 0 ]]; then
+  printf '  %sPASS%s  reap --phase reconcile-A.0.5 --bypass-return-check succeeds (the documented A.0.5 exception)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  reap --phase reconcile-A.0.5 --bypass-return-check: expected exit 0, got %d (output: %s)\n' "$RED" "$RESET" "$reap_bypassed_rc" "$reap_out_bypassed"
   fail=$((fail+1))
 fi
 

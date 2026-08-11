@@ -213,6 +213,7 @@ reap_out=$(bash "$worktree_reap_path" reap \
   --classification "peer-alive-force" \
   --lock-pid 0 \
   --phase "steady-state-B-completion" \
+  --bypass-return-check "test fixture — this suite covers phase propagation, not issue #1237's gate" \
   --skip-remove 2>&1)
 reap_rc=$?
 
@@ -245,6 +246,7 @@ reap_out2=$(bash "$worktree_reap_path" reap \
   --classification "peer-alive-force" \
   --lock-pid 0 \
   --phase "steady-state-pre-dispatch" \
+  --bypass-return-check "test fixture — this suite covers phase propagation, not issue #1237's gate" \
   --skip-remove 2>&1)
 reap_rc2=$?
 
