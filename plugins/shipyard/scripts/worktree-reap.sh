@@ -745,8 +745,23 @@ pid_alive() {
 extract_lock_start_from_content() {
   local content="$1"
   [ -n "$content" ] || return 0
-  printf '%s' "$content" | grep -oE 'start [^)]+\)' 2>/dev/null \
-    | sed -E 's/^start //; s/\)[[:space:]]*$//' \
+  # Anchor on `pid <N> start` rather than a bare `start ` (issue #1207
+  # CI-regression fix). A bare `start [^)]+\)` false-matches any lock whose
+  # agent-id happens to end in "start" — e.g. the common
+  # `agent-<id>-nostart (pid <N>)` shape used by this file's own no-start-field
+  # test fixture: "...nostart (pid 12345)" contains the literal substring
+  # "start (pid 12345)", which the bare pattern happily matches and extracts
+  # as if it were the ctime value. The extracted garbage ("(pid 12345") then
+  # fails to parse as a ctime on macOS/BSD `date` (both zone interpretations
+  # end up empty, so `lock_start_corroborates_ps()` still calls it
+  # "corroborated") but DOES parse on GNU `date -d` — which is why this
+  # shipped locally green and only broke on Linux CI: `expected: peer-alive,
+  # actual: peer-alive-stale`. Requiring the literal `pid <N> ` immediately
+  # before `start` mirrors extract_lock_pid()'s own `\(pid[[:space:]]+[0-9]+`
+  # anchor above and only matches the real `(pid <N> start <ctime>)` shape,
+  # never a coincidental "start" substring elsewhere in the lock content.
+  printf '%s' "$content" | grep -oE 'pid[[:space:]]+[0-9]+[[:space:]]+start [^)]+\)' 2>/dev/null \
+    | sed -E 's/^pid[[:space:]]+[0-9]+[[:space:]]+start //; s/\)[[:space:]]*$//' \
     | head -1
 }
 
