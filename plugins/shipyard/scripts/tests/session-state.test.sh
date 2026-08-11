@@ -139,6 +139,14 @@ assert_contains "$content" '"divert_queue": []' "divert_queue initialised to emp
 assert_contains "$content" '"session_prs": []' "session_prs initialised to empty array"
 assert_contains "$content" '"deferred_issues": []' "deferred_issues initialised to empty array"
 assert_contains "$content" '"raw_backlog": []' "raw_backlog initialised to empty array"
+# unfiltered_open_count / me_assigned_open / last_fresh_fetch (issue #1246)
+# -- the backlog-eligibility-filter divergence-smell invariant-line tokens.
+# Asserted directly against the written state file (not prose) so a future
+# regression that drops these fields from the init template fails loudly
+# here instead of silently reproducing #1246's "never implemented" bug.
+assert_contains "$content" '"unfiltered_open_count": 0' "unfiltered_open_count initialised to 0 (#1246)"
+assert_contains "$content" '"me_assigned_open": 0' "me_assigned_open initialised to 0 (#1246)"
+assert_contains "$content" '"last_fresh_fetch": null' "last_fresh_fetch initialised to null (#1246)"
 assert_contains "$content" '"main_ci"' "main_ci block initialised"
 assert_contains "$content" '"started_at"' "started_at timestamp present"
 rm -rf "$tmphome"
@@ -229,6 +237,33 @@ out=$(SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "missing" \
 rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=3" "update of missing session exits 3"
 assert_file_missing "$tmphome/sessions/missing.json" "update of missing session does not create the file"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== update — unfiltered_open_count / me_assigned_open / last_fresh_fetch (issue #1246)"
+# --------------------------------------------------------------------------
+# These three fields are set via the generic `update --set` mechanism --
+# there is no dedicated flag -- so this proves the schema slots added to
+# the init template round-trip correctly through an ordinary --set write,
+# the same call shape drain.md's termination step 4 and steady-state.md
+# step C use to stamp them from a fresh backlog-filter.sh summary read.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "inv1" --repo "o/r" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "inv1" \
+  --set '.unfiltered_open_count = 29' \
+  --set '.me_assigned_open = 16' \
+  --set '.last_fresh_fetch = "14:02:07"' >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "inv1" --path ".unfiltered_open_count")
+assert_equals "$out" "29" "update --set persists unfiltered_open_count (#1246)"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "inv1" --path ".me_assigned_open")
+assert_equals "$out" "16" "update --set persists me_assigned_open (#1246)"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "inv1" --path ".last_fresh_fetch")
+assert_equals "$out" "14:02:07" "update --set persists last_fresh_fetch (#1246)"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
