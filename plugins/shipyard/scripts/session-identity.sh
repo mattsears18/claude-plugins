@@ -113,6 +113,15 @@
 #     --force` + audit-log write. This helper just enumerates candidates
 #     so the discovery logic is testable in isolation.
 #
+#     Issue #1234 — pass --emit-resolved-id to append the RESOLVED
+#     occupant id (the same id tested above for liveness) as a second,
+#     tab-separated field on each line: "<path>\t<resolved_id>". Additive
+#     and opt-in — default output (bare path, one per line) is unchanged.
+#     Lets a caller that needs the id for an audit log (e.g. the
+#     step-1.6.5 reap loop's --reaped-session-id) use the id this helper
+#     actually tested instead of re-deriving it from the directory
+#     basename, which can silently diverge from the tested id (#1232).
+#
 #     Env vars:
 #       SHIPYARD_HOME — override the session-file lookup root (defaults
 #                       to `$HOME/.shipyard`). Mirrors session-state.sh.
@@ -138,7 +147,8 @@ Usage:
   session-identity.sh detect-orchestrator-pid [<comm-name>]
   session-identity.sh derive-session-id --repo-root <path>
   session-identity.sh find-orphan-orchestrators --repo-root <path> \
-                                                --current-session-id <id>
+                                                --current-session-id <id> \
+                                                [--emit-resolved-id]
 
 detect-orchestrator-pid — Walks the process-ancestor chain and prints the
                           PID of the nearest ancestor whose `comm` matches
@@ -170,7 +180,10 @@ find-orphan-orchestrators — Emits one path per line for each orphan
                           directory is otherwise empty; any other
                           unreadable-stash candidate is skipped (fail
                           closed, never emitted). Empty stdout when there
-                          are no orphans.
+                          are no orphans. Pass --emit-resolved-id to
+                          append the resolved occupant id as a second
+                          tab-separated field per line (#1234); omit it
+                          for the default bare-path-per-line output.
 
 Env vars:
   SHIPYARD_HOME              Override session-file lookup root for
@@ -338,6 +351,17 @@ derive_session_id() {
 find_orphan_orchestrators() {
   local repo_root=""
   local current_session_id=""
+  # Issue #1234 — when set, each emitted line carries the RESOLVED occupant
+  # id (the same id this function already tested for liveness — stash-first,
+  # name-embedded fallback only for a genuinely empty candidate) as a second,
+  # tab-separated field: "<path>\t<resolved_id>". Opt-in and additive so the
+  # default one-field-per-line output (and every existing caller/test that
+  # depends on it) is byte-for-byte unchanged; only a caller that explicitly
+  # asks for the resolved id sees the second field. This lets the step-1.6.5
+  # reap loop record the id it actually tested in its audit log instead of
+  # re-deriving (and potentially drifting from) the same rule from the
+  # directory basename — see 01d-orphan-orchestrator-worktree-reap.md.
+  local emit_resolved_id=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -355,6 +379,10 @@ find_orphan_orchestrators() {
         ;;
       --current-session-id=*)
         current_session_id="${1#--current-session-id=}"
+        shift
+        ;;
+      --emit-resolved-id)
+        emit_resolved_id=1
         shift
         ;;
       --)
@@ -447,7 +475,11 @@ find_orphan_orchestrators() {
     # prior session's step 7→8 cleanup ran before its step 6 worktree
     # reap, so its session file is gone but its worktree lingers.
     if [ ! -f "$session_file" ]; then
-      printf '%s\n' "$entry"
+      if [ "$emit_resolved_id" -eq 1 ]; then
+        printf '%s\t%s\n' "$entry" "$session_id"
+      else
+        printf '%s\n' "$entry"
+      fi
       continue
     fi
 
@@ -463,7 +495,11 @@ find_orphan_orchestrators() {
       continue
     fi
     # File present but PID dead/unparseable → orphan.
-    printf '%s\n' "$entry"
+    if [ "$emit_resolved_id" -eq 1 ]; then
+      printf '%s\t%s\n' "$entry" "$session_id"
+    else
+      printf '%s\n' "$entry"
+    fi
   done
 
   return 0
