@@ -152,6 +152,27 @@ run_classify_with_env() {
   SHIPYARD_ORCHESTRATOR_PID="$orch_pid" bash "$helper" classify-lock "$lock_path" 2>/dev/null
 }
 
+# Issue #1207 — format an epoch as a `ps -o lstart`-shaped ctime string
+# ("Mon Aug 10 12:58:36 2026") in the given zone ("utc" or "local"). Used
+# ONLY to fabricate lock fixtures with a KNOWN, deterministic relationship
+# to a live sibling's actual start time — the inverse of worktree-reap.sh's
+# own `parse_ctime_epoch()`, same GNU-then-BSD dual-path portability
+# strategy every other date helper in this repo already uses (e.g.
+# session-state.test.sh's `date -v-2H ... || date -d '2 hours ago' ...`).
+epoch_to_ctime() {
+  local epoch="$1"
+  local zone="$2"
+  local out=""
+  if [ "$zone" = "utc" ]; then
+    out=$(date -u -r "$epoch" +"%a %b %e %T %Y" 2>/dev/null)
+    [ -z "$out" ] && out=$(date -u -d "@$epoch" +"%a %b %e %T %Y" 2>/dev/null)
+  else
+    out=$(date -r "$epoch" +"%a %b %e %T %Y" 2>/dev/null)
+    [ -z "$out" ] && out=$(date -d "@$epoch" +"%a %b %e %T %Y" 2>/dev/null)
+  fi
+  printf '%s' "$out"
+}
+
 echo "worktree-reap.sh tests (issue #138)"
 echo
 
@@ -366,12 +387,22 @@ real_shape_lock="$tmpdir/real-shape.lock"
 # the exact #1206 repro: a live peer session misclassified as dead because
 # the extraction grabbed the ctime's year (always a low-numbered, almost
 # certainly-dead "PID" like 2026) instead of the real PID.
+#
+# The lock's `start` field is set to the sibling's OWN actual spawn epoch
+# (captured right after spawn), not a hardcoded date — issue #1207 added a
+# cross-check between this field and `ps -o lstart` for the same pid, and a
+# hardcoded/unrelated date would now (correctly) trip that check and
+# reclassify this as 'peer-alive-stale' instead. Using the real spawn time
+# keeps this fixture's PID-EXTRACTION concern (issue #1206) decoupled from
+# the newer START-TIME-CORROBORATION concern (issue #1207, covered by its
+# own dedicated (8e)-(8h) tests below).
 (sleep 30) &
 sibling_pid=$!
 sleep 0.05
 if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
-  printf 'claude session orchestrator-do-work-20260810T221957Z-35757 (pid %d start Mon Aug 10 12:58:36 2026)\n' \
-    "$sibling_pid" > "$real_shape_lock"
+  spawn_epoch=$(date +%s)
+  printf 'claude session orchestrator-do-work-20260810T221957Z-35757 (pid %d start %s)\n' \
+    "$sibling_pid" "$(epoch_to_ctime "$spawn_epoch" local)" > "$real_shape_lock"
   result=$(run_classify "$real_shape_lock")
   assert_equals "$result" "peer-alive" \
     "(8b) issue #1206 repro: REAL lock shape '(pid N start ctime)' with a LIVE peer PID → 'peer-alive' (NOT 'dead' — the ctime-year misparse this issue reports)"
@@ -402,6 +433,123 @@ printf 'claude session orchestrator-test (pid %d start Mon Aug 10 12:58:36 2026)
 result=$(run_classify "$real_shape_lock")
 assert_equals "$result" "dead" \
   "(8d) REAL lock shape with a genuinely-DEAD pid → 'dead' (still reap-eligible — the fix doesn't over-defer)"
+
+# --- (8e)-(8h) issue #1207 — start-time cross-check (PID-reuse
+# defense-in-depth) ---
+#
+# #755's mtime gate corroborates peer-liveness with a PROXY signal (is the
+# lock file still being touched). This gate corroborates it DIRECTLY: the
+# lock's own recorded `start <ctime>` field against `ps -o lstart` for the
+# same still-alive pid. The catch, confirmed live during #1207's
+# investigation against a real production lock: the SAME still-live
+# process's lock-recorded start time and `ps -o lstart`'s reading of it can
+# disagree by exactly the host's local UTC offset (lock `12:58:36` vs `ps`
+# `08:58:36`, four hours apart, EDT is UTC-4 — same instant, different
+# clock-face reading). These fixtures pin exactly that shape rather than
+# relying on incidental host timezone: (8f) constructs the lock's `start`
+# field by formatting the sibling's REAL epoch in UTC (`epoch_to_ctime ...
+# utc`) while `ps -o lstart` reports it in local time — on a non-UTC host
+# this reproduces the exact cross-zone disagreement from the issue; on a
+# UTC host the two strings happen to coincide, which still exercises the
+# same code path (the "zero offset" acceptance branch) and still must pass.
+real_shape_lock2="$tmpdir/real-shape-1207.lock"
+
+# (8e) accurate LOCAL-zone start time (matches what `ps -o lstart` itself
+# renders) → 'peer-alive'. The zero-offset acceptance branch.
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  spawn_epoch=$(date +%s)
+  printf 'claude session orchestrator-test (pid %d start %s)\n' \
+    "$sibling_pid" "$(epoch_to_ctime "$spawn_epoch" local)" > "$real_shape_lock2"
+  result=$(run_classify "$real_shape_lock2")
+  assert_equals "$result" "peer-alive" \
+    "(8e) issue #1207: lock start recorded in LOCAL zone, matches ps -o lstart exactly → 'peer-alive'"
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+
+# (8f) THE hazard case: lock start recorded in UTC while `ps -o lstart`
+# reports local time — same instant, different clock-face reading. MUST
+# classify 'peer-alive', never 'peer-alive-stale' — misclassifying a live
+# lock as stale enables reaping a running session's worktree.
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  spawn_epoch=$(date +%s)
+  printf 'claude session orchestrator-do-work-20260810T221957Z-35757 (pid %d start %s)\n' \
+    "$sibling_pid" "$(epoch_to_ctime "$spawn_epoch" utc)" > "$real_shape_lock2"
+  result=$(run_classify "$real_shape_lock2")
+  assert_equals "$result" "peer-alive" \
+    "(8f) issue #1207 REPRO: lock start recorded in UTC, ps -o lstart reads local (same instant, host-UTC-offset apart) → 'peer-alive' (NOT 'peer-alive-stale' — the destructive misclassification this issue exists to prevent)"
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+
+# (8g) genuine mismatch (suspected PID reuse): lock records a start time 20
+# hours away from the live pid's actual start — outside any real-world UTC
+# offset (max is ±14h) in EITHER zone interpretation, so this can't
+# coincidentally pass on any host regardless of its local timezone. Direct
+# evidence the PID was recycled → 'peer-alive-stale' (reap-eligible),
+# regardless of the lock FILE's own mtime freshness (it's freshly written
+# in this fixture, so the #755 mtime gate alone would say 'peer-alive' —
+# this gate must override that).
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  spawn_epoch=$(date +%s)
+  mismatched_epoch=$(( spawn_epoch - 20 * 3600 ))
+  printf 'claude session orchestrator-test (pid %d start %s)\n' \
+    "$sibling_pid" "$(epoch_to_ctime "$mismatched_epoch" utc)" > "$real_shape_lock2"
+  result=$(run_classify "$real_shape_lock2")
+  assert_equals "$result" "peer-alive-stale" \
+    "(8g) issue #1207: lock start 20h off the live pid's actual start (outside any real UTC offset) → 'peer-alive-stale' (PID reuse suspected, overrides a fresh lock mtime)"
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+
+# (8h) fail-safe regression guard: a lock with NO `start` field at all (the
+# common `claude agent <agent-id> (pid <N>)` shape — the majority of
+# real-world agent-* worktree locks) must skip this gate entirely, not
+# treat "no start field" as a mismatch. Reuses test (6)'s exact fixture
+# shape to prove the new gate is a true no-op on it.
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  lock_no_start="$tmpdir/no-start.lock"
+  printf 'claude agent agent-test-1207-nostart (pid %d)\n' "$sibling_pid" > "$lock_no_start"
+  result=$(run_classify "$lock_no_start")
+  assert_equals "$result" "peer-alive" \
+    "(8h) issue #1207: lock with NO start field → 'peer-alive' unaffected (gate is a no-op absent a start field)"
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
+
+# (8i) SHIPYARD_LOCK_START_TOLERANCE_SEC override: a 90-second-off start
+# time is within the default 120s tolerance (→ 'peer-alive'), but outside a
+# tightened 10s tolerance (→ 'peer-alive-stale'). Confirms the knob wires
+# through end-to-end.
+(sleep 30) &
+sibling_pid=$!
+sleep 0.05
+if ps -p "$sibling_pid" -o pid= >/dev/null 2>&1; then
+  spawn_epoch=$(date +%s)
+  near_epoch=$(( spawn_epoch - 90 ))
+  printf 'claude session orchestrator-test (pid %d start %s)\n' \
+    "$sibling_pid" "$(epoch_to_ctime "$near_epoch" local)" > "$real_shape_lock2"
+  result=$(run_classify "$real_shape_lock2")
+  assert_equals "$result" "peer-alive" \
+    "(8i) issue #1207: 90s-off start time within default 120s tolerance → 'peer-alive'"
+  result=$(SHIPYARD_LOCK_START_TOLERANCE_SEC=10 run_classify "$real_shape_lock2")
+  assert_equals "$result" "peer-alive-stale" \
+    "(8i-a) issue #1207: same 90s-off start time, SHIPYARD_LOCK_START_TOLERANCE_SEC=10 → 'peer-alive-stale' (tighter tolerance activates)"
+fi
+[ -n "${sibling_pid:-}" ] && kill "$sibling_pid" 2>/dev/null
+wait "$sibling_pid" 2>/dev/null
 
 # --- (9) issue #263 — SHIPYARD_ORCHESTRATOR_PID matches lock PID ---
 # The core fix scenario: classify-lock is called from a context where the
@@ -1899,14 +2047,22 @@ wait "$ca_sibling_pid" 2>/dev/null
 # the ctime year. This exercises both: a real-shape lock naming a live PID
 # resolves to peer-alive (not the pre-#1206 `dead`), and a lock with no
 # parseable pid at all resolves to `unknown` (not `dead`).
+#
+# The lock's `start` field is the sibling's OWN actual spawn epoch (captured
+# right after spawn), not a hardcoded date — issue #1207 added a start-time
+# cross-check between this field and `ps -o lstart` for the same pid (see
+# the dedicated (94f)-(94h) tests below), and a hardcoded/unrelated date
+# would now (correctly) trip that check, decoupling THIS fixture's
+# PID-EXTRACTION concern from that newer concern.
 reset_ca_layout
 ca_add_worktree realpeer
 ca_add_worktree malformed
 (sleep 300) &
 ca_sibling_pid=$!
 sleep 0.05
-printf 'claude session orchestrator-do-work-20260810T221957Z-35757 (pid %s start Mon Aug 10 12:58:36 2026)\n' \
-  "$ca_sibling_pid" > "$ca_repo/.git/worktrees/agent-realpeer/locked"
+ca_spawn_epoch=$(date +%s)
+printf 'claude session orchestrator-do-work-20260810T221957Z-35757 (pid %s start %s)\n' \
+  "$ca_sibling_pid" "$(epoch_to_ctime "$ca_spawn_epoch" local)" > "$ca_repo/.git/worktrees/agent-realpeer/locked"
 printf 'some other content with no pid syntax\n' \
   > "$ca_repo/.git/worktrees/agent-malformed/locked"
 result=$(run_classify_all | sort)
@@ -1944,6 +2100,81 @@ assert_equals "$result" "agent-stale peer-alive $ca_sibling_pid" \
   "(94a) same lock + --peer-stale-min 120 -> not stale vs a higher floor"
 kill "$ca_sibling_pid" 2>/dev/null
 wait "$ca_sibling_pid" 2>/dev/null
+
+# --- (94f)-(94h) issue #1207 — classify-all's own start-time cross-check ---
+# Same corroboration gate as classify-lock's (8e)-(8i), exercised through
+# the batch `classify-all` path (its own independent Pass 1 extraction +
+# Pass 5 branch — see worktree-reap.sh's comments on why this needed its
+# own wiring rather than delegating to classify-lock's).
+
+# (94f) THE hazard case: lock start recorded in UTC, ps -o lstart reads
+# local (same instant, host-UTC-offset apart) -> 'peer-alive', never
+# 'peer-alive-stale'. Fresh lock (no backdating), so if this gate wrongly
+# fired we'd know it's THIS gate and not the #755 mtime gate.
+reset_ca_layout
+ca_add_worktree utcmatch
+(sleep 300) &
+ca_sibling_pid=$!
+sleep 0.05
+ca_spawn_epoch=$(date +%s)
+printf 'claude session orchestrator-do-work-test (pid %s start %s)\n' \
+  "$ca_sibling_pid" "$(epoch_to_ctime "$ca_spawn_epoch" utc)" \
+  > "$ca_repo/.git/worktrees/agent-utcmatch/locked"
+result=$(run_classify_all)
+assert_equals "$result" "agent-utcmatch peer-alive $ca_sibling_pid" \
+  "(94f) issue #1207 REPRO via classify-all: lock start in UTC, ps -o lstart local (host-UTC-offset apart) -> 'peer-alive' (NOT 'peer-alive-stale')"
+kill "$ca_sibling_pid" 2>/dev/null
+wait "$ca_sibling_pid" 2>/dev/null
+
+# (94g) genuine mismatch (suspected PID reuse): lock start 20h off the live
+# pid's actual start -> 'peer-alive-stale', overriding a FRESH lock mtime
+# (the #755 gate alone would say 'peer-alive' here — this gate must win).
+reset_ca_layout
+ca_add_worktree reused
+(sleep 300) &
+ca_sibling_pid=$!
+sleep 0.05
+ca_spawn_epoch=$(date +%s)
+ca_mismatched_epoch=$(( ca_spawn_epoch - 20 * 3600 ))
+printf 'claude session orchestrator-do-work-test (pid %s start %s)\n' \
+  "$ca_sibling_pid" "$(epoch_to_ctime "$ca_mismatched_epoch" utc)" \
+  > "$ca_repo/.git/worktrees/agent-reused/locked"
+result=$(run_classify_all)
+assert_equals "$result" "agent-reused peer-alive-stale $ca_sibling_pid" \
+  "(94g) issue #1207 via classify-all: lock start 20h off actual pid start -> 'peer-alive-stale' (PID reuse suspected, overrides fresh mtime)"
+kill "$ca_sibling_pid" 2>/dev/null
+wait "$ca_sibling_pid" 2>/dev/null
+
+# (94h) fail-safe regression guard: a lock with NO start field (the common
+# `claude agent <agent-id> (pid <N>)` shape) must skip this gate entirely —
+# classify-all's own no-start-field mixed-batch coverage (test 92) already
+# proves this stays 'peer-alive'; this test additionally proves it survives
+# alongside a SIBLING worktree in the same batch that DOES mismatch, i.e.
+# one lock's mismatch doesn't leak into another lock's classification.
+reset_ca_layout
+ca_add_worktree nostart
+ca_add_worktree reused2
+(sleep 300) &
+ca_sibling_pid=$!
+sleep 0.05
+(sleep 300) &
+ca_sibling2_pid=$!
+sleep 0.05
+printf 'claude agent agent-nostart (pid %s)\n' "$ca_sibling_pid" \
+  > "$ca_repo/.git/worktrees/agent-nostart/locked"
+ca_spawn_epoch=$(date +%s)
+ca_mismatched_epoch=$(( ca_spawn_epoch - 20 * 3600 ))
+printf 'claude session orchestrator-do-work-test (pid %s start %s)\n' \
+  "$ca_sibling2_pid" "$(epoch_to_ctime "$ca_mismatched_epoch" utc)" \
+  > "$ca_repo/.git/worktrees/agent-reused2/locked"
+result=$(run_classify_all | sort)
+expected=$(printf 'agent-nostart peer-alive %s\nagent-reused2 peer-alive-stale %s' \
+  "$ca_sibling_pid" "$ca_sibling2_pid")
+assert_equals "$result" "$expected" \
+  "(94h) issue #1207 via classify-all: a no-start-field lock stays 'peer-alive' alongside a sibling lock that genuinely mismatches (per-lock isolation)"
+kill "$ca_sibling_pid" "$ca_sibling2_pid" 2>/dev/null
+wait "$ca_sibling_pid" 2>/dev/null
+wait "$ca_sibling2_pid" 2>/dev/null
 
 # --- (94b)-(94e) issue #1147 — no-lock-recent defense-in-depth ---
 #
