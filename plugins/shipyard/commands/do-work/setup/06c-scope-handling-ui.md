@@ -216,6 +216,8 @@ $CURRENT_BODY"
      fi
      ```
 
+  4c. **Optional `do-work-recheck` probe marker for `external-dependency`** (#1201) — after the calendar marker above, check whether `evidence_pointer` also carries a recognized probe hint; if so, construct + write a companion recheck marker via the shared validator. See [`06d-recheck-probe-authorship.md`](./06d-recheck-probe-authorship.md).
+
   5. **Inline auto-decompose a mechanically-decomposable epic.** This step fires **only** when ALL of the following hold; otherwise skip it (the human handoff recorded by steps 1–4 is the final state, exactly as before #665):
 
      - `defer_reason_class == "confirmed-non-shippable-as-single-PR"` (the epic-decomposition class — the one that just got `needs-human-review` + the `<!-- do-work-needs-decomposition -->` marker in steps 2/4), **and**
