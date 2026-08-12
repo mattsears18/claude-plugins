@@ -22,9 +22,11 @@ export CLAUDE_PLUGIN_ROOT
 # move to the client-side filter pass below. See issue #332 for the
 # regression this shape exists to prevent.
 gh issue list --repo <owner/repo> --state open --limit 200 \
-  --json number,title,labels,assignees,body,author,createdAt,updatedAt \
-  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, createdAt, updatedAt}]'
+  --json number,title,labels,assignees,body,author,createdAt,updatedAt,milestone \
+  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, createdAt, updatedAt, milestone: (.milestone.title // null)}]'
 ```
+
+The `milestone` field (issue #1241) flattens gh's `{number, title, ...}` milestone object down to just the title string (or `null` when unmilestoned) — the shape `backlog-filter.sh classify`'s milestone-ranking tier parses the `N · Title` sequence prefix from. Same flattening pattern as `labels`/`assignees` above.
 
 The `--jq` projection mirrors step 2's: flatten `labels` / `assignees` to the consumed shapes (names, logins) and preserve `author.login` as the canonical shape downstream filters and step 7's `originating_author_trust` computation reference. Body stays full because the client-side filter walks it for `Blocked by #N` references. Worker-preamble §"`gh` JSON discipline" covers the convention.
 
@@ -99,6 +101,16 @@ CLOSED_HEALTHY_CSV=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" closed-by
 INVESTIGATE_DISPATCH=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
 RESPECT_ASSIGNEES=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.respect_assignees 2>/dev/null || echo "false")
 
+# Milestone-aware ranking gate (issue #1241) — read BOTH config keys and
+# pass them through unconditionally; the script's own AND-gate (not this
+# prose) is what decides whether ranking actually changes. A repo with no
+# `milestones` block, or `enabled:false`, gets "false" from both reads
+# (shipyard-config.sh's documented default) and the script falls back to
+# the byte-identical pre-#1241 order automatically — see backlog-filter.sh's
+# header comment.
+MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
+MILESTONES_PRIORITIZE_DISPATCH=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.prioritize_dispatch 2>/dev/null || echo "false")
+
 # $TRUSTED_AUTHORS_CSV is trusted_authors (step 1.7), comma-joined, lowercased.
 # $PEER_CLAIMED_CSV is .peer_sessions.claimed_targets (step 1.65), comma-joined.
 "${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" classify \
@@ -109,6 +121,8 @@ RESPECT_ASSIGNEES=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backl
   --investigate-dispatch "$INVESTIGATE_DISPATCH" \
   --prioritize-label "<--prioritize-label CLI arg value, or empty string if not passed>" \
   --respect-assignees "$RESPECT_ASSIGNEES" \
+  --milestones-enabled "$MILESTONES_ENABLED" \
+  --milestones-prioritize-dispatch "$MILESTONES_PRIORITIZE_DISPATCH" \
   < .shipyard-fetched-issues.json > .shipyard-classified.ndjson
 ```
 
@@ -126,7 +140,18 @@ already excluded from raw_backlog by construction. Log
 `.shipyard-classified.ndjson` (or at least each gate:*/drop:* line's reason) so the
 unfiltered_open_count invariant token stays auditable. The two scratch files are untracked, ephemeral orchestrator-worktree artifacts — safe to leave (next pass overwrites them) or `rm -f`.
 
-Both `raw_backlog` and `investigate_candidates` arrive from the script **already in rank order** — no separate sort pass is needed. `raw_backlog` ranks by prioritized-label tier (only when `--prioritize-label` was passed), then priority label (`P0` > `P1` > `P2` > unlabeled), then type (`bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` titles > everything else), then staleness (oldest `updatedAt` first). `investigate_candidates` ranks by priority label then staleness only (no prioritized-label or type tier — see [`04d-investigate-routing.md`](./04d-investigate-routing.md)).
+Both `raw_backlog` and `investigate_candidates` arrive from the script **already in rank order** — no separate sort pass is needed. **This description, like the routing bullets above, is non-normative — `backlog-filter.sh classify`'s `_sort_key` is the actual definition; read it there if this prose and the script ever disagree.**
+
+`raw_backlog`'s default ranking (a repo with `milestones.enabled:false`, or no `milestones` block at all — the common case, and byte-identical to every pre-#1241 release): prioritized-label tier (only when `--prioritize-label` was passed), then priority label (`P0` > `P1` > `P2` > unlabeled), then type (`bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` titles > everything else), then staleness (oldest `updatedAt` first).
+
+**When `milestones.enabled` AND `milestones.prioritize_dispatch` are both `true`** (issue [#1241](https://github.com/mattsears18/shipyard/issues/1241)), `raw_backlog` ranks milestone-aware instead:
+
+1. **`P0`** — global, wins in ANY milestone. An emergency escape that exists precisely to violate the plan, not part of the sequencing itself.
+2. **`--prioritize-label`** — an explicit per-run operator override, ranked below `P0` but above every other tier (a behavior *change* from the default order above, where the prioritized-label tier is outermost and can rank above a `P0`).
+3. **Milestone**, ascending by the sequence number parsed from the issue's milestone title's `N · ` prefix — i.e. the earliest phase with dispatchable work. This falls out of sorting *eligible* issues alone: a phase with zero eligible issues never appears in the list, so ascending-`N` naturally skips it without any separate "does this phase have work" computation. An unmilestoned issue, or one whose milestone title doesn't parse, sorts to the tail rather than being dropped.
+4. **`P1` > `P2` > unlabeled**, then **type**, then **staleness** — the same tiebreakers as the default order, now operating *within* a milestone rather than across the whole backlog. Deliberately low-stakes: under parallel dispatch, within-milestone order barely changes outcomes, so don't over-invest in tuning these or add more tiers.
+
+`investigate_candidates` ranks by priority label then staleness only (no prioritized-label, type, or milestone tier — milestone ranking is scoped to `raw_backlog`; see [`04d-investigate-routing.md`](./04d-investigate-routing.md)) — unaffected either way.
 
 This ordered `raw_backlog` list is the initial backlog. If empty AND no failing PRs exist (next step), build [`04f-completion-ledger.md`](./04f-completion-ledger.md) before reporting "backlog empty" — stop only once every open issue is bucketed, 0 unaccounted (#1250). `investigate_candidates` non-empty ≠ raw_backlog non-empty — loop continues when raw_backlog is empty but investigate_candidates has entries (step 1.5 handles those).
 
@@ -196,39 +221,7 @@ Cache `{ status, earliest_red_run_id, earliest_red_run_url, earliest_red_sha, ea
 
 **Never** report `main_ci.status = "green"` on the basis of a single successful workflow run. The status line must derive from the per-workflow aggregate above.
 
-#### Post-main-CI-fix branch-refresh — un-stick session PRs carrying a stale failing required check ([#993](https://github.com/mattsears18/shipyard/issues/993))
-
-GitHub does **not** re-run a PR's already-completed required check just because the PR's base branch went from red to green — without a new commit or an explicit branch update, a PR that recorded a `FAILURE` while `main` was broken keeps that stale conclusion forever, even though the underlying cause is now fixed and a fresh run would pass. Left unhandled, this permanently strands every `session_prs` entry that happened to run its required checks during the `main`-red window: `mergeStateStatus` reads `MERGEABLE` and auto-merge is armed, but the stale check will never re-run on its own, so the PR sits `BLOCKED` indefinitely — even though a `fix-main-ci` dispatch already landed the remedy and `main` is green again. See [RATIONALE → Stale-red vs genuinely-red](../../do-work-RATIONALE.md#stale-red-vs-genuinely-red-993) for the session repro that motivated this (a 7-PR merge train left `BLOCKED` forever after the diversion that unblocked it had already merged).
-
-**Fires immediately after the `main_ci.status == "green"` bullet above, and only on a genuine transition into green** — never on every green evaluation, because a PR carrying a check that's failing against the *current, already-fixed* `main` must NOT get a masking re-run. Before overwriting the cached `main_ci` object with this evaluation's result, capture its existing `.status` as `previous_main_ci_status` (an absent/first-run cache counts as non-green). The refresh below runs only when `previous_main_ci_status != "green"` AND the freshly-computed `main_ci.status == "green"`.
-
-**Extracted to [`scripts/stale-check-refresh.sh`](../../../scripts/stale-check-refresh.sh) ([#1277](https://github.com/mattsears18/shipyard/issues/1277))** — this used to be an inline `for pr in $session_prs; do ... done` loop with three internal `gh pr view | jq` pipes, both shapes the worktree-isolation guard refuses post-relocation. The script is the normative implementation now (mirroring `backlog-filter.sh classify`'s #1247 precedent) — see [`dont.md`'s post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) for when to extract vs. decompose in place. Side benefit: the script's `--state-file` gives "once per PR per fix" a real persistence mechanism — the old inline loop's bash associative array could not actually survive between the separate Bash calls this check runs from, so that guarantee never held in practice.
-
-`$previous_main_ci_status != "green"` → run the command sequence below. `$previous_main_ci_status == "green"` → skip this section entirely; don't run it.
-
-Resolve the pin, read the fix commit's SHA and date, then call the script — all in **one** `Bash` call (plain sequential statements, no loop/pipe/`if`, so keeping them together avoids re-deriving `$fix_commit_sha` / `$fix_commit_date` in a second call that could never see them otherwise — a shell variable does not survive between separate `Bash` tool calls):
-
-```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-fix_commit_sha=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.sha')
-fix_commit_date=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.commit.committer.date')
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/stale-check-refresh.sh" run \
-  --repo <owner/repo> \
-  --fix-commit-sha "$fix_commit_sha" \
-  --fix-commit-date "$fix_commit_date" \
-  --session-prs "$session_prs"
-```
-
-**Guards, matching the issue's suggested fix exactly (now implemented inside the script):**
-
-- **Only for PRs whose failing check predates the fix.** A PR whose latest failing run completed *after* `fix_commit_date` already ran against the fixed base and is genuinely red — running `gh pr update-branch` there would mask a real failure behind a fresh run rather than surface it. The `completedAt < fix_commit_date` comparison (latest-per-name, the same de-duplication convention used throughout [drain.md](../drain.md#drain-protocol) and [steady-state.md](../steady-state.md#a1-parse-the-return-string)) is what tells stale-red apart from genuinely-red.
-- **Once per PR per fix, never in a loop.** The script's `--state-file` (`.shipyard-stale-refresh-done` by default, in the orchestrator worktree root) records the `main` SHA the refresh already ran against for that PR; it prevents a second re-poll from calling `update-branch` again for the same fix before the freshly-triggered check has had a chance to complete.
-- **Skip DIRTY PRs.** Those belong to `fix-rebase`, not this gate — `gh pr update-branch` rebases a DIRTY branch onto the new base as a side effect, which is a different, already-bookkept code path (`rebase_success_counts`, `rebase_blocked_prs` in [drain.md](../drain.md#drain-protocol)). Leaving DIRTY PRs to that existing mechanism avoids double-counting a rebase outside its owning bookkeeping.
-
-**Session-scoped state.** `.shipyard-stale-refresh-done` (a per-session, per-PR-and-SHA append-only text file) lives in the orchestrator worktree, never persisted across sessions — a fresh session starts without it and re-evaluates from scratch, which is safe since the dedup only prevents redundant `update-branch` calls within one continuous drive of the same fix.
-
-This mechanism is **evaluated at every call site that runs 4.5a** — session setup and [step D's periodic refresh](../steady-state.md#d-periodic-refresh) — so it fires automatically the first time either path observes the red→green transition; no separate wiring is needed at either call site. See [drain.md's post-main-CI-fix branch-refresh](../drain.md#post-main-ci-fix-branch-refresh-drain-phase-993) for the corresponding drain-phase health read — drain does not enqueue new `divert_queue` work, but it still needs to observe this same transition so a fix that lands *during* drain un-sticks the PRs it stranded, rather than leaving the whole merge train `BLOCKED` for the next session to discover.
+The post-main-CI-fix branch-refresh that fires on a genuine transition into `main_ci.status == "green"` — un-sticking session PRs that carry a stale failing required check ([#993](https://github.com/mattsears18/shipyard/issues/993)) — lives in [`04h-post-main-ci-branch-refresh.md`](./04h-post-main-ci-branch-refresh.md#post-main-ci-fix-branch-refresh--un-stick-session-prs-carrying-a-stale-failing-required-check-993). Deep-link there when that transition fires.
 
 **4.5b — Failing-PR pileup.** Count open PRs across **all authors** whose check rollup contains a hard failure:
 

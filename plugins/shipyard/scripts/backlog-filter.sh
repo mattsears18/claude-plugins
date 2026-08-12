@@ -38,21 +38,53 @@
 #            [--peer-claimed <csv>] [--investigate-dispatch true|false]
 #            [--prioritize-label <label>] [--today YYYY-MM-DD]
 #            [--respect-assignees true|false]
+#            [--milestones-enabled true|false] [--milestones-prioritize-dispatch true|false]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
 #     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
-#     assignees: [login,...], author: {login}, createdAt, updatedAt}, ...].
+#     assignees: [login,...], author: {login}, createdAt, updatedAt,
+#     milestone: "<N · Title>"|null}, ...]. `milestone` is the issue's
+#     milestone TITLE (already flattened from gh's `{number,title,...}`
+#     object by the caller's wide-fetch --jq projection, mirroring how
+#     `labels`/`assignees` are flattened) or null/absent when unmilestoned.
 #     Emits one NDJSON line per issue on stdout:
 #       {"number":N,"verdict":"eligible"}
 #       {"number":N,"verdict":"route","reason":"investigate"}
 #       {"number":N,"verdict":"route","reason":"operator"}
 #       {"number":N,"verdict":"drop","reason":"<reason>"}
 #       {"number":N,"verdict":"gate","reason":"<label>"}
-#     Output ORDER: every "eligible" line first, in rank order (prioritized
-#     label tier, then P0>P1>P2>unlabeled, then bug>fix(*)>feat(*)>chore(*)>
-#     other, then oldest-updatedAt-first) — this is the same order setup.md
-#     step 4 sorts raw_backlog into. Then every "route":"investigate" line,
-#     in its own rank order (P0>P1>P2>unlabeled, then staleness — no
-#     prioritized-label or type tier, per 04d-investigate-routing.md). Then
+#     Output ORDER: every "eligible" line first, in rank order. The default
+#     (milestone ranking OFF — either --milestones-enabled or
+#     --milestones-prioritize-dispatch is false, matching a repo that never
+#     opted into milestones.*) is BYTE-IDENTICAL to the pre-#1241 order:
+#     prioritized-label tier, then P0>P1>P2>unlabeled, then
+#     bug>fix(*)>feat(*)>chore(*)>other, then oldest-updatedAt-first.
+#     When BOTH --milestones-enabled and --milestones-prioritize-dispatch
+#     are true, the eligible order becomes (issue #1241 — see
+#     do-work-RATIONALE.md for why each tier sits where it does):
+#       1. P0 — global, wins in ANY milestone (an emergency escape, not
+#          part of the sequencing plan).
+#       2. prioritized-label tier — an explicit per-run operator override,
+#          now ranked below P0 (this is a behavior CHANGE from the
+#          milestone-off order, where the prioritized-label tier is
+#          outermost and can rank ABOVE a P0).
+#       3. milestone sequence, ascending, parsed from the issue's milestone
+#          title's `N · ` numeric prefix — this is "the earliest milestone
+#          with dispatchable work," which falls out of the sort for free:
+#          a milestone with zero eligible issues simply never appears in
+#          this list, so ascending-N naturally skips it. An unmilestoned
+#          issue, or one whose milestone title doesn't parse, sorts to the
+#          tail (alongside where the fallback milestone's own high N
+#          already sorts) rather than being dropped.
+#       4. P1>P2>unlabeled, then type, then staleness — the same
+#          tiebreakers as the milestone-off order, now operating WITHIN a
+#          milestone rather than across the whole backlog.
+#     Then every "route":"investigate" line, in its own rank order
+#     (P0>P1>P2>unlabeled, then staleness — no prioritized-label, type, or
+#     milestone tier, per 04d-investigate-routing.md — milestone ranking is
+#     scoped to raw_backlog only). Then every remaining line
+#     (route:operator, drop:*, gate:*) in input order, as an audit trail.
+#     A caller that wants only the ranked eligible numbers does:
+#     `jq -r 'select(.verdict=="eligible") | .number'`.
 #     `--respect-assignees` (issue #1248) gates the "drop:assigned-other"
 #     clause. Default `true` when the flag is omitted entirely (preserves
 #     the #1194-fixed predicate for a caller that hasn't been updated yet).
@@ -61,10 +93,10 @@
 #     contributor repo, the common shipyard-marketplace case, "assigned to
 #     someone else" has no correct exclusion to make). When `false`, an
 #     issue's `assignees` array never affects its verdict — self-assigned,
-#     unassigned, and other-assigned issues are all equally eligible.
-#     every remaining line (route:operator, drop:*, gate:*) in input order,
-#     as an audit trail. A caller that wants only the ranked eligible
-#     numbers does: `jq -r 'select(.verdict=="eligible") | .number'`.
+#     unassigned, and other-assigned issues are all equally eligible. It is
+#     orthogonal to the milestone-ranking flags above: `--respect-assignees`
+#     decides which issues reach the eligible bucket at all, the milestone
+#     flags decide only how that bucket is ordered.
 #     Exit 0 always (even on an empty input array — emits nothing).
 #
 #   closed-by-healthy-pr --repo <owner/repo> --me <login>
@@ -148,6 +180,8 @@ Usage:
       [--closed-by-healthy-pr <csv-of-numbers>] [--peer-claimed <csv-of-numbers>]
       [--investigate-dispatch true|false] [--prioritize-label <label>]
       [--today YYYY-MM-DD] [--respect-assignees true|false]
+      [--milestones-enabled true|false]
+      [--milestones-prioritize-dispatch true|false]
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
@@ -219,6 +253,29 @@ def type_rank($issue):
   elif ($issue.title | test("^chore\\(")) then 3
   else 4
   end;
+
+# milestone_seq($issue) -- the issue milestone sequence number, parsed
+# from the milestone title "N · Title" prefix (U+00B7 MIDDLE DOT, one
+# space each side -- the fixed, non-configurable numbering contract per
+# schemas/shipyard.config.schema.json milestones block). An unmilestoned
+# issue, or one whose milestone title does not parse (malformed, or a
+# pre-#1239 milestone that predates the numbering convention), gets a
+# sentinel far larger than any real sequence number so it sorts to the
+# tail alongside where the fallback milestone (always the highest N)
+# already sorts, rather than being dropped from the ranked list (issue
+# #1241 acceptance: "An issue with no milestone at all still ranks").
+# capture() wrapped in [...] then `first` turns "zero outputs on
+# no-match" into a real `null` we can branch on, same defensive pattern
+# time_gate_future uses below for the identical reason. NOTE: no literal
+# apostrophes anywhere in this program string -- CLASSIFY_JQ is itself a
+# single-quoted bash string, so an apostrophe (even inside a comment)
+# would terminate it early.
+def milestone_seq($issue):
+  ($issue.milestone // "") as $m
+  | ([$m | capture("^\\s*(?<n>[0-9]+)\\s*·")] | first) as $cap
+  | if ($cap == null) then 999999999
+    else ($cap.n | tonumber)
+    end;
 
 def prioritized_tier($issue; $plabel):
   if ($plabel == "") then 0
@@ -302,7 +359,35 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
       _priority_rank: priority_rank($issue),
       _type_rank: type_rank($issue),
       _prioritized_tier: prioritized_tier($issue; $prioritize_label),
-      _updatedAt: ($issue.updatedAt // "")
+      _updatedAt: ($issue.updatedAt // ""),
+      # _sort_key -- the eligible-bucket sort key, issue #1241. Computed
+      # here (not left inline at the final sort_by) so BOTH branches are
+      # visible together with the byte-identical-by-construction guarantee
+      # they exist to satisfy: the milestone-off branch is a verbatim copy
+      # of the pre-#1241 [_prioritized_tier, _priority_rank, _type_rank,
+      # _updatedAt] key, so a repo with milestones.enabled:false OR
+      # milestones.prioritize_dispatch:false gets the exact same ranking
+      # as every prior release, never a "close enough" approximation. The
+      # milestone-on branch promotes P0 to a global tier ABOVE
+      # _prioritized_tier -- a deliberate behavior CHANGE, gated so it can
+      # only fire when a repo has actually opted into milestone-ordered
+      # dispatch (see header comment + do-work-RATIONALE.md for the full
+      # tier-ordering rationale).
+      _sort_key: (
+        if $milestone_rank_on then
+          [(if priority_rank($issue) == 0 then 0 else 1 end),
+           prioritized_tier($issue; $prioritize_label),
+           milestone_seq($issue),
+           priority_rank($issue),
+           type_rank($issue),
+           ($issue.updatedAt // "")]
+        else
+          [prioritized_tier($issue; $prioritize_label),
+           priority_rank($issue),
+           type_rank($issue),
+           ($issue.updatedAt // "")]
+        end
+      )
     };
 
 . as $issues
@@ -310,7 +395,7 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
 | ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
-      | sort_by([._prioritized_tier, ._priority_rank, ._type_rank, ._updatedAt]))
+      | sort_by(._sort_key))
     +
     ($classified | map(select(.verdict == "route" and .reason == "investigate"))
       | sort_by([._priority_rank, ._updatedAt]))
@@ -327,6 +412,13 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
 cmd_classify() {
   local me="" trusted_csv="" healthy_csv="" peer_csv="" investigate_dispatch="true"
   local prioritize_label="" today="" respect_assignees="true"
+  # milestones.enabled / milestones.prioritize_dispatch (issue #1241) --
+  # BOTH default "false" so a caller that never passes these flags at all
+  # (every pre-#1241 invocation, and every fixture test written before
+  # this issue) gets the exact pre-#1241 behavior with zero code change on
+  # its end -- the milestone-ranking gate below can only ever turn ON via
+  # an explicit true/true pair.
+  local milestones_enabled="false" milestones_prioritize_dispatch="false"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --me) me="${2:-}"; shift 2 ;;
@@ -337,6 +429,8 @@ cmd_classify() {
       --prioritize-label) prioritize_label="${2:-}"; shift 2 ;;
       --today) today="${2:-}"; shift 2 ;;
       --respect-assignees) respect_assignees="${2:-}"; shift 2 ;;
+      --milestones-enabled) milestones_enabled="${2:-}"; shift 2 ;;
+      --milestones-prioritize-dispatch) milestones_prioritize_dispatch="${2:-}"; shift 2 ;;
       *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
     esac
   done
@@ -359,6 +453,14 @@ cmd_classify() {
     true|false) ;;
     *) echo "classify: --respect-assignees must be true or false, got: $respect_assignees" >&2; return 64 ;;
   esac
+  case "$milestones_enabled" in
+    true|false) ;;
+    *) echo "classify: --milestones-enabled must be true or false, got: $milestones_enabled" >&2; return 64 ;;
+  esac
+  case "$milestones_prioritize_dispatch" in
+    true|false) ;;
+    *) echo "classify: --milestones-prioritize-dispatch must be true or false, got: $milestones_prioritize_dispatch" >&2; return 64 ;;
+  esac
   if [[ -z "$today" ]]; then
     today="$(date -u +%F)"
   fi
@@ -369,7 +471,7 @@ cmd_classify() {
 
   require_jq "backlog-filter.sh"
 
-  local me_lower trusted_json healthy_json peer_json input
+  local me_lower trusted_json healthy_json peer_json input milestone_rank_on
   me_lower=$(printf '%s' "$me" | tr '[:upper:]' '[:lower:]')
   trusted_json=$(_csv_to_json_lower_string_array "$trusted_csv")
   healthy_json=$(_csv_to_json_number_array "$healthy_csv")
@@ -380,6 +482,17 @@ cmd_classify() {
     input="[]"
   fi
 
+  # The AND-gate itself -- milestone-aware ranking requires BOTH knobs
+  # true. Either one false reproduces the pre-#1241 sort byte-for-byte
+  # (see CLASSIFY_JQ's _sort_key comment above) -- this is what makes the
+  # "milestones.enabled:false OR prioritize_dispatch:false -> unchanged
+  # ranking" acceptance criterion hold structurally rather than by
+  # convention.
+  milestone_rank_on="false"
+  if [[ "$milestones_enabled" == "true" && "$milestones_prioritize_dispatch" == "true" ]]; then
+    milestone_rank_on="true"
+  fi
+
   printf '%s' "$input" | jq -c \
     --arg me "$me_lower" \
     --argjson trusted "$trusted_json" \
@@ -388,6 +501,7 @@ cmd_classify() {
     --argjson investigate_dispatch "$investigate_dispatch" \
     --arg prioritize_label "$prioritize_label" \
     --arg today "$today" \
+    --argjson milestone_rank_on "$milestone_rank_on" \
     --arg symptom_re "$SYMPTOM_REGEX" \
     --argjson respect_assignees "$respect_assignees" \
     "$CLASSIFY_JQ"
