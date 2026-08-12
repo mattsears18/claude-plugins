@@ -255,6 +255,41 @@ gh issue close <N> --repo <owner/repo> \
 
 Closing an issue **you yourself created this session** is in-scope cleanup, not an out-of-scope mutation — you are reversing your own action. If the safety classifier denies the close (observed in the #434 session — agents were blocked from closing their own false issues), do NOT retry through a workaround. Instead, **report the false positive in your end-of-run summary** under a `Filed in error (needs retraction)` line naming the issue number and the reason, so the orchestrator can close it during reconciliation. Either way the retraction is visible; the in-summary record is the fallback when the direct close is denied.
 
+## Tree-freshness check (deployed-artifact auditors only, issue [#1265](https://github.com/mattsears18/shipyard/issues/1265))
+
+**Applies only to `lighthouse-auditor`, `seo-auditor`, `pwa-auditor`, `web-ux-auditor`, `functional-qa-auditor`.** These five measure a **deployed artifact** — a live URL or an exported build — which can lag the repo's current default branch by hours (a fix can merge the same morning the audit runs). Every other auditor (`security`, `a11y`, `privacy`, `dx`, `tech-debt`, `testing`, `docs`, `api`, `data-lifecycle`, `observability`, `release-readiness`, `marketing`, `mobile-ux`, `comprehension`) already reads the tree directly as its primary evidence — its finding's evidence *is* the current tree state, so there's nothing to reconcile. **If you are not one of the five named auditors, skip this entire section.**
+
+**If the target repo isn't available as a local checkout in this dispatch** (auditing a bare URL with no `cwd`/repo access), skip this section too — there is no tree to check against, and filing normally is correct, not a bypass.
+
+The diagnostic case this closes: an auditor proposed adding a specific `browserslist` config that had already existed in the target file for months, guarded by a dedicated regression test. A single `grep` for the proposed remedy before filing would have dropped it — instead it cost a downstream `/do-work` dispatch ~200k tokens and a full rebuild to disprove.
+
+**When a finding names or implies a concrete, greppable remedy** — a specific config key/value, an exact file path, a specific string/identifier, a package to add/remove, a specific test name — before filing:
+
+1. **Resolve the default branch and fetch it fresh**, never trust a possibly-stale local checkout:
+   ```bash
+   DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+   git fetch origin "$DEFAULT_BRANCH" -q
+   ```
+2. **Grep for the proposed remedy against `origin/<default-branch>` specifically**, not your working tree:
+   ```bash
+   git show "origin/$DEFAULT_BRANCH:<path>" | grep -n '<remedy>'
+   # or, to search across the tree rather than one known file:
+   git grep -n '<remedy>' "origin/$DEFAULT_BRANCH" -- '<path-glob>'
+   ```
+3. **Disposition on what you find:**
+   - **Remedy present AND guarded by a test** (a dedicated regression test asserting the config/behavior, or the acceptance-criteria-shaped check the finding would itself demand) → **drop the finding, do not file.** Record it in your end-of-run summary under a `Dropped (already fixed in tree)` line naming the file:line/test that disproves it — a dropped finding still needs a trace, just not an issue.
+   - **Remedy present but NOT clearly test-guarded, OR you can't rule out the deployed artifact genuinely lagging the tree** (recent commit, no signal the fix has actually deployed) → **file it anyway, downgraded one severity tier from the rubric default, with an explicit annotation** — prepend `> Tree appears already fixed at <SHA> (<file:line>) — verify deployment freshness before starting work.` to the body. This is deliberately conservative: a deployed site can genuinely lag `main`, and "the remedy exists in the tree" doesn't always mean "the live artifact is fixed" — annotate and downgrade rather than silently discard.
+   - **Remedy absent, or the finding doesn't name a specific/greppable remedy at all** (e.g. "improve LCP" with no concrete change named) → file normally, no adjustment.
+4. **Never silently discard a measured finding with no trace anywhere.** Every finding this check touches is either logged as dropped (case a) or filed with an annotation (case b) — a finding that vanishes with no record is worse than a false positive, because nobody can audit the decision later.
+
+**Stamp every filing from these five auditors with the verified-against SHA — cheap staleness signal for later readers.** Whether or not the check above tripped, add the SHA you fetched in step 1 to the issue body as a hidden comment alongside `audit-key` (see "Issue body template" below):
+
+```
+<!-- audit-verified-against=<SHA> -->
+```
+
+An audit-filed issue otherwise reads to a downstream `/do-work` worker as a *current, verified* measurement — the same confident-premise shape flagged elsewhere in this plugin's dispatch rules. Recording the SHA the finding was checked against lets a later dispatch (or a human) judge whether the finding is stale — a recorded SHA far behind current `main` is itself a signal worth re-verifying before dispatch — without re-deriving it from scratch.
+
 ## Conventional Commit title prefixes
 
 Required — most target repos enforce this via commitlint, and the conventional-commit title is what release-please picks up to drive changelog + version bumps. Pick:
@@ -298,9 +333,10 @@ Found by `<audit type>` audit of `<url or surface>` on <YYYY-MM-DD>.
 
 <!-- audit-key=<dimension>/<finding-type>[/<scope>] -->
 <!-- audit-run=<run-id> -->   (only when the orchestrator supplied a run id — see "Per-run attribution marker")
+<!-- audit-verified-against=<SHA> -->   (only from lighthouse/seo/pwa/web-ux/functional-qa — see "Tree-freshness check")
 ```
 
-**The `audit-key` HTML comment is mandatory** — it powers idempotent re-runs. If a body would ship without it, that's a bug in your filing process. The `audit-run` comment is conditional — include it only when the dispatch prompt supplied a run id (see "Per-run attribution marker" below).
+**The `audit-key` HTML comment is mandatory** — it powers idempotent re-runs. If a body would ship without it, that's a bug in your filing process. The `audit-run` comment is conditional — include it only when the dispatch prompt supplied a run id (see "Per-run attribution marker" below). The `audit-verified-against` comment is conditional too — include it on every filing from the five deployed-artifact auditors (see "Tree-freshness check" above), omit it otherwise.
 
 ## Cross-references
 
@@ -380,3 +416,4 @@ When "Milestone assignment" is gated on (both config keys `true`) and one or mor
 - Don't create a milestone, even the fallback one, from inside a filing pass — see "Milestone assignment" above. Match against an existing phase's `BET:` or its already-existing fallback; if neither exists, file without one.
 - Don't skip a filing because the milestone lookup errored or nothing matched. File the finding without a milestone and note it — a lost finding is worse than an unmilestoned one.
 - Don't re-fetch the milestone list per finding. Cache it once at the start of the run alongside the label-discovery calls.
+- If you're one of the five deployed-artifact auditors (`lighthouse`, `seo`, `pwa`, `web-ux`, `functional-qa`): don't file a finding whose proposed remedy already exists in the tree and is test-guarded without first running the "Tree-freshness check" above — and don't silently drop a finding that check touches without leaving a trace in your end-of-run summary.
