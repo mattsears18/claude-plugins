@@ -126,7 +126,7 @@ export CLAUDE_PLUGIN_ROOT
 # cwd-independent given the explicit --repo-root (immune to the #477 cwd-leak
 # that fires on reconcile turns). See setup.md §0.55 for the full rationale.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
+SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
   --repo-root "$REPO_ROOT" 2>/dev/null)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
 # Loud abort when both derive paths return empty — cascading exit-64s from
@@ -153,7 +153,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
 if [ -n "$SESSION_ID" ]; then
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" bump-tokens \
   --session-id "$SESSION_ID" \
   --issue <N>            `# present for issue-work and fix-checks-only on issue-anchored PRs` \
   --pr <M>               `# present for fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch (and issue-work after it shipped)` \
@@ -179,7 +179,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
 if [ -n "$SESSION_ID" ]; then
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" bump-tokens \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" bump-tokens \
   --session-id "$SESSION_ID" \
   --issue <N> --pr <M> \
   --input <total_tokens>          `# total_tokens lands in --input; other token flags MUST be omitted` \
@@ -329,7 +329,7 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
    ```
    Log success or failure. If the push fails (network still down, permissions issue, the branch is already on origin ahead of this commit), continue to step 3 rather than reaping silently — a failed push still leaves the local commit recoverable by a human inspection of the worktree before it's removed.
 3. After a successful push, check whether an open PR already exists for the branch. If no PR exists, create one using the normal issue-work PR template (`Closes #<N>` keyword, `--label shipyard`, `--auto`). If a PR already exists (the worker pushed but crashed before creating the PR), create the PR against the existing branch. If PR creation fails, log it and proceed to the reap anyway — the commit is now on origin and the branch is recoverable via the GitHub UI.
-4. Append the recovered PR number to `session_prs` so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR. Then arm auto-merge **behind the ungated-merge pre-check** ([#720](https://github.com/mattsears18/shipyard/issues/720)) — the same [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust) gate, routed through the one executable detector rather than restated: run [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh); resolve `auto_merge.method` (default `squash` — never hardcode `--merge`, issue [#989](https://github.com/mattsears18/shipyard/issues/989)) via `"${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method`, falling back to `squash` on an empty/invalid read; on `gated` call `gh pr merge <M> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch`, and on `ungated` **leave the PR OPEN and unarmed** so [drain's deferred-merge lander](./drain.md#deferred-merge-lander-merge-unarmed-green-session-prs--720) merges it on the first poll its checks are green (the `session_prs` append above is what hands it to the lander). Snapshot `state` and `autoMergeRequest` exactly as step 7 of issue-work.md directs; emit a `[reconcile-A.0.5-recovery] #<N> crash-recovered via PR #<M> (auto-merge: <...>, checks: <...>)` log line. **The `gated` branch's `--auto` call captures stderr rather than discarding it ([#850](https://github.com/mattsears18/shipyard/issues/850))** — when it matches the missing-`workflow`-OAuth-scope signature (`worker-preamble § "Auto-merge + snapshot-and-return pattern"` step 1.1, fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md), issue [#812](https://github.com/mattsears18/shipyard/issues/812)) it logs `[reconcile-A.0.5-recovery] PR #<M> auto-merge arm blocked — gh token lacks workflow scope` — append `<M>` to the session-local [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) list on that line exactly as [step A.1's `shipped` handler](#a1-parse-the-return-string) already does from a worker's return string, so a crash-recovered PR's arm failure reaches the same end-of-session banner instead of vanishing into the `2>/dev/null` this branch used before.
+4. Append the recovered PR number to `session_prs` so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR. Then arm auto-merge **behind the ungated-merge pre-check** ([#720](https://github.com/mattsears18/shipyard/issues/720)) — the same [issue-work §6.a](../../agents/issue-worker/issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust) gate, routed through the one executable detector rather than restated: run [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh); resolve `auto_merge.method` (default `squash` — never hardcode `--merge`, issue [#989](https://github.com/mattsears18/shipyard/issues/989)) via `"$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method`, falling back to `squash` on an empty/invalid read; on `gated` call `gh pr merge <M> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch`, and on `ungated` **leave the PR OPEN and unarmed** so [drain's deferred-merge lander](./drain.md#deferred-merge-lander-merge-unarmed-green-session-prs--720) merges it on the first poll its checks are green (the `session_prs` append above is what hands it to the lander). Snapshot `state` and `autoMergeRequest` exactly as step 7 of issue-work.md directs; emit a `[reconcile-A.0.5-recovery] #<N> crash-recovered via PR #<M> (auto-merge: <...>, checks: <...>)` log line. **The `gated` branch's `--auto` call captures stderr rather than discarding it ([#850](https://github.com/mattsears18/shipyard/issues/850))** — when it matches the missing-`workflow`-OAuth-scope signature (`worker-preamble § "Auto-merge + snapshot-and-return pattern"` step 1.1, fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md), issue [#812](https://github.com/mattsears18/shipyard/issues/812)) it logs `[reconcile-A.0.5-recovery] PR #<M> auto-merge arm blocked — gh token lacks workflow scope` — append `<M>` to the session-local [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) list on that line exactly as [step A.1's `shipped` handler](#a1-parse-the-return-string) already does from a worker's return string, so a crash-recovered PR's arm failure reaches the same end-of-session banner instead of vanishing into the `2>/dev/null` this branch used before.
 
    **Why this site must gate, and why it must not block.** A crash-recovered PR is the **least-validated diff in the system** — the dirty-worktree path auto-commits with `--no-verify` (the pre-commit gate may be exactly what hung the worker), so CI is quite literally the only thing that ever inspects it. Arming `--auto` on an ungated repo lands that unvalidated diff on the default branch immediately, and because every recovery step is fire-and-forget (`2>/dev/null || true`) it does so **silently**. But this runs on the orchestrator's reconcile hot path, so the worker-style blocking `gh pr checks --watch` is not available — a multi-minute block here stalls every in-flight dispatch. Deferring to drain's lander gates the merge on green without blocking anything.
 5. Then proceed to the reap. The recovery does not skip the reap — the worktree is still a crashed agent's directory and needs to be cleaned up.
@@ -356,7 +356,7 @@ export CLAUDE_PLUGIN_ROOT
 # below. slot-id/agent-id/repo/slot-kind/slot-issue are the same
 # .in_flight.<slot-id> fields and dispatch-target values used throughout
 # this file's other reap sites.
-crash_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/crash-recovery-reap.sh" reap \
+crash_result=$("$CLAUDE_PLUGIN_ROOT/scripts/crash-recovery-reap.sh" reap \
   --repo <owner/repo> \
   --slot-id <slot-id> \
   --agent-id <agent-id> \
@@ -374,7 +374,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
     export CLAUDE_PLUGIN_ROOT
     if [ -e "$worktree_path" ]; then
-      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
         --action reaped-failed \
         --worktree-path "$worktree_path" \
         --worktree-name "$worktree_name" \
@@ -434,7 +434,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     export CLAUDE_PLUGIN_ROOT
     RESUMED_PR_ARG=()
     [ -n "${recovered_pr:-}" ] && RESUMED_PR_ARG=(--resumed-pr "$recovered_pr")
-    bash "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" record-stall \
+    bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-stall \
       --session-id "$session_id" --expected-repo "<owner/repo>" \
       --target "#${slot_issue:-unknown}" --mode "${slot_kind:-unknown}" \
       --trigger "$stalled_trigger" --outcome "$stalled_outcome" \
@@ -565,11 +565,11 @@ Once A.0.6 has run, proceed to A.1.
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
+SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
   --repo-root "$REPO_ROOT" 2>/dev/null)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
 agent_id="${.in_flight[<slot-id>].agent_id}"
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "${SESSION_ID:-unknown}" \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "${SESSION_ID:-unknown}" \
   --set ".returned_agent_ids[\"${agent_id}\"] = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
   >/dev/null 2>&1 || true
 ```
@@ -589,7 +589,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
   export SHIPYARD_REPO_ROOT
-  EXPECTED_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+  EXPECTED_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
   case "$EXPECTED_METHOD" in squash|merge|rebase) ;; *) EXPECTED_METHOD=squash ;; esac
 
   # Two direct --jq reads (never a shared snapshot piped through a second
@@ -642,21 +642,21 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   # before any session-id derivation or gh call. Defaults to true (fail
   # OPEN on a config-read error) so a read failure never silently swallows
   # the comment the schema default says should post.
-  COMMENT_ON_PR=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get cost_tracking.comment_on_pr 2>/dev/null)
+  COMMENT_ON_PR=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get cost_tracking.comment_on_pr 2>/dev/null)
   if [ "$COMMENT_ON_PR" = "false" ]; then
     echo "[cost-tracking] cost_tracking.comment_on_pr=false; skipping PR comment for PR #<M> (#855)"
   else
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
+  SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
     --repo-root "$REPO_ROOT" 2>/dev/null)
   [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
   if [ -z "$SESSION_ID" ]; then
     echo "[session-id-derive] empty — skipping A.1 cost-comment post; check for #477 cwd-leak (#548)"
   else
   # 1. Read the cost summary as a Markdown comment body.
-  BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
+  BODY=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read-tokens \
     --session-id "$SESSION_ID" --pr <M> --format comment)
 
   # 2. Look up the existing sentinel comment (if any) so we can edit
@@ -695,7 +695,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   ```bash
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
-  reap_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipped-immediate-branch-reap.sh" reap --issue <N>)
+  reap_result=$("$CLAUDE_PLUGIN_ROOT/scripts/shipped-immediate-branch-reap.sh" reap --issue <N>)
   ```
 
   Parse `reap_result` — either `reaped=false session_id=<id>` (no matching worktree found) or `reaped=true worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid> session_id=<id>`. On `reaped=true`, hold onto the values for the separate verify call immediately below.
@@ -706,7 +706,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
   if [ -n "${worktree_path:-}" ] && [ -e "$worktree_path" ]; then
-    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+    "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
       --action reaped-failed \
       --worktree-path "$worktree_path" \
       --worktree-name "$worktree_name" \
@@ -761,7 +761,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   ```bash
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
-  bail_class=$("${CLAUDE_PLUGIN_ROOT}/scripts/classify-blocked-bail.sh" classify \
+  bail_class=$("$CLAUDE_PLUGIN_ROOT/scripts/classify-blocked-bail.sh" classify \
     --repo <owner/repo> --issue <N> --reason "<the worker's reason string, lowercased>")
   ```
 
@@ -794,7 +794,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
+  SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
     --repo-root "$REPO_ROOT" 2>/dev/null)
   [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
   if [ -z "$SESSION_ID" ]; then
@@ -802,7 +802,7 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
   else
   # 1. Read the cost summary as a Markdown comment body (now includes the
   # cumulative total across the original ship + every fix-checks follow-up).
-  BODY=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
+  BODY=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read-tokens \
     --session-id "$SESSION_ID" --pr <M> --format comment)
 
   # 2. Edit the existing sentinel comment in place if one exists; otherwise
@@ -998,9 +998,9 @@ worktree_path="${PRIMARY_CHECKOUT}/.claude/worktrees/agent-${completed_agent_id}
 if [ -d "$wt_dir" ]; then
   # Bootstrap the orchestrator PID so classify-lock can short-circuit on
   # our own session's locks (issue #263 — same pattern as A.1's reap).
-  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
+  export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
 
-  classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
+  classification=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" \
     classify-lock "$wt_dir/locked")
 
   # Extract the lock PID for the audit log (best effort; null literal
@@ -1035,7 +1035,7 @@ if [ -d "$wt_dir" ]; then
   # so the override stays traceable in ~/.shipyard/reap-audit.jsonl.
   local_classification="$classification"
   [ "$classification" = "peer-alive" ] && local_classification="peer-alive-force"
-  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+  "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
     --action reaped \
     --worktree-path "$worktree_path" \
     --worktree-name "agent-${completed_agent_id}" \
@@ -1053,7 +1053,7 @@ fi
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 if [ -e "$worktree_path" ]; then
-  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+  "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
     --action reaped-failed \
     --worktree-path "$worktree_path" \
     --worktree-name "agent-${completed_agent_id}" \
@@ -1090,8 +1090,8 @@ FETCHED_ISSUES_JSON=$(gh issue list --repo <owner/repo> --state open --limit 200
   --json number,title,labels,assignees,body,author,updatedAt,milestone \
   --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, updatedAt, milestone: (.milestone.title // null)}]')
 
-SUMMARY=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FETCHED_ISSUES_JSON")
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "<session-id>" \
+SUMMARY=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FETCHED_ISSUES_JSON")
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
   --set ".unfiltered_open_count = $(printf '%s' "$SUMMARY" | jq -r '.unfiltered_open_count')" \
   --set ".me_assigned_open = $(printf '%s' "$SUMMARY" | jq -r '.me_assigned_open')" \
   --set ".last_fresh_fetch = \"$(date -u +%H:%M:%S)\"" \
@@ -1110,7 +1110,7 @@ SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-roo
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
 # blocked_agent.soft_retry_minutes — default 30 — from shipyard-config.sh.
-soft_retry_minutes=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" \
+soft_retry_minutes=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" \
   get blocked_agent.soft_retry_minutes 2>/dev/null || echo "30")
 now_epoch=$(date -u +%s)
 for n in "${net_new_issues[@]}"; do
@@ -1141,8 +1141,8 @@ Skip this check entirely unless `.ci_capacity.shape == "self-hosted"` **and** `.
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-ci_shape=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.shape" 2>/dev/null)
-pool_total=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.pool_total" 2>/dev/null)
+ci_shape=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.shape" 2>/dev/null)
+pool_total=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.pool_total" 2>/dev/null)
 
 if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; then
   # Live re-read, NOT the stale `.ci_capacity.queued_at_start` snapshot —
@@ -1151,7 +1151,7 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
   # fires on every dispatch turn, and the queue doesn't meaningfully change
   # inside a ~30s window, so a live call on every single turn would be
   # pure API-call waste for no decision-quality gain.
-  queued_live=$("${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" run \
+  queued_live=$("$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" run \
     --session-id "<session-id>" --ttl 30 -- \
     run list --repo "<owner/repo>" --status queued --limit 100 \
     --json databaseId --jq 'length' 2>/dev/null)
@@ -1163,12 +1163,12 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
   export SHIPYARD_REPO_ROOT
-  multiplier=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.backpressure_multiplier 2>/dev/null)
-  min_in_flight=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.backpressure_min_in_flight 2>/dev/null)
+  multiplier=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_multiplier 2>/dev/null)
+  min_in_flight=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_min_in_flight 2>/dev/null)
 
   # <in_flight> is the count of entries in `.in_flight` BEFORE this slot is
   # filled — the same count step E's `in_flight < concurrency` check reads.
-  verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-runner-capacity.sh" \
+  verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-runner-capacity.sh" \
     --decide-backpressure "$pool_total" "${queued_live:-0}" "<in_flight>" "$multiplier" "$min_in_flight")
 
   if [ "$verdict" = "hold" ]; then
@@ -1197,12 +1197,12 @@ When both hold, scan `ready_issues` **in its existing priority order** — do no
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-cheap_globs=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.cheap_ci_globs" 2>/dev/null)
+cheap_globs=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.cheap_ci_globs" 2>/dev/null)
 
 # For each candidate <N> in ready_issues, in existing priority order:
 candidate_text="<issue title>\n<issue body>"
-candidate_paths=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-cheap-path.sh" --extract-paths "$candidate_text")
-verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-cheap-path.sh" --match "$candidate_paths" "${cheap_globs:-}")
+candidate_paths=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --extract-paths "$candidate_text")
+verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --match "$candidate_paths" "${cheap_globs:-}")
 # verdict = "match" -> this candidate's mentioned file paths are ALL covered
 # by the repo's paths-ignore glob list; it is CI-cheap. Stop scanning and
 # dispatch THIS candidate for the freed slot (normal dispatch mechanics
@@ -1233,7 +1233,7 @@ export CLAUDE_PLUGIN_ROOT
 # (issue #281). Without it, a concurrent /do-work session's orphan-sweep
 # reaping this file mid-session would surface as exit 3 on the next
 # update call, leaving working memory out of sync with the file.
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update \
   --session-id "<session-id>" \
   --allow-degraded-init --degraded-init-repo "<owner/repo>" \
   --set ".in_flight.<slot-id> = {

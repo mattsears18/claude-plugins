@@ -89,7 +89,7 @@ cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
 # size probe: only pay for `du` when the count actually crosses the
 # threshold.
 wt_count=$(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | wc -l | tr -d ' ')
-warn_threshold=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.warn_threshold 2>/dev/null || echo "20")
+warn_threshold=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.warn_threshold 2>/dev/null || echo "20")
 if [ "${wt_count:-0}" -gt 0 ] && [ "${wt_count:-0}" -ge "${warn_threshold:-20}" ] 2>/dev/null; then
   # `find` (not a bare `.claude/worktrees/agent-*` glob) feeds `du -sk` so
   # the zsh nomatch hazard the #335 comment above already documents for
@@ -115,7 +115,7 @@ fi
 # writes the orchestrator's PID into every dispatched agent's lock, and
 # without this declaration the ancestor walk can fail to find it whenever
 # an intermediate harness layer returns empty PPID.
-export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
+export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
 
 # In-flight guard (issue #832) — snapshot the set of agent-ids this
 # session currently has dispatched, BEFORE reap-stale ever consults
@@ -129,7 +129,7 @@ export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identi
 # (step 0.45), this session has typically dispatched nothing yet — but
 # the read is cheap and correct either way, and keeps this block
 # identical to the form used if a later session ever needs to re-run it.
-in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+in_flight_agent_ids=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read \
   --session-id "<session-id>" --path .in_flight 2>/dev/null \
   | jq -r '.[]?.agent_id // empty' 2>/dev/null)
 exclude_flags=()
@@ -138,9 +138,9 @@ while IFS= read -r aid; do
   exclude_flags+=(--exclude-agent-id "$aid")
 done <<< "$in_flight_agent_ids"
 
-max_per_session=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
+max_per_session=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
 
-reap_output=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap-stale \
+reap_output=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-stale \
   --repo-root "$(pwd)" \
   --session-id "<session-id>" \
   --max-per-session "${max_per_session:-10}" \
@@ -243,10 +243,10 @@ git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}'
       # `2>/dev/null || true` makes it silent. Fail-safe: an unreadable verdict
       # resolves to `ungated` (defer), never to an immediate merge.
       if [ -n "$pr_num" ]; then
-        verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
+        verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" \
           <owner/repo> 2>/dev/null || echo ungated)
         # Resolve the merge method from config — never hardcode --merge (#989).
-        auto_merge_method=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+        auto_merge_method=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
         case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
         if [ "$verdict" = "gated" ]; then
           # Capture stderr instead of discarding it (#850) — the same
@@ -293,7 +293,7 @@ done
 # (the default), /do-work never writes an @me assignment, so this sweep
 # has nothing to find; skip the query entirely rather than pay a
 # permanently-empty `gh issue list` every session.
-BACKLOG_SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
+BACKLOG_SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
 if [ "$BACKLOG_SELF_ASSIGN" = "true" ]; then
   for n in $(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null); do
     # If a worktree for this issue exists, the loop above already handled it;
@@ -571,10 +571,10 @@ The sub-f migration runs **once per legacy issue** — after the first pass ther
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_3_5_refine_issues 2>/dev/null || true
 # /refine-issues --repo <owner/repo> --concurrency <N>
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_3_5_refine_issues 2>/dev/null || true
 ```
 

@@ -9,10 +9,10 @@
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_4_backlog_fetch_and_rank 2>/dev/null || true
 # ... run step 4 ...
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_4_backlog_fetch_and_rank 2>/dev/null || true
 ```
 
@@ -95,11 +95,11 @@ export SHIPYARD_REPO_ROOT
 ME_LOGIN=$(gh api user --jq '.login')
 
 # The live-network half (see the bullet above for why it's a separate call).
-CLOSED_HEALTHY_CSV=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" closed-by-healthy-pr \
+CLOSED_HEALTHY_CSV=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" closed-by-healthy-pr \
   --repo <owner/repo> --me "$ME_LOGIN")
 
-INVESTIGATE_DISPATCH=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
-RESPECT_ASSIGNEES=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.respect_assignees 2>/dev/null || echo "false")
+INVESTIGATE_DISPATCH=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
+RESPECT_ASSIGNEES=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.respect_assignees 2>/dev/null || echo "false")
 
 # Milestone-aware ranking gate (issue #1241) — read BOTH config keys and
 # pass them through unconditionally; the script's own AND-gate (not this
@@ -108,12 +108,12 @@ RESPECT_ASSIGNEES=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backl
 # (shipyard-config.sh's documented default) and the script falls back to
 # the byte-identical pre-#1241 order automatically — see backlog-filter.sh's
 # header comment.
-MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
-MILESTONES_PRIORITIZE_DISPATCH=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.prioritize_dispatch 2>/dev/null || echo "false")
+MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
+MILESTONES_PRIORITIZE_DISPATCH=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.prioritize_dispatch 2>/dev/null || echo "false")
 
 # $TRUSTED_AUTHORS_CSV is trusted_authors (step 1.7), comma-joined, lowercased.
 # $PEER_CLAIMED_CSV is .peer_sessions.claimed_targets (step 1.65), comma-joined.
-"${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" classify \
+"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" classify \
   --me "$ME_LOGIN" \
   --trusted-authors "$TRUSTED_AUTHORS_CSV" \
   --closed-by-healthy-pr "$CLOSED_HEALTHY_CSV" \
@@ -347,7 +347,7 @@ export CLAUDE_PLUGIN_ROOT
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
-FLAKE_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
+FLAKE_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
 ```
 
 `FLAKE_ENABLED != "true"` → skip the rest of this step entirely; nothing below runs. `FLAKE_ENABLED == "true"` → continue with the reads and the enforcement call below, in order.
@@ -364,9 +364,9 @@ export CLAUDE_PLUGIN_ROOT
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
-PRUNE_WINDOW_DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
+PRUNE_WINDOW_DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
 case "$PRUNE_WINDOW_DAYS" in ''|*[!0-9]*) PRUNE_WINDOW_DAYS=90 ;; esac
-"${CLAUDE_PLUGIN_ROOT}/scripts/flake-enforce.sh" enforce \
+"$CLAUDE_PLUGIN_ROOT/scripts/flake-enforce.sh" enforce \
   --repo "<owner/repo>" \
   --repo-root "$SHIPYARD_REPO_ROOT" \
   --prune-window-days "$PRUNE_WINDOW_DAYS" \

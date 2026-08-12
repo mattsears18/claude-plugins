@@ -59,7 +59,7 @@ export CLAUDE_PLUGIN_ROOT
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
-SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
+SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
 if [ "$SELF_ASSIGN" = "true" ]; then
   gh issue edit <N> --repo <owner/repo> --add-assignee @me --add-label shipyard
 else
@@ -122,9 +122,9 @@ export CLAUDE_PLUGIN_ROOT
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
-VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
 # Resolve the merge method from config — never hardcode --merge (#989).
-AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+AUTO_MERGE_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
 case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
 
 if [ "$VERDICT" = "gated" ]; then
@@ -162,7 +162,7 @@ Inline execution has no agent return to reconcile in [step A](./steady-state.md#
   ```bash
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
-  "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read-tokens \
+  "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read-tokens \
     --session-id "<session-id>" --pr <M> --format comment --mode inline
   ```
   The `--mode inline` flag stamps the comment body with `mode=inline` instead of `mode=<worker-mode>` — telemetry needs to distinguish inline-shipped from worker-shipped PRs for the [abort rate metric](#telemetry).

@@ -9,11 +9,11 @@
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_0_7_parallel_batch 2>/dev/null || true
 # ... fire all parallel gh calls ...
 # ... wait for all to return ...
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_0_7_parallel_batch 2>/dev/null || true
 ```
 
@@ -60,7 +60,7 @@ export SHIPYARD_REPO_ROOT
   # .tmp-leftover sweep. A single plain script call, with its own test
   # coverage under scripts/tests/, rather than an untested inline loop
   # nested three levels inside this already-large background group.
-  "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-sessions.sh" sweep \
+  "$CLAUDE_PLUGIN_ROOT/scripts/sweep-orphan-sessions.sh" sweep \
     --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
     --current-session-id "<session-id>" \
     --reaper-session-id "<session-id>" 2>/dev/null || true
@@ -80,7 +80,7 @@ export SHIPYARD_REPO_ROOT
   # logged (not silent) — see the script's own header for the full
   # rationale and 01-repo-recovery.md's step 1.6 section for the
   # human-readable writeup.
-  "${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-tmp.sh" sweep \
+  "$CLAUDE_PLUGIN_ROOT/scripts/sweep-orphan-tmp.sh" sweep \
     --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" 2>/dev/null || true
 
   # 1.6.5 (orphan orchestrator-worktree sweep), 3b (stale agent-worktree
@@ -131,7 +131,7 @@ The `(...) &` block above is submitted as **one** Bash tool call. The permission
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   setup_reap_denial_unreaped=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" report-unreaped \
+   setup_reap_denial_unreaped=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" report-unreaped \
      --repo-root "$(git rev-parse --show-toplevel)" \
      --current-session-id "<session-id>" | wc -l | tr -d ' ')
    echo "setup-background-group-denied: unreaped=${setup_reap_denial_unreaped}"
@@ -207,7 +207,7 @@ Within a single orchestrator session (typically 5–15 minutes), GitHub state do
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" run \
+"$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" run \
   --session-id "<session-id>" --ttl 60 -- \
   gh-args-without-the-gh-prefix
 ```
@@ -234,7 +234,7 @@ These are *suggestions*. A caller that needs harder freshness should pass a smal
   ```bash
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
-  "${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" invalidate --session-id "<session-id>"
+  "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" invalidate --session-id "<session-id>"
   ```
   Burns one extra round of cold reads on the next refresh but never serves stale data after a write. Use this when in doubt — the cost is "one re-read per shipyard write," which is small compared to the savings on the hot read paths.
 - **Targeted (advanced).** When the write affects a specific PR or issue and the caller knows which cached reads depend on that artifact, pass `--pattern <sha-prefix>` to invalidate just the matching entries. Practical use is rare — the `--pattern` surface is intentionally narrow because callers don't easily know the sha shape. Stick with the conservative policy unless profiling shows the broad flush dominates.
@@ -244,7 +244,7 @@ These are *suggestions*. A caller that needs harder freshness should pass a smal
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
+"$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
 ```
 
 Idempotent. Runs in the same cleanup chain that reaps the session state file — both are session-scoped artifacts under `$SHIPYARD_HOME`.
@@ -272,13 +272,13 @@ export CLAUDE_PLUGIN_ROOT
 # Batch PR status — same projection as `gh pr view <M> --json
 # number,state,mergeable,mergeStateStatus,statusCheckRollup,headRefName,headRefOid`
 # but for N PRs in one query. Emits one JSON object keyed by PR number string.
-"${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+"$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" pr-status \
   --repo <owner/repo> \
   --numbers "142 143 144"
 # → {"142": {"number":142,"state":"OPEN","mergeable":"MERGEABLE",...}, "143": {...}, "144": {...}}
 
 # Batch issue state + labels. Same shape — keyed by issue number string.
-"${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" issue-state \
+"$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" issue-state \
   --repo <owner/repo> \
   --numbers "100,200,300"
 # → {"100": {"number":100,"state":"OPEN","labels":["P1","bug"]}, ...}
@@ -305,9 +305,9 @@ The compose pattern (cached batch read):
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" run \
+"$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" run \
   --session-id "<session-id>" --ttl 10 -- \
-  bash "${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+  bash "$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" pr-status \
     --repo <owner/repo> --numbers "142 143 144"
 ```
 

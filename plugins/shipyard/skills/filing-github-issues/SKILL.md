@@ -96,8 +96,8 @@ Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the buck
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
-MILESTONES_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
+MILESTONES_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
 ```
 
 **When `MILESTONES_ENABLED` != `"true"` OR `MILESTONES_ASSIGN` != `"true"`, skip this entire section.** File exactly as you would without it — no `gh api .../milestones` call, no `--milestone` flag, nothing else changes. This must be byte-for-byte identical to running with no `milestones` block at all.
@@ -105,7 +105,7 @@ MILESTONES_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get miles
 **When both are `"true"`, fetch the open milestone list once for the whole run and cache it** — an audit filing 30 findings reads this once, not 30 times. **`--method GET` is not optional here** — `gh api` silently defaults to `POST` whenever any `-f` field is present, and a `POST` to the milestones endpoint with no `title` field fails with a confusing `422 "title" wasn't supplied` (it's attempting to *create* a milestone, not list them):
 
 ```bash
-MILESTONES_FALLBACK=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
+MILESTONES_FALLBACK=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
 MILESTONES_JSON=$(gh api repos/<owner>/<repo>/milestones --method GET --paginate -f state=open \
   --jq '[.[] | {number, title, description}]' 2>/dev/null)
 ```

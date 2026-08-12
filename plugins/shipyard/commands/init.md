@@ -169,7 +169,7 @@ Issue [#482](https://github.com/mattsears18/shipyard/issues/482). This is **opt-
      "hooks": [
        {
          "type": "command",
-         "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/guard-primary-checkout.sh\"",
+         "command": "bash \"$CLAUDE_PLUGIN_ROOT/hooks/guard-primary-checkout.sh\"",
          "env": { "SHIPYARD_PRIMARY_GUARD": "<warn|block>" }
        }
      ]
@@ -360,7 +360,7 @@ fi
 - Issue [#1239](https://github.com/mattsears18/shipyard/issues/1239) — the `milestones` config block offered in [step 9.8](#98-optionally-enable-milestone-sequenced-roadmap-work); config-surface foundation for the milestone-sequencing work in issues #1240–#1244.
 - [`plugins/shipyard/scripts/worktree-reap.sh`](../scripts/worktree-reap.sh) — the reap helper whose commands [step 9.6](#96-optionally-pre-authorize-the-worktree-reap-commands) pre-authorizes.
 - [`plugins/shipyard/skills/adding-dependencies/SKILL.md`](../skills/adding-dependencies/SKILL.md) — the skill [step 9.7](#97-optionally-append-the-adding-dependencies-rule-to-claudemd) points a `pointer`-mode `CLAUDE.md` rule at.
-- [`plugins/shipyard/hooks/guard-primary-checkout.sh`](../hooks/guard-primary-checkout.sh) — the guard hook (`off`/`warn`/`block` via `SHIPYARD_PRIMARY_GUARD`). Registered in the plugin's own `hooks.json` (default `warn`, issue [#741](https://github.com/mattsears18/shipyard/issues/741)); this init step additionally wires it into the user's `settings.json` via `${CLAUDE_PLUGIN_ROOT}` to let a user pin a stricter mode.
+- [`plugins/shipyard/hooks/guard-primary-checkout.sh`](../hooks/guard-primary-checkout.sh) — the guard hook (`off`/`warn`/`block` via `SHIPYARD_PRIMARY_GUARD`). Registered in the plugin's own `hooks.json` (default `warn`, issue [#741](https://github.com/mattsears18/shipyard/issues/741)); this init step additionally wires it into the user's `settings.json` via `$CLAUDE_PLUGIN_ROOT` to let a user pin a stricter mode.
 - [`/shipyard:config`](./config.md) — show / get / set / edit subcommands for managing the config post-init.
 - [`plugins/shipyard/scripts/shipyard-config.sh`](../scripts/shipyard-config.sh) — the underlying loader / validator / writer.
 - [`plugins/shipyard/schemas/shipyard.config.schema.json`](../schemas/shipyard.config.schema.json) — the repo-config schema.

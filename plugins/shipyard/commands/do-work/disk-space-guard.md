@@ -16,15 +16,15 @@ SHIPYARD_REPO_ROOT=$(cat "$REPO_ROOT/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$REPO_ROOT"
 export SHIPYARD_REPO_ROOT
 
-floor_mb=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.disk_free_floor_mb 2>/dev/null || echo "10240")
-disk_probe=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" disk-check \
+floor_mb=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.disk_free_floor_mb 2>/dev/null || echo "10240")
+disk_probe=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" disk-check \
   --path "${REPO_ROOT}/.claude/worktrees" --floor-mb "${floor_mb:-10240}" 2>/dev/null)
 disk_free_mb=$(printf '%s\n' "$disk_probe" | sed -n 's/^free_mb=\([a-z0-9]*\) .*/\1/p')
 disk_low=$(printf '%s\n' "$disk_probe" | sed -n 's/.* low=\([a-z]*\)$/\1/p')
 
 if [ "${disk_low:-false}" = "true" ]; then
-  max_per_session=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
-  disk_sweep_out=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap-stale \
+  max_per_session=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
+  disk_sweep_out=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-stale \
     --repo-root "$REPO_ROOT" \
     --session-id "<session-id>" \
     --max-per-session "${max_per_session:-10}" 2>/dev/null)
@@ -35,7 +35,7 @@ if [ "${disk_low:-false}" = "true" ]; then
   # reclaimed enough to clear the low reading, or may not have (the cap
   # was already reached, or every eligible worktree was peer-alive and
   # deferred). Either way, report what's actually true post-sweep.
-  disk_probe=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" disk-check \
+  disk_probe=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" disk-check \
     --path "${REPO_ROOT}/.claude/worktrees" --floor-mb "${floor_mb:-10240}" 2>/dev/null)
   disk_free_mb=$(printf '%s\n' "$disk_probe" | sed -n 's/^free_mb=\([a-z0-9]*\) .*/\1/p')
 fi

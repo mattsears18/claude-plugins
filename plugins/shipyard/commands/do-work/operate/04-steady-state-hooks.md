@@ -28,7 +28,7 @@ In [step D's periodic refresh](../steady-state.md#d-periodic-refresh), additiona
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
    
    VERDICT=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body' \
-     | bash "${CLAUDE_PLUGIN_ROOT}/scripts/eval-recheck-probe.sh" <owner/repo>)
+     | bash "$CLAUDE_PLUGIN_ROOT/scripts/eval-recheck-probe.sh" <owner/repo>)
    ```
 
    `eval-recheck-probe.sh` is the **single executable source of truth** for this decision — it parses the marker against a small, hardcoded verb allowlist (`npm-view`, `gh-api`), rejects anything that doesn't match one of the two fixed grammars (never attempting to sanitize free-form text), executes the matched probe as a fixed-binary argv array with a bounded timeout, and returns exactly one of four verdicts:

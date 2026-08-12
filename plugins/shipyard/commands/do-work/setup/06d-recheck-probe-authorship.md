@@ -17,7 +17,7 @@ Runs immediately after [step 4b](06c-scope-handling-ui.md#handling-each-returned
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null) || SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
-RECHECK_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get scope.recheck_probe_enabled 2>/dev/null || echo true)
+RECHECK_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.recheck_probe_enabled 2>/dev/null || echo true)
 if [ "$DEFER_REASON_CLASS" != "external-dependency" ] || [ "$RECHECK_ENABLED" != "true" ]; then
   : # not applicable — skip this step entirely, calendar-only behavior unchanged
 fi
@@ -48,7 +48,7 @@ where `<verb> <args...>` is **exactly** the marker-body grammar `eval-recheck-pr
    # was extracted from evidence_pointer, itself derived from untrusted issue
    # body text, so this MUST go through --validate before anything downstream
    # ever treats it as a real command.
-   PARSED=$("${CLAUDE_PLUGIN_ROOT}/scripts/eval-recheck-probe.sh" --validate "<owner/repo>" $PROBE_CLAUSE)
+   PARSED=$("$CLAUDE_PLUGIN_ROOT/scripts/eval-recheck-probe.sh" --validate "<owner/repo>" $PROBE_CLAUSE)
    VALIDATE_STATUS=$?
    ```
 

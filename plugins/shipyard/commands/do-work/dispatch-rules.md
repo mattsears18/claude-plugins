@@ -43,7 +43,7 @@ SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-roo
 export SHIPYARD_REPO_ROOT
 
 # <mode> is the dispatch's mode, hyphenated or underscored — both are accepted.
-dispatch_model=$("${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh" <mode> 2>/dev/null)
+dispatch_model=$("$CLAUDE_PLUGIN_ROOT/scripts/resolve-dispatch-model.sh" <mode> 2>/dev/null)
 ```
 
 **The re-export above is belt-and-suspenders, not the only line of defense ([#1263](https://github.com/mattsears18/shipyard/issues/1263)).** `resolve-dispatch-model.sh` itself also resolves the `.shipyard-primary-root` stash internally when `SHIPYARD_REPO_ROOT` isn't already set, so a call to it that skips the preamble above (a stray direct invocation, a future call site that never grows one) still honors the repo's `models.<mode>` override rather than silently falling back to the built-in default. Keep the explicit preamble here regardless — it documents intent and is what `shipyard-repo-root-preamble.test.sh` mechanically checks for — but correctness no longer depends solely on it.
@@ -57,11 +57,11 @@ dispatch_model=$("${CLAUDE_PLUGIN_ROOT}/scripts/resolve-dispatch-model.sh" <mode
 
 **Resolve the plugin root once and pass it to every worker as a literal fallback path ([#965](https://github.com/mattsears18/shipyard/issues/965)).** `shipyard:worker-preamble`'s step-0 fail-fast instructs every worker to resolve `CLAUDE_PLUGIN_ROOT` itself via a compound `export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(...)}"` one-liner — but that exact compound shape (command substitutions plus an inline `if`) is refused by the harness's Auto Mode classifier as "too complex to verify that it stays inside the worktree" when it fires as, or near, a worktree-isolated dispatch's first tool call. The orchestrator already resolved `CLAUDE_PLUGIN_ROOT` for its own use above (the per-dispatch model-resolution call); reuse that **same** resolved value rather than re-deriving it a second time, and pass it to every worker as a literal string embedded directly in the dispatch prompt — so the worker never has to run the compound block at all, and the refusal (plus the wasted tool call and misrouted recovery text it costs on nearly every dispatch) is sidestepped entirely rather than merely documented.
 
-**Scope caveat — this literal is an invocation fallback, never a read/edit target ([#969](https://github.com/mattsears18/shipyard/issues/969)).** The orchestrator-resolved value is the **primary checkout's** path. That's harmless for `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` invocation (read-only execution), but on the dogfooding repo (shipyard working on its own source) it is also the exact tree `dont.md` forbids ever reading-to-edit or writing to. A worker dispatched to edit `plugins/shipyard/...` spec files that took this literal at face value edited the primary checkout by mistake — `enforce-worktree-isolation.sh` caught it, but only after burning a wasted edit cycle (issue #969's repro, session `do-work-20260726T204019Z-8133`, worker on #966). Rather than rely on prose caution alone (an explicit ad-hoc warning in that same dispatch prompt was not enough to stop the repro), the paragraph below makes the worker's **own worktree copy the default** whenever one exists, and the orchestrator-supplied literal a fallback for consumer-install layouts that have no worktree-local `plugins/shipyard` to begin with.
+**Scope caveat — this literal is an invocation fallback, never a read/edit target ([#969](https://github.com/mattsears18/shipyard/issues/969)).** The orchestrator-resolved value is the **primary checkout's** path. That's harmless for `$CLAUDE_PLUGIN_ROOT/scripts/*.sh` invocation (read-only execution), but on the dogfooding repo (shipyard working on its own source) it is also the exact tree `dont.md` forbids ever reading-to-edit or writing to. A worker dispatched to edit `plugins/shipyard/...` spec files that took this literal at face value edited the primary checkout by mistake — `enforce-worktree-isolation.sh` caught it, but only after burning a wasted edit cycle (issue #969's repro, session `do-work-20260726T204019Z-8133`, worker on #966). Rather than rely on prose caution alone (an explicit ad-hoc warning in that same dispatch prompt was not enough to stop the repro), the paragraph below makes the worker's **own worktree copy the default** whenever one exists, and the orchestrator-supplied literal a fallback for consumer-install layouts that have no worktree-local `plugins/shipyard` to begin with.
 
 Prepend this Context paragraph as the **first** paragraph of every dispatch prompt this section builds, for every mode in the routing table above, under **both** dispatch shapes:
 
-> **Resolved plugin root (orchestrator-supplied, literal path — invocation fallback, NOT a read/edit target):** `<CLAUDE_PLUGIN_ROOT>`. This literal is scoped to `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` **invocation only**. **Before using it, prefer your own worktree's copy if one exists** — run `git rev-parse --show-toplevel` as its own plain command, then `test -d "<that-toplevel>/plugins/shipyard/scripts"` as another plain command (never chain the two with `&&`/`if` — that compound shape is what issue #965 reports as refused). Exit 0 → use `<that-toplevel>/plugins/shipyard` as `CLAUDE_PLUGIN_ROOT` for BOTH script invocation AND as the base for every spec file you read-to-edit or write for the rest of this dispatch — this is the dogfooding case (this session working on shipyard's own repo), where the literal above resolves to the **primary checkout**, the one tree `dont.md` forbids writing to. Non-zero exit → no worktree-local plugin copy (a consumer-install layout, with no plugin spec files under your worktree to edit anyway) — fall back to the literal path above, for script invocation only. See issue #969.
+> **Resolved plugin root (orchestrator-supplied, literal path — invocation fallback, NOT a read/edit target):** `<CLAUDE_PLUGIN_ROOT>`. This literal is scoped to `$CLAUDE_PLUGIN_ROOT/scripts/*.sh` **invocation only**. **Before using it, prefer your own worktree's copy if one exists** — run `git rev-parse --show-toplevel` as its own plain command, then `test -d "<that-toplevel>/plugins/shipyard/scripts"` as another plain command (never chain the two with `&&`/`if` — that compound shape is what issue #965 reports as refused). Exit 0 → use `<that-toplevel>/plugins/shipyard` as `CLAUDE_PLUGIN_ROOT` for BOTH script invocation AND as the base for every spec file you read-to-edit or write for the rest of this dispatch — this is the dogfooding case (this session working on shipyard's own repo), where the literal above resolves to the **primary checkout**, the one tree `dont.md` forbids writing to. Non-zero exit → no worktree-local plugin copy (a consumer-install layout, with no plugin spec files under your worktree to edit anyway) — fall back to the literal path above, for script invocation only. See issue #969.
 
 Under the `Workflow`-substrate alternate, the **same** resolved value is additionally passed as the `pluginRoot` field on the work unit — required on every unit, alongside `worktreePath` (see the per-mode payload examples in [Workflow-substrate dispatch](#workflow-substrate-dispatch--an-alternate-dispatch-shape-825) below) — so the shared `worktreeAnchorLines` helper can render the same worktree-local-preferred check into the worktree-anchor block instead of blindly emitting the literal as an unconditional export, closing the same gap at the point a `Workflow`-dispatched worker hits it first: its own dispatch prompt, before it has even loaded the skill. When `pluginRoot` is omitted (a caller predating #965), `worktreeAnchorLines` falls back to emitting the compound self-resolving block unchanged (which itself already checks the worktree first) — every existing behavior is preserved, this is additive.
 
@@ -96,7 +96,7 @@ When filling a slot, walk this decision tree:
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
-   triage_auto_close=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.auto_close 2>/dev/null || echo "confident-only")
+   triage_auto_close=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.auto_close 2>/dev/null || echo "confident-only")
    ```
 
    **For `investigate` dispatches** — `mode: investigate` (Sonnet-pinned). Prompt template (mirrored by `buildInvestigatePrompt`):
@@ -120,10 +120,10 @@ When filling a slot, walk this decision tree:
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
-   verify_stale=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+   verify_stale=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.verify_check_failing_on_head_before_dispatch 2>/dev/null || echo "false")
    if [ "$verify_stale" = "true" ]; then
-     stale_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/stale-failure-check.sh" check --repo <owner/repo> --pr <M>)
+     stale_result=$("$CLAUDE_PLUGIN_ROOT/scripts/stale-failure-check.sh" check --repo <owner/repo> --pr <M>)
    fi
    ```
 
@@ -145,7 +145,7 @@ When filling a slot, walk this decision tree:
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
-   require_settle=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+   require_settle=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.require_in_progress_check_to_settle 2>/dev/null || echo "false")
    if [ "$require_settle" = "true" ]; then
      in_progress=$(gh pr view <M> --repo <owner/repo> \
@@ -182,7 +182,7 @@ When filling a slot, walk this decision tree:
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   reap_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/pre-dispatch-branch-reap.sh" reap \
+   reap_result=$("$CLAUDE_PLUGIN_ROOT/scripts/pre-dispatch-branch-reap.sh" reap \
      --head-ref "$head_ref" --session-id "<session-id>" --phase "steady-state-pre-dispatch")
    ```
 
@@ -194,7 +194,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    if [ -n "${worktree_path:-}" ] && [ -e "$worktree_path" ]; then
-     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+     "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
        --action reaped-failed \
        --worktree-path "$worktree_path" \
        --worktree-name "$worktree_name" \
@@ -286,7 +286,7 @@ When filling a slot, walk this decision tree:
      SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
      [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
      export SHIPYARD_REPO_ROOT
-     SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
+     SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
      if [ "$SELF_ASSIGN" = "true" ]; then
        gh issue edit <N> --repo <owner/repo> --add-assignee @me --add-label shipyard
      else
@@ -303,7 +303,7 @@ When filling a slot, walk this decision tree:
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   guard_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/concurrent-session-guard.sh" check --issue <N>)
+   guard_result=$("$CLAUDE_PLUGIN_ROOT/scripts/concurrent-session-guard.sh" check --issue <N>)
    ```
 
    Parse `guard_result`:
@@ -331,10 +331,10 @@ When filling a slot, walk this decision tree:
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
-   vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
-   vc_manifest=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
-   vc_version_jq=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
-   vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
+   vc_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
+   vc_manifest=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
+   vc_version_jq=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
+   vc_changelog=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
    ```
 
    When `vc_enabled == "true"` AND `vc_manifest` is non-empty, walk `session_prs` to find the highest manifest version any in-flight PR has already claimed — then take the max of that and the session-local cursor ([#437](https://github.com/mattsears18/shipyard/issues/437)) so versions claimed by **sibling workers dispatched in the same batch** (whose PRs aren't open yet, so the `session_prs` walk can't see them) are still respected. The `session_prs` walk is a data-dependent loop with internal `gh api | base64 -d | jq` pipes — the same for-loop-wraps-gh-calls-plus-pipe shape the worktree-isolation guard refuses post-relocation — so it's extracted to [`scripts/next-available-version.sh`](../../scripts/next-available-version.sh) (issue #1289, mirrors #1277's `stale-check-refresh.sh` precedent). The extraction also gives the cursor a REAL persistence mechanism: a bash variable doesn't survive between the separate Bash tool calls that compose a batch's N prompts, so the pre-extraction cursor was silently resetting every call; the script's `--cursor-file` is a real file that persists correctly across those calls:
@@ -343,7 +343,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    default_branch=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-   version_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/next-available-version.sh" compute \
+   version_result=$("$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" compute \
      --repo <owner/repo> --manifest "$vc_manifest" --version-jq "$vc_version_jq" \
      --default-branch "$default_branch" --issue <N> \
      --session-prs "<session_prs, space or comma separated>" \
@@ -376,7 +376,7 @@ When filling a slot, walk this decision tree:
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
-   decompose_max_subissues=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get decompose.max_subissues 2>/dev/null || echo "8")
+   decompose_max_subissues=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get decompose.max_subissues 2>/dev/null || echo "8")
    ```
 
    Prompt template:
@@ -414,7 +414,7 @@ When filling a slot, walk this decision tree:
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
-   verify_gate=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get verify_gate.enabled 2>/dev/null || echo "false")
+   verify_gate=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get verify_gate.enabled 2>/dev/null || echo "false")
    ```
 
    When `verify_gate == "true"` **AND** `originating_author_trust == "trusted"`, append this Context paragraph to the dispatch prompt between the `mode:` line and the Return values line:
@@ -515,7 +515,7 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
 2. **Resolve the model exactly as the per-dispatch model-resolution rule above** — `resolve-dispatch-model.sh <mode>` — and put the resolved family alias (`opus`/`sonnet`/`haiku`/`fable`) on the work unit's `model` field; the workflow script's `agent()` call takes it as its own `model` option. This preserves every mode's tier from the routing table at the top of this file (Haiku for `fix-checks-only`, Sonnet for `fix-rebase`/`fix-main-ci`/`fix-failing-prs-batch`/`investigate`/`issue-work`, session-default for `spike`) — the resolver is mode-parameterized, so nothing here re-derives or overrides those tiers.
 
-3. **Invoke the `Workflow` tool** against `${CLAUDE_PLUGIN_ROOT}/workflows/do-work-dispatch.workflow.js`, passing `args`. The shared envelope is the same across every mode (`repo`, `concurrency`, `models`); the single `issues[0]` entry's fields vary by mode — only the fields each mode's builder consumes need be present, everything else may be omitted. **`mode` and `worktreePath` are required on every unit regardless of mode** (hook-enforced — [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) hard-fails a unit with no `worktreePath`). **`pluginRoot` should also be supplied on every unit ([#965](https://github.com/mattsears18/shipyard/issues/965), not yet hook-enforced)** — the same literal `CLAUDE_PLUGIN_ROOT` value resolved once above (see [Resolve the plugin root once and pass it to every worker as a literal fallback path](#dispatch-rules-used-by-step-7-and-step-c) above). `worktreeAnchorLines` reads it off the unit and, when present, renders a worktree-local-preferred check (`test -d "<worktreePath>/plugins/shipyard/scripts"`, then `export CLAUDE_PLUGIN_ROOT` to the worktree-local path on a hit or to the literal `pluginRoot` fallback on a miss — [#969](https://github.com/mattsears18/shipyard/issues/969)) rather than an unconditional literal export; when `pluginRoot` is absent it falls back to the compound self-resolving block unchanged, so an older caller that omits the field still works exactly as before:
+3. **Invoke the `Workflow` tool** against `$CLAUDE_PLUGIN_ROOT/workflows/do-work-dispatch.workflow.js`, passing `args`. The shared envelope is the same across every mode (`repo`, `concurrency`, `models`); the single `issues[0]` entry's fields vary by mode — only the fields each mode's builder consumes need be present, everything else may be omitted. **`mode` and `worktreePath` are required on every unit regardless of mode** (hook-enforced — [`enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh) hard-fails a unit with no `worktreePath`). **`pluginRoot` should also be supplied on every unit ([#965](https://github.com/mattsears18/shipyard/issues/965), not yet hook-enforced)** — the same literal `CLAUDE_PLUGIN_ROOT` value resolved once above (see [Resolve the plugin root once and pass it to every worker as a literal fallback path](#dispatch-rules-used-by-step-7-and-step-c) above). `worktreeAnchorLines` reads it off the unit and, when present, renders a worktree-local-preferred check (`test -d "<worktreePath>/plugins/shipyard/scripts"`, then `export CLAUDE_PLUGIN_ROOT` to the worktree-local path on a hit or to the literal `pluginRoot` fallback on a miss — [#969](https://github.com/mattsears18/shipyard/issues/969)) rather than an unconditional literal export; when `pluginRoot` is absent it falls back to the compound self-resolving block unchanged, so an older caller that omits the field still works exactly as before:
 
    **`issue-work`**:
 
@@ -680,7 +680,7 @@ A denial that is not recorded is invisible: the slot goes unfilled and the targe
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" record-denial \
+bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-denial \
   --session-id "$session_id" --expected-repo "<owner/repo>" \
   --target "<#N|#M|main|pr-pileup>" --mode "<mode>" \
   --denial-text "<verbatim first line of the harness denial>" \

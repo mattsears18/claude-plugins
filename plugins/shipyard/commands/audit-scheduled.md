@@ -41,8 +41,8 @@ The mechanics split the same way `/shipyard:eas-watch` does: this spec owns orch
 ### 2. Read the effective `audits.schedule` config
 
 ```bash
-SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/audit-schedule.sh"
-SCHEDULE_JSON=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get audits.schedule 2>/dev/null)
+SCRIPT="$CLAUDE_PLUGIN_ROOT/scripts/audit-schedule.sh"
+SCHEDULE_JSON=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get audits.schedule 2>/dev/null)
 ```
 
 `shipyard-config.sh get` prints `null` (via jq's default `-r` string coercion this may render as the literal text `null`, or the call may simply fail with exit 3 when the path isn't present) when the repo has no `audits.schedule` block configured. Treat either case as "nothing scheduled": if `$SCHEDULE_JSON` is empty or the literal string `null`, print **"No audits.schedule configured — nothing to do. See `/shipyard:init` or CLAUDE.md's Configuration section to add one."** and stop. Do NOT fall back to running `/audit all` — an absent schedule means the maintainer hasn't opted in yet, not "run everything."

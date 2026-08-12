@@ -100,7 +100,7 @@ The command is a thin wrapper. The assistant's job is to:
 1. **Resolve the flags** from the user's args (`--json`, `--stale`, `--stale-seconds N`).
 2. **Forward to the helper script**:
    ```bash
-   ${CLAUDE_PLUGIN_ROOT}/scripts/status.sh "$@"
+   $CLAUDE_PLUGIN_ROOT/scripts/status.sh "$@"
    ```
 3. **Print the helper's output verbatim.** The helper handles the empty-sessions case ("no active sessions") and the no-in-flight case ("sessions present but no slots active") without any orchestrator intervention.
 

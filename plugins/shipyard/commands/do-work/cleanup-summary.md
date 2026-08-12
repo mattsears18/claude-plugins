@@ -35,7 +35,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" record-session-end \
+   "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-session-end \
      --session-id "<session-id>" \
      --reason "<completed|bounded-exit|user-stop>" \
      --detail "drain exited via <drain-exit-reason>; session_prs merged=<m> blocked:ci=<c> rebase-blocked=<r> pending=<p>; ledger dispatchable=<bucket10> unaccounted=<bucket11>" \
@@ -68,7 +68,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    REPO_ROOT="$(git rev-parse --show-toplevel)"
    # Declare our orchestrator PID so classify-lock short-circuits on our own
    # locks (issue #263) — same rationale as the generic sweep below.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
+   export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
 
    # Feed this session's agent-ids (one per line) on stdin: the union of
    # reconciled_agent_ids and every live in_flight slot's agent_id. The helper
@@ -92,7 +92,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      esac
    done < <(
      printf '%s\n' "${session_agent_ids[@]}" \
-       | "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap-session-worktrees \
+       | "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-session-worktrees \
            --repo-root "$REPO_ROOT" \
            --session-id "<session-id>"
    )
@@ -118,7 +118,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    # ancestor walk inside classify-lock can fail to find the orchestrator
    # whenever an intermediate harness layer returns empty PPID, deferring
    # the reap and stranding worktrees.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
+   export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
 
    for wt_dir in .git/worktrees/agent-*; do
      [ -d "$wt_dir" ] || continue
@@ -126,7 +126,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
      [ -z "$worktree_path" ] && continue
 
-     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
+     classification=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" \
        classify-lock "$wt_dir/locked")
 
      # Extract the lock PID for the audit log (best effort; null literal
@@ -150,7 +150,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
        # classification so the audit line doesn't misreport an `unknown`
        # defer as `peer-alive`.
        deferred_live=$((deferred_live + 1))
-       "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+       "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
          --action deferred \
          --worktree-path "$worktree_path" \
          --worktree-name "$name" \
@@ -176,7 +176,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      # pass above did NOT already reach (cross-session leftovers, and any
      # this-session worktree whose id wasn't in session_agent_ids), so a
      # .returned_agent_ids record is not guaranteed to exist here.
-     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+     "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
        --action reaped \
        --worktree-path "$worktree_path" \
        --worktree-name "$name" \
@@ -216,7 +216,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      branch_name="${branch_line#reaped-branch: }"
      reaped_orphan_branches=$((reaped_orphan_branches + 1))
    done < <(
-     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap-orphan-branches \
+     "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-branches \
        --repo-root "$(git rev-parse --show-toplevel)" \
        --session-id "<session-id>"
    )
@@ -254,7 +254,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      # sites' own #1274 additions) never ran or missed it for any reason.
      # `--classification unknown` because this probe doesn't run
      # classify-lock per worktree — it's a pure filesystem check.
-     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+     "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
        --action reaped-failed \
        --worktree-path "$leftover_path" \
        --worktree-name "$(basename "$leftover_path")" \
@@ -264,7 +264,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
        --lock-pid "null" \
        --phase "cleanup-summary-5.5" 2>/dev/null || true
    done < <(
-     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" report-unreaped \
+     "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" report-unreaped \
        --repo-root "$(git rev-parse --show-toplevel)" \
        --current-session-id "<session-id>"
    )
@@ -322,7 +322,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    # `fast_worktree_remove` tries a non-destructive rename-aside first, then
    # falls back to plain `git worktree remove`, and only escalates to
    # `--force` behind the evidence gate.
-   "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+   "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
      --action reaped \
      --worktree-path "$ORCH_WT_ABS" \
      --worktree-name "orchestrator-<session-id>" \
@@ -345,7 +345,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    # cost-history.jsonl. Both are idempotent, but the wait eliminates the race.
    wait "${SETUP_BACKGROUND_PID:-}" 2>/dev/null || true
 
-   "${CLAUDE_PLUGIN_ROOT}/scripts/cost-history.sh" flush --session-id "<session-id>"
+   "$CLAUDE_PLUGIN_ROOT/scripts/cost-history.sh" flush --session-id "<session-id>"
    ```
 
    The `flush` subcommand is idempotent (a session id that already appears in the ledger is silently skipped) and exits 0 with no output when the session file is missing — same don't-gate-exit posture as `session-state.sh cleanup`. The two ledger files (`cost-history.jsonl`, `cost-history-issues.jsonl`) are read by `/shipyard:cost report` to produce cross-session usage reports. **Order matters: flush before cleanup**, otherwise the data we want to persist is already gone.
@@ -355,7 +355,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   "${CLAUDE_PLUGIN_ROOT}/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
+   "$CLAUDE_PLUGIN_ROOT/scripts/gh-cached.sh" cleanup --session-id "<session-id>"
    ```
 
    Idempotent; same don't-gate-exit posture as the session-state cleanup. The cache directory at `$SHIPYARD_HOME/cache/<session-id>/` is session-scoped and has no value after the session terminates — leaving it behind would accumulate on long-running workstations.
@@ -365,7 +365,7 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" cleanup --session-id "<session-id>"
+   "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" cleanup --session-id "<session-id>"
    ```
 
    The `cleanup` subcommand is idempotent. Don't gate session exit on this call; a stale session file gets overwritten by the next session's `init --force`. If `SHIPYARD_KEEP_SESSIONS=1` is set, skip the cleanup call (file stays as a permanent record).
@@ -383,8 +383,8 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
-   MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
-   SWEEP_ON_LOOP_END=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.sweep_on_loop_end 2>/dev/null || echo "false")
+   MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
+   SWEEP_ON_LOOP_END=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.sweep_on_loop_end 2>/dev/null || echo "false")
    roadmap_sweep_ran=false
    roadmap_applied_count=0
    roadmap_proposed_count=0

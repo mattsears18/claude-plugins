@@ -59,10 +59,40 @@
 #   locate it — the circularity this whole preamble exists to avoid.
 #
 # This test is the regression guard: if anyone adds a new bash block that
-# uses ${CLAUDE_PLUGIN_ROOT} without a valid preamble at its top, the test
+# uses $CLAUDE_PLUGIN_ROOT without a valid preamble at its top, the test
 # fails. Existing blocks were swept by the issue #354 PR (then shrunk in
 # place by issue #883); new ones (or any block whose preamble got moved /
 # removed / reverted to the old four-layer form) regress here.
+#
+# --- Unbraced-expansion convention (issue #1308) ---------------------------
+#
+# Every INVOCATION site spells the variable unbraced — `$CLAUDE_PLUGIN_ROOT`,
+# never `${CLAUDE_PLUGIN_ROOT}`. The braced form is refused outright by the
+# harness's worktree-isolation guard once a session is isolated in a worktree
+# ("this command is too complex to verify that it stays inside the worktree"),
+# and that refusal fires on the BRACES, not on statement count, loop shape,
+# block length, or whether the expansion sits in command position — the four
+# axes issues #1182 / #1277 / #1289 / #1291 each decomposed in turn without
+# stopping the refusals. See setup/00-config-worktree.md step 0.3 for the
+# controlled experiment table that isolated it.
+#
+# Two consequences for this test:
+#
+#   - `has_ref` below matches the UNBRACED spelling. Matching only the braced
+#     form after the #1308 sweep would make every check pass vacuously across
+#     zero blocks — an absence-assertion that observed nothing, which is not a
+#     pass (see worker-preamble's ci-pitfalls.md). Check (3b) asserts a floor
+#     on the observed block count so that failure mode can't recur silently.
+#   - Check (8) bans the braced spelling outright, repo-wide across the
+#     plugin's markdown. That is the actual convention guard: without it, a
+#     re-braced call site would simply drop out of coverage rather than fail.
+#
+# The one place the braced spelling legitimately survives is the canonical
+# preamble itself (`${CLAUDE_PLUGIN_ROOT:-...}`) — `${VAR:-default}` has no
+# unbraced spelling in POSIX shell. That is exactly why the preamble is
+# PRE-RELOCATION-ONLY and why the stash-read form below exists for everything
+# after it. Check (8) matches the braced form with a CLOSING brace only, so
+# the `:-` default form is untouched.
 #
 # --- Post-relocation stash-read form (issue #1181) --------------------------
 #
@@ -298,7 +328,12 @@ walk_blocks() {
 
     # inside a block
     in_block {
-      if (/\$\{CLAUDE_PLUGIN_ROOT\}/) {
+      # Unbraced spelling only (issue #1308) — `$CLAUDE_PLUGIN_ROOT` followed
+      # by a non-identifier character or end-of-line. Deliberately does NOT
+      # match `${CLAUDE_PLUGIN_ROOT:-...}` (the char after `$` is `{`), so a
+      # preamble-only block still reports has_ref=0 and is recognised as the
+      # leading block of the two-block idiom.
+      if (/\$CLAUDE_PLUGIN_ROOT([^A-Za-z0-9_]|$)/) {
         has_ref = 1
       }
       if (/[^ \t]/) {
@@ -353,7 +388,60 @@ for f in "${FILES[@]}"; do
 done
 
 if (( offending_blocks == 0 )); then
-  assert_pass "all $total_ref_blocks bash blocks using \${CLAUDE_PLUGIN_ROOT} across ${#FILES[@]} scanned files carry a valid preamble"
+  assert_pass "all $total_ref_blocks bash blocks using \$CLAUDE_PLUGIN_ROOT across ${#FILES[@]} scanned files carry a valid preamble"
+fi
+
+# (3b) Vacuous-pass guard (issue #1308). Check (3) above is an ABSENCE
+# assertion: it only reports offending blocks, so a `has_ref` pattern that
+# stops matching — because the spelling convention changed underneath it, as
+# it did during the #1308 sweep — turns the whole check into "0 blocks
+# examined, 0 offences found, PASS". That is a pass over nothing, not a pass.
+# #910 closed the same failure shape one layer up (an empty FILES array);
+# this closes it at the block layer. The floor is deliberately well below the
+# real count (~180 at the time of writing) so ordinary spec churn never trips
+# it — only a matcher that has gone blind.
+REF_BLOCK_FLOOR=100
+if (( total_ref_blocks >= REF_BLOCK_FLOOR )); then
+  assert_pass "block-level discovery observed $total_ref_blocks \$CLAUDE_PLUGIN_ROOT blocks (>= floor $REF_BLOCK_FLOOR)"
+else
+  assert_fail "block-level discovery observed only $total_ref_blocks \$CLAUDE_PLUGIN_ROOT blocks (expected >= $REF_BLOCK_FLOOR — the has_ref matcher has likely gone blind, making check (3) pass vacuously; see issue #1308)"
+fi
+
+# (3c) Convention guard (issue #1308). The BRACED spelling
+# `${CLAUDE_PLUGIN_ROOT}` is refused by the harness worktree-isolation guard
+# in every isolated session, so no invocation site may use it. Scanned across
+# the whole plugin's markdown (not just SCAN_DIRS): the refusal is a property
+# of the shell syntax, so it applies identically to /shipyard:my-turn,
+# /shipyard:file-issue, the auditor skills, and every other surface that
+# templates a helper invocation.
+#
+# The pattern requires a CLOSING brace, so the canonical preamble's
+# `${CLAUDE_PLUGIN_ROOT:-...}` default-expansion is deliberately NOT matched —
+# it has no unbraced spelling and is pre-relocation-only by design (#1181).
+# Exactly ONE file is exempt: the fragment that documents the ban. It quotes
+# the braced spelling in its controlled-experiment table, so a blanket scan
+# would flag the documentation of the rule as a violation of it. The exemption
+# is a single named path, and its existence is asserted below — a rename or
+# deletion must not silently widen the hole into "no file is scanned".
+BRACE_DOC_EXEMPT="plugins/shipyard/commands/do-work/bash-refusal-triggers.md"
+
+PLUGIN_ROOT_DIR="$repo_root/plugins/shipyard"
+if [[ -f "$repo_root/$BRACE_DOC_EXEMPT" ]]; then
+  assert_pass "brace-ban exemption target exists ($BRACE_DOC_EXEMPT)"
+else
+  assert_fail "brace-ban exemption target is missing ($BRACE_DOC_EXEMPT) — the exemption below would silently apply to nothing; re-point it or drop it"
+fi
+
+# shellcheck disable=SC2016  # literal search text — must NOT expand
+braced_hits=$(grep -rlF '${CLAUDE_PLUGIN_ROOT}' "$PLUGIN_ROOT_DIR" --include='*.md' 2>/dev/null \
+  | grep -vF "$repo_root/$BRACE_DOC_EXEMPT" | sort)
+if [[ -z "$braced_hits" ]]; then
+  assert_pass "no braced \${CLAUDE_PLUGIN_ROOT} spelling anywhere in the plugin's markdown (issue #1308)"
+else
+  assert_fail "braced \${CLAUDE_PLUGIN_ROOT} found — the harness refuses this form in an isolated session; use the unbraced \$CLAUDE_PLUGIN_ROOT (issue #1308)"
+  while IFS= read -r hit; do
+    printf '         %s\n' "${hit#"$repo_root/"}"
+  done <<< "$braced_hits"
 fi
 
 # (4) Sanity check — the preamble itself must actually work. Run it in a

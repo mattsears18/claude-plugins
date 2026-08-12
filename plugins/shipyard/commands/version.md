@@ -11,12 +11,12 @@ Prints the `version` field from the installed plugin's `plugin.json`. One line, 
 Run:
 
 ```bash
-jq -r '.version' "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json"
+jq -r '.version' "$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json"
 ```
 
 Print stdout verbatim. If `jq` is unavailable or the file is missing, surface the error and stop — don't try to compute the version another way.
 
-`${CLAUDE_PLUGIN_ROOT}` resolves to the *installed* plugin directory (under `~/.claude/plugins/cache/shipyard/shipyard/<version>/`), so the result reflects what's actually loaded — not whatever copy is checked out in a repo.
+`$CLAUDE_PLUGIN_ROOT` resolves to the *installed* plugin directory (under `~/.claude/plugins/cache/shipyard/shipyard/<version>/`), so the result reflects what's actually loaded — not whatever copy is checked out in a repo.
 
 ## Related
 

@@ -3003,7 +3003,7 @@ assert_contains "$steady_state_path" \
 # Dollar-sign variable refs here are literal characters inside a fenced bash
 # code block quoted in the markdown, not something this test script expands.
 assert_contains "$steady_state_path" \
-  '"${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
+  '"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
   "steady-state.md step C stamps the invariant-line tokens via the executable backlog-filter.sh summary subcommand, not prose alone (#1246)"
 assert_contains "$steady_state_path" \
   'issues/1246' \
@@ -3017,7 +3017,7 @@ assert_contains "$drain_path" \
 # Dollar-sign variable refs here are literal characters inside a fenced bash
 # code block quoted in the markdown, not something this test script expands.
 assert_contains "$drain_path" \
-  '"${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
+  '"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
   "drain.md termination-assertion step 4 stamps the invariant-line tokens via the executable backlog-filter.sh summary subcommand, not prose alone (#1246)"
 assert_contains "$drain_path" \
   'issues/1246' \
@@ -3050,7 +3050,7 @@ assert_contains "$steady_state_path" \
 # bash code block quoted in the markdown, not something this test script
 # expands.
 assert_contains "$steady_state_path" \
-  '"${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" disk-check' \
+  '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" disk-check' \
   "steady-state.md step C probes free space via the worktree-reap.sh disk-check subcommand"
 assert_contains "$steady_state_path" \
   'worktree_reap.disk_free_floor_mb' \
