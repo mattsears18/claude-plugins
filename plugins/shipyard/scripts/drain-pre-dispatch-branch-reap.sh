@@ -150,8 +150,9 @@ case "$sub" in
     if [ "$PRIMARY_BRANCH" = "$head_ref" ]; then
       DEFAULT_BRANCH=$("$GH" repo view "$repo" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
       if [ -z "$(git -C "$PRIMARY_CHECKOUT" status --porcelain 2>/dev/null)" ]; then
-        git -C "$PRIMARY_CHECKOUT" checkout "$DEFAULT_BRANCH" 2>/dev/null \
-          && git -C "$PRIMARY_CHECKOUT" pull --ff-only 2>/dev/null || true
+        if git -C "$PRIMARY_CHECKOUT" checkout "$DEFAULT_BRANCH" 2>/dev/null; then
+          git -C "$PRIMARY_CHECKOUT" pull --ff-only 2>/dev/null || true
+        fi
         echo "[primary-leak] restored primary from $head_ref to $DEFAULT_BRANCH before fix-rebase dispatch (#387)"
         primary_leak_restored=true
       else
