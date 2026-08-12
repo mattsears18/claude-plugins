@@ -1751,6 +1751,64 @@ else
   fi
 fi
 
+# --- (81c)-(81f) issue #1274 — `--action reaped-failed` is directly
+# invocable (not only an internal downgrade of `reaped`), with NO removal
+# attempt. This is the safe, non-destructive follow-up call a caller issues
+# from a SEPARATE Bash tool call after it has already determined — via a
+# non-destructive post-hoc existence check — that a prior reap attempt did
+# not happen, most commonly because the attempt's own Bash tool call was
+# denied outright by the auto-mode permission classifier before this
+# script's own reaped/reaped-failed branching ever ran.
+bash "$helper" reap --action reaped-failed \
+  --worktree-path /nonexistent --worktree-name wt1274 \
+  --session-id s1274 --reason foo >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(81c) reaped-failed without --classification exits 64"
+
+bash "$helper" reap --action reaped-failed \
+  --worktree-path /nonexistent --worktree-name wt1274 \
+  --session-id s1274 --classification unknown >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(81d) reaped-failed without --reason exits 64"
+
+reset_fast_layout
+fast_add_worktree wt1274direct
+wt1274direct_path="$fast_repo/.claude/worktrees/wt1274direct"
+SHIPYARD_HOME="$fast_home" bash "$helper" reap \
+  --action reaped-failed \
+  --worktree-path "$wt1274direct_path" \
+  --worktree-name "wt1274direct" \
+  --session-id "s1274" \
+  --classification "peer-alive" \
+  --reason "classifier-denied" \
+  --lock-pid 12345 \
+  --phase "test-1274" >/dev/null 2>&1
+direct_rc=$?
+assert_exit_code "$direct_rc" "0" \
+  "(81e) direct reaped-failed invocation exits 0"
+
+if [ -d "$wt1274direct_path" ]; then
+  printf '  %sPASS%s  (81f) direct reaped-failed made NO removal attempt — worktree untouched\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (81f) direct reaped-failed removed the worktree — it must never attempt removal\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+direct_line=$(cat "$fast_home/reap-audit.jsonl" 2>/dev/null)
+direct_shape_ok=1
+case "$direct_line" in *'"action":"reaped-failed"'*) ;; *) direct_shape_ok=0 ;; esac
+case "$direct_line" in *'"reason":"classifier-denied"'*) ;; *) direct_shape_ok=0 ;; esac
+case "$direct_line" in *'"classification":"peer-alive"'*) ;; *) direct_shape_ok=0 ;; esac
+case "$direct_line" in *'"phase":"test-1274"'*) ;; *) direct_shape_ok=0 ;; esac
+if [ "$direct_shape_ok" = "1" ]; then
+  printf '  %sPASS%s  (81g) direct reaped-failed audit line carries action/reason/classification/phase\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (81g) unexpected direct reaped-failed audit line shape: %s\n' "$RED" "$RESET" "$direct_line"
+  fail=$((fail+1))
+fi
+
 # --- (82) reap-session-worktrees reports `unreaped:` when the removal fails ---
 # The status line must reflect the VERIFIED end state, not the intent. Before
 # #712 it printed `reaped:` before the removal even ran, so a failed removal

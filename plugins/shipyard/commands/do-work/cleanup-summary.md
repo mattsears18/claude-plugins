@@ -213,6 +213,28 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      [ -z "$leftover_path" ] && continue
      unreaped_worktrees=$((unreaped_worktrees + 1))
      printf 'unreaped-leftover: %s\n' "$leftover_path"
+     # Issue #1274 — this probe used to be read-only: it computed the tally
+     # above for the summary line but never wrote a durable audit-log record
+     # of WHICH worktrees survived or why. That's how a full session shipping
+     # 11+ PRs against ~12 stranded worktrees could still leave
+     # ~/.shipyard/reap-audit.jsonl completely untouched — every per-dispatch
+     # reap attempt (A.0.5 / A.1 / step B / dispatch-rules §2d) is
+     # fire-and-forget, and this end-of-session probe was the one place that
+     # DOES see every survivor but wasn't recording it either. Write a
+     # `reaped-failed` line per leftover here so the durable trail exists
+     # even for a survivor whose own per-dispatch verify step (see those
+     # sites' own #1274 additions) never ran or missed it for any reason.
+     # `--classification unknown` because this probe doesn't run
+     # classify-lock per worktree — it's a pure filesystem check.
+     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+       --action reaped-failed \
+       --worktree-path "$leftover_path" \
+       --worktree-name "$(basename "$leftover_path")" \
+       --session-id "<session-id>" \
+       --classification "unknown" \
+       --reason "still-present-at-end-of-session-cleanup (#1274)" \
+       --lock-pid "null" \
+       --phase "cleanup-summary-5.5" 2>/dev/null || true
    done < <(
      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" report-unreaped \
        --repo-root "$(git rev-parse --show-toplevel)" \
