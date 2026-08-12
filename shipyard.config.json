@@ -48,5 +48,12 @@
     "manifest_path": "plugins/shipyard/.claude-plugin/plugin.json",
     "manifest_version_jq": ".version",
     "changelog_path": "CHANGELOG.md"
+  },
+  "milestones": {
+    "enabled": true,
+    "fallback": "Ongoing maintenance",
+    "assign_on_file": true,
+    "prioritize_dispatch": true,
+    "sweep_on_loop_end": true
   }
 }
