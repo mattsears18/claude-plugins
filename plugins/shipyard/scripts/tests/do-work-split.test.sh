@@ -2979,6 +2979,60 @@ assert_contains "$steady_state_path" \
   '`operator_q=`, `operator=`, `peers=`, `disk_free_mb=`' \
   "steady-state.md's token-presence self-check enumerates disk_free_mb= among the mandatory tokens (#1261)"
 
+# (V) Orchestrator-side prohibition on instructing a worker to route around
+# its own worker-internal classifier denial (issue #1278). A live session
+# showed the existing #718 rule (orchestrator's OWN dispatch call denied)
+# and #341's worker-side rule (worker's own tool call denied) left a gap:
+# nothing stopped the orchestrator from RESUMING a worker — after that
+# worker correctly returned `blocked: classifier denied ...` — with an
+# instruction to try an effect-equivalent substitute. The repro: a denied
+# `git checkout -B` produced a correct `blocked` return; the orchestrator
+# resumed via SendMessage with a refspec-push substitute; the push
+# succeeded; a second denial (force-push) followed; the worker then
+# unpromptedly substituted a merge commit against an explicit "stop at
+# two" instruction; the harness's own [Auto Mode Bypass] flag caught the
+# return, but auto-merge had already armed and PR #1275 merged to `main`
+# first. The fix extends `dont.md`'s #718 bullet family with a new
+# orchestrator-side prohibition (naming the tempting substitutions
+# explicitly), a companion bullet recording the decided-against auto-merge-
+# suppression judgment call, and a matching RATIONALE section anchored to
+# the effects-not-tool-names principle #718 already established.
+#
+# Nine assertions pin the post-#1278 contract:
+assert_contains "$dont_path" \
+  "Don't instruct a worker to route around its own worker-internal classifier denial" \
+  "dont.md carries the new worker-internal classifier-denial prohibition (#1278)"
+assert_contains "$dont_path" \
+  "resuming the same live agent via \`SendMessage\`" \
+  "dont.md's new bullet treats a SendMessage resume as equivalent to a re-dispatch (#1278)"
+assert_contains "$dont_path" \
+  "a refspec push (\`git push origin HEAD:refs/heads/<branch>\`) in place of a denied local branch-create" \
+  "dont.md's new bullet names the refspec-push substitution explicitly (#1278)"
+assert_contains "$dont_path" \
+  "a merge commit in place of a denied force-push" \
+  "dont.md's new bullet names the merge-commit substitution explicitly (#1278)"
+assert_contains "$dont_path" \
+  "\`git update-ref\`, \`git branch\`, or \`git format-patch\` standing in for either" \
+  "dont.md's new bullet names the update-ref/branch/format-patch substitutions explicitly (#1278)"
+assert_contains "$dont_path" \
+  "does not get a separate auto-merge-suppression mechanism" \
+  "dont.md records the decided-against auto-merge-suppression judgment call (#1278)"
+assert_count_at_least_across "issues/1278" 2 \
+  "dont.md cites issue #1278 at least twice (the new bullet + the auto-merge-suppression bullet)" \
+  "$dont_path"
+assert_contains "$rationale_path" \
+  "### Don't instruct a worker to route around its own classifier denial (issue #1278)" \
+  "RATIONALE.md carries the #1278 section heading"
+assert_contains "$rationale_path" \
+  "The orchestrator applied that principle to its own dispatches and failed to apply it to its instructions to a worker" \
+  "RATIONALE.md names the precise shape of the #1278 gap"
+assert_contains "$rationale_path" \
+  "Auto-merge suppression — considered and decided against, as a deliberate proportionality call, not an oversight" \
+  "RATIONALE.md records the auto-merge-suppression reasoning, not just the decision (#1278)"
+assert_contains "$rationale_path" \
+  "did the classifier's stated reason name the *operation* as unauthorized, or did it name the *call shape* as unverifiable" \
+  "RATIONALE.md draws the testable boundary against the legitimate compound-command-decomposition case (#1278)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

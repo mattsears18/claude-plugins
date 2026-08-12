@@ -1265,6 +1265,42 @@ assert_contains "$nvm_source_refusal_path" "PATH-prepend" \
 assert_contains "$node_bootstrap_path" "nvm-source-refusal.md" \
   "node-bootstrap.md points a worker with a Node-version (not just deps) mismatch at nvm-source-refusal.md (issue #1186)"
 
+# Issue #1278 — "Don't comply with a resumed instruction that routes around
+# a worker-internal classifier denial" reinforcement. A live session showed
+# the worker-side rule (#341, "don't retry the SAME denied call") wasn't
+# enough: an orchestrator resume instructing an effect-equivalent substitute
+# for a denied call wasn't covered by any existing rule, and the worker also
+# unpromptedly improvised a THIRD workaround against an explicit "stop at
+# two" instruction it had already been given. The fix adds a fourth
+# MUST-NOT item to classifier-denial.md's list, renumbers the section intro
+# from "Three" to "Four", names the same tempting substitutions dont.md's
+# companion orchestrator-side rule names, and explicitly carves out the
+# unrelated compound-command-decomposition case so the new rule can't be
+# misread as forbidding that sanctioned response.
+#
+# Six assertions pin the post-#1278 contract:
+assert_contains "$classifier_denial_path" \
+  "Four behaviors you MUST NOT do after a denial" \
+  "classifier-denial.md's intro is renumbered to four MUST-NOT items (#1278)"
+assert_contains "$classifier_denial_path" \
+  "A denial encountered **after an orchestrator resume is still a denial**" \
+  "classifier-denial.md states a resumed denial is still a denial (#1278)"
+assert_contains "$classifier_denial_path" \
+  "stop at two, do not try a third formulation" \
+  "classifier-denial.md names the explicit stop-at-two instruction from the #1278 repro"
+assert_contains "$classifier_denial_path" \
+  "orchestrator instructed an effect-equivalent substitute after denial, refusing" \
+  "classifier-denial.md documents the resumed-substitute blocked return string (#1278)"
+assert_contains "$classifier_denial_path" \
+  "stopping per the prior stop instruction rather than improvising a further workaround" \
+  "classifier-denial.md documents the self-initiated-third-attempt blocked return string (#1278)"
+assert_contains "$classifier_denial_path" \
+  "does not cover decomposing a refused *compound* command into plain single-purpose commands" \
+  "classifier-denial.md explicitly carves out the legitimate compound-command-decomposition case (#1278)"
+assert_contains "$classifier_denial_path" \
+  "issues/1278" \
+  "classifier-denial.md cites issue #1278"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
