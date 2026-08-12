@@ -130,7 +130,31 @@ Return per step 5 below: `investigated+fixed #<N> via PR #<M> (auto-merge: <...>
 
 #### 4b. Genuinely needs a human → apply `needs-human-review`, return blocked-style (the `investigated+needs-human-review` path)
 
-The crash is real and understood, but the resolution requires something a worker cannot do: a product/design/legal decision, access the worker lacks (a third-party dashboard, a rotated secret), or a fix whose correct behavior is genuinely ambiguous. Do NOT guess — hand it off cleanly:
+The crash is real and understood, but the resolution requires something a worker cannot do: a product/design/legal decision, access the worker lacks (a third-party dashboard, a rotated secret), or a fix whose correct behavior is genuinely ambiguous. Do NOT guess — hand it off cleanly.
+
+**First — check whether a human already answered this exact question ([#1279](https://github.com/mattsears18/shipyard/issues/1279)).** Before applying the gate, run the ordering check from `shipyard:worker-preamble` § "On-demand fragments" — fragment [`decision-freshness-check.md`](../../skills/worker-preamble/decision-freshness-check.md) — against the `comments` array already fetched in [step 0](#0-pre-flight-confirm-the-issue-is-still-workable), using `startswith("<!-- do-work-investigation-disposition -->")` as this call site's `$ESCALATION_MARKER_JQ` (the marker this same 4b applies below — see the comment block further down):
+
+```bash
+COMMENTS_JSON='<the comments array from step 0, already in context>'
+latest_escalation=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+  [.[] | select(.body | startswith("<!-- do-work-investigation-disposition -->"))]
+  | sort_by(.createdAt) | last.createdAt // empty')
+latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+  [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
+                      or startswith("<!-- do-work-decision-resolved -->"))]
+  | sort_by(.createdAt) | last.createdAt // empty')
+```
+
+**If `latest_escalation` is non-empty AND `latest_decision` is non-empty AND `latest_decision` sorts after `latest_escalation`** (plain string `>` — ISO-8601 UTC timestamps compare correctly), a human already answered this exact question after the last time this issue was escalated. Do NOT apply `needs-human-review` — instead:
+
+```bash
+gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true
+gh issue comment <N> --repo <owner/repo> --body "Not re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at ${latest_decision}). Leaving the gate off; the recorded decision should be read and acted on directly on the next pass."
+```
+
+Return: `investigated+needs-human-review #<N> (decision already recorded, gate not re-applied)` and stop — do NOT continue to the label-apply block below.
+
+**Otherwise** (no prior escalation exists yet, or no decision was recorded after it) — proceed with the ordinary escalation:
 
 ```bash
 gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage
@@ -199,6 +223,7 @@ One line, matching the disposition. These extend the `issue-work` vocabulary; th
 |---|---|
 | Fixable (PR opened) | `investigated+fixed #<N> via PR #<M> (auto-merge: <enabled\|gated-manual\|merged-direct\|merged-direct-ungated\|unavailable — needs manual merge\|unavailable — gh token lacks workflow scope\|gated — external-author origin, needs-human-review label applied>, checks: <green\|pending\|failing>)` |
 | Needs a human | `investigated+needs-human-review #<N> (label applied)` |
+| Needs a human, but a decision was already recorded since the last escalation ([#1279](https://github.com/mattsears18/shipyard/issues/1279)) | `investigated+needs-human-review #<N> (decision already recorded, gate not re-applied)` |
 | Not actionable — noise | `investigated+closed-noise #<N>` |
 | Not actionable — duplicate | `investigated+duplicate #<N> of #<K>` |
 | Worktree reaped mid-run | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: <hash\|none>)` |
