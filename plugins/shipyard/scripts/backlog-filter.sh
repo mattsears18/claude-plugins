@@ -69,21 +69,30 @@
 #
 #   closed-by-healthy-pr --repo <owner/repo> --me <login>
 #     Live-queries GitHub: the set of issue numbers with an OPEN PR,
-#     authored by --me, that (a) is currently healthy (mergeStateStatus in
-#     {CLEAN, HAS_HOOKS, UNSTABLE} — i.e. not blocked by failing checks) and
-#     (b) has this issue in closingIssuesReferences. This is the
-#     "closed-by-@me-authored-healthy-PR" drop clause's input set — it
-#     requires live network access (an open-PR query + a batched check
-#     rollup), so unlike `classify` it is NOT a pure function and is not
-#     fixture-tested; it is the thin, single-copy replacement for the `gh
-#     pr list` + gh-batch.sh + jq block that used to be written out in full
-#     in setup.md step 4 and silently assumed ("apply the same filter") at
-#     the other two call-sites.
+#     authored by --me, that (a) is currently healthy — its latest-per-name
+#     check-rollup projection (the #333 group-by, reused verbatim rather
+#     than re-derived) has ZERO failing checks, and mergeStateStatus !=
+#     DIRTY — and (b) has this issue in closingIssuesReferences. Health is
+#     deliberately NOT gated on mergeStateStatus's CLEAN/HAS_HOOKS/UNSTABLE
+#     allowlist (the pre-#1262 behavior): on a ruleset-protected default
+#     branch, a PR whose required checks are merely queued reports
+#     mergeStateStatus == BLOCKED even though nothing has actually failed —
+#     misclassifying a genuinely healthy, still-in-flight PR as unhealthy
+#     and leaving its issue in the workable backlog, risking a duplicate PR
+#     against work already in flight (issue #1262). DIRTY is excluded on
+#     its own — that state belongs to the fix-rebase path, never "healthy,"
+#     regardless of check state.
+#     This is the "closed-by-@me-authored-healthy-PR" drop clause's input
+#     set — it requires live network access, so unlike `classify` it is NOT
+#     a pure function and is not fixture-tested; it is the thin,
+#     single-copy replacement for the `gh pr list` + jq block that used to
+#     be written out in full in setup.md step 4 and silently assumed
+#     ("apply the same filter") at the other two call-sites.
 #     Prints a comma-separated, numerically-sorted, deduped list of issue
 #     numbers to stdout (empty output, not "(none)", when the set is empty
 #     — so `--closed-by-healthy-pr "$(...)"` composes directly).
 #     Exit codes: 0 success (even if the set is empty); 65 if `gh` or `jq`
-#     is missing, or gh-batch.sh can't be found alongside this script.
+#     is missing.
 #
 #   summary --me <login>
 #     < wide-fetch-issue-json (array) on stdin — the exact same payload
@@ -408,35 +417,24 @@ cmd_closed_by_healthy_pr() {
     echo "closed-by-healthy-pr: gh is required but not installed" >&2
     return 65
   fi
-  local gh_batch="${here}/gh-batch.sh"
-  if [[ ! -f "$gh_batch" ]]; then
-    echo "closed-by-healthy-pr: gh-batch.sh not found alongside this script (expected $gh_batch)" >&2
-    return 65
-  fi
 
-  local open_pr_numbers
-  open_pr_numbers=$(gh pr list --repo "$repo" --state open --author "$me" --limit 200 \
-    --json number --jq '[.[].number] | join(" ")' 2>/dev/null)
-
-  if [[ -z "$open_pr_numbers" ]]; then
-    return 0
-  fi
-
-  bash "$gh_batch" pr-status --repo "$repo" --numbers "$open_pr_numbers" 2>/dev/null | jq -r '
-    [.[] | select(
-        .mergeStateStatus == "CLEAN"
-        or .mergeStateStatus == "HAS_HOOKS"
-        or .mergeStateStatus == "UNSTABLE"
-      )
+  # Direct `gh pr list` (not gh-batch.sh) — its GraphQL projection only
+  # returns the aggregate `statusCheckRollup.state`, not the per-check
+  # array this latest-per-name group-by needs. `gh pr list --json
+  # statusCheckRollup` returns the real per-check array, same as every
+  # other rollup walk in setup/04-backlog-divert.md and drain.md.
+  gh pr list --repo "$repo" --state open --author "$me" --limit 200 \
+    --json number,mergeStateStatus,statusCheckRollup,closingIssuesReferences 2>/dev/null | jq -r '
+    [.[] | select(.mergeStateStatus != "DIRTY")
       | select(
         ([(.statusCheckRollup // [])
          | group_by(.name)
          | map(sort_by(.completedAt // .startedAt // "") | last)
          | .[]
-         | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or .conclusion == "TIMED_OUT")
+         | select((.conclusion // .state // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
         ] | length) == 0
       )
-      | .closingIssueNumbers[]
+      | .closingIssuesReferences[]?.number
     ] | unique | join(",")
   '
 }
