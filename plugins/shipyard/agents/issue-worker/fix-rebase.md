@@ -172,8 +172,8 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       IFS='.' read -r fMAJ fMIN fPAT <<< "$floor"
       case "$bump_level" in
         major)   next_free="$((fMAJ + 1)).0.0" ;;
-        minor)   next_free="${fMAJ}.$((fMIN + 1)).0" ;;
-        patch|*) next_free="${fMAJ}.${fMIN}.$((fPAT + 1))" ;;
+        minor)   next_free="$fMAJ.$((fMIN + 1)).0" ;;
+        patch|*) next_free="$fMAJ.$fMIN.$((fPAT + 1))" ;;
       esac
       ```
 

@@ -101,8 +101,8 @@ if [ "${wt_count:-0}" -gt 0 ] && [ "${wt_count:-0}" -ge "${warn_threshold:-20}" 
     | xargs -0 du -sk 2>/dev/null | awk '{sum+=$1} END{print sum+0}')
   reclaimable_human=$(( (reclaimable_kb + 1023) / 1024 ))
   cat <<EOF
-⚠️  worktree backlog: ${wt_count} agent-* worktrees on disk (~${reclaimable_human} MB reclaimable),
-   at or above the ${warn_threshold}-worktree warn threshold (worktree_reap.warn_threshold).
+⚠️  worktree backlog: $wt_count agent-* worktrees on disk (~$reclaimable_human MB reclaimable),
+   at or above the $warn_threshold-worktree warn threshold (worktree_reap.warn_threshold).
    This session's step-3b sweep reaps at most worktree_reap.max_per_session
    of them (oldest-first) — the rest are left for subsequent sessions to
    continue draining. See issue #836 if the backlog isn't shrinking session
@@ -150,7 +150,7 @@ reap_output=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-stale \
 # surface it verbatim so the reaped-vs-deferred-vs-remaining backlog is
 # visible rather than silent (issue #836 fix 2's "emit a one-line count").
 summary_line=$(printf '%s\n' "$reap_output" | tail -1)
-echo "[setup-3b] ${summary_line}"
+echo "[setup-3b] $summary_line"
 
 git worktree prune 2>/dev/null || true
 ```
@@ -254,9 +254,9 @@ git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}'
           # (worker-preamble auto-merge.md step 1.1, #812) can hit this
           # setup-3c orphan-recovery arm too; `2>/dev/null || true` was
           # previously swallowing it with zero visibility.
-          merge_arm_err=$(gh pr merge "$pr_num" --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
+          merge_arm_err=$(gh pr merge "$pr_num" --repo <owner/repo> --auto --$auto_merge_method --delete-branch 2>&1 1>/dev/null) || true
           if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
-            echo "[setup-3c] PR #${pr_num} auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
+            echo "[setup-3c] PR #$pr_num auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
           fi
         else
           # Leave OPEN + unarmed. The PR carries `--label shipyard` (above),
@@ -264,7 +264,7 @@ git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}'
           # so it gets merged on the first poll its checks are green, with no
           # `session_prs` plumbing needed. Do NOT block on `gh pr checks
           # --watch` here — this would stall session start, once per orphan.
-          echo "[setup-3c] PR #${pr_num} left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
+          echo "[setup-3c] PR #$pr_num left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
         fi
       fi
     fi

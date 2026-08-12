@@ -139,7 +139,7 @@ if [[ -f "$SETUP_WORKTREE" ]]; then
   assert_contains "$SETUP_WORKTREE" 'without .workflow. scope' \
     "setup/01c-label-recovery-refine.md §3c matches the shared GraphQL 'without \`workflow\` scope' signature"
   # shellcheck disable=SC2016
-  assert_contains "$SETUP_WORKTREE" '[setup-3c] PR #${pr_num} auto-merge arm blocked' \
+  assert_contains "$SETUP_WORKTREE" '[setup-3c] PR #$pr_num auto-merge arm blocked' \
     "setup/01c-label-recovery-refine.md §3c logs a distinctly-tagged line on match"
   # shellcheck disable=SC2016
   assert_contains "$SETUP_WORKTREE" 'merge_arm_err=$(gh pr merge "$pr_num"' \

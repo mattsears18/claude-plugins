@@ -61,7 +61,7 @@ If the exact `.nvmrc` version is already installed under `$NVM_DIR/versions/node
 
 ```bash
 NVMRC_VERSION="$(cat .nvmrc 2>/dev/null | tr -d 'v[:space:]')"
-NODE_BIN_DIR=$(ls -d "$HOME/.nvm/versions/node/v${NVMRC_VERSION}"* 2>/dev/null | head -1)
+NODE_BIN_DIR=$(ls -d "$HOME/.nvm/versions/node/v$NVMRC_VERSION"* 2>/dev/null | head -1)
 if [ -n "$NODE_BIN_DIR" ]; then
   export PATH="$NODE_BIN_DIR/bin:$PATH"
   node -v   # confirm it matches .nvmrc before trusting any npm output

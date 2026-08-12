@@ -76,7 +76,7 @@ Closes the verification gap issue [#1046](https://github.com/mattsears18/shipyar
 **Before `gh pr create`, run `plugins/shipyard/scripts/verify-new-dep-versions.sh`** against your diff. It re-parses the same diff for newly-added dependency lines and cross-checks the version you wrote in step 1 against the authoritative registry — a mechanical backstop for the lookup-first rule above, not a replacement for actually doing the lookup:
 
 ```bash
-bash plugins/shipyard/scripts/verify-new-dep-versions.sh "origin/${DEFAULT_BRANCH}" --pr-body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
+bash plugins/shipyard/scripts/verify-new-dep-versions.sh "origin/$DEFAULT_BRANCH" --pr-body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
 ```
 
 Pass the same scratch PR-body file `issue-work.md` step 5 already writes before `gh pr create` — the script reads it for two things: the offline fallback (below) and the cooldown/carve-out-note explanation for an otherwise-unexplained gap.

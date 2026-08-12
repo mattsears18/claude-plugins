@@ -206,15 +206,15 @@ Closes [#654](https://github.com/mattsears18/shipyard/issues/654) — the **infr
 
 ```bash
 RUN_ID=<failing-run-id>   # from `gh run list` or the failing check's `link`
-JOBID=$(gh api "repos/<owner/repo>/actions/runs/${RUN_ID}/jobs" \
+JOBID=$(gh api "repos/<owner/repo>/actions/runs/$RUN_ID/jobs" \
   --jq '.jobs[] | select(.conclusion=="failure") | .id' | head -1)
-gh api "repos/<owner/repo>/actions/jobs/${JOBID}/logs"
+gh api "repos/<owner/repo>/actions/jobs/$JOBID/logs"
 ```
 
 Only block your own turn when the job you actually need — not a sibling — genuinely has no `conclusion` yet. Poll that job specifically, never the full rollup:
 
 ```bash
-gh api "repos/<owner/repo>/actions/jobs/${JOBID}" --jq '.status, .conclusion'
+gh api "repos/<owner/repo>/actions/jobs/$JOBID" --jq '.status, .conclusion'
 ```
 
 A `blocked` return whose reason is "logs unavailable while run in progress" is **always premature** when the job you need already has a `conclusion` — that was the #654 repro's root failure (session `01XU6TMaDdGnDyptZqJJJiDm`, PR #2273: the cancelled/timed-out jobs already carried terminal conclusions the whole time) and is doubly true when it's a *slow sibling*, not your own job, that's still running (the #984 repro: PR #3245, a fast-failing `Unit Tests` job sat undiagnosed for 15+ minutes because `Web E2E Tests` was still mid-run). Wait for completion first only when it's genuinely your own job still in flight; then classify per Step B.
@@ -244,7 +244,7 @@ When Step B matches, re-run only the failed jobs and return the distinct `flake`
 RUN_ID=<failing-run-id>   # from `gh run list` or the failing check's `link`
 ATTEMPT=$(gh run view "$RUN_ID" --repo <owner/repo> --json attempt --jq '.attempt // 1')
 if [ "${ATTEMPT:-1}" -ge 2 ]; then
-  echo "blocked #<M> at fix-checks: infra flake persisted across ${ATTEMPT} run attempts (<signature>) — CI host may be resource-starved; needs human/operator attention, not another re-run"
+  echo "blocked #<M> at fix-checks: infra flake persisted across $ATTEMPT run attempts (<signature>) — CI host may be resource-starved; needs human/operator attention, not another re-run"
   exit 0
 fi
 
@@ -307,20 +307,20 @@ On failure:
 
    ```bash
    RUN_ID=<failing-run-id>   # from the failing check's `link` (step 1's `gh pr checks --json name,state,link`)
-   JOBID=$(gh api "repos/<owner/repo>/actions/runs/${RUN_ID}/jobs" \
+   JOBID=$(gh api "repos/<owner/repo>/actions/runs/$RUN_ID/jobs" \
      --jq '.jobs[] | select(.conclusion=="failure") | .id' | head -1)
-   gh api "repos/<owner/repo>/actions/jobs/${JOBID}/logs"
+   gh api "repos/<owner/repo>/actions/jobs/$JOBID/logs"
    ```
 
    **Stream the output rather than redirecting it to a file** — a big log fetch piped to `> /tmp/log` produces zero stream output for its whole duration and can trip the harness's ~600s stall watchdog (worker-preamble § "Heartbeat emission around long-running commands", fragment [`ci-pitfalls.md`](../../skills/worker-preamble/ci-pitfalls.md); issue [#372](https://github.com/mattsears18/shipyard/issues/372)). Pipe through `tee` if you also need the file:
    ```bash
-   gh api "repos/<owner/repo>/actions/jobs/${JOBID}/logs" 2>&1 | tee /tmp/failed.log
+   gh api "repos/<owner/repo>/actions/jobs/$JOBID/logs" 2>&1 | tee /tmp/failed.log
    ```
    The same heartbeat discipline applies to `npm ci` and to a buffered local test re-run in step 3 — keep stream output flowing so a 5–15 min command doesn't read as a stall.
 
    **If `$JOBID` itself has no `conclusion` yet — the job you actually need, not a sibling, genuinely hasn't finished** — wait for *that job*, not the whole run, then re-fetch:
    ```bash
-   gh api "repos/<owner/repo>/actions/jobs/${JOBID}" --jq '.status, .conclusion'
+   gh api "repos/<owner/repo>/actions/jobs/$JOBID" --jq '.status, .conclusion'
    ```
    Do NOT bail "logs unavailable" — that specific job finishes in minutes; a premature bail here is the exact #654 failure mode. But do NOT wait on sibling jobs that have nothing to do with your failing check — that wait is exactly what #984 closes.
 

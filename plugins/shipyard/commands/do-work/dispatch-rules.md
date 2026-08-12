@@ -159,7 +159,7 @@ When filling a slot, walk this decision tree:
        # settled to GREEN, the refresh's per-PR rollup walk drops it from
        # failed_prs automatically; if they settled to FAILURE, the rollup
        # walk re-keeps it and step C will retry with the post-settle state.
-       failed_prs="<M> ${failed_prs}"
+       failed_prs="<M> $failed_prs"
        continue   # to the next slot-fill decision
      fi
    fi
@@ -488,16 +488,16 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
      ```bash
      WORKTREE_ID="agent-workflow-$(date +%s)-$$"
-     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_ID}"
+     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
      DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-     git worktree add "$WORKTREE_PATH" -b "do-work/issue-<N>" "origin/${DEFAULT_BRANCH}"
+     git worktree add "$WORKTREE_PATH" -b "do-work/issue-<N>" "origin/$DEFAULT_BRANCH"
      ```
 
    - **`fix-checks-only` / `fix-rebase`** — checked out directly onto the **existing** PR branch being fixed/rebased, not a fresh branch off default. This makes `fix-checks-only.md`'s own Setup step (`git fetch origin "$HEAD_REF" && git switch "$HEAD_REF"`) a no-op safety net rather than required additional setup:
 
      ```bash
      WORKTREE_ID="agent-workflow-$(date +%s)-$$"
-     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_ID}"
+     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
      git worktree add "$WORKTREE_PATH" -B "<headRefName>" "origin/<headRefName>"
      ```
 
@@ -505,9 +505,9 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
      ```bash
      WORKTREE_ID="agent-workflow-$(date +%s)-$$"
-     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/${WORKTREE_ID}"
+     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
      DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-     git worktree add "$WORKTREE_PATH" -b "<synthetic-divert-branch>" "origin/${DEFAULT_BRANCH}"
+     git worktree add "$WORKTREE_PATH" -b "<synthetic-divert-branch>" "origin/$DEFAULT_BRANCH"
      # <synthetic-divert-branch> = do-work/fix-main-ci-<short-sha> or do-work/fix-pr-pileup-<short-timestamp>
      ```
 

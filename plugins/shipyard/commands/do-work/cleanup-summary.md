@@ -268,7 +268,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
        --repo-root "$(git rev-parse --show-toplevel)" \
        --current-session-id "<session-id>"
    )
-   echo "unreaped-worktrees: ${unreaped_worktrees}"
+   echo "unreaped-worktrees: $unreaped_worktrees"
    ```
 
    **The final `echo` is load-bearing, not decorative.** Every path piped through the `while ... done < <(...)` process substitution above is consumed entirely by the loop — none of it reaches this Bash call's own stdout on its own. Without an explicit `echo` of the tally (and, for diagnosability, each leftover path as it's counted), this step computes `$unreaped_worktrees` correctly inside the subprocess and then discards it: a shell variable set in one Bash tool call does not survive into the next one, and nothing else in this block ever prints the number anywhere the orchestrator can read it back for the summary. Skipping the `echo` is indistinguishable, from the orchestrator's side, from an empty result — the exact "line never appears even when worktrees are stranded" symptom [#1042](https://github.com/mattsears18/shipyard/issues/1042) reports. Read the printed `unreaped-worktrees: <N>` line back into `<unreaped_worktrees>` for the summary render below, rather than trusting the in-process shell variable to have persisted.
@@ -625,9 +625,9 @@ After emitting the chat summary, persist the same content to a styled HTML repor
 
    ```bash
    base="$(date +%Y-%m-%d)-do-work-session"
-   path="$REPORTS_DIR/${base}.html"
+   path="$REPORTS_DIR/$base.html"
    n=2
-   while [ -e "$path" ]; do path="$REPORTS_DIR/${base}-${n}.html"; n=$((n+1)); done
+   while [ -e "$path" ]; do path="$REPORTS_DIR/$base-$n.html"; n=$((n+1)); done
    ```
 
 4. **Write the report** using the `Write` tool. HTML skeleton below — populate placeholders directly:

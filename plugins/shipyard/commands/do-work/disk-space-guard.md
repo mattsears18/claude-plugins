@@ -18,7 +18,7 @@ export SHIPYARD_REPO_ROOT
 
 floor_mb=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.disk_free_floor_mb 2>/dev/null || echo "10240")
 disk_probe=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" disk-check \
-  --path "${REPO_ROOT}/.claude/worktrees" --floor-mb "${floor_mb:-10240}" 2>/dev/null)
+  --path "$REPO_ROOT/.claude/worktrees" --floor-mb "${floor_mb:-10240}" 2>/dev/null)
 disk_free_mb=$(printf '%s\n' "$disk_probe" | sed -n 's/^free_mb=\([a-z0-9]*\) .*/\1/p')
 disk_low=$(printf '%s\n' "$disk_probe" | sed -n 's/.* low=\([a-z]*\)$/\1/p')
 
@@ -29,14 +29,20 @@ if [ "${disk_low:-false}" = "true" ]; then
     --session-id "<session-id>" \
     --max-per-session "${max_per_session:-10}" 2>/dev/null)
   disk_sweep_summary=$(printf '%s\n' "$disk_sweep_out" | tail -1)
-  echo "[disk-guard] free=${disk_free_mb}MB < floor=${floor_mb}MB — ran reap-stale: ${disk_sweep_summary}"
+  # The unit is a SEPARATE word ("free=$disk_free_mb MB"), not glued onto the
+  # expansion. An identifier-adjacent suffix is the one case where braces are
+  # load-bearing — unbraced, "$disk_free_mb" would swallow the MB into the
+  # variable name and expand a different, unset one — and braces are exactly
+  # what the worktree-isolation guard refuses. Separating the unit into its own
+  # word removes the adjacency rather than hiding it behind braces (#1311).
+  echo "[disk-guard] free=$disk_free_mb MB < floor=$floor_mb MB — ran reap-stale: $disk_sweep_summary"
 
   # Re-probe for the invariant-line token below — the sweep may have
   # reclaimed enough to clear the low reading, or may not have (the cap
   # was already reached, or every eligible worktree was peer-alive and
   # deferred). Either way, report what's actually true post-sweep.
   disk_probe=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" disk-check \
-    --path "${REPO_ROOT}/.claude/worktrees" --floor-mb "${floor_mb:-10240}" 2>/dev/null)
+    --path "$REPO_ROOT/.claude/worktrees" --floor-mb "${floor_mb:-10240}" 2>/dev/null)
   disk_free_mb=$(printf '%s\n' "$disk_probe" | sed -n 's/^free_mb=\([a-z0-9]*\) .*/\1/p')
 fi
 ```

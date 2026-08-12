@@ -97,8 +97,8 @@ if [[ -f "$AUTO_MERGE_MD" ]]; then
 
   # shellcheck disable=SC2016
   # Single-quoted on purpose: the needle is the LITERAL markdown text, including
-  # the un-expanded `${DEFAULT_BRANCH}` shell variable as it appears in the doc.
-  assert_contains "$AUTO_MERGE_MD" 'repos/<owner/repo>/rules/branches/${DEFAULT_BRANCH}' \
+  # the un-expanded `$DEFAULT_BRANCH` shell variable as it appears in the doc.
+  assert_contains "$AUTO_MERGE_MD" 'repos/<owner/repo>/rules/branches/$DEFAULT_BRANCH' \
     "auto-merge.md §0.5 probes the rulesets endpoint when classic checks read 0 (#645)"
   # shellcheck disable=SC2016
   # Literal markdown text — the ruleset probe checks ONLY required_status_checks.
@@ -120,8 +120,8 @@ if [[ -f "$AUTO_MERGE_MD" ]]; then
   # (it only fires as a fallback when the classic count is 0).
   classic_line=$(grep -n 'protection/required_status_checks/contexts' "$AUTO_MERGE_MD" | head -1 | cut -d: -f1)
   # shellcheck disable=SC2016
-  # Literal markdown text — `${DEFAULT_BRANCH}` must not expand; we grep the doc for it.
-  ruleset_line=$(grep -n 'rules/branches/${DEFAULT_BRANCH}' "$AUTO_MERGE_MD" | head -1 | cut -d: -f1)
+  # Literal markdown text — `$DEFAULT_BRANCH` must not expand; we grep the doc for it.
+  ruleset_line=$(grep -n 'rules/branches/$DEFAULT_BRANCH' "$AUTO_MERGE_MD" | head -1 | cut -d: -f1)
   if [[ -n "$classic_line" && -n "$ruleset_line" && "$ruleset_line" -gt "$classic_line" ]]; then
     assert_pass "auto-merge.md ruleset probe follows the classic contexts read (L$ruleset_line > L$classic_line)"
   else

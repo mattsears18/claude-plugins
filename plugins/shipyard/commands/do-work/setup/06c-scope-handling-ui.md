@@ -193,7 +193,7 @@ $CURRENT_BODY"
      export SHIPYARD_REPO_ROOT
      DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null || echo 14)
      DAYS=${DAYS//[!0-9]/14}
-     DATE=$(date -u -d "+${DAYS} days" +%F 2>/dev/null || date -u -v+"${DAYS}"d +%F)
+     DATE=$(date -u -d "+$DAYS days" +%F 2>/dev/null || date -u -v+"$DAYS"d +%F)
 
      CURRENT_BODY=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body')
      if echo "$CURRENT_BODY" | grep -q '<!-- do-work-blocked-until:'; then
@@ -201,10 +201,10 @@ $CURRENT_BODY"
        if [[ "$EXISTING_DATE" > "$DATE" ]]; then
          NEW_BODY="$CURRENT_BODY"
        else
-         NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s/<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->/<!-- do-work-blocked-until: ${DATE} -->/")
+         NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s/<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->/<!-- do-work-blocked-until: $DATE -->/")
        fi
      else
-       NEW_BODY="<!-- do-work-blocked-until: ${DATE} -->
+       NEW_BODY="<!-- do-work-blocked-until: $DATE -->
 
 $CURRENT_BODY"
      fi

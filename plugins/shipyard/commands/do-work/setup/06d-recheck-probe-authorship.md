@@ -61,7 +61,7 @@ where `<verb> <args...>` is **exactly** the marker-body grammar `eval-recheck-pr
 
    ```bash
    IFS='|' read -r V A1 A2 EXP <<<"$PARSED"
-   MARKER_LINE="<!-- do-work-recheck: ${V} ${A1} ${A2} == ${EXP} -->"
+   MARKER_LINE="<!-- do-work-recheck: $V $A1 $A2 == $EXP -->"
    ```
 
 4. **Write it into the issue body, idempotently — mirroring step 4b's own blocked-until write.** Re-fetch the body fresh (step 4b already mutated it in a separate call; don't trust an in-memory copy across tool calls):
@@ -72,9 +72,9 @@ where `<verb> <args...>` is **exactly** the marker-body grammar `eval-recheck-pr
      # A marker already exists (e.g. a re-diagnosis produced an updated probe).
      # Replace it in place rather than stacking a second one. Idempotent: if
      # the clause is unchanged, this is a no-op edit.
-     NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s|<!-- do-work-recheck: .+ -->|${MARKER_LINE}|")
+     NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s|<!-- do-work-recheck: .+ -->|$MARKER_LINE|")
    else
-     NEW_BODY="${MARKER_LINE}
+     NEW_BODY="$MARKER_LINE
 
 $CURRENT_BODY"
    fi

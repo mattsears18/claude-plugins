@@ -227,9 +227,9 @@ Reports are **styled HTML, not markdown** — markdown is fine for grep / versio
 
    ```bash
    base="$(date +%Y-%m-%d)-shipyard-audit"
-   path=".shipyard/audits/${base}.html"
+   path=".shipyard/audits/$base.html"
    n=2
-   while [ -e "$path" ]; do path=".shipyard/audits/${base}-${n}.html"; n=$((n+1)); done
+   while [ -e "$path" ]; do path=".shipyard/audits/$base-$n.html"; n=$((n+1)); done
    ```
 
 4. **Write the report** using the `Write` tool. Mirror the same structure the chat summary emitted, plus a metadata header. Use the HTML skeleton below — populate the placeholders directly; the `Write` tool dumps the populated HTML to the target path in one call. Don't bother running the markup through any pre-processor; templated string substitution is sufficient. Recommended HTML shape:

@@ -58,7 +58,7 @@ fi
 # the operator asking for it by hand and always wins, even on an ungated
 # shape (they've seen the warning above; --concurrency is the override valve).
 if [ "$verdict" = "ungated" ] && [ -z "<--concurrency CLI value, if passed>" ] && [ "$EFFECTIVE_CONCURRENCY" -gt 1 ] 2>/dev/null; then
-  echo "[setup] concurrency clamped ${EFFECTIVE_CONCURRENCY} -> 1 (ungated merge shape)"
+  echo "[setup] concurrency clamped $EFFECTIVE_CONCURRENCY -> 1 (ungated merge shape)"
   EFFECTIVE_CONCURRENCY=1
 fi
 ```
@@ -142,7 +142,7 @@ fi
 
 ```bash
 if [ "$CI_POOL_SHAPE" = "self-hosted" ] && [ -z "<--concurrency CLI value, if passed>" ] && [ "$CI_POOL_TOTAL" -gt 0 ] 2>/dev/null && [ "$EFFECTIVE_CONCURRENCY" -gt "$CI_POOL_TOTAL" ] 2>/dev/null; then
-  echo "[setup] concurrency clamped ${EFFECTIVE_CONCURRENCY} -> ${CI_POOL_TOTAL} (self-hosted CI runner pool has only ${CI_POOL_TOTAL} online runner(s) — #1141)"
+  echo "[setup] concurrency clamped $EFFECTIVE_CONCURRENCY -> $CI_POOL_TOTAL (self-hosted CI runner pool has only $CI_POOL_TOTAL online runner(s) — #1141)"
   EFFECTIVE_CONCURRENCY="$CI_POOL_TOTAL"
 fi
 ```
@@ -204,7 +204,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update \
   --session-id "<session-id>" \
-  --set ".ci_capacity = { shape: \"${CI_POOL_SHAPE}\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0}, cheap_ci_globs: \"${CI_CHEAP_GLOBS:-}\" }"
+  --set ".ci_capacity = { shape: \"$CI_POOL_SHAPE\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0}, cheap_ci_globs: \"${CI_CHEAP_GLOBS:-}\" }"
 ```
 
 The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.shipyard/sessions/<session-id>.json`). The default config above is the entire schema with empty queues + an `unknown` `main_ci` state — everything else gets filled in by later setup steps and the steady-state loop.
@@ -287,7 +287,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 PEER_TARGETS_JSON=$(printf '%s' "$PEER_CLAIMED_TARGETS" | jq -R 'split(",") | map(select(length>0) | tonumber)')
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
-  --set ".peer_sessions = { count: ${PEER_COUNT:-0}, claimed_targets: ${PEER_TARGETS_JSON}, checked_at: \"<iso-8601 UTC now>\" }"
+  --set ".peer_sessions = { count: ${PEER_COUNT:-0}, claimed_targets: $PEER_TARGETS_JSON, checked_at: \"<iso-8601 UTC now>\" }"
 ```
 
 `PEER_CLAIMED_TARGETS` feeds [step 4's drop rule](04-backlog-divert.md#4-fetch--rank-the-backlog) (mechanics + warn-and-continue policy: [`04e-peer-session-drop.md`](04e-peer-session-drop.md)). `PEER_COUNT` feeds [step E's invariant line](../steady-state.md#e-invariant-line-end-of-every-steady-state-turn) as `peers=<n>`.

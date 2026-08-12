@@ -625,7 +625,7 @@ if [ "$merge_gating" = "gated" ]; then
   # `workflow`-OAuth-scope block a worker's own arm can hit (worker-preamble
   # auto-merge.md step 1.1, #812) can hit this release-train arm too, and a
   # release-please PR routinely touches .github/workflows/ version pins.
-  merge_arm_err=$(gh pr merge <M> --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
+  merge_arm_err=$(gh pr merge <M> --repo <owner/repo> --auto --$auto_merge_method --delete-branch 2>&1 1>/dev/null) || true
   if grep -qi "without .workflow. scope" <<< "$merge_arm_err"; then
     echo "[release-train] PR #<M> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
   fi
