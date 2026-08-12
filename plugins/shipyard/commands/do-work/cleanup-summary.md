@@ -105,7 +105,8 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   cd "$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   cd "$SY_TOPLEVEL"
    # Seed the running totals from step 3.0's targeted pass so the generic
    # sweep ADDS to them (don't reset to 0 — that would discard the
    # this-session worktrees already reaped above).
@@ -209,6 +210,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    reaped_orphan_branches=0
    while IFS= read -r branch_line; do
      [ -z "$branch_line" ] && continue
@@ -217,7 +219,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      reaped_orphan_branches=$((reaped_orphan_branches + 1))
    done < <(
      "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-branches \
-       --repo-root "$(git rev-parse --show-toplevel)" \
+       --repo-root "$SY_TOPLEVEL" \
        --session-id "<session-id>"
    )
    ```
@@ -236,10 +238,12 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    unreaped_worktrees=0
    while IFS= read -r leftover_path; do
      [ -z "$leftover_path" ] && continue
      unreaped_worktrees=$((unreaped_worktrees + 1))
+     leftover_name=$(basename "$leftover_path")
      printf 'unreaped-leftover: %s\n' "$leftover_path"
      # Issue #1274 — this probe used to be read-only: it computed the tally
      # above for the summary line but never wrote a durable audit-log record
@@ -257,7 +261,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
        --action reaped-failed \
        --worktree-path "$leftover_path" \
-       --worktree-name "$(basename "$leftover_path")" \
+       --worktree-name "$leftover_name" \
        --session-id "<session-id>" \
        --classification "unknown" \
        --reason "still-present-at-end-of-session-cleanup (#1274)" \
@@ -265,7 +269,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
        --phase "cleanup-summary-5.5" 2>/dev/null || true
    done < <(
      "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" report-unreaped \
-       --repo-root "$(git rev-parse --show-toplevel)" \
+       --repo-root "$SY_TOPLEVEL" \
        --current-session-id "<session-id>"
    )
    echo "unreaped-worktrees: $unreaped_worktrees"
@@ -380,8 +384,9 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
    # (issue #1059/#1064) — otherwise this read silently drops
    # .shipyard/config.local.json post-relocation.
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
    SWEEP_ON_LOOP_END=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.sweep_on_loop_end 2>/dev/null || echo "false")

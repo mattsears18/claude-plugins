@@ -55,7 +55,8 @@ check_closing_ref() {
 ```bash
 # Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch".
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
   LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
@@ -123,7 +124,8 @@ if [ "$LEAKED" = "true" ]; then
   gh pr close "$CURRENT_PR" --repo <owner/repo> \
     --comment "Closing — closingIssuesReferences kept registering #<E> even with a confirmed-clean body and commit message (#893). Reopening from a neutrally-named branch to clear the leaked link."
 
-  NEUTRAL_BRANCH="docs/issue-<N>-followup-$(date +%s)"
+  NEUTRAL_STAMP=$(date +%s)
+  NEUTRAL_BRANCH="docs/issue-<N>-followup-$NEUTRAL_STAMP"
   git checkout -B "$NEUTRAL_BRANCH" "origin/$DEFAULT_BRANCH"
   git cherry-pick <original-commit-sha>   # or recreate the same file changes directly
   git push -u origin "$NEUTRAL_BRANCH"

@@ -167,7 +167,8 @@ The command is a thin wrapper. The assistant's job is to:
      global)
        file="${SHIPYARD_HOME:-$HOME/.shipyard}/config.json" ;;
    esac
-   mkdir -p "$(dirname "$file")"
+   file_dir=$(dirname "$file")
+   mkdir -p "$file_dir"
    [ -f "$file" ] || echo '{"version":1}' > "$file"
    "${EDITOR:-vi}" "$file"
    plugins/shipyard/scripts/shipyard-config.sh validate --layer "$target"

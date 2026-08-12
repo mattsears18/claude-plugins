@@ -117,7 +117,8 @@ After all issues are filed, delete any screenshot you captured that did NOT end 
 
 ```bash
 # List screenshots you kept (mentioned in issue bodies); delete the rest from today's screenshots dir.
-DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
+TODAY=$(date +%Y-%m-%d)
+DIR=".shipyard/audits/$TODAY/screenshots"
 [ -d "$DIR" ] || exit 0
 # After filing, for each file in $DIR, check whether any filed issue's body referenced it.
 # If not, remove it. (The orchestrator-level report will list which screenshots were retained.)

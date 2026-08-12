@@ -226,7 +226,8 @@ A pure-research spike with nothing safely committable yet is a completely valid 
 
 ```bash
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
   LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0

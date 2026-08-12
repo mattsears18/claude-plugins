@@ -81,7 +81,8 @@ The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+cd "$SY_TOPLEVEL"   # be robust to subdir invocation
 
 # Threshold warning (issue #836 fix 4) — surface a large agent-* backlog
 # in the session banner even though the per-session cap means it won't
@@ -141,7 +142,7 @@ done <<< "$in_flight_agent_ids"
 max_per_session=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
 
 reap_output=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-stale \
-  --repo-root "$(pwd)" \
+  --repo-root "$SY_TOPLEVEL" \
   --session-id "<session-id>" \
   --max-per-session "${max_per_session:-10}" \
   "${exclude_flags[@]}" 2>/dev/null)
@@ -192,7 +193,8 @@ The row's action is intentionally conservative: clear the assignment only, leave
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+cd "$SY_TOPLEVEL"   # be robust to subdir invocation
 stale_assigns_count=0
 declare -a stale_assigns_numbers
 git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||' | while read -r branch; do
@@ -295,7 +297,8 @@ done
 # permanently-empty `gh issue list` every session.
 BACKLOG_SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
 if [ "$BACKLOG_SELF_ASSIGN" = "true" ]; then
-  for n in $(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null); do
+  UNLINKED_ASSIGNED=$(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null)
+  for n in $UNLINKED_ASSIGNED; do
     # If a worktree for this issue exists, the loop above already handled it;
     # skip. Extract issue numbers from every do-work worktree branch the same
     # permissive way as the loop above (#739) so a collision-fallback local
@@ -311,7 +314,8 @@ if [ "$BACKLOG_SELF_ASSIGN" = "true" ]; then
     # (e.g., draft PR linked via a different reference shape). Conservative
     # gate: only clear assignment when NOTHING in the dispatch artifacts
     # exists for this issue anymore.
-    if [ -n "$(git ls-remote --heads origin "do-work/issue-$n" 2>/dev/null)" ]; then
+    remote_head=$(git ls-remote --heads origin "do-work/issue-$n" 2>/dev/null)
+    if [ -n "$remote_head" ]; then
       continue
     fi
     gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
@@ -339,7 +343,8 @@ held_ciblocked=0
 declare -a cleared_pr_numbers
 declare -a held_pr_numbers
 
-for pr in $(jq -r '.[].number' /tmp/do-work-ciblocked-prs.json); do
+ciblocked_pr_numbers=$(jq -r '.[].number' /tmp/do-work-ciblocked-prs.json)
+for pr in $ciblocked_pr_numbers; do
   head_oid=$(jq -r --argjson n "$pr" '.[] | select(.number == $n) | .headRefOid' /tmp/do-work-ciblocked-prs.json)
 
   # Newest `labeled` event for blocked:ci on this PR (shipyard, a bot, or a human — doesn't matter who).
@@ -394,7 +399,8 @@ migrated_legacy_dep=0      # → no label (dependency-wait, body-ref filter gate
 migrated_legacy_review=0   # → needs-human-review (unclassifiable legacy refuse)
 declare -a migrated_legacy_dep_numbers
 declare -a migrated_legacy_review_numbers
-for n in $(jq -r '.[].number' /tmp/do-work-blocked-legacy-issues.json); do
+legacy_issue_numbers=$(jq -r '.[].number' /tmp/do-work-blocked-legacy-issues.json)
+for n in $legacy_issue_numbers; do
   body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body' /tmp/do-work-blocked-legacy-issues.json)
 
   # Same `Blocked by #N` extraction the bail handler uses. Any reference to a
@@ -443,7 +449,8 @@ gh issue list --repo <owner/repo> --state open --label blocked:agent-soft --limi
 
 cleared_blocked_soft=0
 declare -a cleared_blocked_soft_numbers
-for n in $(jq -r '.[].number' /tmp/do-work-blocked-soft-issues.json); do
+blocked_soft_numbers=$(jq -r '.[].number' /tmp/do-work-blocked-soft-issues.json)
+for n in $blocked_soft_numbers; do
   gh issue edit "$n" --repo <owner/repo> --remove-label blocked:agent-soft 2>/dev/null || true
   gh issue comment "$n" --repo <owner/repo> --body "Auto-cleared \`blocked:agent-soft\` at next-session backlog fetch — subjective bails (cannot-reproduce / ambiguous / scope-judgment) do not persist across sessions. If the underlying ambiguity is still unresolved, a fresh worker dispatch this session may re-stamp the label." 2>/dev/null || true
   cleared_blocked_soft=$((cleared_blocked_soft + 1))
@@ -463,7 +470,8 @@ gh issue list --repo <owner/repo> --state open --label needs-design --limit 200 
 
 migrated_needs_design=0
 declare -a migrated_needs_design_numbers
-for n in $(jq -r '.[].number' /tmp/do-work-legacy-needs-design.json); do
+legacy_needs_design_numbers=$(jq -r '.[].number' /tmp/do-work-legacy-needs-design.json)
+for n in $legacy_needs_design_numbers; do
   # Add the current label first so the issue is never unlabelled mid-transition.
   gh issue edit "$n" --repo <owner/repo> --add-label needs-human-review 2>/dev/null || true
   gh issue edit "$n" --repo <owner/repo> --remove-label needs-design 2>/dev/null || true
@@ -496,7 +504,8 @@ gh issue list --repo <owner/repo> --state open --label tracking --limit 200 \
 # Deduplicate (an issue could carry both labels) and process each once.
 migrated_needs_decomp=0
 declare -a migrated_needs_decomp_numbers
-for n in $(jq -r '.[].number' /tmp/do-work-legacy-needs-decomp.json | sort -un); do
+legacy_needs_decomp_numbers=$(jq -r '.[].number' /tmp/do-work-legacy-needs-decomp.json | sort -un)
+for n in $legacy_needs_decomp_numbers; do
   gh issue edit "$n" --repo <owner/repo> --add-label needs-human-review 2>/dev/null || true
   # Remove whichever legacy labels the issue carries (one or both).
   gh issue edit "$n" --repo <owner/repo> --remove-label needs-decomposition 2>/dev/null || true
@@ -523,7 +532,8 @@ migrated_hard_dep=0      # → no label (dependency-wait, body-ref filter gates 
 migrated_hard_review=0   # → needs-human-review (unclassifiable refuse)
 declare -a migrated_hard_dep_numbers
 declare -a migrated_hard_review_numbers
-for n in $(jq -r '.[].number' /tmp/do-work-legacy-hard-issues.json); do
+legacy_hard_numbers=$(jq -r '.[].number' /tmp/do-work-legacy-hard-issues.json)
+for n in $legacy_hard_numbers; do
   body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body' /tmp/do-work-legacy-hard-issues.json)
 
   # Same `Blocked by #N` extraction as sub-sweep b.

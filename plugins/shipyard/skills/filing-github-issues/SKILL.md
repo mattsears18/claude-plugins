@@ -342,39 +342,37 @@ Found by `<audit type>` audit of `<url or surface>` on <YYYY-MM-DD>.
 
 Only reference issue numbers you verified this session via `gh issue view N` or `gh issue list --search`. Inventing numbers trips permission checks and pollutes the tracker.
 
-## Filing command (HEREDOC pattern)
+## Filing command (`--body-file` pattern)
 
-Always include `--label shipyard` (the provenance stamp — see "shipyard provenance label" above) and `--label "P<n>"` (the severity label — see "Severity label" above) alongside your other labels. Add `--milestone "<title>"` only when the "Milestone assignment" section above resolved one for this finding — omit the flag entirely otherwise:
+Always include `--label shipyard` (the provenance stamp — see "shipyard provenance label" above) and `--label "P<n>"` (the severity label — see "Severity label" above) alongside your other labels. Add `--milestone "<title>"` only when the "Milestone assignment" section above resolved one for this finding — omit the flag entirely otherwise.
+
+**Write the body to a file with the `Write` tool, then pass `--body-file`.** Do NOT feed it through a `--body "$(cat <<'EOF' … EOF)"` heredoc-in-command-substitution: that shape is refused outright by the harness's worktree-isolation `Bash` guard ([#979](https://github.com/mattsears18/shipyard/issues/979), [#1314](https://github.com/mattsears18/shipyard/issues/1314)). A worktree-isolated caller writes it to `$WORKTREE_PATH/.shipyard-scratch/issue-body.md` per `shipyard:worker-preamble` § "Scratch directory"; any other caller may use any path it is allowed to write.
 
 ```bash
+BODY_FILE="<path written with the Write tool>"
 gh issue create --repo <owner/repo> \
   --label shipyard \
   --label "P1" \
   --label <label1> --label <label2> \
   --title "<conventional-commit title>" \
-  --body "$(cat <<'EOF'
-<body>
-EOF
-)" \
+  --body-file "$BODY_FILE" \
   ${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"}
 ```
 
-HEREDOC with quoted `'EOF'` preserves backticks, dollar signs, and special chars in the body verbatim.
+A `--body-file` payload is read verbatim, so backticks, dollar signs, and other special characters in the body survive without any shell quoting at all — the same guarantee the old quoted-`'EOF'` heredoc gave, minus the refused command shape.
 
 ## Capture the real issue number — never guess or read it back stale (REQUIRED)
 
 `gh issue create` prints the URL of the issue it just created to **stdout** (e.g. `https://github.com/<owner>/<repo>/issues/152`). That URL — and the number derived from it — is the **only** authoritative record of what you filed. Capture it inline and report exactly that:
 
 ```bash
+BODY_FILE="<path written with the Write tool>"
 issue_url=$(gh issue create --repo <owner/repo> \
   --label shipyard \
   --label "P1" \
   --label <label1> --label <label2> \
   --title "<conventional-commit title>" \
-  --body "$(cat <<'EOF'
-<body>
-EOF
-)" \
+  --body-file "$BODY_FILE" \
   ${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"})
 echo "filed: $issue_url"   # e.g. https://github.com/<owner>/<repo>/issues/152
 ```

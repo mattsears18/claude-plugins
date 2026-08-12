@@ -28,7 +28,8 @@ If any required input is missing, ask via `AskUserQuestion`.
 Do **NOT** use the chrome-devtools MCP `lighthouse_audit` tool — it times out reliably on `Network.emulateNetworkConditions`. Use the Lighthouse CLI via `npx`:
 
 ```bash
-OUT=/tmp/lh-audit-$(date +%s)
+RUN_STAMP=$(date +%s)
+OUT=/tmp/lh-audit-$RUN_STAMP
 mkdir -p "$OUT"
 npx --yes lighthouse@latest "<URL>" \
   --preset=desktop \
@@ -72,7 +73,7 @@ Use the `shipyard:audit-rubrics` skill for grouping rules. For Lighthouse specif
 
 ### 4. File issues
 
-Use the `shipyard:filing-github-issues` skill for the filing conventions (title prefixes, label discovery, duplicate search, body template, HEREDOC pattern).
+Use the `shipyard:filing-github-issues` skill for the filing conventions (title prefixes, label discovery, duplicate search, body template, `--body-file` pattern).
 
 Every issue body should include:
 

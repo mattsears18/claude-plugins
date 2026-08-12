@@ -99,8 +99,9 @@ Compute candidates for the following buckets:
   # post-relocation (setup sub-phase 01b, after step 0.5/0.56), so a bare
   # shipyard-config.sh call here would silently read the orchestrator
   # worktree's config instead of the primary checkout's.
-  SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+  SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+  SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
   export SHIPYARD_REPO_ROOT
   investigate_dispatch=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
   ```

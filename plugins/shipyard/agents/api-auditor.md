@@ -178,10 +178,12 @@ if [[ -z "$LAST_TAG" ]]; then
   echo "no tags — skipping breaking-change diff pass"
 else
   # Diff the schema file(s) between the last tag and HEAD
-  for schema in $(git ls-files | grep -iE '(openapi|swagger)\.(ya?ml|json)$'); do
+  OPENAPI_FILES=$(git ls-files | grep -iE '(openapi|swagger)\.(ya?ml|json)$')
+  GRAPHQL_FILES=$(git ls-files | grep -iE '\.(graphql|gql|graphqls)$')
+  for schema in $OPENAPI_FILES; do
     git diff "$LAST_TAG..HEAD" -- "$schema"
   done
-  for schema in $(git ls-files | grep -iE '\.(graphql|gql|graphqls)$'); do
+  for schema in $GRAPHQL_FILES; do
     git diff "$LAST_TAG..HEAD" -- "$schema"
   done
 fi

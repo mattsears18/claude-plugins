@@ -2389,9 +2389,12 @@ assert_contains "$issue_work_path736" \
   'Do NOT touch the other worktree' \
   "issue-work.md §3 forbids touching the colliding worktree on fallback (#736)"
 # shellcheck disable=SC2016
-# Literal needle — must NOT expand $(date +%s); this is markdown prose text.
+# Literal needle — must NOT expand $COLLISION_STAMP; this is markdown prose
+# text. The timestamp suffix is now hoisted to its own assignment line rather
+# than interpolated inline — #1314 swept every argument-position/prefixed-RHS
+# command substitution out of the spec tree, so assert on the resulting shape.
 assert_contains "$issue_work_path736" \
-  'LOCAL_BRANCH="do-work/issue-<N>-$(date +%s)"' \
+  'LOCAL_BRANCH="do-work/issue-<N>-$COLLISION_STAMP"' \
   "issue-work.md §3 falls back to a collision-free LOCAL branch name (#736)"
 # shellcheck disable=SC2016
 # Backticks/single-quotes are literal markdown punctuation in the needle.

@@ -98,7 +98,8 @@ The watchdog keys on **stream output**, not on tool-call boundaries — a single
    slow_silent_command > /tmp/out.log 2>&1 &
    cmd_pid=$!
    while kill -0 "$cmd_pid" 2>/dev/null; do
-     echo "[heartbeat] $(date -u +%H:%M:%S) — still running slow_silent_command (pid $cmd_pid)"
+     beat_ts=$(date -u +%H:%M:%S)
+     echo "[heartbeat] $beat_ts — still running slow_silent_command (pid $cmd_pid)"
      sleep 60
    done
    wait "$cmd_pid"   # propagate the real exit status
@@ -113,7 +114,8 @@ The watchdog keys on **stream output**, not on tool-call boundaries — a single
 
 ```bash
 # Was node_modules actually populated by the last (possibly-killed) npm ci?
-[ -d node_modules ] && [ -n "$(ls -A node_modules 2>/dev/null)" ] && echo "node_modules present — install likely completed, don't re-run npm ci blind"
+node_modules_entries=$(ls -A node_modules 2>/dev/null)
+[ -d node_modules ] && [ -n "$node_modules_entries" ] && echo "node_modules present — install likely completed, don't re-run npm ci blind"
 
 # Did the commit actually land despite the turn ending mid-hook?
 git status --porcelain   # clean + HEAD advanced past the base branch ⇒ commit landed

@@ -96,7 +96,8 @@ SHIPYARD_PLUGIN_ROOT_SHA=$(git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD 2
 [ -z "$SHIPYARD_PLUGIN_ROOT_SHA" ] && SHIPYARD_PLUGIN_ROOT_SHA="unknown"
 echo "resolved CLAUDE_PLUGIN_ROOT commit=$SHIPYARD_PLUGIN_ROOT_SHA" >&2
 
-cd "$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+cd "$SY_TOPLEVEL"
 
 # Capture the PRIMARY checkout's own root now, while cwd is still there
 # (issue #1059). Step 0.5 relocates the session into a fresh orchestrator
@@ -120,7 +121,7 @@ echo "resolved SHIPYARD_PRIMARY_CHECKOUT_ROOT=$SHIPYARD_PRIMARY_CHECKOUT_ROOT" >
 # does NOT apply to a consumer install (layers 2-4) — there, CLAUDE_PLUGIN_ROOT
 # points at a distinct installed/marketplace checkout with its own update
 # cadence (`/shipyard:update`), not this repo's own history.
-if [ "$CLAUDE_PLUGIN_ROOT" = "$(pwd)/plugins/shipyard" ]; then
+if [ "$CLAUDE_PLUGIN_ROOT" = "$SHIPYARD_PRIMARY_CHECKOUT_ROOT/plugins/shipyard" ]; then
   STALENESS_DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
   if [ -n "$STALENESS_DEFAULT_BRANCH" ]; then
     git fetch origin "$STALENESS_DEFAULT_BRANCH" --quiet 2>/dev/null || true
@@ -297,12 +298,13 @@ Both `EnterWorktree` forms resolve to the same path, `.claude/worktrees/orchestr
 
 ```bash
 # Run this once from the user's primary checkout (the only write to .git/worktrees/ that the primary will see this session)
-cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+cd "$SY_TOPLEVEL"   # be robust to subdir invocation
 ORCH_WT=".claude/worktrees/orchestrator-<session-id>"
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
 
 # If a prior session left this exact path around, reuse it after refreshing to origin's tip.
-if [ -d "$ORCH_WT" ] && git worktree list --porcelain | grep -q "^worktree $(pwd)/$ORCH_WT$"; then
+if [ -d "$ORCH_WT" ] && git worktree list --porcelain | grep -q "^worktree $SY_TOPLEVEL/$ORCH_WT$"; then
   git -C "$ORCH_WT" fetch origin "$DEFAULT_BRANCH"
   git -C "$ORCH_WT" checkout "$DEFAULT_BRANCH"
   git -C "$ORCH_WT" reset --hard "origin/$DEFAULT_BRANCH"
