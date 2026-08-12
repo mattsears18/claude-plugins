@@ -95,6 +95,18 @@ assert_branch_log_contains() {
   fi
 }
 
+# assert_branch_log_not_contains <repo-dir> <branch> <needle> <label> — the
+# negated counterpart, same no-subshell rationale as assert_branch_log_contains.
+assert_branch_log_not_contains() {
+  local repo_dir="$1" branch="$2" needle="$3" label="$4"
+  if git -C "$repo_dir" log "$branch" --oneline 2>/dev/null | grep -qF -- "$needle"; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"; pass=$((pass+1))
+  fi
+}
+
 TMPDIR_ROOT="$(mktemp -d -t crash-recovery-reap-1291.XXXXXX)"
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
@@ -106,6 +118,13 @@ home="$TMPDIR_ROOT/home"
 # enough because `gh repo view ... -q .defaultBranchRef.name` needs to
 # actually print "main" (an empty stdout with exit 0 leaves DEFAULT_BRANCH
 # empty, corrupting every downstream `origin/${DEFAULT_BRANCH}..HEAD` ref).
+#
+# Also stubs the two calls a05_version_bump makes when
+# version_coordination.enabled=true (issue #1298's regression fixture):
+# `gh issue view ... -q .title/.body` (bump-level inference) and
+# `gh api repos/.../contents/plugin.json?ref=main --jq .content` (reads the
+# origin manifest version). Both are no-ops for every OTHER test in this
+# suite, which never enables version_coordination.
 gh_stub="$TMPDIR_ROOT/gh-stub.sh"
 cat > "$gh_stub" << 'STUBEOF'
 #!/usr/bin/env bash
@@ -115,8 +134,26 @@ case "$1 $2" in
   "pr create") echo "999" ;; # a fake recovered PR number
   "pr merge") ;; # succeed silently, no output
   "pr view") echo '{"state":"OPEN","autoMerge":false}' ;;
+  "issue view")
+    all_args="$*"
+    if [[ "$all_args" == *".title"* ]]; then
+      echo "fix: recovered issue title"
+    elif [[ "$all_args" == *".body"* ]]; then
+      echo "recovered issue body"
+    fi
+    ;;
   *) ;;
 esac
+if [[ "$1" == "api" ]]; then
+  case "${2%%\?*}" in
+    repos/o/r/contents/plugin.json)
+      # Base64 of {"version": "1.0.0"} — must match the worktree-side
+      # plugin.json version the "bump applied" test writes below, since
+      # a05_version_bump only bumps when wt_version == origin_version.
+      printf '{"version": "1.0.0"}' | base64
+      ;;
+  esac
+fi
 exit 0
 STUBEOF
 chmod +x "$gh_stub"
@@ -293,6 +330,61 @@ if [[ ! -e "$wt_path" ]]; then
 else
   printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "clean worktree is still reaped"; fail=$((fail+1))
 fi
+
+# ==========================================================================
+echo
+echo "release-bump commit-message clause tracks a05_bump_applied's VALUE, not its emptiness (#1298)"
+# ==========================================================================
+# a05_version_bump always sets a05_bump_applied to the literal string "true"
+# or "false" — never empty. The old \${a05_bump_applied:+...} form tests for
+# non-emptiness, so it emitted the "release bump" clause even when the value
+# was "false". Both branches below exercise the dirty-worktree (#495)
+# auto-commit path, which is where the buggy interpolation lived.
+
+echo
+echo "  bump NOT applied (version_coordination disabled — the default)"
+reset_repo
+add_worktree "do-work/issue-45" "agent-nobump45"
+wt_path="$repo/.claude/worktrees/agent-nobump45"
+echo "uncommitted edit" > "$wt_path/newfile.txt"
+# No shipyard.config.json written — version_coordination.enabled falls back
+# to the built-in default (false), so a05_version_bump returns early with
+# a05_bump_applied="false" (a non-empty string — the exact case the bug
+# mishandled).
+out="$(GH="$gh_stub" run_reap --repo o/r --slot-id s8 --agent-id nobump45 --slot-kind issue --slot-issue 45 --return-text "" --harness-status completed)"
+assert_contains "$out" "dirty-worktree auto-commit: ok=true" "the dirty-worktree auto-commit succeeds (bump disabled)"
+assert_branch_log_not_contains "$repo" "do-work/issue-45" "release bump" \
+  "auto-commit message has NO release-bump clause when a05_bump_applied=false (the #1298 bug, fixed)"
+assert_branch_log_contains "$repo" "do-work/issue-45" "orchestrator A.0.5 #495)" \
+  "auto-commit message closes cleanly with no trailing bump clause"
+
+echo
+echo "  bump APPLIED (version_coordination enabled, worktree matches origin version)"
+reset_repo
+add_worktree "do-work/issue-46" "agent-bump46"
+wt_path="$repo/.claude/worktrees/agent-bump46"
+# Repo-level config, read from cwd ($repo) by shipyard-config.sh — enables
+# version_coordination with a manifest_path matching the gh-stub's
+# `api .../contents/plugin.json` fixture content (both at version 1.0.0, so
+# a05_version_bump's wt_version==origin_version gate lets the bump proceed).
+cat > "$repo/shipyard.config.json" << 'CONFEOF'
+{
+  "version": 1,
+  "version_coordination": {
+    "enabled": true,
+    "manifest_path": "plugin.json",
+    "manifest_version_jq": ".version",
+    "changelog_path": ""
+  }
+}
+CONFEOF
+echo '{"version": "1.0.0"}' > "$wt_path/plugin.json"
+echo "uncommitted edit" > "$wt_path/newfile.txt"
+out="$(GH="$gh_stub" run_reap --repo o/r --slot-id s9 --agent-id bump46 --slot-kind issue --slot-issue 46 --return-text "" --harness-status completed)"
+assert_contains "$out" "version-bump: applied 1.0.0 → 1.0.1" "the version bump applies when worktree matches origin (patch level, no feat/breaking signal)"
+assert_contains "$out" "dirty-worktree auto-commit: ok=true" "the dirty-worktree auto-commit succeeds (bump applied)"
+assert_branch_log_contains "$repo" "do-work/issue-46" "release bump 1.0.1 #575" \
+  "auto-commit message HAS the release-bump clause when a05_bump_applied=true"
 
 echo
 printf '  %s passed, %s failed\n' "$pass" "$fail"
