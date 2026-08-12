@@ -429,6 +429,16 @@
 #        [--classification <c>] [--reason <r>] [--lock-pid <pid>]
 #        [--reaped-session-id <id>] [--phase <p>]
 #        [--skip-remove]
+#     Argv shape deliberately diverges from its siblings (issue #1305).
+#     classify-all / reap-stale / reap-orphan-branches / reap-session-worktrees
+#     / report-unreaped all take `--repo-root <path>` because each SWEEPS a
+#     repo's worktrees and discovers its own targets internally. `reap` takes
+#     `--worktree-path <path> --worktree-name <name>` instead because it acts
+#     on exactly ONE, already-identified target the caller resolved before
+#     invoking it (the single source of truth for the audit-log write, not a
+#     discovery mechanism) — there is no repo to sweep, only a specific
+#     worktree to record the outcome for. This is not an accidental
+#     inconsistency; do not "fix" it by adding a --repo-root alias here.
 #     Issue #284 — single source of truth for worktree-reap audit-log
 #     writes. Previously the audit-log `printf >> $REAP_AUDIT_LOG` was
 #     inlined at three call sites (setup.md 1.6.5 / 3b, cleanup-summary.md
@@ -682,7 +692,12 @@ reap                    — Performs the worktree-remove (when applicable)
                           $SHIPYARD_HOME/reap-audit.jsonl describing the
                           outcome. Issue #284 single source of truth for
                           reap-audit writes — call sites no longer inline
-                          the printf >> $REAP_AUDIT_LOG line.
+                          the printf >> $REAP_AUDIT_LOG line. Takes
+                          --worktree-path/--worktree-name (a single
+                          already-identified target) rather than the
+                          --repo-root every sweeping subcommand above takes
+                          — deliberate, see issue #1305 and the comment
+                          above this subcommand's own flag list.
                           The remove escalates plain `git worktree remove`
                           → evidence-gated `git worktree remove --force`
                           (issue #712); `--force-evidence <reason>` lets a
