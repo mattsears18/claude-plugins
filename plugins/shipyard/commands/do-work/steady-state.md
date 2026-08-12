@@ -1238,27 +1238,63 @@ ${issue_body}" 2>/dev/null || true
       now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       session_blocked_soft[<N>]="$now"
       comment_body="Worker returned blocked: <reason>. Classified as \`$label\`."
+      gh issue edit <N> --repo <owner/repo> --add-label "$label" 2>/dev/null || true
+      gh issue comment <N> --repo <owner/repo> --body "$comment_body"
     else
-      # Refuse → needs-human-review. No automated path; a human must look.
-      label="needs-human-review"
-      # <!-- do-work-agent-refuse --> is a provenance TRIGGER marker (persists
-      # for the issue's lifetime, distinct from a dedupe/idempotency sentinel
-      # like <!-- do-work-refinement-agent -->) — it's what lets /my-turn
-      # distinguish an agent-refuse needs-human-review from the other seven
-      # provenances that land on the same label, per #1091. Must be the
-      # literal first line of the comment body.
-      comment_body="<!-- do-work-agent-refuse -->
-Worker returned blocked: <reason>. Classified as \`$label\`."
-    fi
+      # Refuse → needs-human-review — UNLESS a human already answered this
+      # exact question after the LAST time this issue was refuse-escalated
+      # (issue #1279). Re-applying the gate in that case just bounces a
+      # settled decision back to the human on repeat — the concrete repro
+      # was three re-gates in ~10 minutes on one issue, twice after a
+      # comment on the thread had already explained the race. This is an
+      # ORDERING check, not a keyword-match: only a decision-resolved
+      # sentinel POSTED AFTER the prior <!-- do-work-agent-refuse --> comment
+      # counts — a decision recorded before an EARLIER escalation must not
+      # suppress a genuinely new one. Full rule + rationale:
+      # `shipyard:worker-preamble` § "On-demand fragments" — fragment
+      # decision-freshness-check.md.
+      comments_json=$(gh issue view <N> --repo <owner/repo> --json comments \
+        --jq '[.comments[] | {body, createdAt}]' 2>/dev/null || echo "[]")
+      latest_escalation=$(printf '%s' "$comments_json" | jq -r '
+        [.[] | select(.body | startswith("<!-- do-work-agent-refuse -->"))]
+        | sort_by(.createdAt) | last.createdAt // empty')
+      latest_decision=$(printf '%s' "$comments_json" | jq -r '
+        [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
+                            or startswith("<!-- do-work-decision-resolved -->"))]
+        | sort_by(.createdAt) | last.createdAt // empty')
 
-    gh issue edit <N> --repo <owner/repo> --add-label "$label" 2>/dev/null || true
-    gh issue comment <N> --repo <owner/repo> --body "$comment_body"
+      if [ -n "$latest_escalation" ] && [ -n "$latest_decision" ] && [ "$latest_decision" \> "$latest_escalation" ]; then
+        # A human answered this AFTER the last time it was escalated — do
+        # NOT re-gate. Leave the label off so the next dispatch reads the
+        # recorded decision (per each mode's own comment-reading rule)
+        # instead of repeating this exact bounce.
+        comment_body="Worker returned blocked: <reason>. NOT re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at ${latest_decision}). Leaving the gate off so the next dispatch acts on the recorded decision instead of repeating this question."
+        gh issue comment <N> --repo <owner/repo> --body "$comment_body"
+      else
+        label="needs-human-review"
+        # <!-- do-work-agent-refuse --> is a provenance TRIGGER marker (persists
+        # for the issue's lifetime, distinct from a dedupe/idempotency sentinel
+        # like <!-- do-work-refinement-agent -->) — it's what lets /my-turn
+        # distinguish an agent-refuse needs-human-review from the other seven
+        # provenances that land on the same label, per #1091. Must be the
+        # literal first line of the comment body — it is also the escalation
+        # marker the freshness check above compares against on this issue's
+        # NEXT bail (#1279); do not change its shape without updating that
+        # check.
+        comment_body="<!-- do-work-agent-refuse -->
+Worker returned blocked: <reason>. Classified as \`$label\`."
+        gh issue edit <N> --repo <owner/repo> --add-label "$label" 2>/dev/null || true
+        gh issue comment <N> --repo <owner/repo> --body "$comment_body"
+      fi
+    fi
   fi
   ```
 
   A refuse routes to `needs-human-review` (not a dedicated block label) because it has no automated recovery path — a human must look, same semantics `/my-turn` already surfaces. **Why a provisioning bail routes to `agent-console`:** `external provisioning required` is a concrete browser/console action, not a decision, and not auto-recoverable — same destination as the scope-preflight `external-dependency` defer. A dependency-wait needs no label because the `Blocked by #N` body-reference filter ([setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) / bucket 7) is already the complete mechanism. Soft labels don't survive to next session (setup.md step 3d.2 sub-sweep c clears them at every session start) and gate only in-session re-dispatch via `session_blocked_soft[<N>]` for `blocked_agent.soft_retry_minutes` (default 30). See [RATIONALE → Blocked-reason routing table rationale](../do-work-RATIONALE.md#blocked-reason-routing-table-rationale-521628) for the full reasoning behind each routing choice.
 
   **The `<!-- do-work-agent-refuse -->` marker on the refuse comment is a provenance discriminator for `/my-turn`** (issue [#1091](https://github.com/mattsears18/shipyard/issues/1091)) — it lets the human-review render cite the actual bail reason without re-deriving it from prose. It is NOT applied to the soft-block comment (that lands on `blocked:agent-soft`, not `needs-human-review`, and auto-clears every session — no marker needed).
+
+  **The freshness check inside the refuse branch above is a re-escalation guard, not a substitute for reading the thread ([#1279](https://github.com/mattsears18/shipyard/issues/1279)).** It only trips when a PRIOR `<!-- do-work-agent-refuse -->` comment exists on this issue AND a `<!-- shipyard-resolve-decisions -->` / `<!-- do-work-decision-resolved -->` sentinel landed after it — i.e. this is a *repeat* of an escalation a human already answered, not this issue's first refuse. A decision-resolved comment that predates the prior escalation (or an issue with no prior refuse at all) does not suppress anything; see [`decision-freshness-check.md`](../../skills/worker-preamble/decision-freshness-check.md)'s "Guard the other direction" for why an issue can legitimately need human input twice. The two sentinels are already treated as equivalent elsewhere in this repo — [`setup/06-scope-preflight.md`'s Signal B](./setup/06-scope-preflight.md) established the same equivalence for the scope-preflight diagnosis path (issue [#962](https://github.com/mattsears18/shipyard/issues/962)) — this reuses that fact rather than introducing a third marker.
 
 - **errored** — record in the session log, continue.
 
@@ -1399,6 +1435,8 @@ For **investigate work** (`investigated+fixed` / `investigated+needs-human-revie
 
 - **investigated+needs-human-review #<N> (label applied)** — the worker reviewed the issue and determined it requires human judgment (ambiguous reproducer, architectural decision, security-sensitive, etc.). The worker already applied the `needs-human-review` label. Record. Remove `needs-triage`: `gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true`. No auto-retry — `/my-turn` will surface it. Reap the agent's worktree via step B.
 
+- **investigated+needs-human-review #<N> (decision already recorded, gate not re-applied)** — [#1279](https://github.com/mattsears18/shipyard/issues/1279): the worker's own [§4b freshness check](../../agents/issue-worker/investigate.md#4b-genuinely-needs-a-human--apply-needs-human-review-return-blocked-style-the-investigatedneeds-human-review-path) found a decision-resolved sentinel posted after this issue's last escalation and deliberately did **not** (re-)apply `needs-human-review` — the worker already removed `needs-triage` and posted the explanatory comment itself. Record. **Do NOT apply `needs-human-review` here either** — the issue is meant to re-enter the normal dispatch pool with no gate label, since the recorded decision should make it actionable on the next pass. No further label action. Reap the agent's worktree via step B.
+
 - **investigated+closed-noise #<N>** — the worker determined the issue is noise (spam, test artifact, auto-filed bot issue with no actionable signal). The worker already closed the issue. Record. Log: `[investigate-reconcile] #<N> closed as noise.` Reap the agent's worktree via step B.
 
 - **investigated+duplicate #<N> of #<K>** — the worker determined the issue duplicates `#<K>`. The worker already closed `#<N>` as a duplicate. Record. Log: `[investigate-reconcile] #<N> closed as duplicate of #<K>.` Reap the agent's worktree via step B.
@@ -1412,6 +1450,8 @@ For **spike work** (`spiked+shipped` / `spiked+needs-human-review` / `blocked` /
 - **spiked+shipped #<N> via PR #<M> (auto-merge: ..., checks: ..., sub-issues: ...)** — the worker concluded the spike (viable / viable-with-caveats / **or** not-viable — all three are `spiked+shipped`, per [spike.md step 11](../../agents/issue-worker/spike.md#11-return)) and opened a PR carrying the committed design doc plus, optionally, a decomposition and/or an implemented slice. Treat this identically to an issue-work `shipped #<N> via PR #<M>` return: **Append `<M>` to `session_prs`.** Run the standard `shipped` cost-tracking comment and immediate worktree reap for `do-work/issue-<N>` (same mechanics as the [issue-work `shipped` handler](#a1-parse-the-return-string) above — auto-merge/checks parsing, cost comment, force-reap-even-on-`peer-alive`). The issue auto-closes when PR `<M>` merges (the worker's PR body includes `Closes #<N>`). Any follow-on sub-issues the worker filed (per spike.md step 6) are fresh `shipyard`-labelled issues with no gate label — they re-enter the normal dispatch loop via the next backlog fetch, exactly like a `/decompose-epic` shard.
 
 - **spiked+needs-human-review #<N> (label applied)** — the investigation surfaced a genuine human-only decision (product/business/legal call, access the worker lacks, or a question no amount of investigation could narrow). The worker already applied `needs-human-review`. Record. No auto-retry — `/my-turn` will surface it. Reap the agent's worktree via step B.
+
+- **spiked+needs-human-review #<N> (decision already recorded, gate not re-applied)** — [#1279](https://github.com/mattsears18/shipyard/issues/1279): same shape as investigate-mode's identically-suffixed outcome above — the worker's own [§4b freshness check](../../agents/issue-worker/spike.md#4b-not-actionable--route-to-a-human) found a decision-resolved sentinel posted after this issue's last escalation and deliberately did **not** (re-)apply `needs-human-review`. Record. **Do NOT apply the label here either** — no further label action. Reap the agent's worktree via step B.
 
 - **reaped:** (from spike mode) — same handling as issue-work `reaped:` above: re-enqueue `<N>` back into the ready pool (deduped), remove `@me` assignee, log the event. The worker's worktree is already gone; no reap needed.
 

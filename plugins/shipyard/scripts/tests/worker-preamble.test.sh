@@ -1301,6 +1301,120 @@ assert_contains "$classifier_denial_path" \
   "issues/1278" \
   "classifier-denial.md cites issue #1278"
 
+# --- Issue #1279 — decision-freshness check: don't re-apply needs-human-review
+# over an already-recorded decision. Regression guard for the failure mode
+# where a worker escalating to needs-human-review never checked whether the
+# human decision it was asking for had already been recorded — repro'd three
+# times in ~10 minutes on one lightwork issue. The fix adds a shared fragment
+# plus three call sites (investigate.md §4b, spike.md §4b, and the
+# orchestrator's blocked→refuse routing in steady-state.md) that all compare
+# a decision-resolved sentinel's timestamp against the prior escalation's,
+# rather than just checking whether a resolution comment exists anywhere.
+decision_freshness_path="$wp_dir/decision-freshness-check.md"
+investigate_path="$repo_root/plugins/shipyard/agents/issue-worker/investigate.md"
+spike_path="$repo_root/plugins/shipyard/agents/issue-worker/spike.md"
+
+echo
+echo "decision-freshness-check regression tests (issue #1279)"
+echo
+
+assert_file_exists "$decision_freshness_path" \
+  "worker-preamble fragment decision-freshness-check.md exists (issue #1279)"
+assert_contains "$skill_path" "(./decision-freshness-check.md)" \
+  "SKILL.md fragment-index links decision-freshness-check.md (issue #1279)"
+
+if [[ -f "$decision_freshness_path" ]]; then
+  assert_contains "$decision_freshness_path" \
+    "ordering check, not a keyword-match" \
+    "decision-freshness-check.md frames the rule as ordering, not keyword-matching"
+  assert_contains "$decision_freshness_path" \
+    "shipyard-resolve-decisions" \
+    "decision-freshness-check.md recognizes the shipyard-resolve-decisions sentinel"
+  assert_contains "$decision_freshness_path" \
+    "do-work-decision-resolved" \
+    "decision-freshness-check.md recognizes the do-work-decision-resolved sentinel"
+  assert_contains "$decision_freshness_path" \
+    "Guard the other direction" \
+    "decision-freshness-check.md documents the non-suppression direction (a stale decision must not block a new escalation)"
+fi
+
+# investigate.md §4b must run the freshness check BEFORE applying the label,
+# and must document the new no-relabel return-string variant.
+if [[ -f "$investigate_path" ]]; then
+  assert_contains "$investigate_path" \
+    "do-work-investigation-disposition" \
+    "investigate.md's freshness check compares against its own escalation marker"
+  assert_contains "$investigate_path" \
+    "sorts after" \
+    "investigate.md documents the ordering comparison in prose"
+  assert_contains "$investigate_path" \
+    "investigated+needs-human-review #<N> (decision already recorded, gate not re-applied)" \
+    "investigate.md documents the decision-already-recorded return-string variant"
+  # Ordering assertion: the freshness-check block must appear in the file
+  # BEFORE the unconditional label-apply line, not after — a check added
+  # after the label was already applied would be too late to matter.
+  freshness_line=$(grep -n "latest_escalation=\$(printf" "$investigate_path" | head -n 1 | cut -d: -f1)
+  apply_line=$(grep -n 'gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage' "$investigate_path" | head -n 1 | cut -d: -f1)
+  if [[ -n "$freshness_line" && -n "$apply_line" && "$freshness_line" -lt "$apply_line" ]]; then
+    printf '  %sPASS%s  investigate.md freshness check runs before the label-apply call\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  investigate.md freshness check runs before the label-apply call\n' "$RED" "$RESET"
+    fail=$((fail+1))
+  fi
+fi
+
+# spike.md §4b — structurally identical to investigate.md's §4b.
+if [[ -f "$spike_path" ]]; then
+  assert_contains "$spike_path" \
+    "do-work-investigation-disposition" \
+    "spike.md's freshness check compares against its own escalation marker"
+  assert_contains "$spike_path" \
+    "sorts after" \
+    "spike.md documents the ordering comparison in prose"
+  assert_contains "$spike_path" \
+    "spiked+needs-human-review #<N> (decision already recorded, gate not re-applied)" \
+    "spike.md documents the decision-already-recorded return-string variant"
+  freshness_line=$(grep -n "latest_escalation=\$(printf" "$spike_path" | head -n 1 | cut -d: -f1)
+  apply_line=$(grep -n 'gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage' "$spike_path" | head -n 1 | cut -d: -f1)
+  if [[ -n "$freshness_line" && -n "$apply_line" && "$freshness_line" -lt "$apply_line" ]]; then
+    printf '  %sPASS%s  spike.md freshness check runs before the label-apply call\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  spike.md freshness check runs before the label-apply call\n' "$RED" "$RESET"
+    fail=$((fail+1))
+  fi
+fi
+
+# steady-state.md's orchestrator-side blocked→refuse routing — the central
+# choke point every mode's refuse-class bail funnels through. Must compare
+# against its OWN escalation marker (do-work-agent-refuse), and must
+# document both new investigate+/spiked+ return-string handling entries.
+if [[ -f "$steady_state_hot_path" ]]; then
+  assert_contains "$steady_state_hot_path" \
+    "do-work-agent-refuse" \
+    "steady-state.md's refuse branch still carries its provenance marker"
+  assert_contains "$steady_state_hot_path" \
+    "latest_decision" \
+    "steady-state.md's refuse branch computes a latest_decision timestamp"
+  assert_contains "$steady_state_hot_path" \
+    "NOT re-applying" \
+    "steady-state.md documents the not-re-applying comment body"
+  assert_contains "$steady_state_hot_path" \
+    "investigated+needs-human-review #<N> (decision already recorded, gate not re-applied)" \
+    "steady-state.md documents investigate-mode's decision-already-recorded reconcile handling"
+  assert_contains "$steady_state_hot_path" \
+    "spiked+needs-human-review #<N> (decision already recorded, gate not re-applied)" \
+    "steady-state.md documents spike-mode's decision-already-recorded reconcile handling"
+  # Guard against regressing to a keyword-match: the check must compare
+  # TWO timestamps (latest_escalation vs latest_decision), not merely test
+  # whether a decision comment exists at all.
+  # shellcheck disable=SC2016  # literal needle — must NOT expand $latest_decision/$latest_escalation
+  assert_contains "$steady_state_hot_path" \
+    '[ "$latest_decision" \> "$latest_escalation" ]' \
+    "steady-state.md's freshness check is a timestamp comparison, not a bare existence check"
+fi
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

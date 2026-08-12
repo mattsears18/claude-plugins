@@ -95,6 +95,30 @@ Reach exactly one of three conclusions:
 
 Route here instead of completing the spike when the investigation surfaces something a worker genuinely cannot resolve on its own — a product/business/legal tradeoff with no reasonable default, access the worker lacks (a third-party dashboard, credentials, an internal system with no discoverable code), or a question so underspecified that no amount of investigation narrows it. Do **not** route here merely because the topic is a design/architecture decision — per [#767](https://github.com/mattsears18/shipyard/issues/767), an open design or architecture decision is not, by itself, a valid defer reason; if the only obstacle is picking between reasonable design options, make the call yourself and document the tradeoff in the design doc instead.
 
+**First — check whether a human already answered this exact question ([#1279](https://github.com/mattsears18/shipyard/issues/1279)).** Before applying the gate, run the ordering check from `shipyard:worker-preamble` § "On-demand fragments" — fragment [`decision-freshness-check.md`](../../skills/worker-preamble/decision-freshness-check.md) — against the `comments` array already fetched in [step 0](#0-pre-flight-confirm-the-issue-is-still-workable), using `startswith("<!-- do-work-investigation-disposition -->")` as this call site's `$ESCALATION_MARKER_JQ` (the marker this same 4b applies below — see the comment block further down; shared with investigate-mode's structurally identical 4b):
+
+```bash
+COMMENTS_JSON='<the comments array from step 0, already in context>'
+latest_escalation=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+  [.[] | select(.body | startswith("<!-- do-work-investigation-disposition -->"))]
+  | sort_by(.createdAt) | last.createdAt // empty')
+latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
+  [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
+                      or startswith("<!-- do-work-decision-resolved -->"))]
+  | sort_by(.createdAt) | last.createdAt // empty')
+```
+
+**If `latest_escalation` is non-empty AND `latest_decision` is non-empty AND `latest_decision` sorts after `latest_escalation`** (plain string `>` — ISO-8601 UTC timestamps compare correctly), a human already answered this exact question after the last time this issue was escalated. Do NOT apply `needs-human-review` — instead:
+
+```bash
+gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true
+gh issue comment <N> --repo <owner/repo> --body "Not re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at ${latest_decision}). Leaving the gate off; the recorded decision should be read and acted on directly on the next pass."
+```
+
+Return: `spiked+needs-human-review #<N> (decision already recorded, gate not re-applied)` and stop — do NOT continue to the label-apply block below.
+
+**Otherwise** (no prior escalation exists yet, or no decision was recorded after it) — proceed with the ordinary escalation:
+
 ```bash
 gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
@@ -317,6 +341,7 @@ Identical mechanics to `issue-work` § 7 — one-shot snapshot, never `--watch`,
 |---|---|
 | Spike concluded — design doc + decomposition (+ optional PR-shipped slice) | `spiked+shipped #<N> via PR #<M> (auto-merge: <enabled\|gated-manual\|merged-direct\|merged-direct-ungated\|unavailable — needs manual merge\|unavailable — gh token lacks workflow scope\|gated — external-author origin, needs-human-review label applied>, checks: <green\|pending\|failing>, sub-issues: <#a,#b,...\|none>)` |
 | Investigation surfaced a human-only decision | `spiked+needs-human-review #<N> (label applied)` |
+| Investigation surfaced a human-only decision, but a decision was already recorded since the last escalation ([#1279](https://github.com/mattsears18/shipyard/issues/1279)) | `spiked+needs-human-review #<N> (decision already recorded, gate not re-applied)` |
 | Worktree reaped mid-run | `reaped: my worktree was reaped while I was running — re-dispatch required (last push: <hash\|none>)` |
 | Blocked | `blocked #<N> at <stage>: <reason>` |
 
