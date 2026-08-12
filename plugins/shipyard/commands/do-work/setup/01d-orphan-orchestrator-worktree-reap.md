@@ -31,14 +31,14 @@ while IFS=$'\t' read -r orph_path orph_session_id; do
   # attempt AND the rm -rf fallback internally, and emits the appropriate
   # action variant (`reaped-orphan-orchestrator` vs the `-raw-rm` suffix)
   # in a single audit-log line.
-  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+  "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
     --action reaped-orphan-orchestrator \
     --worktree-path "$orph_path" \
     --worktree-name "$orph_name" \
     --session-id "<session-id>" \
     --reaped-session-id "$orph_session_id" \
     --phase "setup-1.6.5" 2>/dev/null || true
-done < <("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" find-orphan-orchestrators \
+done < <("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" find-orphan-orchestrators \
            --repo-root "$(pwd)" --current-session-id "<session-id>" \
            --emit-resolved-id 2>/dev/null)
 git worktree prune 2>/dev/null || true

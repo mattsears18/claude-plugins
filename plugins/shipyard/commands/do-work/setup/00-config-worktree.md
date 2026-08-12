@@ -47,11 +47,11 @@ C=1 is the default and the right choice for most personal-repo backlogs because 
 
 ### 0.3 `CLAUDE_PLUGIN_ROOT` re-export preamble (every Bash-tool call)
 
-**The harness does not propagate `$CLAUDE_PLUGIN_ROOT` into the Bash-tool subprocess shells.** Verified deterministically against this repo as `do-work-20260525T142439Z-64308` ([#354](https://github.com/mattsears18/shipyard/issues/354)): the env var that's documented as the canonical "where is the installed plugin" pointer expands to the **empty string** inside every Bash-tool call. The very first templated invocation of `/shipyard:do-work` — step 0.4's `"${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" exists` — therefore evaluates as `/scripts/shipyard-config.sh` and exits 127 (`no such file or directory`). Every subsequent script invocation in setup / steady-state / drain / cleanup-summary / inline-trivial would fail the same way.
+**The harness does not propagate `$CLAUDE_PLUGIN_ROOT` into the Bash-tool subprocess shells.** Verified deterministically against this repo as `do-work-20260525T142439Z-64308` ([#354](https://github.com/mattsears18/shipyard/issues/354)): the env var that's documented as the canonical "where is the installed plugin" pointer expands to the **empty string** inside every Bash-tool call. The very first templated invocation of `/shipyard:do-work` — step 0.4's `"$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" exists` — therefore evaluates as `/scripts/shipyard-config.sh` and exits 127 (`no such file or directory`). Every subsequent script invocation in setup / steady-state / drain / cleanup-summary / inline-trivial would fail the same way.
 
 This is the same class of harness-env friction as [#322](https://github.com/mattsears18/shipyard/issues/322) (`$WORKTREE_PATH` not persisting across Bash tool calls): each Bash tool call is hermetic — variables you set in call N are NOT visible in call N+1, and `export` in call N does not persist. Setting the env var once at session start doesn't help.
 
-**The fix is an idempotent preamble at the top of every Bash snippet that references `${CLAUDE_PLUGIN_ROOT}/scripts/...`:**
+**The fix is an idempotent preamble at the top of every Bash snippet that references `$CLAUDE_PLUGIN_ROOT/scripts/...`:**
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
@@ -59,7 +59,7 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 
 Semantics:
 
-- **When the harness DOES set `$CLAUDE_PLUGIN_ROOT`** (slash-command launch contexts, future harness fixes, manual `export` for testing) — the `${VAR:-default}` short-circuits and the export is a no-op. Subsequent `${CLAUDE_PLUGIN_ROOT}/scripts/...` calls resolve to the harness-provided installed-plugin path.
+- **When the harness DOES set `$CLAUDE_PLUGIN_ROOT`** (slash-command launch contexts, future harness fixes, manual `export` for testing) — the `${VAR:-default}` short-circuits and the export is a no-op. Subsequent `$CLAUDE_PLUGIN_ROOT/scripts/...` calls resolve to the harness-provided installed-plugin path.
 - **When the harness does NOT set it** (the observed steady-state for every Bash-tool call inside this orchestrator) — the fallback **probes two install layouts in order** before defaulting:
   1. **Repo-local** (`<repo>/plugins/shipyard`) — but only when that path actually carries a `scripts/` subdir. This is the dogfooding case: shipyard's own checkout (or a worktree of it) runs the spec from the same repo it's orchestrating against, so the repo-local plugin source IS the tree to execute. The `-d "$R/plugins/shipyard/scripts"` guard is load-bearing — it's what lets the probe *fall through* on a consumer repo instead of resolving to a non-existent path. **Kept unconditionally** (issue [#883](https://github.com/mattsears18/shipyard/issues/883)) — [#907](https://github.com/mattsears18/shipyard/issues/907) is the governing decision on whether this layer survives, and it kept it (adding a staleness *warning*, not removing the layer), so dropping it here would contradict that decision.
   2. **Authoritative installed path** (`installPath` for `shipyard@shipyard` in `$HOME/.claude/plugins/installed_plugins.json`) — the consumer-install case, done *correctly* ([#681](https://github.com/mattsears18/shipyard/issues/681)). `installed_plugins.json` records the exact directory of the loaded install (under `cache/<marketplace>/<plugin>/<version>/`), and it resolves identically for the maintainer's own dogfooding-adjacent installs and for any marketplace consumer — it isn't a special case. Guarded by `-d "$I/scripts"` so a malformed/partial entry falls through to the final default rather than being trusted blindly. **This layer alone replaces the former layers 2+3** (issue [#883](https://github.com/mattsears18/shipyard/issues/883) — see the collapse rationale below).
@@ -67,13 +67,15 @@ Semantics:
 
 **Collapsed from four layers to two ([#883](https://github.com/mattsears18/shipyard/issues/883)).** The preamble used to also glob `$HOME/.claude/plugins/marketplaces/*/plugins/shipyard` as a third layer, hardened against a shadowing `.bak` sibling and a version-mismatched marketplace checkout ([#681](https://github.com/mattsears18/shipyard/issues/681), [#417](https://github.com/mattsears18/shipyard/issues/417)) — that layer only ever mattered when `installed_plugins.json` was unreadable or missing the `shipyard@shipyard` entry. In practice `installed_plugins.json` is populated by the harness's own plugin manager for every install method (marketplace-add-then-install, dev-linked, or otherwise) — verified directly against this maintainer's own install (`installed_plugins.json`'s `installPath` resolves to the loaded `cache/shipyard/shipyard/<version>/` directory with a real `scripts/` subdir) before this collapse landed, per the [#883 decision comment](https://github.com/mattsears18/shipyard/issues/883)'s explicit "verify layer 2 resolves across install methods before deleting layer 3" instruction. Removing the marketplace-glob layer drops ~350 bytes per occurrence (~696 → ~345 for the fallback-only bytes, ~403 total with the surrounding guards) while keeping the one layer (`installed_plugins.json`) that's both authoritative and universal. The residual risk — `installed_plugins.json` itself missing or corrupted — degrades to the repo-local-anyway fallback (a meaningful, if likely-missing, error path) rather than a silent wrong pick; this is the same fail-safe posture the old layer 4 already had, just reached one layer sooner.
 
-**Helper-script extraction was proposed and rejected — do not re-propose it.** [#883](https://github.com/mattsears18/shipyard/issues/883) was originally scoped as "ship `scripts/resolve-plugin-root.sh`, replace each of the 66 inlined copies with a 2-line `source` call." A scoping pass rejected this: every occurrence of this preamble is an ad-hoc Bash-tool block executed in a **fresh, hermetic subshell** — nothing persists between calls (the same constraint this section's opening paragraph documents, citing [#354](https://github.com/mattsears18/shipyard/issues/354)). To `source "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-plugin-root.sh"`, a block must first *locate* that script — which requires the identical repo-local/installed-path probe the helper was meant to replace. The circularity is the general case, not a corner case: there is no shortcut that lets a fresh subshell find a helper script without re-deriving `$CLAUDE_PLUGIN_ROOT` first. A resolve-once-and-cache-to-disk scheme would sidestep the circularity but is a materially different, higher-risk design (cross-session and concurrent-worker cache collisions, invalidation) that doesn't help a freshly-dispatched worker's first call — the scoped fix here is shrinking the inlined form in place, not extracting it.
+**Helper-script extraction was proposed and rejected — do not re-propose it.** [#883](https://github.com/mattsears18/shipyard/issues/883) was originally scoped as "ship `scripts/resolve-plugin-root.sh`, replace each of the 66 inlined copies with a 2-line `source` call." A scoping pass rejected this: every occurrence of this preamble is an ad-hoc Bash-tool block executed in a **fresh, hermetic subshell** — nothing persists between calls (the same constraint this section's opening paragraph documents, citing [#354](https://github.com/mattsears18/shipyard/issues/354)). To `source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-plugin-root.sh"`, a block must first *locate* that script — which requires the identical repo-local/installed-path probe the helper was meant to replace. The circularity is the general case, not a corner case: there is no shortcut that lets a fresh subshell find a helper script without re-deriving `$CLAUDE_PLUGIN_ROOT` first. A resolve-once-and-cache-to-disk scheme would sidestep the circularity but is a materially different, higher-risk design (cross-session and concurrent-worker cache collisions, invalidation) that doesn't help a freshly-dispatched worker's first call — the scoped fix here is shrinking the inlined form in place, not extracting it.
 
-**Echo the resolved value once, at this step ([#681](https://github.com/mattsears18/shipyard/issues/681)).** The variable is load-bearing for the whole session — every `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` call routes through it — yet it resolves *invisibly*, so a fallback that picked the wrong directory (a stale `.bak` copy, a version-mismatched marketplace checkout) is undetectable from the session log. The first real usage (step 0.4) therefore prints the resolved path to stderr immediately after the preamble: `echo "resolved CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >&2`. One line, once — enough for an operator (or a later reader of the transcript) to confirm the session ran against the intended install. Do NOT repeat the echo in every block; the one at step 0.4 covers the session.
+**Echo the resolved value once, at this step ([#681](https://github.com/mattsears18/shipyard/issues/681)).** The variable is load-bearing for the whole session — every `$CLAUDE_PLUGIN_ROOT/scripts/*.sh` call routes through it — yet it resolves *invisibly*, so a fallback that picked the wrong directory (a stale `.bak` copy, a version-mismatched marketplace checkout) is undetectable from the session log. The first real usage (step 0.4) therefore prints the resolved path to stderr immediately after the preamble: `echo "resolved CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT" >&2`. One line, once — enough for an operator (or a later reader of the transcript) to confirm the session ran against the intended install. Do NOT repeat the echo in every block; the one at step 0.4 covers the session.
 
 **Defense in depth — the helpers also self-locate.** Every script under `plugins/shipyard/scripts/*.sh` resolves sibling-script paths via `BASH_SOURCE[0]`, not via `$CLAUDE_PLUGIN_ROOT`. The preamble only fixes layer 1 (how the orchestrator *invokes* a script); layer 2 (how a script finds its peers) was already correct. Together the two layers mean a templated invocation works regardless of how the harness configures (or fails to configure) the env var.
 
-**This compound preamble is PRE-RELOCATION ONLY** ([#1181](https://github.com/mattsears18/shipyard/issues/1181)) — steps 0.3, 0.4, and the pre-`EnterWorktree` timing bracket atop [step 0.5](#05-move-into-the-orchestrators-worktree) are the only orchestrator blocks that still carry it, since those run before isolation. The identical one-liner is **refused** post-isolation: "too complex to verify that it stays inside the worktree." **Every other orchestrator-phase block** — step 0.5's post-relocation resolution onward, here and in `steady-state.md` / `drain.md` / `cleanup-summary.md` / `inline-trivial.md` / `dispatch-rules.md` / the rest of `setup/` — instead reads the `.shipyard-plugin-root` stash step 0.5 writes, via `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null); export CLAUDE_PLUGIN_ROOT`. Worker-side files (`agents/issue-worker/*.md`, `skills/worker-preamble/*.md`) keep the compound form unconditionally — a dispatched worker's own `agent-*` worktree has no such stash, and gets the resolved literal via its dispatch prompt instead ([#965](https://github.com/mattsears18/shipyard/issues/965)). Regression-guarded by [`scripts/tests/claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) (accepts either form per file scope). **This callout was scoped to the `CLAUDE_PLUGIN_ROOT` preamble specifically — see [`dont.md`'s general post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) ([#1277](https://github.com/mattsears18/shipyard/issues/1277)) for the same "decompose, don't re-run the compound form" principle applied to every OTHER post-relocation multi-statement block (loops, pipes, `if`/`case` wrappers), plus the decompose-vs-extract-to-a-script decision rule and the regression scanner.**
+**Spell the variable UNBRACED at every invocation site — `"$CLAUDE_PLUGIN_ROOT/scripts/foo.sh"`, never the braced `"${VAR}/..."` form ([#1308](https://github.com/mattsears18/shipyard/issues/1308)).** A braced expansion is refused outright by the worktree-isolation guard in any isolated session, and **the braces are the trigger** — not statement count, loop/pipe shape, block length, or command position. **[`bash-refusal-triggers.md`](../bash-refusal-triggers.md) owns the full rule**, the experiment isolating it, and the companion `$(cmd)`-in-argument-position trigger. Enforced by [`claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) checks (3b)/(3c).
+
+**This compound preamble is PRE-RELOCATION ONLY** ([#1181](https://github.com/mattsears18/shipyard/issues/1181)) — steps 0.3, 0.4, and the pre-`EnterWorktree` timing bracket atop [step 0.5](#05-move-into-the-orchestrators-worktree) are the only orchestrator blocks that still carry it, since those run before isolation. The identical one-liner is **refused** post-isolation, for the precise reason #1308 isolated: a `${VAR:-default}` modifier expansion has no unbraced spelling, so this one preamble cannot be de-braced the way every invocation site above was — hence the stash below. **Every other orchestrator-phase block** — step 0.5's post-relocation resolution onward, here and in `steady-state.md` / `drain.md` / `cleanup-summary.md` / `inline-trivial.md` / `dispatch-rules.md` / the rest of `setup/` — instead reads the `.shipyard-plugin-root` stash step 0.5 writes, via `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null); export CLAUDE_PLUGIN_ROOT`. Worker-side files (`agents/issue-worker/*.md`, `skills/worker-preamble/*.md`) keep the compound form unconditionally — a dispatched worker's own `agent-*` worktree has no such stash, and gets the resolved literal via its dispatch prompt instead ([#965](https://github.com/mattsears18/shipyard/issues/965)). Regression-guarded by [`scripts/tests/claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) (accepts either form per file scope). **This callout was scoped to the `CLAUDE_PLUGIN_ROOT` preamble specifically — see [`dont.md`'s general post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) ([#1277](https://github.com/mattsears18/shipyard/issues/1277)) for the same "decompose, don't re-run the compound form" principle applied to every OTHER post-relocation multi-statement block (loops, pipes, `if`/`case` wrappers), plus the decompose-vs-extract-to-a-script decision rule and the regression scanner.**
 
 ### 0.4 Check the repo-level opt-in (`shipyard.config.json`)
 
@@ -138,7 +140,7 @@ EOF
   fi
 fi
 
-"${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" exists
+"$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" exists
 case $? in
   0)
     # Repo is shipyard-initialized — load the merged config so subsequent
@@ -153,7 +155,7 @@ case $? in
     # trust list / auto-merge policy / cost-tracking knobs all ignored for
     # the rest of the session with NO warning (issue #367). Capture the exit
     # code and stderr, and surface a loud warning on failure.
-    CONFIG_LOAD_STDERR=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>&1 1>/tmp/shipyard-effective-config.$$)
+    CONFIG_LOAD_STDERR=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>&1 1>/tmp/shipyard-effective-config.$$)
     CONFIG_LOAD_RC=$?
     if [ "$CONFIG_LOAD_RC" -eq 0 ]; then
       EFFECTIVE_CONFIG=$(cat /tmp/shipyard-effective-config.$$)
@@ -162,7 +164,7 @@ case $? in
       # built-in defaults — but LOUDLY, and record the failure so the
       # end-of-session summary surfaces it (the silent-degrade is the
       # actual bug #367 flags as more important than the regex breadth).
-      EFFECTIVE_CONFIG=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null < /dev/null) || EFFECTIVE_CONFIG=""
+      EFFECTIVE_CONFIG=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null < /dev/null) || EFFECTIVE_CONFIG=""
       # The loader's stderr already names each rejected field on its own
       # indented line (e.g. `  .auto_merge.policy: value bogus not in
       # enum [...]`). Extract just those lines and `; `-join them. POSIX
@@ -212,7 +214,7 @@ warning: this repo is not shipyard-initialized.
   A future release will refuse to dispatch without shipyard.config.json
   unless --force is passed.
 EOF
-    EFFECTIVE_CONFIG=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load)
+    EFFECTIVE_CONFIG=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load)
     SHIPYARD_UNCONFIGURED=1 ;;
 esac
 ```
@@ -260,7 +262,7 @@ esac
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
 ```
 
@@ -354,7 +356,7 @@ SHIPYARD_PLUGIN_ROOT_VERSION=$(jq -r '.version // empty' "$CLAUDE_PLUGIN_ROOT/.c
 printf '%s\n' "$SHIPYARD_PLUGIN_ROOT_VERSION" > .shipyard-plugin-root-version
 echo "resolved CLAUDE_PLUGIN_ROOT version=$SHIPYARD_PLUGIN_ROOT_VERSION (post-relocation)" >&2
 # Close the step_0_5_worktree timing window.
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
 ```
 
@@ -413,8 +415,8 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 PINNED_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
 if [ -n "$PINNED_ROOT" ] && [ -f "$PINNED_ROOT/.shipyard/config.local.json" ]; then
-  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$(pwd)" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
-  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$PINNED_ROOT" "${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" load 2>/dev/null)
+  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$(pwd)" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
+  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$PINNED_ROOT" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
   if [ "$UNPINNED_CONFIG" != "$PINNED_CONFIG" ]; then
     echo "warning: .shipyard/config.local.json in the primary checkout changes the effective config (issue #1059). SHIPYARD_REPO_ROOT is pinned for THIS session, but a call site that skips re-exporting it (see above) will still read the un-pinned config. Verify trust/auto-merge/model behavior this session." >&2
   fi

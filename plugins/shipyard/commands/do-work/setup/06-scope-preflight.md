@@ -32,7 +32,7 @@ step 6 opens timing window
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 SCOPE_START_EPOCH=$(date -u +%s)
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_6_scope_preflight 2>/dev/null || true
 
 # ... fire all 2N scoping agents with run_in_background: true ...
@@ -43,11 +43,11 @@ SCOPE_START_EPOCH=$(date -u +%s)
 SCOPE_END_EPOCH=$(date -u +%s)
 SCOPE_ELAPSED=$(( SCOPE_END_EPOCH - SCOPE_START_EPOCH ))
 
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_6_scope_preflight 2>/dev/null || true
 
 # Record the per-candidate metrics for reporting.
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" record-scope-preflight \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" record-scope-preflight \
   --session-id "<session-id>" \
   --candidates-scoped "${candidates_dispatched}" \
   --ready-count "${#ready_issues[@]}" \

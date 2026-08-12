@@ -66,7 +66,7 @@ Bail with `blocked` if any of:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-SELF_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
+SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
 if [ "$SELF_ASSIGN" = "true" ]; then
   gh issue edit <N> --repo <owner/repo> --add-assignee @me
 fi
@@ -157,7 +157,7 @@ Branch name comes from the orchestrator's dispatch prompt and must be exactly `d
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-branch-switched.sh" "$(git rev-parse --show-toplevel)" "${LOCAL_BRANCH:-do-work/issue-<N>}"
+bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-branch-switched.sh" "$(git rev-parse --show-toplevel)" "${LOCAL_BRANCH:-do-work/issue-<N>}"
 ```
 
 `match` → proceed below. Anything else (`mismatch`/`error`) → **stop, no `Edit`/`Write` yet** — complete [step 3](#3-sync--branch) first (the diagnostic names the harness placeholder branch explicitly if that's the cause).
@@ -194,12 +194,12 @@ This rule **composes with** the coordination-managed-paths contract above: the p
 
 **CHANGELOG entry write — never delete an existing `### <version>` heading ([#555](https://github.com/mattsears18/shipyard/issues/555)).** When you write the CHANGELOG entry for your release, you are inserting a new `### <version>` block at the top of the file. Never overwrite, reorder, or delete any existing `### <version>` heading that was already present on the base branch. The failure mode from issue #555 was silent: PRs #552 and #553 both resolved their CHANGELOG conflicts correctly (no conflict markers survived) but dropped `### 1.9.10` and `### 1.9.9` from main in the process — the loss was only noticed when a human eyeballed the file during a later manual rebase.
 
-Before committing a CHANGELOG edit, run the monotonicity scan to confirm no released heading was lost. **Reuse the literal plugin-root value you already resolved at `shipyard:worker-preamble`'s step-0 (whether orchestrator-supplied or self-resolved) in place of `${CLAUDE_PLUGIN_ROOT}` below rather than re-deriving it here — see [#965](https://github.com/mattsears18/shipyard/issues/965).** The block below still shows the compound resolution for completeness (and as the path if you somehow reach here without an already-resolved value), but re-running it is redundant once you already have the literal value:
+Before committing a CHANGELOG edit, run the monotonicity scan to confirm no released heading was lost. **Reuse the literal plugin-root value you already resolved at `shipyard:worker-preamble`'s step-0 (whether orchestrator-supplied or self-resolved) in place of `$CLAUDE_PLUGIN_ROOT` below rather than re-deriving it here — see [#965](https://github.com/mattsears18/shipyard/issues/965).** The block below still shows the compound resolution for completeness (and as the path if you somehow reach here without an already-resolved value), but re-running it is redundant once you already have the literal value:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 # (variables don't survive across Bash tool calls, so this is re-derived here)
-scanner="${CLAUDE_PLUGIN_ROOT}/scripts/changelog-monotonicity-scan.sh"
+scanner="$CLAUDE_PLUGIN_ROOT/scripts/changelog-monotonicity-scan.sh"
 if [[ -f "$scanner" ]]; then
   if ! bash "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
     echo "blocked: deleted released CHANGELOG heading(s) during CHANGELOG entry write — restore them before committing (https://github.com/mattsears18/shipyard/issues/555)"
@@ -526,15 +526,15 @@ Branch on the `originating_author_trust` field the orchestrator put in your disp
 
 **Do not type `gh pr merge` until this check has returned.** `gh pr merge --auto` is widely assumed to mean *"queue this PR and merge it when CI goes green."* On two repo configurations that guarantee **silently does not hold** — gh falls through to an *immediate direct merge*, landing the PR while its own checks are still `IN_PROGRESS`. On those configurations the PR's own CI is the only gate that exists, and `--auto` bypasses it, so a red diff reaches the default branch with nothing having gated it.
 
-Run the detector. It is a **script, not a rule for you to re-derive** — do not reason about `allow_auto_merge` yourself. **Reuse the literal plugin-root value already resolved at `shipyard:worker-preamble`'s step-0 in place of `${CLAUDE_PLUGIN_ROOT}` below instead of re-deriving it here ([#965](https://github.com/mattsears18/shipyard/issues/965)):**
+Run the detector. It is a **script, not a rule for you to re-derive** — do not reason about `allow_auto_merge` yourself. **Reuse the literal plugin-root value already resolved at `shipyard:worker-preamble`'s step-0 in place of `$CLAUDE_PLUGIN_ROOT` below instead of re-deriving it here ([#965](https://github.com/mattsears18/shipyard/issues/965)):**
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
 # Resolve the merge method from config — never hardcode --merge (#989). The
 # merge method is repo policy, not worker choice; every `gh pr merge` call in
 # this step and the next uses $AUTO_MERGE_METHOD, resolved once here.
-AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+AUTO_MERGE_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
 case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
 ```
 

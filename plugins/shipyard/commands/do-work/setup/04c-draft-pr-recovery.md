@@ -23,7 +23,7 @@ Part of the [setup parallelization batch](00-config-worktree.md#07-setup-paralle
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-DRAFT_PR_RECOVERY_OUTPUT=$("${CLAUDE_PLUGIN_ROOT}/scripts/draft-pr-recovery.sh" enforce --repo "<owner/repo>" 2>&1)
+DRAFT_PR_RECOVERY_OUTPUT=$("$CLAUDE_PLUGIN_ROOT/scripts/draft-pr-recovery.sh" enforce --repo "<owner/repo>" 2>&1)
 ```
 
 The call is fire-and-forget from the setup step's point of view — the script itself performs the `gh pr ready` / `gh pr merge --auto` / `gh pr edit --add-label` mutations synchronously and returns once every candidate has been classified and acted on; there is nothing further for the orchestrator to poll. Each output line is a JSON object: `{"number":N,"disposition":"...","action":"...","url":"..."}`. Hold the parsed lines in a session-local `inherited_draft_prs` list (see [`orchestrator-state-reference.md`](../orchestrator-state-reference.md#cold-orchestrator-state-structures)) — this is the **surfacing floor** issue #1069 requires even independent of the auto-ready path: every inherited draft this step classified (readied or handed back) must appear in the [end-of-session summary](../cleanup-summary.md#end-of-session-summary), never silently absent from the session's view. A `ready` entry whose action starts with `readied-and-auto-merge-armed` also belongs in `session_prs` — it's now a real open PR under this session's ownership, same as any other freshly-armed auto-merge, so a subsequent red check gets picked up by the normal drain machinery.

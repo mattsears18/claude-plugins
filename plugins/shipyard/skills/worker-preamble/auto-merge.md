@@ -39,7 +39,7 @@ After `gh pr create` returns:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   GATE_VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-gate-narrowing.sh" <owner/repo> <pr-num>)
+   GATE_VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-gate-narrowing.sh" <owner/repo> <pr-num>)
    ```
 
    - **`GATE_VERDICT == "narrowing"` (or `"unknown"` — the detector couldn't read the diff at all and fails toward the safe/blocking reading, never toward silently arming auto-merge on an unreadable diff)** →
@@ -75,7 +75,7 @@ After `gh pr create` returns:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+   VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
    # `ungated` => do NOT arm --auto; --watch the PR's checks, merge only if green.
    # `gated`   => --auto genuinely queues behind CI; arm it (step 1 below).
    ```
@@ -161,7 +161,7 @@ After `gh pr create` returns:
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+   AUTO_MERGE_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
    case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
    ```
 

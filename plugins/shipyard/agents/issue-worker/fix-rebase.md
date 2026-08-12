@@ -101,11 +101,11 @@ This is the one structured exception to step 4's "both sides edited the same JSO
    1. **At least one of the two carve-out classes is configured.** Read the config (re-derive `CLAUDE_PLUGIN_ROOT` first — variables don't survive across Bash tool calls):
       ```bash
       export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-      vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
-      vc_manifest=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
-      vc_version_jq=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
-      vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
-      vc_append_only=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.append_only_paths 2>/dev/null || echo "[]")
+      vc_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
+      vc_manifest=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
+      vc_version_jq=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
+      vc_changelog=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
+      vc_append_only=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.append_only_paths 2>/dev/null || echo "[]")
       ```
       The manifest/CHANGELOG resolution (items 3–4 below, and the version-bump recipe under "Resolution") is eligible only when `vc_enabled == "true"` AND `vc_manifest` is non-empty. The append-only-doc resolution (item 5 below) is eligible whenever `vc_append_only` is a non-empty JSON array — independent of `vc_enabled`. If **neither** class is eligible, this carve-out does not apply at all — bail per step 4.
    2. **The conflicted file set is a subset of the recognized set: `{manifest_path, changelog_path}` (when the manifest/CHANGELOG class is eligible) union `append_only_paths` (when non-empty).** List the conflicted paths with `git diff --name-only --diff-filter=U` and confirm every entry falls into a recognized class. If ANY conflicted file is outside that union — a source file, a spec markdown, a test, or a doc not listed in `append_only_paths` — the conflict touches content beyond the coordinated set: `git rebase --abort` and bail, naming the file that tripped it:
@@ -132,7 +132,7 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
       for f in $conflicted; do
         if printf '%s' "$vc_append_only" | jq -e --arg f "$f" 'type == "array" and (index($f) != null)' >/dev/null 2>&1; then
-          AO_OUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/resolve-append-only-conflict.sh" "$f")
+          AO_OUT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/resolve-append-only-conflict.sh" "$f")
           AO_STATUS=$?
           if [ "$AO_STATUS" != "0" ]; then
             git rebase --abort 2>/dev/null || true
@@ -247,7 +247,7 @@ This is the one structured exception to step 4's "both sides edited the same JSO
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
    # (variables don't survive across Bash tool calls, so this is re-derived here)
-   scanner="${CLAUDE_PLUGIN_ROOT}/scripts/changelog-monotonicity-scan.sh"
+   scanner="$CLAUDE_PLUGIN_ROOT/scripts/changelog-monotonicity-scan.sh"
    if [[ -f "$scanner" ]]; then
      if ! bash "$scanner" "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
        git rebase --abort 2>/dev/null || true
@@ -301,7 +301,7 @@ This is the one structured exception to step 4's "both sides edited the same JSO
    CANDIDATE_KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"
    [ -f "$CANDIDATE_KNOWN_REWRITES" ] && KNOWN_REWRITES="$CANDIDATE_KNOWN_REWRITES"
 
-   VERIFY_OUTPUT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" ${KNOWN_REWRITES:+"$KNOWN_REWRITES"} 2>&1)
+   VERIFY_OUTPUT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/verify-added-lines-survived.sh" "$MERGE_BASE" "origin/$HEAD_REF" ${KNOWN_REWRITES:+"$KNOWN_REWRITES"} 2>&1)
    VERIFY_STATUS=$?
 
    if [ "$VERIFY_STATUS" != "0" ]; then

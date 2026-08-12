@@ -49,7 +49,7 @@ Default values:
 ### 2. Confirm we're in an Expo project
 
 ```bash
-SCRIPT="${CLAUDE_PLUGIN_ROOT}/scripts/eas-watch.sh"
+SCRIPT="$CLAUDE_PLUGIN_ROOT/scripts/eas-watch.sh"
 SLUG=$(bash "$SCRIPT" project-slug)
 ```
 

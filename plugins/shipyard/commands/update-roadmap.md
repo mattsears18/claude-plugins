@@ -40,7 +40,7 @@ Not the right surface when:
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
+ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
 ```
 
 If `$ENABLED` is not `true`, print **"milestones.enabled is false (or the block is absent) — nothing to do. Turn it on via `/shipyard:init` or `/shipyard:config set milestones.enabled true`."** and stop. Do not proceed to any read or write below.

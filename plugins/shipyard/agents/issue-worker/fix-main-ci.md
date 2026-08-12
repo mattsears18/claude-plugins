@@ -20,7 +20,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/assert-ci-green.sh" <owner/repo> --branch <default-branch>
+   bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-ci-green.sh" <owner/repo> --branch <default-branch>
    VERDICT=$?
    ```
 
@@ -97,10 +97,10 @@ The single highest-leverage action is: identify the root cause and ship the smal
 
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   VERDICT=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+   VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
    # Resolve the merge method from config — never hardcode --merge (#989).
    # Repo policy, not worker choice; used in every gh pr merge call below.
-   AUTO_MERGE_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+   AUTO_MERGE_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
    case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac
    ```
 

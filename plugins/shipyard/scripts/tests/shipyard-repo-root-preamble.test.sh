@@ -268,8 +268,13 @@ walk_blocks() {
 
     in_block {
       line = $0
-      if (line ~ /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/shipyard-config\.sh"/ ||
-          line ~ /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/resolve-dispatch-model\.sh"/) {
+      # Unbraced spelling (issue #1308 — the braced form is refused outright
+      # by the harness worktree-isolation guard, so no call site uses it any
+      # more). Matching only the braced form here made this whole suite pass
+      # over ZERO call-bearing blocks; the discovery floor below is what
+      # caught that, and it must keep catching it.
+      if (line ~ /\$CLAUDE_PLUGIN_ROOT\/scripts\/shipyard-config\.sh"/ ||
+          line ~ /\$CLAUDE_PLUGIN_ROOT\/scripts\/resolve-dispatch-model\.sh"/) {
         has_call = 1
       }
       if (line ~ /\.shipyard-primary-root/) {

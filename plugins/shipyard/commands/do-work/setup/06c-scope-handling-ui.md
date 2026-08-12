@@ -191,7 +191,7 @@ $CURRENT_BODY"
      export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
      SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null) || SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
      export SHIPYARD_REPO_ROOT
-     DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null || echo 14)
+     DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.external_dependency_recheck_days 2>/dev/null || echo 14)
      DAYS=${DAYS//[!0-9]/14}
      DATE=$(date -u -d "+${DAYS} days" +%F 2>/dev/null || date -u -v+"${DAYS}"d +%F)
 
@@ -420,7 +420,7 @@ The rule of thumb is: banners are LOUD and one-shot (printed when the transition
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" flush \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" flush \
   --session-id "<session-id>" 2>/dev/null || true
 ```
 

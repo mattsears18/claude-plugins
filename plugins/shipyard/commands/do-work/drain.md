@@ -79,8 +79,8 @@ Once every row above reports empty (subject to row 7's degraded-path exception),
    ME_LOGIN=$(gh api user --jq '.login')
    # Herestring, not a pipe — feeds the same stdin content without spanning a
    # shell command boundary (issue #1289, mirrors #1277's decomposition rule).
-   SUMMARY=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FRESH_FETCH_JSON")
-   "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "<session-id>" \
+   SUMMARY=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FRESH_FETCH_JSON")
+   "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
      --set ".unfiltered_open_count = $(printf '%s' "$SUMMARY" | jq -r '.unfiltered_open_count')" \
      --set ".me_assigned_open = $(printf '%s' "$SUMMARY" | jq -r '.me_assigned_open')" \
      --set ".last_fresh_fetch = \"$(date -u +%H:%M:%S)\"" \
@@ -249,8 +249,8 @@ export CLAUDE_PLUGIN_ROOT
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
-settled_minutes=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.settled_minutes 2>/dev/null || echo 20)
-max_drain_hours=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.max_drain_hours 2>/dev/null || echo 8)
+settled_minutes=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.settled_minutes 2>/dev/null || echo 20)
+max_drain_hours=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.max_drain_hours 2>/dev/null || echo 8)
 ```
 
 **Run the primary-checkout branch-leak guard once at drain entry** ([#387](https://github.com/mattsears18/shipyard/issues/387)). Drain is exactly where a leaked `do-work/*` checkout on the primary does its damage: it holds git's per-branch lock on a PR head branch, so the [pre-dispatch head-branch reap](#pre-dispatch-head-branch-reap-self-pid-lock-release) below and the fix-rebase worker's `git switch <head>` both collide with it. The [#387](https://github.com/mattsears18/shipyard/issues/387) repro surfaced precisely here — drain dispatching a fix-rebase for the one DIRTY PR (#384, head `do-work/issue-378`) against a primary the harness had leaked onto `do-work/issue-378`. Restoring the primary to the default branch at drain entry frees the head branch *before* the first per-PR reap runs. Run the **exact** guard from [steady-state.md step A.0.6](./steady-state.md#a06-primary-checkout-branch-leak-guard-fires-every-reconcile-turn-before-a1) (same path-derivation, same clean-restore-vs-dirty-skip branch, same `primary_leak_counters` increments) — it is the single source of truth; do not re-derive a variant here.
@@ -276,7 +276,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # One round-trip + one tool-result block instead of N. Same projection
 # fields the per-PR `gh pr view` would return.
-"${CLAUDE_PLUGIN_ROOT}/scripts/gh-batch.sh" pr-status \
+"$CLAUDE_PLUGIN_ROOT/scripts/gh-batch.sh" pr-status \
   --repo <owner/repo> \
   --numbers "142 143 144 145 146"
 ```
@@ -336,7 +336,7 @@ Closes [#370](https://github.com/mattsears18/shipyard/issues/370). Before dispat
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-reap_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/drain-pre-dispatch-branch-reap.sh" reap \
+reap_result=$("$CLAUDE_PLUGIN_ROOT/scripts/drain-pre-dispatch-branch-reap.sh" reap \
   --head-ref "$head_ref" --repo <owner/repo> --session-id "<session-id>")
 ```
 
@@ -359,7 +359,7 @@ Before the per-poll actions below dispatch anything, scan for a **mutually-block
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-mb_pairs=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-mutually-blocking-prs.sh" <owner/repo> <candidate PR numbers, space-separated>)
+mb_pairs=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-mutually-blocking-prs.sh" <owner/repo> <candidate PR numbers, space-separated>)
 mb_exit=$?
 ```
 
@@ -411,9 +411,9 @@ mb_exit=$?
    [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
    export SHIPYARD_REPO_ROOT
    # Read both keys once per poll (cheap — the helper short-circuits on cached defaults).
-   skip_rebase=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+   skip_rebase=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.skip_drain_rebase 2>/dev/null || echo "false")
-   max_rebases=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+   max_rebases=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.max_drain_rebases 2>/dev/null || echo "null")
 
    # 2a. Skip-all gate. `skip_drain_rebase: true` wins over `max_drain_rebases`
@@ -476,11 +476,11 @@ mb_exit=$?
    # behavior on non-coordinated repos: serialize_drain_rebase defaults true,
    # but the gate only engages when enabled AND changelog_path is non-empty,
    # so a repo without version_coordination.enabled never serializes.
-   vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+   vc_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      version_coordination.enabled 2>/dev/null || echo "false")
-   vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+   vc_changelog=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      version_coordination.changelog_path 2>/dev/null || echo "")
-   vc_serialize=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
+   vc_serialize=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      version_coordination.serialize_drain_rebase 2>/dev/null || echo "true")
 
    if [ "$vc_enabled" = "true" ] && [ -n "$vc_changelog" ] && [ "$vc_serialize" = "true" ]; then
@@ -562,7 +562,7 @@ export CLAUDE_PLUGIN_ROOT
 SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
-mg_command=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get merge_gate.command 2>/dev/null || echo "")
+mg_command=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get merge_gate.command 2>/dev/null || echo "")
 ```
 
 When `mg_command` is empty (the default), this entire section is a **no-op** — cloud-CI behavior is unchanged, exactly as before #643. The rest of the section applies ONLY when `merge_gate.command` is non-empty.
@@ -615,7 +615,7 @@ SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-roo
 [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
 export SHIPYARD_REPO_ROOT
 # Resolve the merge method from config — never hardcode --merge (#989).
-auto_merge_method=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
+auto_merge_method=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
 case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
 
 if [ "$merge_gating" = "gated" ]; then
@@ -693,7 +693,7 @@ Closes the orchestrator-turn half of [#720](https://github.com/mattsears18/shipy
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-merge_gating=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+merge_gating=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 ```
 
 The action is a **no-op when `merge_gating == "gated"`** (GitHub's real auto-merge queue owns the merge — never race it) and a no-op when `auto_merge.policy == never`.

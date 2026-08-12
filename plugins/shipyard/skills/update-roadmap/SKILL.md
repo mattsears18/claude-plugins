@@ -15,12 +15,12 @@ This skill is a **port** of `mattsears18/lightwork`'s repo-local `.claude/skills
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled)
+ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled)
 if [ "$ENABLED" != "true" ]; then
   echo "milestones.enabled is false (or the block is absent) — nothing to do."
   exit 0
 fi
-FALLBACK=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.fallback)
+FALLBACK=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.fallback)
 ```
 
 A repo that hasn't opted in via `/shipyard:init` (or `/shipyard:config set milestones.enabled true`) gets byte-for-byte no behavior from this skill — no GitHub Milestones API calls, no reads, nothing. This mirrors every other `milestones.*` consumer's inertness contract (see [`do-work/dont.md`'s milestones bullet](../../commands/do-work/dont.md)).

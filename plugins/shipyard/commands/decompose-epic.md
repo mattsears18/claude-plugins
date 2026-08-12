@@ -131,8 +131,8 @@ For each remaining candidate, dispatch a **decomposition worker** in parallel â€
 >
 > ```bash
 > CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-> MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
-> MILESTONES_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+> MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
+> MILESTONES_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
 > PARENT_MILESTONE=""
 > if [ "$MILESTONES_ENABLED" = "true" ] && [ "$MILESTONES_ASSIGN" = "true" ]; then
 >   PARENT_MILESTONE=$(gh issue view <N> --repo <owner/repo> --json milestone --jq '.milestone.title // empty' 2>/dev/null)

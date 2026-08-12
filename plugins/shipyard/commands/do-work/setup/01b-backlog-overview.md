@@ -102,7 +102,7 @@ Compute candidates for the following buckets:
   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
   export SHIPYARD_REPO_ROOT
-  investigate_dispatch=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
+  investigate_dispatch=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
   ```
 
   When `investigate_dispatch == "true"` → **skip this scoring entirely.** The bucket-5 row still prints its raw count in the table; omit the `⚠ likely-triageable` sub-row and its recommendation.

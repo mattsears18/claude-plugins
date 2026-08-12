@@ -130,14 +130,14 @@ Read the gate once:
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
-MILESTONES_ASSIGN=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
+MILESTONES_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
 ```
 
 **If `MILESTONES_ENABLED` != `"true"` OR `MILESTONES_ASSIGN` != `"true"`, skip this step entirely** — file exactly as today, no `--milestone` flag. Otherwise, fetch the repo's open milestones once. **`--method GET` is required** — `gh api` defaults to `POST` whenever a `-f` field is present, and a bare `POST` to the milestones endpoint fails with `422 "title" wasn't supplied` instead of listing anything:
 
 ```bash
-MILESTONES_FALLBACK=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
+MILESTONES_FALLBACK=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
 MILESTONES_JSON=$(gh api repos/<owner>/<repo>/milestones --method GET --paginate -f state=open \
   --jq '[.[] | {number, title, description}]' 2>/dev/null)
 ```

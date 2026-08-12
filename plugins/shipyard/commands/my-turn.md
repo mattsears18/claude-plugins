@@ -70,7 +70,7 @@ If `gh` is not authenticated, abort with a clear error directing the user to `gh
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-investigate_dispatch=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
+investigate_dispatch=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
 ```
 
 ### 4. Resolve the stale-undispatched-issue threshold ([#1078](https://github.com/mattsears18/shipyard/issues/1078))
@@ -79,7 +79,7 @@ Pass B's "authored by `$ME`, never dispatched" signal (below) gates on an age th
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-stale_undispatched_days=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get my_turn.stale_undispatched_days 2>/dev/null)
+stale_undispatched_days=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get my_turn.stale_undispatched_days 2>/dev/null)
 [[ "$stale_undispatched_days" =~ ^[0-9]+$ ]] || stale_undispatched_days=7
 ```
 
@@ -89,7 +89,7 @@ stale_undispatched_days=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-max_diagnostic_reads_per_item=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get my_turn.max_diagnostic_reads_per_item 2>/dev/null)
+max_diagnostic_reads_per_item=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get my_turn.max_diagnostic_reads_per_item 2>/dev/null)
 [[ "$max_diagnostic_reads_per_item" =~ ^[0-9]+$ ]] || max_diagnostic_reads_per_item=1
 ```
 
@@ -101,7 +101,7 @@ Default `1` — at most one extra read beyond the survey projection per item (e.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-disposition_call_detection=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get my_turn.disposition_call_detection 2>/dev/null)
+disposition_call_detection=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get my_turn.disposition_call_detection 2>/dev/null)
 [[ "$disposition_call_detection" == "false" ]] || disposition_call_detection="true"
 ```
 
@@ -115,7 +115,7 @@ Until #1080 lands, `/my-turn` relies on a **declared** per-repo assumption the m
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-assume_operator_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get my_turn.assume_operator_enabled 2>/dev/null)
+assume_operator_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get my_turn.assume_operator_enabled 2>/dev/null)
 [[ "$assume_operator_enabled" == "true" || "$assume_operator_enabled" == "false" ]] || assume_operator_enabled="false"
 ```
 
@@ -131,7 +131,7 @@ Resolve it once at setup — the `CLAUDE_PLUGIN_ROOT` export is repeated here ra
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-skip_drain_rebase=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get ci.skip_drain_rebase 2>/dev/null)
+skip_drain_rebase=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.skip_drain_rebase 2>/dev/null)
 [[ "$skip_drain_rebase" == "true" || "$skip_drain_rebase" == "false" ]] || skip_drain_rebase="true"
 ```
 
@@ -177,7 +177,7 @@ Any failure along the way — no `sessions/` dir (a machine that's never run `/d
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 live=0
 if [[ -n "$session_id" ]]; then
-  if "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" is-active --session-id "$session_id" 2>/dev/null; then
+  if "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" is-active --session-id "$session_id" 2>/dev/null; then
     live=1
   fi
 fi
@@ -191,17 +191,17 @@ fi
 in_flight_issue_targets=""
 in_flight_pr_targets=""
 if [[ "$live" == "1" ]]; then
-  in_flight_issue_targets=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+  in_flight_issue_targets=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read \
     --session-id "$session_id" \
     --path '.in_flight[] | select(.kind == "issue" or .kind == "investigate" or .kind == "spike") | .target' 2>/dev/null)
-  in_flight_pr_targets=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+  in_flight_pr_targets=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read \
     --session-id "$session_id" \
     --path '.in_flight[] | select(.kind == "fix-checks" or .kind == "fix-rebase") | .target' 2>/dev/null)
 fi
 
 main_ci_status="unknown"
 if [[ -n "$session_id" ]]; then
-  main_ci_status=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
+  main_ci_status=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read \
     --session-id "$session_id" --path \
     'if .main_ci.checked_at and ((now - (.main_ci.checked_at | fromdateiso8601)) <= 1800) then .main_ci.status else "unknown" end' \
     2>/dev/null)

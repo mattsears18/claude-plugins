@@ -38,7 +38,7 @@ export CLAUDE_PLUGIN_ROOT
 # from a prior crashed session can't shadow the live session). cwd-independent
 # given the explicit --repo-root (immune to the #477 cwd-leak).
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
+SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
   --repo-root "$REPO_ROOT" 2>/dev/null)
 # Last-resort fallback for a non-worktree layout where the glob found no
 # orchestrator worktree: the cwd-derived stash read. Vulnerable to the #477

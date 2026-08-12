@@ -31,7 +31,7 @@ This is a **warning, not a behavior change** — the orchestrator does not flip 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
 if [ "$verdict" = "ungated" ]; then
   echo "[setup] WARNING (#438/#465): \`gh pr merge --auto\` will SILENTLY DIRECT-MERGE on this repo (no queue) — you have admin/maintain and either allow_auto_merge=false (#438) or the default branch has zero required status checks (#465, fires even when allow_auto_merge=true). Shipyard's merge call sites gate on this automatically (#720): workers block on the PR's own checks, and the orchestrator-turn sites defer to drain's merge lander. But at --concurrency >= 2, version/CHANGELOG coordination across in-flight PRs still cannot hold: the first PR to merge advances main and re-DIRTYs siblings. Recommend --concurrency 1 here, or add a required status check (and/or enable allow_auto_merge) so --auto actually queues. version_coordination.serialize_drain_rebase (drain phase) mitigates the CHANGELOG cascade but not the steady-state leapfrog."
 fi
@@ -87,7 +87,7 @@ A **worker** can afford a multi-minute `--watch` — it owns a dispatch slot and
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 
-verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
+verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
 if [ "$verdict" = "warn" ]; then
   GH_TOKEN_SCOPES=$(gh auth status 2>&1 | grep -o "Token scopes: '[^']*'" | sed "s/Token scopes: //")
   cat <<EOF
@@ -128,7 +128,7 @@ fi
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-CI_POOL_LINE=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-runner-capacity.sh" <owner/repo> 2>/dev/null || echo unknown)
+CI_POOL_LINE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-runner-capacity.sh" <owner/repo> 2>/dev/null || echo unknown)
 CI_POOL_SHAPE=$(printf '%s' "$CI_POOL_LINE" | awk '{print $1}')
 CI_POOL_TOTAL=0
 CI_POOL_QUEUED=0
@@ -164,7 +164,7 @@ Follow-up to [step 1.36](#136-detect-ci-executor-pool-capacity-and-clamp-toward-
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-CI_CHEAP_LINE=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ci-cheap-path.sh" "<repo-checkout>/.github/workflows" 2>/dev/null || echo no-cheap-path)
+CI_CHEAP_LINE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" "<repo-checkout>/.github/workflows" 2>/dev/null || echo no-cheap-path)
 CI_CHEAP_GLOBS=""
 if [ "${CI_CHEAP_LINE%% *}" = "cheap-path-available" ]; then
   CI_CHEAP_GLOBS=$(printf '%s' "$CI_CHEAP_LINE" | sed -n 's/^cheap-path-available globs=//p')
@@ -188,7 +188,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # <session-id> is the orchestrator's session identifier — the same value
 # step 0.5 used in the orchestrator-worktree path. Stable across the run.
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" init \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" init \
   --session-id "<session-id>" \
   --repo "<owner/repo>" \
   --concurrency "$EFFECTIVE_CONCURRENCY" \
@@ -202,7 +202,7 @@ export CLAUDE_PLUGIN_ROOT
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update \
   --session-id "<session-id>" \
   --set ".ci_capacity = { shape: \"${CI_POOL_SHAPE}\", pool_total: ${CI_POOL_TOTAL:-0}, queued_at_start: ${CI_POOL_QUEUED:-0}, cheap_ci_globs: \"${CI_CHEAP_GLOBS:-}\" }"
 ```
@@ -224,7 +224,7 @@ The file lands at `$SHIPYARD_HOME/sessions/<session-id>.json` (default: `~/.ship
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-sessions.sh" sweep \
+"$CLAUDE_PLUGIN_ROOT/scripts/sweep-orphan-sessions.sh" sweep \
   --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
   --current-session-id "<session-id>" \
   --reaper-session-id "<session-id>"
@@ -237,7 +237,7 @@ export CLAUDE_PLUGIN_ROOT
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/sweep-orphan-tmp.sh" sweep \
+"$CLAUDE_PLUGIN_ROOT/scripts/sweep-orphan-tmp.sh" sweep \
   --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}"
 ```
 
@@ -271,7 +271,7 @@ The session-state file at `$SHIPYARD_HOME/sessions/<id>.json` already carries ev
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-PEER_LINES=$("${CLAUDE_PLUGIN_ROOT}/scripts/detect-peer-sessions.sh" check \
+PEER_LINES=$("$CLAUDE_PLUGIN_ROOT/scripts/detect-peer-sessions.sh" check \
   --shipyard-home "${SHIPYARD_HOME:-$HOME/.shipyard}" \
   --repo "<owner/repo>" \
   --current-session-id "<session-id>" 2>/dev/null || echo "summary: peers=0 claimed_targets=(none)")
@@ -286,7 +286,7 @@ Write through unconditionally, holding the value for the rest of the session (sa
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 PEER_TARGETS_JSON=$(printf '%s' "$PEER_CLAIMED_TARGETS" | jq -R 'split(",") | map(select(length>0) | tonumber)')
-"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "<session-id>" \
+"$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
   --set ".peer_sessions = { count: ${PEER_COUNT:-0}, claimed_targets: ${PEER_TARGETS_JSON}, checked_at: \"<iso-8601 UTC now>\" }"
 ```
 
@@ -305,10 +305,10 @@ PEER_TARGETS_JSON=$(printf '%s' "$PEER_CLAIMED_TARGETS" | jq -R 'split(",") | ma
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" start \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" start \
   --session-id "<session-id>" --phase step_1_7_trusted_authors 2>/dev/null || true
 # ... run resolution logic ...
-"${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
+"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_1_7_trusted_authors 2>/dev/null || true
 ```
 
@@ -338,7 +338,7 @@ GitHub returns **two different login shapes** for the same GH App account depend
 - **REST** (e.g. `/repos/.../issues/N/events`) returns the legacy-style login: `sentry[bot]`.
 - **GraphQL Bot/App actor objects** (what `gh issue list --json author` and `gh issue view --json author` return) expose: `app/sentry`.
 
-The two strings have nothing in common after lowercasing, which silently broke bot-author trust before [#296](https://github.com/mattsears18/shipyard/issues/296) — see [RATIONALE → GH App alias normalization](../../do-work-RATIONALE.md#gh-app-alias-normalization--why-it-was-needed-296) for the failure story. The fix is alias normalization at allowlist-load time. The helper `${CLAUDE_PLUGIN_ROOT}/scripts/trusted-authors-normalize.sh` reads the cleaned set and, for every `<name>[bot]` or `app/<name>` entry, **adds the other shape** to the set. So a file with `sentry[bot]` produces `{sentry[bot], app/sentry}`; a file with `app/sentry` produces `{app/sentry, sentry[bot]}`. Either form matches the GraphQL `author.login` value the orchestrator compares against. Human logins (no `[bot]` suffix, no `app/` prefix) pass through unchanged.
+The two strings have nothing in common after lowercasing, which silently broke bot-author trust before [#296](https://github.com/mattsears18/shipyard/issues/296) — see [RATIONALE → GH App alias normalization](../../do-work-RATIONALE.md#gh-app-alias-normalization--why-it-was-needed-296) for the failure story. The fix is alias normalization at allowlist-load time. The helper `$CLAUDE_PLUGIN_ROOT/scripts/trusted-authors-normalize.sh` reads the cleaned set and, for every `<name>[bot]` or `app/<name>` entry, **adds the other shape** to the set. So a file with `sentry[bot]` produces `{sentry[bot], app/sentry}`; a file with `app/sentry` produces `{app/sentry, sentry[bot]}`. Either form matches the GraphQL `author.login` value the orchestrator compares against. Human logins (no `[bot]` suffix, no `app/` prefix) pass through unchanged.
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
@@ -349,12 +349,12 @@ trusted_authors=$(
   {
     cat "$allowlist_file"
     printf '%s\n' "<owner>"   # repo owner is implicitly trusted
-  } | "${CLAUDE_PLUGIN_ROOT}/scripts/trusted-authors-normalize.sh"
+  } | "$CLAUDE_PLUGIN_ROOT/scripts/trusted-authors-normalize.sh"
 )
 
 # The advisory log SHOULD report which aliases were applied so the
 # maintainer knows the normalization fired (issue #296 acceptance criterion):
-"${CLAUDE_PLUGIN_ROOT}/scripts/trusted-authors-normalize.sh" \
+"$CLAUDE_PLUGIN_ROOT/scripts/trusted-authors-normalize.sh" \
   --report-aliases "$allowlist_file" | while IFS= read -r line; do
   [ -z "$line" ] || echo "$line"
 done

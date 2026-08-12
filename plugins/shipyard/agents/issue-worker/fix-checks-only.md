@@ -285,15 +285,15 @@ On failure:
    [ -z "$PRIMARY_CHECKOUT" ] && PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
    ```
 
-   The fallback to `$(git rev-parse --show-toplevel)` only fires if `git worktree list` itself produced no output at all (not a worktree checkout — shouldn't happen under `/do-work`, but keeps this step from hard-erroring in that case); it does NOT mask the bug above, since when worktrees genuinely exist, the `awk` resolution always wins. Reading `.shipyard/flake-suspects.txt` at that absolute path is a narrow, read-only reference into the primary checkout's local state file — the same "invocation fallback" posture already established for `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` — never a `cd` there and never a write.
+   The fallback to `$(git rev-parse --show-toplevel)` only fires if `git worktree list` itself produced no output at all (not a worktree checkout — shouldn't happen under `/do-work`, but keeps this step from hard-erroring in that case); it does NOT mask the bug above, since when worktrees genuinely exist, the `awk` resolution always wins. Reading `.shipyard/flake-suspects.txt` at that absolute path is a narrow, read-only reference into the primary checkout's local state file — the same "invocation fallback" posture already established for `$CLAUDE_PLUGIN_ROOT/scripts/*.sh` — never a `cd` there and never a write.
 
    Build the suspect key from the failing check's `(workflow, job, test)` — the same pipe-joined shape `stop-auto-rerunning` wrote (`<workflow>|<job>|<test>`, test component empty when you can't pin it) — and probe the list:
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-   ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
+   ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
    if [[ "$ENABLED" == "true" ]]; then
      KEY="<workflowName>|<failing job name>|<test-id-or-empty>"
-     if "${CLAUDE_PLUGIN_ROOT}/scripts/flake-enforce.sh" is-suspect --key "$KEY" --repo-root "$PRIMARY_CHECKOUT"; then
+     if "$CLAUDE_PLUGIN_ROOT/scripts/flake-enforce.sh" is-suspect --key "$KEY" --repo-root "$PRIMARY_CHECKOUT"; then
        # Known chronic flake — do NOT auto-rerun. The escalation (tracking issue,
        # blocked:ci label) was already applied by the orchestrator's setup-time
        # enforce pass; your job is to stop, not to burn fix attempts on it.
@@ -345,7 +345,7 @@ On failure:
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 # Only record if the registry is enabled for this repo.
-ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
+ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
 ```
 
 **When to record.** Record exactly one event per (workflow, job, test) failure that you concluded was a *flake* — a transient/environmental/race failure that was NOT a real defect in the PR's diff. Concretely: you re-ran the check (or pushed a no-op-equivalent flake-mitigation) and it went green without a substantive code fix that addressed a real bug, OR the failure log shows a known-flaky shape (timeout on a runner, `boundingBox()` returning null intermittently, network blip, runner cancellation). Do NOT record a real failure you fixed with a genuine code change — that's not a flake, it's a bug your PR introduced and corrected. The registry is for chronic *non-actionable-per-PR* flakes; polluting it with real-bug fixes defeats the escalation signal.
@@ -354,7 +354,7 @@ ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-"${CLAUDE_PLUGIN_ROOT}/scripts/flake-registry.sh" record \
+"$CLAUDE_PLUGIN_ROOT/scripts/flake-registry.sh" record \
   --repo <owner/repo> --pr <M> \
   --workflow "<workflowName>" --job "<failing job name>" \
   [--test "<test-id>"] --action rerun-failed
