@@ -33,8 +33,9 @@
 #
 # Files that legitimately contain bare marker lines (test fixtures that
 # CONSTRUCT a conflicted file to exercise this very scanner) opt out with a
-# `conflict-marker-scan: allow` directive somewhere in the file. Keep that
-# allowlist as small as possible — it is a hole in the gate.
+# `conflict-marker-scan: allow` directive occupying its own line (optionally
+# comment-wrapped — see ALLOW_LINE_RE below). Keep that allowlist as small
+# as possible — it is a hole in the gate.
 #
 # Usage:
 #   bash plugins/shipyard/scripts/conflict-marker-scan.sh            # scan tracked files
@@ -48,15 +49,33 @@ set -u
 # Anchored conflict-marker pattern, shared with fix-rebase.md step 5.
 MARKER_RE='^(<{7}|={7}|>{7})( |$)'
 
-# Opt-out directive a fixture file can carry to exclude itself from the gate.
-ALLOW_DIRECTIVE='conflict-marker-scan: allow'
+# Opt-out directive a fixture file can carry to exclude itself from the
+# gate. ANCHORED to require the directive be the sole content of its own
+# line (whitespace and an optional `#` / `//` / `<!-- ... -->` comment
+# wrapper aside) — never a bare substring match anywhere in the file.
+#
+# Issue #1282: the previous implementation was `grep -qF` for the literal
+# string with no anchoring, so ANY occurrence anywhere in a file — including
+# a file merely *documenting* this convention in running prose, wrapped in
+# backticks — silenced the gate for that file's entire remaining content.
+# CHANGELOG.md's own #436-era release entry (the one that introduced this
+# scanner) does exactly that: it quotes `` `conflict-marker-scan: allow` ``
+# mid-sentence to describe the opt-out convention to readers. Under the old
+# substring check, that single documentation mention permanently exempted
+# ALL of CHANGELOG.md from marker scanning — including an unrelated, later,
+# genuine lone `=======` a different PR introduced elsewhere in the file,
+# which is exactly how it rode a green "conflict markers" run onto `main`.
+# The anchored form below still matches every known legitimate use (a bare
+# fixture-appended line, or the bash-comment directive in this scanner's own
+# test suite) while no longer matching a quoted mid-sentence mention.
+ALLOW_LINE_RE='^[[:space:]]*(#|//|<!--)?[[:space:]]*conflict-marker-scan: allow[[:space:]]*(-->)?[[:space:]]*$'
 
 usage() {
   cat >&2 <<'EOF'
 usage: conflict-marker-scan.sh [path ...]
   With no args, scans every tracked file in the current git repo.
   With paths, scans only those (still skips files carrying the
-  `conflict-marker-scan: allow` opt-out directive).
+  `conflict-marker-scan: allow` opt-out directive on its own line).
 EOF
   exit 2
 }
@@ -92,8 +111,10 @@ found=0
 for f in "${candidates[@]}"; do
   [[ -f "$f" ]] || continue
   # Skip files that explicitly opt out (test fixtures that construct a
-  # conflicted file on purpose).
-  if grep -qF -- "$ALLOW_DIRECTIVE" "$f" 2>/dev/null; then
+  # conflicted file on purpose) — but only when the directive is the SOLE
+  # content of its own line (optionally comment-wrapped); a mention buried
+  # inside running prose does not count (see ALLOW_LINE_RE above, #1282).
+  if grep -qE -- "$ALLOW_LINE_RE" "$f" 2>/dev/null; then
     continue
   fi
   # `grep -nE` prints `<line>:<text>`; prefix with the filename ourselves so
