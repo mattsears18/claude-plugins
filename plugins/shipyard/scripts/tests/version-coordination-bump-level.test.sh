@@ -126,17 +126,26 @@ else
   bad "scripts/next-available-version.sh exists (missing)"
 fi
 
+# a05_level and its major/minor next_ver arithmetic moved from steady-state.md
+# into scripts/crash-recovery-reap.sh with issue #1291's extraction — the
+# "issues/671" cross-reference stays in steady-state.md's surviving prose
+# (the "Version-coordination bump during recovery" paragraph was not moved).
+crash_recovery_reap="$repo_root/plugins/shipyard/scripts/crash-recovery-reap.sh"
 if [[ -f "$steady_state" ]]; then
-  assert_contains "$steady_state" 'a05_level' \
-    "steady-state.md a05 recovery infers a bump level"
-  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the spec, not expanded
-  assert_contains "$steady_state" 'major)   next_ver="$((vc_maj + 1)).0.0"' \
-    "steady-state.md a05 recovery major bump zeroes minor+patch"
-  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the spec, not expanded
-  assert_contains "$steady_state" 'minor)   next_ver="${vc_maj}.$((vc_min + 1)).0"' \
-    "steady-state.md a05 recovery minor bump zeroes patch"
   assert_contains "$steady_state" 'issues/671' \
-    "steady-state.md a05 recovery links to #671"
+    "steady-state.md a05 recovery prose links to #671"
+fi
+if [[ -f "$crash_recovery_reap" ]]; then
+  assert_contains "$crash_recovery_reap" 'a05_level' \
+    "crash-recovery-reap.sh a05 recovery infers a bump level"
+  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+  assert_contains "$crash_recovery_reap" 'major)   next_ver="$((vc_maj + 1)).0.0"' \
+    "crash-recovery-reap.sh a05 recovery major bump zeroes minor+patch"
+  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+  assert_contains "$crash_recovery_reap" 'minor)   next_ver="${vc_maj}.$((vc_min + 1)).0"' \
+    "crash-recovery-reap.sh a05 recovery minor bump zeroes patch"
+else
+  bad "scripts/crash-recovery-reap.sh exists (missing)"
 fi
 
 # ---------------------------------------------------------------------------

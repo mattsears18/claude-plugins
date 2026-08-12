@@ -40,6 +40,10 @@ fi
 
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 worktree_reap_path="$repo_root/plugins/shipyard/scripts/worktree-reap.sh"
+# The terminal-prefix check itself was extracted into crash-recovery-reap.sh
+# by issue #1291 — steady-state.md now only holds the invocation + verify/
+# bookkeeping code, not the case statement.
+crash_recovery_reap_path="$repo_root/plugins/shipyard/scripts/crash-recovery-reap.sh"
 # detect-orchestrator-pid moved to session-identity.sh (issue #941) — the
 # reap/classify-lock subcommands this test also exercises stayed put in
 # worktree-reap.sh, so both paths are needed.
@@ -135,10 +139,12 @@ assert_contains "$steady_state_path" \
   "A.0.5 names issue #358 inline"
 
 # 4) The crash-detection contract is documented — the six valid terminal prefixes
-#    must all appear in the prefix-check guidance.
-assert_contains "$steady_state_path" \
+#    must all appear in the prefix-check guidance. This case statement moved
+#    into crash-recovery-reap.sh with the #1291 extraction.
+assert_file_exists "$crash_recovery_reap_path" "scripts/crash-recovery-reap.sh exists (#1291 extraction)"
+assert_contains "$crash_recovery_reap_path" \
   "shipped*|green*|noop:*|blocked*|rebased*|reaped:*" \
-  "A.0.5 prefix check enumerates all six terminal prefixes"
+  "crash-recovery-reap.sh prefix check enumerates all six terminal prefixes"
 
 # 5) The crash-like shapes the user might encounter are named (API Error,
 #    empty, narrative). These are documentation contract — the prose tells
