@@ -101,8 +101,17 @@ operate_router_path="$repo_root/plugins/shipyard/commands/do-work/operate.md"
 operate_dir="$repo_root/plugins/shipyard/commands/do-work/operate"
 operate_path="$(mktemp -t do-work-operate-concat.XXXXXX)"
 cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
+# Several lock-reaping / bail-classification / version-computation blocks
+# that used to live inline in steady-state.md / dispatch-rules.md were
+# extracted to standalone scripts (issue #1289, the follow-up to
+# #1277/#1288's post-relocation compound-Bash-block decomposition) — fold
+# them into the same concatenation so the many pre-existing
+# `assert_contains "$steady_state_path" …` assertions below keep finding
+# their logic regardless of which file/script it now lives in.
+extracted_reap_scripts_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh $repo_root/plugins/shipyard/scripts/concurrent-session-guard.sh $repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh $repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh $repo_root/plugins/shipyard/scripts/stale-failure-check.sh $repo_root/plugins/shipyard/scripts/next-available-version.sh"
 steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
-cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$invariant_line_path" "$operate_path" > "$steady_state_path" 2>/dev/null
+# shellcheck disable=SC2086  # intentional word-splitting: space-separated path list
+cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
 trap 'rm -f "$setup_path" "$operate_path" "$steady_state_path"' EXIT
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
@@ -423,8 +432,12 @@ assert_count_at_least_across "issues/<M>/comments?per_page" 2 \
 assert_contains "$steady_state_path" \
   '--phase "steady-state-A1-shipped"' \
   "steady-state.md immediate-reap uses the steady-state-A1-shipped phase tag (#282)"
+# shipped-immediate-branch-reap.sh (issue #1289) parameterizes the branch
+# name via --issue rather than the literal "<N>" template placeholder the
+# pre-extraction inline block used — assert the script's own variable form.
+# shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
 assert_contains "$steady_state_path" \
-  'git branch -D "do-work/issue-<N>"' \
+  'git branch -D "$head_ref"' \
   "steady-state.md immediate-reap drops the local branch ref so fix-rebase can resolve via origin (#282)"
 assert_count_at_least_across 'worktree-reap.sh" reap' 2 \
   "steady-state.md routes immediate-reap calls through worktree-reap.sh reap (≥2: reaped + deferred branches) (#282)" \
@@ -1375,8 +1388,20 @@ assert_contains "$issue_work_path453" \
 # the cwd-strip retained only as a fallback — now covering `agent-*` too.
 # Both surfaces (steady-state.md A.0.6 + drain.md drain-entry guard) get the
 # same derivation.
-for f in "$steady_state_path" "$drain_path"; do
+# drain.md's own per-PR primary-checkout-leak section was extracted to
+# drain-pre-dispatch-branch-reap.sh (issue #1289) — drain.md itself now only
+# points at steady-state.md's A.0.6 guard for the drain-ENTRY case (line
+# "Run the exact guard from steady-state.md step A.0.6"), so the fallback-
+# strip literal for the per-PR case lives in the script now. Concatenate
+# drain.md with the script so this assertion keeps finding it regardless of
+# which file it lives in.
+drain_pre_dispatch_reap_script="$repo_root/plugins/shipyard/scripts/drain-pre-dispatch-branch-reap.sh"
+drain_family_path="$(mktemp -t do-work-drain-concat.XXXXXX)"
+cat "$drain_path" "$drain_pre_dispatch_reap_script" > "$drain_family_path" 2>/dev/null
+trap 'rm -f "$setup_path" "$operate_path" "$steady_state_path" "$drain_family_path"' EXIT
+for f in "$steady_state_path" "$drain_family_path"; do
   fname=$(basename "$f")
+  [[ "$f" == "$drain_family_path" ]] && fname="drain.md"
   # The cwd-independent porcelain derivation must be present.
   assert_contains "$f" \
     'git worktree list --porcelain' \

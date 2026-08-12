@@ -92,8 +92,21 @@ repo_root="$(git rev-parse --show-toplevel)"
 
 # The curated, entirely-post-relocation-or-verified-clean file list. See the
 # Scope note in the header for why this isn't a blanket repo sweep yet.
+#
+# dispatch-rules.md / drain.md / inline-trivial.md / steady-state.md added
+# by issue #1289 (the follow-up to #1277/#1288) — an informational sweep at
+# #1277's own fix time found roughly a dozen more compound-shape instances
+# across these four files beyond setup/04-backlog-divert.md; #1289 verified
+# and swept 17 of the 18 flagged locations clean. steady-state.md's single
+# remaining block (the ~420-line A.0.5 crash-recovery reap) is deliberately
+# exempted via an inline `<!-- compound-block-scan: allow -->` marker rather
+# than left off this list entirely — tracked as issue #1291.
 FILES=(
   "$repo_root/plugins/shipyard/commands/do-work/setup/04-backlog-divert.md"
+  "$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
+  "$repo_root/plugins/shipyard/commands/do-work/drain.md"
+  "$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
+  "$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 )
 
 if [[ $# -gt 0 ]]; then

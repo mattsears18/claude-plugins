@@ -48,16 +48,23 @@ if [[ "$repo_root" == "/" ]]; then
   exit 1
 fi
 
-# The four worktree-reap blocks live across the steady-state phase's two files:
-# A.0.5 / A.1 / step B in the hot-path steady-state.md, and the step-C 2d
-# fix-checks dispatch-site reap in the Dispatch rules reference block, which
-# moved to dispatch-rules.md (issue #616). Concatenate both so the
-# count-at-least assertions still see all four reap blocks regardless of which
-# file each now lives in.
+# The four worktree-reap blocks live across the steady-state phase's two
+# files plus two extracted scripts: A.0.5 / step B stayed inline in the
+# hot-path steady-state.md; A.1's shipped-immediate reap and the step-C 2d
+# fix-checks dispatch-site reap (which moved to dispatch-rules.md, issue
+# #616) were BOTH further extracted to their own scripts
+# (shipped-immediate-branch-reap.sh, pre-dispatch-branch-reap.sh) per issue
+# #1289 — the cd-anchor preamble moved with them. Concatenate all four
+# sources so the count-at-least assertions still see all four reap blocks
+# regardless of which file/script each now lives in.
 steady_state_hot_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
+shipped_immediate_reap_path="$repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh"
+pre_dispatch_branch_reap_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh"
 steady_state_path="$(mktemp -t reconcile-reap-concat.XXXXXX)"
-cat "$steady_state_hot_path" "$dispatch_rules_path" > "$steady_state_path" 2>/dev/null
+cat "$steady_state_hot_path" "$dispatch_rules_path" \
+  "$shipped_immediate_reap_path" "$pre_dispatch_branch_reap_path" \
+  > "$steady_state_path" 2>/dev/null
 trap 'rm -f "$steady_state_path"' EXIT
 
 pass=0
@@ -131,10 +138,26 @@ assert_count_at_least "$steady_state_path" \
   4 \
   "all four reap blocks carry the cd-anchor (cd \${STABLE_DIR:-/})"
 
+# Two shapes derive STABLE_DIR from the #477 porcelain idiom now: the
+# still-inline A.0.5 block keeps the original `STABLE_DIR=$(git worktree
+# list --porcelain | awk ...)` pipe form; the two extracted scripts
+# (issue #1289) use the pipe-free `STABLE_DIR=$(awk ... <(git worktree list
+# --porcelain ...))` process-substitution form instead (same cwd-independent
+# porcelain source, different — non-piped — shell shape). Assert the
+# structural invariant both share (`STABLE_DIR=$(` — every anchor derives
+# the variable via command substitution) plus that `git worktree list
+# --porcelain` itself appears at least as often, rather than pinning to one
+# shape's exact text.
+# shellcheck disable=SC2016  # literal grep needle — matched verbatim in the spec, not expanded
 assert_count_at_least "$steady_state_path" \
-  "STABLE_DIR=\$(git worktree list --porcelain" \
+  'STABLE_DIR=$(' \
   4 \
-  "all four reap blocks derive STABLE_DIR via the #477 porcelain idiom"
+  "all four reap blocks derive STABLE_DIR via command substitution"
+
+assert_count_at_least "$steady_state_path" \
+  "git worktree list --porcelain" \
+  4 \
+  "all four reap blocks source STABLE_DIR from the #477 porcelain idiom"
 
 # 6) The orchestrator-worktree-first / primary-fallback ordering is present
 #    (the porcelain walk prefers the orchestrator-* entry, falls back to the

@@ -1395,24 +1395,33 @@ if [[ -f "$steady_state_hot_path" ]]; then
     "do-work-agent-refuse" \
     "steady-state.md's refuse branch still carries its provenance marker"
   assert_contains "$steady_state_hot_path" \
-    "latest_decision" \
-    "steady-state.md's refuse branch computes a latest_decision timestamp"
-  assert_contains "$steady_state_hot_path" \
-    "NOT re-applying" \
-    "steady-state.md documents the not-re-applying comment body"
-  assert_contains "$steady_state_hot_path" \
     "investigated+needs-human-review #<N> (decision already recorded, gate not re-applied)" \
     "steady-state.md documents investigate-mode's decision-already-recorded reconcile handling"
   assert_contains "$steady_state_hot_path" \
     "spiked+needs-human-review #<N> (decision already recorded, gate not re-applied)" \
     "steady-state.md documents spike-mode's decision-already-recorded reconcile handling"
+fi
+
+# The refuse-vs-soft classification (including the #1279 decision-freshness
+# timestamp comparison) was extracted from steady-state.md to
+# classify-blocked-bail.sh, issue #1289 — assert against the script now, not
+# the removed inline prose.
+classify_blocked_bail_path="$repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh"
+assert_file_exists "$classify_blocked_bail_path" "scripts/classify-blocked-bail.sh exists"
+if [[ -f "$classify_blocked_bail_path" ]]; then
+  assert_contains "$classify_blocked_bail_path" \
+    "latest_decision" \
+    "classify-blocked-bail.sh's refuse branch computes a latest_decision timestamp"
+  assert_contains "$classify_blocked_bail_path" \
+    "NOT re-applying" \
+    "classify-blocked-bail.sh documents the not-re-applying comment body"
   # Guard against regressing to a keyword-match: the check must compare
   # TWO timestamps (latest_escalation vs latest_decision), not merely test
   # whether a decision comment exists at all.
   # shellcheck disable=SC2016  # literal needle — must NOT expand $latest_decision/$latest_escalation
-  assert_contains "$steady_state_hot_path" \
+  assert_contains "$classify_blocked_bail_path" \
     '[ "$latest_decision" \> "$latest_escalation" ]' \
-    "steady-state.md's freshness check is a timestamp comparison, not a bare existence check"
+    "classify-blocked-bail.sh's freshness check is a timestamp comparison, not a bare existence check"
 fi
 
 echo

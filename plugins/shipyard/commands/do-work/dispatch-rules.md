@@ -111,7 +111,7 @@ When filling a slot, walk this decision tree:
 
    **CI-minute pre-dispatch checks (issue [#323](https://github.com/mattsears18/shipyard/issues/323) — gated on `ci.*` config keys).** Before composing the fix-checks-only prompt, run the two cost-discipline checks below. Both default to off (`false`) so pre-#323 behavior is preserved; flip them in `shipyard.config.json`'s `ci.*` block to engage. On repos with expensive E2E shards / Lighthouse, the savings are typically 1 full CI suite per skipped dispatch.
 
-   **2a. Stale-failure check (`ci.verify_check_failing_on_head_before_dispatch`).** When the config key is `true`, fetch the failing check's run-SHA and compare against the PR's current `headRefOid`:
+   **2a. Stale-failure check (`ci.verify_check_failing_on_head_before_dispatch`).** When the config key is `true`, fetch the failing check's run-SHA and compare against the PR's current `headRefOid`. The rollup fetch + per-check run-SHA walk is a data-dependent loop over a dynamic set of failing checks — exactly the for-loop-wraps-gh-calls shape the worktree-isolation guard refuses post-relocation, so it's extracted to [`scripts/stale-failure-check.sh`](../../scripts/stale-failure-check.sh) (issue #1289, mirrors #1277's `stale-check-refresh.sh` precedent) rather than inlined:
 
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
@@ -123,49 +123,18 @@ When filling a slot, walk this decision tree:
    verify_stale=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get \
      ci.verify_check_failing_on_head_before_dispatch 2>/dev/null || echo "false")
    if [ "$verify_stale" = "true" ]; then
-     # Fetch headRefOid + the failing check's run-SHA from the rollup. The
-     # statusCheckRollup nodes expose detailsUrl with the run-id embedded;
-     # we extract it client-side rather than a second gh round-trip.
-     # Latest-per-name projection (issue #333) — without it the `failing`
-     # array enumerates stale superseded FAILURE entries too, each one
-     # forcing a wasted `gh api runs/<id>` round-trip in the loop below
-     # to confirm what the projection would have caught for free: the
-     # entry is on an older SHA than the PR's current head.
-     rollup=$(gh pr view <M> --repo <owner/repo> \
-       --json headRefOid,statusCheckRollup \
-       --jq '{head: .headRefOid, failing: [
-         .statusCheckRollup
-         | group_by(.name)
-         | map(sort_by(.completedAt // .startedAt // "") | last)
-         | .[]
-         | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
-         | {name, detailsUrl}]}')
-     head_sha=$(echo "$rollup" | jq -r .head)
-     # Probe each failing check's run via detailsUrl → run id → run's head_sha.
-     # If ANY failing check's run head_sha != PR head_sha, the failure has been
-     # superseded by a later push — drop the entry without dispatch.
-     stale=true
-     for url in $(echo "$rollup" | jq -r '.failing[].detailsUrl // empty'); do
-       run_id=$(echo "$url" | grep -oE '/runs/[0-9]+' | grep -oE '[0-9]+' | head -1)
-       [ -z "$run_id" ] && { stale=false; break; }
-       run_sha=$(gh api "repos/<owner/repo>/actions/runs/$run_id" \
-         --jq '.head_sha' 2>/dev/null)
-       if [ "$run_sha" = "$head_sha" ]; then
-         stale=false   # at least one failing run IS on the current head — real failure
-         break
-       fi
-     done
-     if [ "$stale" = "true" ]; then
-       echo "[failed-prs] PR #<M> skipped: stale failure on sha <run_sha>... (head=<head_sha>); will re-evaluate on next refresh. (#323)"
-       ci_session_counters.dispatches_skipped_stale_failure=$((ci_session_counters.dispatches_skipped_stale_failure + 1))
-       # Do NOT re-add to failed_prs — the next step-D refresh's failed-PR scan
-       # will re-evaluate from scratch. If the head moved and a NEW failure
-       # appears on the new SHA, the scan will pick it up; if the head moved
-       # and the failure resolved, nothing to dispatch.
-       continue   # to the next slot-fill decision (back to the top of the decision tree)
-     fi
+     stale_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/stale-failure-check.sh" check --repo <owner/repo> --pr <M>)
    fi
    ```
+
+   Parse `stale_result`'s two space-separated `key=value` tokens (`stale=true|false`, `head_sha=<sha>`). When `stale=true`:
+
+   ```bash
+   echo "[failed-prs] PR #<M> skipped: stale failure superseded by a later push (head=<head_sha>); will re-evaluate on next refresh. (#323)"
+   ci_session_counters.dispatches_skipped_stale_failure=$((ci_session_counters.dispatches_skipped_stale_failure + 1))
+   ```
+
+   Do NOT re-add `<M>` to `failed_prs` — the next step-D refresh's failed-PR scan will re-evaluate from scratch. If the head moved and a NEW failure appears on the new SHA, the scan will pick it up; if the head moved and the failure resolved, nothing to dispatch. `continue` to the next slot-fill decision (back to the top of the decision tree). When `stale=false` (the fail-safe default on any fetch error, per the script's own header), proceed to 2b as before — never silently skip a dispatch-worthy failure.
 
    **2b. In-progress-settle check (`ci.require_in_progress_check_to_settle`).** When the config key is `true`, defer the dispatch when any check is still running on the current SHA:
 
@@ -208,99 +177,18 @@ When filling a slot, walk this decision tree:
 
    **Why it's safe to reap.** The lock holds *our orchestrator's* PID, so `classify-lock` short-circuits it to `self-ancestor` — the originating worker's return was already reconciled at [step A](./steady-state.md#a-reconcile-the-return) by the time this dispatch runs, so its worktree is logically done. See [RATIONALE → Pre-dispatch head-branch reap failure mode](../do-work-RATIONALE.md#dispatch-rules--pre-dispatch-head-branch-reap-failure-mode-368) for how this parallels the other self-ancestor reap sites.
 
+   **Extracted to [`scripts/pre-dispatch-branch-reap.sh`](../../scripts/pre-dispatch-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop wrapping several `gh`/git-adjacent calls with internal pipes — exactly the two shapes the worktree-isolation guard refuses post-relocation. This is precisely the block #1277's worker deferred as needing "a dedicated review/test pass" rather than a rushed edit — the script's own header comment restates, verbatim, the two hard prohibitions that govern it (#832's in-flight-before-classify-lock ordering, #836's never-infer-from-branch-name-alone rule) and every classification branch is preserved exactly as it read here before extraction. `$head_ref` is the PR's headRefName (already known from the failed-PR scan's snapshot — no extra `gh` round-trip needed):
+
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
-   # harness can leak the orchestrator's cwd into an `agent-*` worktree this
-   # block then `git worktree remove --force`s; once that dir is gone, the
-   # `git worktree prune` below fails with `fatal: Unable to read current
-   # working directory`. The old `cd "$(git rev-parse --show-toplevel)"`
-   # could NOT rescue it — git resolves its own (deleted) cwd before reading
-   # anything, so the rev-parse fails first and the cd no-ops. Derive the
-   # anchor cwd-independently via the #477 porcelain idiom (orchestrator
-   # worktree first, primary as fallback) while cwd is still valid, then cd
-   # to it so the remove/prune never run with cwd inside the doomed dir.
-   STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-     | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
-   [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-     | awk '/^worktree /{print substr($0,10); exit}')
-   cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
-   # Walk the primary's .git/worktrees (porcelain-derived, cwd-independent).
-   PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
-     | awk '/^worktree /{print substr($0,10); exit}')
-   # Declare the orchestrator PID once so classify-lock short-circuits self-locks
-   # to `self-ancestor` (issue #263) regardless of process-tree shape.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
-   # In-flight guard (issue #832) — snapshot this session's currently
-   # in-flight agent-ids BEFORE the loop below ever consults classify-lock.
-   # In-flight membership is authoritative liveness; the lock file's
-   # classification is only a fallback. Belt-and-braces here alongside the
-   # `$head_ref` branch-match filter below (which already narrows this loop
-   # to a PR whose originating worker has, per this dispatch site's own
-   # precondition, already returned) — see `dont.md`'s "Don't reap a
-   # live-PID worktree" bullet.
-   in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
-     --session-id "<session-id>" --path .in_flight 2>/dev/null \
-     | jq -r '.[]?.agent_id // empty' 2>/dev/null)
-
-   # $head_ref is the PR's headRefName (already known from the failed-PR scan's
-   # snapshot — no extra `gh` round-trip needed).
-   for wt_dir in $(find "${PRIMARY_CHECKOUT}/.git/worktrees" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
-     [ -d "$wt_dir" ] || continue
-     branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
-     [ "$branch_ref" = "$head_ref" ] || continue
-
-     name=$(basename "$wt_dir")
-     # In-flight guard (issue #832) — skip BEFORE classify-lock, not after.
-     case $'\n'"$in_flight_agent_ids"$'\n' in
-       *$'\n'"${name#agent-}"$'\n'*) continue ;;
-     esac
-     worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
-     [ -z "$worktree_path" ] && continue
-
-     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
-     # Anchor on the literal `pid` keyword, not "first digit-run before a
-     # close-paren" — the latter misparses a real `(pid <N> start <ctime>)`
-     # lock as the ctime's trailing year (issue #1206). Same fix as
-     # `worktree-reap.sh`'s own `extract_lock_pid` helper.
-     lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
-     [ -z "$lock_pid" ] && lock_pid="null"
-
-     # no-lock / dead / self-ancestor / peer-alive — all safe to reap here
-     # (issue #771). This dispatch site only ever fires against a PR already
-     # in `failed_prs` / `D_dirty` — i.e. its ORIGINATING worker has already
-     # returned and been reconciled at step A, so any worktree still holding
-     # `$head_ref` is logically done by definition, exactly like the A.1
-     # `shipped` path (#576) and the drain #370 pre-dispatch reap. Force-
-     # reaping here closes the residual gap #576 left open: this site
-     # previously stayed "intentionally conservative" and deferred on
-     # `peer-alive` unconditionally, with no override at all — the exact
-     # failure this issue's #2598 repro hit (a re-dispatched fix-checks
-     # worker bailing on a completed prior worker's worktree, twice in a
-     # row, because neither completion left a force-reap here to catch it).
-     # Audit with classification "peer-alive-force" so the override stays
-     # traceable in ~/.shipyard/reap-audit.jsonl.
-     local_classification="$classification"
-     [ "$classification" = "peer-alive" ] && local_classification="peer-alive-force"
-     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-       --action reaped \
-       --worktree-path "$worktree_path" \
-       --worktree-name "$name" \
-       --session-id "<session-id>" \
-       --classification "$local_classification" \
-       --lock-pid "$lock_pid" \
-       --phase "steady-state-pre-dispatch" 2>/dev/null || true
-
-     # Drop the local branch ref so the fresh worker's `git switch <head>`
-     # recreates it cleanly without the "already checked out" collision.
-     git branch -D "$head_ref" 2>/dev/null || true
-     break   # at most one worktree per head branch
-   done
-   git worktree prune 2>/dev/null || true
+   reap_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/pre-dispatch-branch-reap.sh" reap \
+     --head-ref "$head_ref" --session-id "<session-id>" --phase "steady-state-pre-dispatch")
    ```
 
-   **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** A classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when the loop above found no match (`$worktree_path` unset). Substitute the literal `$worktree_path` / `$name` / `$local_classification` / `$lock_pid` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
+   Parse `reap_result` — either `reaped=false` (no matching worktree found, nothing further to do) or `reaped=true worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid>`. On `reaped=true`, hold onto the four values for the separate verify call immediately below.
+
+   **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** A classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when `reap_result` was `reaped=false`. Substitute the literal `worktree_path` / `worktree_name` / `classification` / `lock_pid` values parsed from `reap_result` above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
 
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
@@ -309,9 +197,9 @@ When filling a slot, walk this decision tree:
      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
        --action reaped-failed \
        --worktree-path "$worktree_path" \
-       --worktree-name "$name" \
+       --worktree-name "$worktree_name" \
        --session-id "<session-id>" \
-       --classification "$local_classification" \
+       --classification "$classification" \
        --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
        --lock-pid "$lock_pid" \
        --phase "steady-state-pre-dispatch" 2>/dev/null || true
@@ -410,42 +298,18 @@ When filling a slot, walk this decision tree:
 
    **Concurrent-session guard (per-dispatch, before self-assign).** Check whether any peer Claude Code instance (a different orchestrator PID) already holds a live lock on any `agent-*` worktree that targets the same issue number `<N>`. This prevents two parallel `/do-work` sessions from independently dispatching against the same issue and racing to push to the same `do-work/issue-<N>` branch.
 
+   **Extracted to [`scripts/concurrent-session-guard.sh`](../../scripts/concurrent-session-guard.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop — the same shape the worktree-isolation guard refuses post-relocation. This is the second of the two blocks #1277's worker deferred as needing "a dedicated review/test pass" (alongside the pre-dispatch head-branch reap above); the script's own header comment restates the `unknown`-fails-closed posture (issue #1206) this block has always used, unchanged:
+
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   # Check every agent-* worktree whose branch matches do-work/issue-<N>.
-   # Use find (not a bare agent-* glob) — under zsh's default nomatch option
-   # a glob that expands to zero entries raises a fatal error and aborts the
-   # whole bash block, dropping the self-assign that follows. Same class as
-   # issues/335 (which fixed setup.md's 3b loop); see issues/546 for this
-   # guard's repro.
-   peer_locked=false
-   # Declare our orchestrator PID so classify-lock distinguishes our own
-   # session's locks (self-ancestor) from genuine peer-session locks
-   # (peer-alive). Issue #263: without this, classify-lock's ancestor walk
-   # can mis-classify our own session's locks as peer-alive whenever an
-   # intermediate harness layer returns empty PPID, blocking dispatch
-   # against issues we're actively working.
-   export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
-   for wt_dir in $(find "$(git rev-parse --show-toplevel)/.git/worktrees" -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
-     # Read the branch ref from the worktree metadata
-     branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
-     [ "$branch_ref" = "do-work/issue-<N>" ] || continue
-     classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
-     # `unknown` (issue #1206 — lock file exists but couldn't be parsed) is
-     # treated identically to `peer-alive` here: fail closed. Skipping the
-     # candidate this dispatch turn is cheap and reversible; misclassifying
-     # a live peer's lock as available and racing it to push the same
-     # do-work/issue-<N> branch is not.
-     if [ "$classification" = "peer-alive" ] || [ "$classification" = "unknown" ]; then
-       peer_locked=true
-       break
-     fi
-   done
+   guard_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/concurrent-session-guard.sh" check --issue <N>)
    ```
 
+   Parse `guard_result`:
+
    - `peer_locked=false` → no concurrent session is working this issue. Proceed to self-assign and dispatch.
-   - `peer_locked=true` → a live peer holds a lock on a `do-work/issue-<N>` worktree, OR its lock couldn't be parsed at all (`unknown`, issue #1206 — treated the same, fail closed, rather than risking a race against a lock this check can't actually read). Park the candidate: log `[concurrent-session-guard] #<N> skipped — <classification> lock on do-work/issue-<N> worktree; issue already being worked by another /do-work instance (or its lock couldn't be confirmed safe).` and move to the next candidate in `ready_issues` (same as a hard-path collision — don't block the slot entirely, just skip this candidate). The issue will become available in the next session once the peer's worktree is reaped.
+   - `peer_locked=true classification=<peer-alive|unknown>` → a live peer holds a lock on a `do-work/issue-<N>` worktree, OR its lock couldn't be parsed at all (`unknown`, issue #1206 — treated the same, fail closed, rather than risking a race against a lock this check can't actually read). Park the candidate: log `[concurrent-session-guard] #<N> skipped — <classification> lock on do-work/issue-<N> worktree; issue already being worked by another /do-work instance (or its lock couldn't be confirmed safe).` and move to the next candidate in `ready_issues` (same as a hard-path collision — don't block the slot entirely, just skip this candidate). The issue will become available in the next session once the peer's worktree is reaped.
 
    **Author-trust computation (per-dispatch).** Before composing the prompt, compute `originating_author_trust` for the candidate:
 
@@ -473,92 +337,20 @@ When filling a slot, walk this decision tree:
    vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
    ```
 
-   When `vc_enabled == "true"` AND `vc_manifest` is non-empty, walk `session_prs` to find the highest manifest version any in-flight PR has already claimed — then take the max of that and the session-local `version_cursor` ([#437](https://github.com/mattsears18/shipyard/issues/437)) so versions claimed by **sibling workers dispatched in the same batch** (whose PRs aren't open yet, so the `session_prs` walk can't see them) are still respected:
+   When `vc_enabled == "true"` AND `vc_manifest` is non-empty, walk `session_prs` to find the highest manifest version any in-flight PR has already claimed — then take the max of that and the session-local cursor ([#437](https://github.com/mattsears18/shipyard/issues/437)) so versions claimed by **sibling workers dispatched in the same batch** (whose PRs aren't open yet, so the `session_prs` walk can't see them) are still respected. The `session_prs` walk is a data-dependent loop with internal `gh api | base64 -d | jq` pipes — the same for-loop-wraps-gh-calls-plus-pipe shape the worktree-isolation guard refuses post-relocation — so it's extracted to [`scripts/next-available-version.sh`](../../scripts/next-available-version.sh) (issue #1289, mirrors #1277's `stale-check-refresh.sh` precedent). The extraction also gives the cursor a REAL persistence mechanism: a bash variable doesn't survive between the separate Bash tool calls that compose a batch's N prompts, so the pre-extraction cursor was silently resetting every call; the script's `--cursor-file` is a real file that persists correctly across those calls:
 
    ```bash
-   # Read the current main version from origin's HEAD as the floor.
+   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+   export CLAUDE_PLUGIN_ROOT
    default_branch=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-   main_version=$(gh api "repos/<owner/repo>/contents/${vc_manifest}?ref=${default_branch}" \
-     --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | jq -r "$vc_version_jq" 2>/dev/null || echo "")
-
-   # Walk session_prs — for each open PR that touched manifest_path, read the
-   # version row from the PR's head tree and keep the max. The --jq filter
-   # selects only PRs whose files include the manifest_path so we don't pay
-   # a per-PR content-fetch on PRs that don't bump the manifest.
-   max_inflight_version="$main_version"
-   for pr in "${session_prs[@]}"; do
-     pr_state=$(gh pr view "$pr" --repo <owner/repo> --json state -q .state 2>/dev/null)
-     [ "$pr_state" != "OPEN" ] && continue
-     pr_touches_manifest=$(gh pr view "$pr" --repo <owner/repo> --json files \
-       --jq "[.files[] | select(.path == \"${vc_manifest}\")] | length")
-     [ "${pr_touches_manifest:-0}" -eq 0 ] && continue
-     pr_head=$(gh pr view "$pr" --repo <owner/repo> --json headRefName -q .headRefName)
-     pr_version=$(gh api "repos/<owner/repo>/contents/${vc_manifest}?ref=${pr_head}" \
-       --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | jq -r "$vc_version_jq" 2>/dev/null || echo "")
-     [ -z "$pr_version" ] && continue
-     # `sort -V` (version-sort) handles 1.5.9 vs 1.5.10 correctly; plain
-     # lexicographic max would wrongly pick 1.5.9 over 1.5.10.
-     max_inflight_version=$(printf '%s\n%s\n' "$max_inflight_version" "$pr_version" | sort -V | tail -1)
-   done
-
-   # #437: fold in the session-local version_cursor — the high-water mark of
-   # versions ALREADY HANDED OUT by dispatch this session, including to
-   # batch-siblings whose PRs aren't open yet (so the session_prs walk above
-   # is blind to them). The cursor holds the LAST value handed out; bumping
-   # it (below) yields the next free slot. Without this, two workers in the
-   # same step-7/step-C batch both read the same max_inflight_version and
-   # collide on main+1.
-   if [ -n "${version_cursor:-}" ]; then
-     max_inflight_version=$(printf '%s\n%s\n' "$max_inflight_version" "$version_cursor" | sort -V | tail -1)
-   fi
-
-   # #671: infer the bump LEVEL from the dispatched issue's Conventional
-   # Commits signals so the computed slot matches the issue's stated release
-   # intent (a patch-only floor injects a semver-wrong "authoritative" version
-   # on any issue requiring a major/minor bump — the common case for a
-   # feature/breaking-change backlog). Reads the same title+body signals the
-   # worker would, so the orchestrator's inference matches the worker's read
-   # in the overwhelmingly-common case.
-   issue_title=$(gh issue view "<N>" --repo <owner/repo> --json title -q .title 2>/dev/null || echo "")
-   issue_body=$(gh issue view "<N>" --repo <owner/repo> --json body -q .body 2>/dev/null || echo "")
-   bump_level="patch"   # default: fix / perf / docs / chore / refactor / test / no recognizable prefix
-   # minor: a `feat`-type Conventional Commits prefix (new feature).
-   printf '%s' "$issue_title" | grep -qiE '^[[:space:]]*feat(\([^)]*\))?[[:space:]]*:' && bump_level="minor"
-   # major: a `!` breaking-change marker after the type (e.g. `feat!:` / `fix!:`),
-   # a `BREAKING CHANGE` footer, or an explicit "major version bump" / `(X.0.0)`
-   # statement anywhere in the title or body. Checked last so it wins over minor.
-   if printf '%s' "$issue_title" | grep -qiE '^[[:space:]]*[a-z]+(\([^)]*\))?!:' \
-      || printf '%s\n%s' "$issue_title" "$issue_body" | grep -qiE 'BREAKING[ -]CHANGE|major version bump|\(X\.0\.0\)'; then
-     bump_level="major"
-   fi
-
-   # next_available_version = max_inflight_version bumped at the inferred level.
-   if [ -n "$max_inflight_version" ]; then
-     # Parse semver X.Y.Z, then bump at the inferred level (higher levels zero
-     # the lower components, per semver): major → (X+1).0.0, minor → X.(Y+1).0,
-     # patch → X.Y.(Z+1).
-     IFS='.' read -r MAJ MIN PAT <<< "$max_inflight_version"
-     case "$bump_level" in
-       major)   next_available_version="$((MAJ + 1)).0.0" ;;
-       minor)   next_available_version="${MAJ}.$((MIN + 1)).0" ;;
-       patch|*) next_available_version="${MAJ}.${MIN}.$((PAT + 1))" ;;
-     esac
-     # Advance the cursor to the EXACT value we're handing out so the NEXT
-     # dispatch in this same batch (or the next sequential dispatch before this
-     # PR opens) sees it as claimed and bumps past it. This is the load-bearing
-     # write that makes a batch of N simultaneous dispatches monotonic — the
-     # cursor advances to the level-correct value, so two same-level batch
-     # siblings never collide (slot 1 → floor bumped at its level, slot 2 reads
-     # the cursor as its floor and bumps again). The collision-avoidance
-     # monotonicity guarantee is preserved at whatever level each was inferred.
-     version_cursor="$next_available_version"
-   else
-     # No floor available (manifest read failed, no in-flight bumps) — omit
-     # the field rather than guess. Worker falls back to its normal bump-
-     # from-main path. Leave version_cursor untouched.
-     next_available_version=""
-   fi
+   version_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/next-available-version.sh" compute \
+     --repo <owner/repo> --manifest "$vc_manifest" --version-jq "$vc_version_jq" \
+     --default-branch "$default_branch" --issue <N> \
+     --session-prs "<session_prs, space or comma separated>" \
+     --cursor-file "$(git rev-parse --show-toplevel)/.shipyard-version-cursor")
    ```
+
+   Parse `version_result`'s three `key=value` lines: `max_inflight_version=<semver-or-empty>`, `bump_level=<major|minor|patch>`, `next_available_version=<semver-or-empty>`. `next_available_version` empty means no floor could be established at all (manifest read failed AND no in-flight bump AND no cursor) — omit the coordination paragraph and let the worker bump from `origin/<default-branch>` on its own, exactly as the pre-extraction fallback did.
 
    **Next-available-version augmentation.** When `next_available_version` is non-empty, append a Context paragraph to the dispatch prompt between the `mode:` line and the Return values line:
 

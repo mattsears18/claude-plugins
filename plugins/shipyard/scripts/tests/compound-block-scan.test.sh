@@ -233,6 +233,56 @@ else
   bad "scanner's built-in FILES list (default invocation, no args) found a compound shape"
 fi
 
+# (13) Regression (issue #1289): dispatch-rules.md / drain.md /
+# inline-trivial.md / steady-state.md — the four files #1289 swept 17 of
+# their 18 flagged blocks from — stay clean. A future edit that
+# reintroduces a compound shape in any of them fails this assertion.
+# steady-state.md's one deliberately-deferred block (issue #1291) is exempt
+# via its own `<!-- compound-block-scan: allow -->` marker, so this
+# assertion still expects a clean exit for the file as a whole.
+for f in dispatch-rules.md drain.md inline-trivial.md steady-state.md; do
+  target="$repo_root/plugins/shipyard/commands/do-work/$f"
+  if [[ -f "$target" ]]; then
+    if bash "$scanner" "$target" >/dev/null 2>&1; then
+      ok "scanner reports $f as clean of the known-refused compound shapes (#1289)"
+    else
+      bad "scanner found a compound shape in $f — see script output for the offending block"
+    fi
+  fi
+done
+
+# (14) Regression: the built-in FILES list now includes all five swept
+# files (setup/04-backlog-divert.md + the four from #1289) — count-based
+# proxy so a future accidental removal from FILES is caught even though the
+# scanner's own output doesn't name which files it scanned.
+# shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+files_count=$(grep -cE '^\s*"\$repo_root/plugins/shipyard/commands/do-work/' "$scanner" 2>/dev/null || echo 0)
+if [[ "$files_count" -ge 5 ]]; then
+  ok "scanner's built-in FILES array lists at least 5 files (found $files_count)"
+else
+  bad "scanner's built-in FILES array lists fewer than 5 files (found $files_count) — #1289's additions may have regressed"
+fi
+
+# (15) Regression: steady-state.md's deferred A.0.5 block (issue #1291)
+# carries a real, load-bearing `<!-- compound-block-scan: allow -->` marker
+# — not just documentation prose citing the issue. If a future edit removes
+# the marker without actually fixing the block, the file-level scan above
+# (test 13) already catches it; this test additionally confirms the marker
+# itself is present so a reader knows the exemption is real, not aspirational.
+steady_state_real="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+if [[ -f "$steady_state_real" ]]; then
+  if grep -qF -- '<!-- compound-block-scan: allow -->' "$steady_state_real"; then
+    ok "steady-state.md carries the compound-block-scan allow marker for its deferred A.0.5 block (#1291)"
+  else
+    bad "steady-state.md is missing the compound-block-scan allow marker — either the A.0.5 block was fixed (remove it from FILES's exemption note) or the marker was dropped by mistake"
+  fi
+  if grep -qF -- 'issues/1291' "$steady_state_real"; then
+    ok "steady-state.md cites the #1291 follow-up issue for its deferred A.0.5 block"
+  else
+    bad "steady-state.md does not cite issue #1291 near its deferred A.0.5 block"
+  fi
+fi
+
 echo
 echo "  ${pass} passed, ${fail} failed"
 [[ "$fail" -eq 0 ]]

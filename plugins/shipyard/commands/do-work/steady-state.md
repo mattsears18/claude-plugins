@@ -345,6 +345,9 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 
 **Skip silently on clean terminal returns** — when the prefix check passes (`shipped` / `green` / `noop:` / `blocked` / `rebased` / `reaped:`), do NOT run this step. Step B's per-completion reap is the right path for clean returns; running A.0.5 too would double-call into `classify-lock` for the common case and waste tool calls. The skip is a no-op — proceed directly to A.1.
 
+**This block still carries the compound shapes issue [#1289](https://github.com/mattsears18/shipyard/issues/1289) swept everywhere else in `dispatch-rules.md` / `drain.md` / `inline-trivial.md` / the rest of `steady-state.md` — deliberately, not by oversight.** At ~420 lines (crash-recovery reap, stalled-worker resume, and a version-bump helper function all interleaved) this is by a wide margin the single largest and most complex block in the whole corpus — the exact "too large to do safely in one PR" case that issue's own scope guidance sanctions deferring, the same judgment #1277's worker exercised for the two blocks #1289 itself went on to resolve. Tracked as a dedicated follow-up: [#1291](https://github.com/mattsears18/shipyard/issues/1291). The `compound-block-scan: allow` marker below is this exception, not a blanket exemption — remove it the moment #1291 lands.
+
+<!-- compound-block-scan: allow -->
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
@@ -898,10 +901,12 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   EXPECTED_METHOD=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
   case "$EXPECTED_METHOD" in squash|merge|rebase) ;; *) EXPECTED_METHOD=squash ;; esac
 
-  PR_SNAPSHOT=$(gh pr view <M> --repo <owner/repo> --json state,autoMergeRequest \
-    --jq '{state: .state, method: (.autoMergeRequest.mergeMethod // empty)}' 2>/dev/null || echo '{}')
-  PR_STATE=$(printf '%s' "$PR_SNAPSHOT" | jq -r '.state // empty')
-  ACTUAL_METHOD=$(printf '%s' "$PR_SNAPSHOT" | jq -r '.method // empty' | tr '[:upper:]' '[:lower:]')
+  # Two direct --jq reads (never a shared snapshot piped through a second
+  # jq/tr) — avoids a pipe spanning a shell command boundary. jq's own
+  # ascii_downcase replaces the separate `| tr '[:upper:]' '[:lower:]'` stage.
+  PR_STATE=$(gh pr view <M> --repo <owner/repo> --json state --jq '.state // empty' 2>/dev/null || echo "")
+  ACTUAL_METHOD=$(gh pr view <M> --repo <owner/repo> --json autoMergeRequest \
+    --jq '(.autoMergeRequest.mergeMethod // empty) | ascii_downcase' 2>/dev/null || echo "")
 
   if [ "$PR_STATE" = "OPEN" ] && [ -n "$ACTUAL_METHOD" ] && [ "$ACTUAL_METHOD" != "$EXPECTED_METHOD" ]; then
     echo "[merge-method-drift] PR #<M> armed with mergeMethod=${ACTUAL_METHOD} (expected ${EXPECTED_METHOD}) — correcting (#989)"
@@ -913,7 +918,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
     gh pr merge <M> --repo <owner/repo> --disable-auto 2>/dev/null || true
     gh pr merge <M> --repo <owner/repo> --auto --${EXPECTED_METHOD} --delete-branch 2>/dev/null || true
     CORRECTED=$(gh pr view <M> --repo <owner/repo> --json autoMergeRequest \
-      --jq '.autoMergeRequest.mergeMethod // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')
+      --jq '(.autoMergeRequest.mergeMethod // empty) | ascii_downcase' 2>/dev/null || echo "")
     if [ "$CORRECTED" = "$EXPECTED_METHOD" ]; then
       echo "[merge-method-drift] PR #<M> corrected to mergeMethod=${EXPECTED_METHOD}"
     else
@@ -994,116 +999,17 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   **Force-reap even on `peer-alive` here.** A `shipped` return is the worker's terminal contract: the agent subprocess has exited, the PR is on the remote, the worktree has no further purpose — deferring on `peer-alive` here would cause the same drain-phase `blocked: branch locked in another worktree` failures A.0.5 exists to avoid (see [§A.0.5](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1s-return-string-parsing)). Audit the reap with `--classification peer-alive-force` so the override is visible in `~/.shipyard/reap-audit.jsonl`. See [RATIONALE → Force-reap on peer-alive (#576/#771)](../do-work-RATIONALE.md#force-reap-on-peer-alive-576771) for the failure-mode history.
 
+  **Extracted to [`scripts/shipped-immediate-branch-reap.sh`](../../scripts/shipped-immediate-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in .../agent-*` loop wrapping several pipes — the same shapes the worktree-isolation guard refuses post-relocation. Same family as dispatch-rules.md §2d's and drain.md's extractions; the script's own header comment restates why this site deliberately skips the #832 in-flight guard (it targets exactly one worktree, unique per issue number by construction) and preserves every classification branch exactly as it read here before extraction:
+
   ```bash
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
-  # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
-  # harness can leak the orchestrator's cwd into an `agent-*` worktree that
-  # this block then `git worktree remove --force`s; once that dir is gone,
-  # the `git worktree prune` below (and any follow-up git command) fails
-  # with `fatal: Unable to read current working directory`. The old
-  # `cd "$(git rev-parse --show-toplevel)"` could NOT rescue it — git
-  # resolves its own (deleted) cwd before reading anything, so the
-  # rev-parse fails first and the cd is a no-op. Derive the anchor
-  # cwd-independently via the #477 porcelain idiom (orchestrator worktree
-  # first, primary as fallback) while cwd is still valid here, then cd to
-  # it so the remove/prune never run with cwd inside the doomed directory.
-  STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
-  [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{print substr($0,10); exit}')
-  cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
-  # Derive the session id cwd-independently while STABLE_DIR is still valid.
-  # After `cd "${STABLE_DIR:-/}"` the cwd is either the orchestrator worktree
-  # or the primary checkout — both are safe anchors for the derive helper.
-  # This closes #548: the reap's --session-id must not read from the (possibly
-  # leaked-to-agent) cwd; it must read from the orchestrator worktree stash.
-  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
-    --repo-root "$REPO_ROOT" 2>/dev/null)
-  [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
-  [ -z "$SESSION_ID" ] && echo "[session-id-derive] empty — reap audit-log entries will lack session-id; check for #477 cwd-leak (#548)"
-  # PRIMARY is the first `worktree ` entry — the .git/worktrees walk below
-  # needs the primary's path (linked worktrees share the common .git dir).
-  PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{print substr($0,10); exit}')
-  # Locate the agent worktree whose branch is do-work/issue-<N>. Walk
-  # .git/worktrees/agent-* and match on the HEAD ref. Same idiom as the
-  # concurrent-session guard further down in step C.
-  # Bootstrap the orchestrator PID so classify-lock can short-circuit
-  # on our own session's locks (issue #263).
-  export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
-  # In-flight guard (issue #832) — NOT applicable as an exclusion here, and
-  # deliberately so. The `do-work/issue-<N>` branch filter below scopes this
-  # loop to exactly one worktree: THIS just-shipped slot's own worktree
-  # (branch names are unique per issue, so no other in-flight peer can hold
-  # this branch). `.in_flight[<slot-id>]` for this slot is still present at
-  # this point (release happens later, at step B) — so a naive "skip if
-  # present in in_flight" check would wrongly defer reaping the very
-  # worktree this step exists to reap. Do not add one; classify-lock below
-  # is still the correct liveness check for THIS worktree, exactly as
-  # A.0.5's analogous single-target reap documents.
-  for wt_dir in "${PRIMARY_CHECKOUT}/.git/worktrees"/agent-*; do
-    [ -d "$wt_dir" ] || continue
-    branch_ref=$(cat "$wt_dir/HEAD" 2>/dev/null | sed 's|ref: refs/heads/||')
-    [ "$branch_ref" = "do-work/issue-<N>" ] || continue
-
-    name=$(basename "$wt_dir")
-    worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
-    [ -z "$worktree_path" ] && continue
-
-    classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
-      classify-lock "$wt_dir/locked")
-
-    # Extract the lock PID for the audit log (best effort; null literal
-    # when the lock file is missing or unparseable). Same pattern as
-    # cleanup-summary.md's reap loop.
-    # Anchor on the literal `pid` keyword, not "first digit-run before a
-    # close-paren" — the latter misparses a real `(pid <N> start <ctime>)`
-    # lock as the ctime's trailing year (issue #1206). Same fix as
-    # `worktree-reap.sh`'s own `extract_lock_pid` helper.
-    lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
-    [ -z "$lock_pid" ] && lock_pid="null"
-
-    # no-lock / dead / self-ancestor / peer-alive — all safe to reap here.
-    # A `shipped` return is the worker's terminal contract; the agent is
-    # done by definition. Unlike step B's general-purpose reap (which
-    # conservatively defers on peer-alive for unknown return shapes),
-    # this call site KNOWS the worker has exited and its worktree has no
-    # further purpose. Force-reap on peer-alive mirrors A.0.5's posture
-    # for crash returns and closes the #576 drain-phase bail window:
-    # a peer-alive defer here leaves the head branch locked, and the
-    # drain pre-dispatch reap's own peer-alive defer then also misses it,
-    # causing fix-checks/fix-rebase to bail "branch locked in another
-    # worktree." Audit with classification "peer-alive-force" so the
-    # override is traceable in ~/.shipyard/reap-audit.jsonl. (#576)
-    local_classification="$classification"
-    [ "$classification" = "peer-alive" ] && local_classification="peer-alive-force"
-    # The `reap` helper performs the `git worktree unlock` +
-    # `git worktree remove --force` AND writes the audit-log line in
-    # one transaction (issue #284).
-    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-      --action reaped \
-      --worktree-path "$worktree_path" \
-      --worktree-name "$name" \
-      --session-id "${SESSION_ID:-unknown}" \
-      --classification "$local_classification" \
-      --lock-pid "$lock_pid" \
-      --phase "steady-state-A1-shipped" 2>/dev/null || true
-
-    # Drop the local branch ref so a same-session fix-rebase dispatch
-    # can recreate `do-work/issue-<N>` cleanly via `git switch` without
-    # tripping the "branch already exists in another worktree" check.
-    # `-D` (force) rather than `-d` because the branch may have unmerged
-    # commits relative to current local main — the canonical record is
-    # on origin, not this branch.
-    git branch -D "do-work/issue-<N>" 2>/dev/null || true
-    break   # at most one match per issue number
-  done
-  git worktree prune 2>/dev/null || true
+  reap_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipped-immediate-branch-reap.sh" reap --issue <N>)
   ```
 
-  **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Same reasoning as A.0.5's own verify step: a classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when the loop above found no match (`$worktree_path` unset). Substitute the literal `$worktree_path` / `$name` / `$local_classification` / `$lock_pid` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
+  Parse `reap_result` — either `reaped=false session_id=<id>` (no matching worktree found) or `reaped=true worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid> session_id=<id>`. On `reaped=true`, hold onto the values for the separate verify call immediately below.
+
+  **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Same reasoning as A.0.5's own verify step: a classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when `reap_result` was `reaped=false`. Substitute the literal `worktree_path` / `worktree_name` / `classification` / `lock_pid` / `session_id` values parsed from `reap_result` above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
 
   ```bash
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
@@ -1112,9 +1018,9 @@ For **issue work** (`shipped` / `blocked` / `errored`):
     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
       --action reaped-failed \
       --worktree-path "$worktree_path" \
-      --worktree-name "$name" \
-      --session-id "${SESSION_ID:-unknown}" \
-      --classification "$local_classification" \
+      --worktree-name "$worktree_name" \
+      --session-id "${session_id:-unknown}" \
+      --classification "$classification" \
       --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
       --lock-pid "$lock_pid" \
       --phase "steady-state-A1-shipped" 2>/dev/null || true
@@ -1159,136 +1065,16 @@ For **issue work** (`shipped` / `blocked` / `errored`):
 
   **The dependency-wait discriminator runs first** (it overrides the refuse/soft classification): a bail that names a still-open blocker is a dependency wait regardless of what other fragment it matched. Extract `Blocked by #N` references from the bail reason (and from the issue body — the worker may have already written one), then check whether any referenced `#N` is still OPEN. If so → dependency-wait. Otherwise classify refuse-vs-soft per the fragment table.
 
-  Implementation:
+  **Extracted to [`scripts/classify-blocked-bail.sh`](../../scripts/classify-blocked-bail.sh) (issue #1289) — the block below is a translation, not a rewrite.** The dependency-wait discriminator's blocker-reference resolution is a data-dependent `for b in $blocker_refs` loop with an internal `gh issue view || gh pr view` fallback per candidate, plus several pipe chains elsewhere in the classification — the same shapes the worktree-isolation guard refuses post-relocation. The script performs the full classification AND its associated label/comment mutations (the two are the same atomic decision in the original block); every branch — dependency-wait, operator, refuse-vs-soft, and the #1279 decision-freshness re-gate suppression — is preserved exactly as it read here before extraction:
 
   ```bash
-  reason="<the worker's reason string, lowercased>"
-
-  # --- Dependency-wait discriminator (runs first, overrides refuse/soft). ---
-  # Collect every `Blocked by #N` reference the worker named in its bail OR
-  # already wrote into the issue body. Same regex the former step 3d.2 sweep
-  # used. A reference to a still-OPEN issue ⇒ dependency-wait.
-  issue_body=$(gh issue view <N> --repo <owner/repo> --json body -q .body 2>/dev/null || echo "")
-  blocker_refs=$(printf '%s\n%s\n' "$reason" "$issue_body" \
-    | grep -oiE 'blocked by[[:space:]]+(#[0-9]+([[:space:]]*,[[:space:]]*#[0-9]+)*)' \
-    | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
-
-  has_open_blocker=false
-  open_blocker=""
-  for b in $blocker_refs; do
-    state=$(gh issue view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null \
-      || gh pr view "$b" --repo <owner/repo> --json state -q .state 2>/dev/null \
-      || echo "")
-    case "$state" in
-      OPEN) has_open_blocker=true; open_blocker="$b"; break ;;
-    esac
-  done
-
-  if $has_open_blocker; then
-    # --- Dependency-wait subset → NO label; ensure the body persists the ref. ---
-    # The bucket-7 / step-4 body-reference filter drops the issue while #N is
-    # open and re-admits it automatically when #N closes. The worker normally
-    # writes the `Blocked by #N` line itself; guarantee it's in the BODY (not
-    # just a comment) so the filter — which reads the body — can see it.
-    if ! printf '%s' "$issue_body" | grep -qiE "blocked by[[:space:]]+#${open_blocker}\b"; then
-      gh issue edit <N> --repo <owner/repo> \
-        --body "Blocked by #${open_blocker}
-
-${issue_body}" 2>/dev/null || true
-    fi
-    gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Dependency-wait on #${open_blocker}; no label applied — the \`Blocked by #N\` body-reference filter gates dispatch and auto-clears when #${open_blocker} closes."
-  elif printf '%s' "$reason" | grep -qi "external provisioning required"; then
-    # --- Operator subset → agent-console (#628). ---
-    # The worker hit a not-yet-provisioned external service: the real
-    # secret/account doesn't exist yet, and creating it is a browser/console
-    # operator action — not a human *decision* and not auto-recoverable. Route
-    # to agent-console so /my-turn surfaces it and /do-work can
-    # drive it (same destination as the scope-preflight external-dependency
-    # defer). Ensure-then-label, since step 3a's create is best-effort.
-    gh label create agent-console --repo <owner/repo> \
-      --description "Blocked on a browser/console action an agent can drive outside the build — not a human decision. See CLAUDE.md's decision rule." \
-      --color 1D76DB 2>/dev/null || true
-    gh issue edit <N> --repo <owner/repo> --add-label "agent-console" 2>/dev/null || true
-    gh issue comment <N> --repo <owner/repo> --body "Worker returned blocked: <reason>. Classified as \`agent-console\` — provisioning an external service is a browser/console operator action. Surfaced by \`/my-turn\`; drainable by \`/do-work\`."
-  else
-    # --- Refuse vs soft, per the fragment table. ---
-    block_class="refuse"  # conservative default
-    case "$reason" in
-      *"issue body contains directives that bypass normal review"*|\
-      *"body requested out-of-scope action"*|\
-      *"comment-thread requested out-of-scope action"*)
-        block_class="refuse"
-        ;;
-      *"pr #"*"already open"*|*"pr #"*"for this issue"*|\
-      *"suggested fix exceeds expected scope"*|\
-      *"cannot reproduce"*|\
-      *"ambiguous"*|\
-      *"did not complete within budget"*)
-        block_class="soft"
-        ;;
-    esac
-
-    if [ "$block_class" = "soft" ]; then
-      label="blocked:agent-soft"
-      # In-memory soft-block bookkeeping — gates in-session re-dispatch.
-      # session_blocked_soft is a {issue_number → ISO-8601 timestamp} map
-      # that step C's lightweight backlog re-check reads to skip issues
-      # within blocked_agent.soft_retry_minutes of their last bail (default
-      # 30 — see ~/.claude/plugins/cache/shipyard/.../scripts/shipyard-config.sh).
-      now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-      session_blocked_soft[<N>]="$now"
-      comment_body="Worker returned blocked: <reason>. Classified as \`$label\`."
-      gh issue edit <N> --repo <owner/repo> --add-label "$label" 2>/dev/null || true
-      gh issue comment <N> --repo <owner/repo> --body "$comment_body"
-    else
-      # Refuse → needs-human-review — UNLESS a human already answered this
-      # exact question after the LAST time this issue was refuse-escalated
-      # (issue #1279). Re-applying the gate in that case just bounces a
-      # settled decision back to the human on repeat — the concrete repro
-      # was three re-gates in ~10 minutes on one issue, twice after a
-      # comment on the thread had already explained the race. This is an
-      # ORDERING check, not a keyword-match: only a decision-resolved
-      # sentinel POSTED AFTER the prior <!-- do-work-agent-refuse --> comment
-      # counts — a decision recorded before an EARLIER escalation must not
-      # suppress a genuinely new one. Full rule + rationale:
-      # `shipyard:worker-preamble` § "On-demand fragments" — fragment
-      # decision-freshness-check.md.
-      comments_json=$(gh issue view <N> --repo <owner/repo> --json comments \
-        --jq '[.comments[] | {body, createdAt}]' 2>/dev/null || echo "[]")
-      latest_escalation=$(printf '%s' "$comments_json" | jq -r '
-        [.[] | select(.body | startswith("<!-- do-work-agent-refuse -->"))]
-        | sort_by(.createdAt) | last.createdAt // empty')
-      latest_decision=$(printf '%s' "$comments_json" | jq -r '
-        [.[] | select(.body | startswith("<!-- shipyard-resolve-decisions -->")
-                            or startswith("<!-- do-work-decision-resolved -->"))]
-        | sort_by(.createdAt) | last.createdAt // empty')
-
-      if [ -n "$latest_escalation" ] && [ -n "$latest_decision" ] && [ "$latest_decision" \> "$latest_escalation" ]; then
-        # A human answered this AFTER the last time it was escalated — do
-        # NOT re-gate. Leave the label off so the next dispatch reads the
-        # recorded decision (per each mode's own comment-reading rule)
-        # instead of repeating this exact bounce.
-        comment_body="Worker returned blocked: <reason>. NOT re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at ${latest_decision}). Leaving the gate off so the next dispatch acts on the recorded decision instead of repeating this question."
-        gh issue comment <N> --repo <owner/repo> --body "$comment_body"
-      else
-        label="needs-human-review"
-        # <!-- do-work-agent-refuse --> is a provenance TRIGGER marker (persists
-        # for the issue's lifetime, distinct from a dedupe/idempotency sentinel
-        # like <!-- do-work-refinement-agent -->) — it's what lets /my-turn
-        # distinguish an agent-refuse needs-human-review from the other seven
-        # provenances that land on the same label, per #1091. Must be the
-        # literal first line of the comment body — it is also the escalation
-        # marker the freshness check above compares against on this issue's
-        # NEXT bail (#1279); do not change its shape without updating that
-        # check.
-        comment_body="<!-- do-work-agent-refuse -->
-Worker returned blocked: <reason>. Classified as \`$label\`."
-        gh issue edit <N> --repo <owner/repo> --add-label "$label" 2>/dev/null || true
-        gh issue comment <N> --repo <owner/repo> --body "$comment_body"
-      fi
-    fi
-  fi
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
+  bail_class=$("${CLAUDE_PLUGIN_ROOT}/scripts/classify-blocked-bail.sh" classify \
+    --repo <owner/repo> --issue <N> --reason "<the worker's reason string, lowercased>")
   ```
+
+  Parse `bail_class` — one of five shapes: `class=dependency-wait open_blocker=<N>`, `class=operator label=agent-console`, `class=soft label=blocked:agent-soft now=<ISO8601>`, `class=refuse label=needs-human-review`, or `class=refuse label=none reason=decision-already-recorded-after-escalation`. On `class=soft`, record the in-memory bookkeeping the script itself cannot hold: `session_blocked_soft[<N>] = <now>` — that map is orchestrator in-session working memory (the same class of conceptual state as `session_prs` / `in_flight` throughout this spec, not something a stateless script invocation can persist), read by step C's lightweight backlog re-check to skip issues within `blocked_agent.soft_retry_minutes` of their last bail (default 30). The other four outcomes need no further orchestrator action — the script already applied the matching label and posted the matching comment.
 
   A refuse routes to `needs-human-review` (not a dedicated block label) because it has no automated recovery path — a human must look, same semantics `/my-turn` already surfaces. **Why a provisioning bail routes to `agent-console`:** `external provisioning required` is a concrete browser/console action, not a decision, and not auto-recoverable — same destination as the scope-preflight `external-dependency` defer. A dependency-wait needs no label because the `Blocked by #N` body-reference filter ([setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) / bucket 7) is already the complete mechanism. Soft labels don't survive to next session (setup.md step 3d.2 sub-sweep c clears them at every session start) and gate only in-session re-dispatch via `session_blocked_soft[<N>]` for `blocked_agent.soft_retry_minutes` (default 30). See [RATIONALE → Blocked-reason routing table rationale](../do-work-RATIONALE.md#blocked-reason-routing-table-rationale-521628) for the full reasoning behind each routing choice.
 
@@ -1498,13 +1284,16 @@ completed_agent_id="${.in_flight[<slot-id>].agent_id}"
 # stable anchor cwd-independently via the #477 porcelain idiom (orchestrator
 # worktree first, primary as fallback) and cd to it first, then derive the
 # primary/worktree paths from porcelain rather than the leaked cwd.
-STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-  | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
-[ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-  | awk '/^worktree /{print substr($0,10); exit}')
+# Process substitution, not a pipe — `awk` still reads the porcelain output
+# as a single command's input, but the shape has no bare `|` spanning a
+# shell command boundary (issue #1289, mirrors #1277's decomposition rule).
+STABLE_DIR=$(awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}' \
+  <(git worktree list --porcelain 2>/dev/null))
+[ -z "$STABLE_DIR" ] && STABLE_DIR=$(awk '/^worktree /{print substr($0,10); exit}' \
+  <(git worktree list --porcelain 2>/dev/null))
 cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
-PRIMARY_CHECKOUT=$(git worktree list --porcelain 2>/dev/null \
-  | awk '/^worktree /{print substr($0,10); exit}')
+PRIMARY_CHECKOUT=$(awk '/^worktree /{print substr($0,10); exit}' \
+  <(git worktree list --porcelain 2>/dev/null))
 wt_dir="${PRIMARY_CHECKOUT}/.git/worktrees/agent-${completed_agent_id}"
 worktree_path="${PRIMARY_CHECKOUT}/.claude/worktrees/agent-${completed_agent_id}"
 
@@ -1529,7 +1318,12 @@ if [ -d "$wt_dir" ]; then
   # misparses a real `(pid <N> start <ctime>)` lock as the ctime's trailing
   # year (issue #1206). Same fix as `worktree-reap.sh`'s own
   # `extract_lock_pid` helper.
-  lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
+  # `-m1` caps grep at the first match (replaces the `| head -1` stage), and
+  # a pure parameter-expansion digit-strip replaces the second `| grep -oE`
+  # stage — no pipe spans a shell command boundary. Anchors on the literal
+  # `pid` keyword exactly as before (issue #1206).
+  lock_pid_match=$(grep -m1 -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null)
+  lock_pid="${lock_pid_match//[!0-9]/}"
   [ -z "$lock_pid" ] && lock_pid="null"
 
   # no-lock / dead / self-ancestor / peer-alive — all safe to reap here.
@@ -1605,7 +1399,7 @@ FETCHED_ISSUES_JSON=$(gh issue list --repo <owner/repo> --state open --limit 200
   --json number,title,labels,assignees,body,author,updatedAt \
   --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, updatedAt}]')
 
-SUMMARY=$(printf '%s' "$FETCHED_ISSUES_JSON" | "${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN")
+SUMMARY=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FETCHED_ISSUES_JSON")
 "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "<session-id>" \
   --set ".unfiltered_open_count = $(printf '%s' "$SUMMARY" | jq -r '.unfiltered_open_count')" \
   --set ".me_assigned_open = $(printf '%s' "$SUMMARY" | jq -r '.me_assigned_open')" \
