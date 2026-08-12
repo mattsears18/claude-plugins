@@ -389,10 +389,20 @@ cmd_reap() {
         # left.
         a05_version_bump "$worktree_path" "$DEFAULT_BRANCH" "$slot_issue" "$repo"
 
+        # `${a05_bump_applied:+...}` tests for non-emptiness, not for the
+        # value "true" — a05_version_bump always sets a05_bump_applied to
+        # the literal string "true" or "false" (never empty), so that form
+        # would emit the release-bump clause even when no bump was applied
+        # (issue #1298). Build the clause explicitly instead.
+        local a05_bump_suffix=""
+        if [ "$a05_bump_applied" = "true" ]; then
+          a05_bump_suffix=", release bump ${a05_bump_version} #575"
+        fi
+
         git -C "$worktree_path" add -A 2>/dev/null || true
         local autocommit_out autocommit_ok autocommit_sha
         if autocommit_out=$(git -C "$worktree_path" commit --no-verify \
-          -m "fix: crash-recovery auto-commit for issue #${slot_issue} (orchestrator A.0.5 #495${a05_bump_applied:+, release bump ${a05_bump_version} #575})" \
+          -m "fix: crash-recovery auto-commit for issue #${slot_issue} (orchestrator A.0.5 #495${a05_bump_suffix})" \
           2>&1); then
           autocommit_ok=true
         else
