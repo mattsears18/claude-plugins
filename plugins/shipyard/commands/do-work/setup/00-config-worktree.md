@@ -225,6 +225,8 @@ esac
 
 **`SHIPYARD_PLUGIN_ROOT_SHA` and `SHIPYARD_PLUGIN_ROOT_STALE` ([#907](https://github.com/mattsears18/shipyard/issues/907)).** Session-local working memory variables (not mirrored to session-state file). `SHIPYARD_PLUGIN_ROOT_SHA` records the short commit sha the resolved `CLAUDE_PLUGIN_ROOT` sits at. `SHIPYARD_PLUGIN_ROOT_STALE` is set in the dogfooding case when the primary checkout is behind `origin/<default-branch>`. Issue [#1167](https://github.com/mattsears18/shipyard/issues/1167) found post-relocation worktrees landing stale despite `baseRef: fresh`, so step 0.5 now runs an explicit [post-relocation staleness assertion](#05-move-into-the-orchestrators-worktree).
 
+**`.shipyard-plugin-root-version` stash ([#1304](https://github.com/mattsears18/shipyard/issues/1304)).** Step 0.5 also writes the resolved `CLAUDE_PLUGIN_ROOT`'s own `.claude-plugin/plugin.json` `.version` to `.shipyard-plugin-root-version` in the orchestrator worktree — a start-of-session snapshot for [cleanup-summary.md's end-of-session drift check](../cleanup-summary.md#end-of-session-summary) to diff against a fresh re-resolution, surfacing a mid-session plugin update (the harness's own plugin manager can silently bump the installed version while a session is live) instead of leaving it invisible for the rest of the run.
+
 Flags interpreted here:
 
 - `--force` / `--no-config` — skip the warn and continue with built-in defaults. Equivalent for now; once the hard-refusal gate ships, `--force` will be the explicit "I know this repo is unconfigured" opt-out.
@@ -340,6 +342,17 @@ echo "resolved CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT (post-relocation)" >&2
 SHIPYARD_PLUGIN_ROOT_SHA=$(git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD 2>/dev/null)
 [ -z "$SHIPYARD_PLUGIN_ROOT_SHA" ] && SHIPYARD_PLUGIN_ROOT_SHA="unknown"
 echo "resolved CLAUDE_PLUGIN_ROOT commit=$SHIPYARD_PLUGIN_ROOT_SHA (post-relocation)" >&2
+# Stash the resolved plugin's own VERSION too (#1304) — the mid-session
+# drift signal end-of-session cleanup compares against a fresh re-resolution.
+# A consumer install (layer 2) can be silently updated by the harness's own
+# plugin manager mid-session, splitting "which spec the worker reads" from
+# "which scripts/*.sh it invokes" (both keyed off this same stale stash) with
+# no warning anywhere. Never fatal — an unreadable plugin.json degrades to
+# "unknown", same posture as SHIPYARD_PLUGIN_ROOT_SHA above.
+SHIPYARD_PLUGIN_ROOT_VERSION=$(jq -r '.version // empty' "$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null)
+[ -z "$SHIPYARD_PLUGIN_ROOT_VERSION" ] && SHIPYARD_PLUGIN_ROOT_VERSION="unknown"
+printf '%s\n' "$SHIPYARD_PLUGIN_ROOT_VERSION" > .shipyard-plugin-root-version
+echo "resolved CLAUDE_PLUGIN_ROOT version=$SHIPYARD_PLUGIN_ROOT_VERSION (post-relocation)" >&2
 # Close the step_0_5_worktree timing window.
 "${CLAUDE_PLUGIN_ROOT}/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
