@@ -270,6 +270,12 @@
           "default": true,
           "description": "When true (default) AND `enabled` is true AND `changelog_path` is non-empty, the end-of-session drain phase caps effective fix-rebase concurrency to 1 — it dispatches a fix-rebase for at most one DIRTY PR per poll and waits for it to merge (or settle) before rebasing the next. Closes issue #438: on repos where every PR appends a top-of-file CHANGELOG entry, parallel drain rebases cannot converge — each merge moves the CHANGELOG insert point, re-DIRTYing every sibling that just rebased, so the only stable order is one-at-a-time. The cap applies ONLY to fix-rebase dispatch; fix-checks-only dispatch against red PRs is unaffected (a red PR is urgent regardless of the CHANGELOG serialization point). Set false to restore parallel drain rebases on a coordinated repo whose CHANGELOG convention is conflict-free (e.g. per-PR fragment files merged at release time)."
         },
+        "append_only_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Paths (relative to repo root) of append-only docs whose fix-rebase conflicts are resolved deterministically, independent of `enabled` (issue #1309). fix-rebase.md §4.6 recognizes each listed path the same way it recognizes `manifest_path`/`changelog_path` — a conflicted file set consisting ONLY of these paths (plus, when coordination is also enabled, the manifest/changelog rows) resolves instead of bailing. Per-file resolution: regenerate the conflict in diff3 style and, IF every hunk's common-ancestor section is empty (neither side touched pre-existing shared content — both sides purely appended), concatenate both sides and drop the markers; if any hunk's ancestor section is non-empty (a real shared-content edit), bail unchanged. Default `[]` (no paths recognized — the pre-#1309 all-or-nothing behavior is unchanged until a repo opts a path in). This repo's own value is `[\"plugins/shipyard/commands/do-work-RATIONALE.md\"]` — the documented convention for recording a decision, so its conflicts are almost always two independently-appended sections."
+        },
         "_comment": { "type": "string" }
       }
     },
