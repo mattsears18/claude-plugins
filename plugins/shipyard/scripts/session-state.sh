@@ -124,6 +124,24 @@
 #              clear a previously-set value. Exit 3 if the session file
 #              does not exist; exit 64 if the slot is unknown.
 #
+#   record-session-end — stamp a terminal `.session_end` reason on the
+#              session file before cleanup reaps it (issue #1252). Closes
+#              the gap where a session that dies mid-flight (crash,
+#              interrupt, harness limit) never records why it stopped,
+#              making it indistinguishable from a clean exit after the
+#              fact. `--reason` is a closed enum: `completed` (every
+#              workable issue closed/dispositioned and every session PR
+#              merged), `bounded-exit` (drain stopped on a safety bound —
+#              max_drain_hours, a still-red/DIRTY/pending PR, or a
+#              non-zero completion-ledger bucket — with unfinished tail
+#              remaining), or `user-stop` (an explicit stop signal ended
+#              the session early). `--detail` is optional free-text
+#              elaboration, stored as `null` when omitted. Shares
+#              --allow-degraded-init / --degraded-init-repo and
+#              --expected-repo / --skip-repo-check with `update`. Exit 64
+#              on an unrecognized `--reason`; exit 3 if the session file
+#              does not exist and --allow-degraded-init was not passed.
+#
 # Pricing table:
 #
 #   The USD estimate in `bump-tokens` and `read-tokens` uses a hardcoded
@@ -230,6 +248,11 @@ Usage:
   session-state.sh set-progress --session-id <id>
                                --slot <slot-id>
                                [--current N|null] [--total N|null]
+  session-state.sh record-session-end --session-id <id>
+                               --reason completed|bounded-exit|user-stop
+                               [--detail <str>]
+                               [--allow-degraded-init] [--degraded-init-repo <r>]
+                               [--expected-repo <owner/repo>] [--skip-repo-check]
 
 Environment:
   SHIPYARD_HOME                base dir for sessions/ (default: $HOME/.shipyard)
@@ -517,6 +540,7 @@ cmd_init() {
        started_at: $now,
        updated_at: $now,
        degraded_recovery_at: $degraded_recovery_at,
+       session_end: null,
        in_flight: {},
        ready_issues: [],
        failed_prs: [],
@@ -1407,6 +1431,106 @@ cmd_set_progress() {
   fi
 }
 
+# cmd_record_session_end — stamp a terminal reason on the session file
+# before cleanup reaps it (issue #1252). Three of six recent sessions on
+# the maintainer's own machine terminated with a non-empty `.in_flight`
+# and no record of why — the orchestrator process ended before it ever
+# reached cleanup-summary.md's normal exit path, so nothing distinguished
+# that abnormal termination from a clean one after the fact.
+#
+# `--reason` is a closed enum, not free text — validated here so a typo
+# can't silently produce an unparseable value nothing downstream expects:
+#   completed    — every open workable issue closed/dispositioned AND
+#                  every session PR merged (do-work.md's completion
+#                  contract, met in full).
+#   bounded-exit — the drain stopped on a safety bound (max_drain_hours
+#                  ceiling, a blocked:ci / rebase-blocked / still-pending
+#                  PR, or a non-zero completion-ledger bucket) rather than
+#                  because the work was actually done.
+#   user-stop    — an explicit `stop` / `drain` signal ended the session
+#                  before the queues were empty.
+# `--detail` is free-text elaboration (drain-exit reason, session_prs
+# counts, ledger bucket counts) — optional, stored as `null` when omitted.
+#
+# Shares the same missing-file recovery (--allow-degraded-init /
+# --degraded-init-repo) and cross-repo write guard (--expected-repo /
+# --skip-repo-check) as `update`, for the same reasons (issues #253/#281,
+# #365) — this call sits in the same end-of-session write-through path.
+cmd_record_session_end() {
+  local session_id=""
+  local reason=""
+  local detail=""
+  local allow_degraded_init=0
+  local degraded_init_repo=""
+  local expected_repo="${SHIPYARD_EXPECTED_REPO:-}"
+  local skip_repo_check=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      --detail) detail="${2:-}"; shift 2 ;;
+      --allow-degraded-init) allow_degraded_init=1; shift ;;
+      --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
+      --expected-repo) expected_repo="${2:-}"; shift 2 ;;
+      --skip-repo-check) skip_repo_check=1; shift ;;
+      *) echo "record-session-end: unknown arg $1" >&2; usage_error "record-session-end" ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "record-session-end: --session-id is required" >&2
+    usage_error "record-session-end"
+  fi
+  case "$reason" in
+    completed|bounded-exit|user-stop) ;;
+    *)
+      echo "record-session-end: --reason must be one of completed|bounded-exit|user-stop (got: '$reason')" >&2
+      exit 64
+      ;;
+  esac
+
+  local target
+  target=$(session_path "$session_id")
+
+  if [[ "$skip_repo_check" -eq 0 ]]; then
+    if ! check_repo_match "$target" "$expected_repo" "record-session-end"; then
+      exit 66
+    fi
+  fi
+
+  if [[ ! -f "$target" ]]; then
+    if [[ "$allow_degraded_init" -eq 1 ]]; then
+      local recovery_repo="${degraded_init_repo:-unknown/unknown}"
+      if ! cmd_init \
+            --session-id "$session_id" \
+            --repo "$recovery_repo" \
+            --degraded-recovery \
+            >/dev/null; then
+        echo "record-session-end: degraded recovery init failed for $target" >&2
+        exit 68
+      fi
+      echo "record-session-end: $target was missing — degraded-init recovered (state from before the disappear is lost)" >&2
+    else
+      echo "record-session-end: $target does not exist (use init first)" >&2
+      exit 3
+    fi
+  fi
+
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  if ! jq \
+        --arg reason "$reason" \
+        --arg detail "$detail" \
+        --arg now "$now" \
+        '.session_end = {reason: $reason, detail: (if $detail == "" then null else $detail end), recorded_at: $now} | .updated_at = $now' \
+        "$target" | atomic_write "$target"; then
+    echo "record-session-end: jq expression failed — file left unchanged" >&2
+    exit 68
+  fi
+}
+
 # cmd_is_active — liveness check used by the orphan-sweep (setup.md step
 # 1.6). The race the sweep guards against: a concurrent /do-work session
 # in another terminal runs the sweep against this session's file. The
@@ -1587,6 +1711,8 @@ cmd_cleanup() {
           reaped_degraded_attribution_count: ($src[0].tokens.degraded_attribution_count // 0),
           reaped_degraded_recovery_at: ($src[0].degraded_recovery_at // null),
           reaped_per_invocation_count: ($src[0].tokens.per_invocation // [] | length),
+          reaped_session_end: ($src[0].session_end // null),
+          reaped_in_flight_count: ($src[0].in_flight // {} | length),
           reason: (if $reason == "" then null else $reason end),
           phase: (if $phase == "" then null else $phase end)
         }' 2>/dev/null)
@@ -1625,6 +1751,7 @@ case "$subcmd" in
   bump-tokens)  cmd_bump_tokens "$@" ;;
   read-tokens)  cmd_read_tokens "$@" ;;
   set-progress) cmd_set_progress "$@" ;;
+  record-session-end) cmd_record_session_end "$@" ;;
   is-active)    cmd_is_active "$@" ;;
   -h|--help|help)
     usage

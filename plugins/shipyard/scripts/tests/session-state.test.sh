@@ -149,6 +149,11 @@ assert_contains "$content" '"me_assigned_open": 0' "me_assigned_open initialised
 assert_contains "$content" '"last_fresh_fetch": null' "last_fresh_fetch initialised to null (#1246)"
 assert_contains "$content" '"main_ci"' "main_ci block initialised"
 assert_contains "$content" '"started_at"' "started_at timestamp present"
+# session_end (issue #1252) — null until record-session-end stamps a
+# terminal reason. Asserted directly here (not just where it's written)
+# so a future regression that drops it from the init template fails at
+# the source rather than only where it's later read back.
+assert_contains "$content" '"session_end": null' "session_end initialised to null (#1252)"
 rm -rf "$tmphome"
 
 # init refuses to clobber an existing session file unless --force.
@@ -1742,6 +1747,15 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "victim" --input 10000 --output 5000 --cache-read 2000 \
   --mode verify --model claude-opus-4-7 >/dev/null
 
+# Issue #1252 — seed a live in_flight slot and leave .session_end unset,
+# simulating a session that died mid-flight (crashed/interrupted) before
+# ever reaching cleanup-summary.md's normal exit path. The reap-audit line
+# below must capture BOTH signals (a non-null in-flight count and a null
+# session_end) so a reader of ~/.shipyard/reap-audit.jsonl can distinguish
+# this abnormal termination from a clean one after the fact.
+SHIPYARD_HOME="$tmphome" bash "$helper" update --session-id "victim" \
+  --set '.in_flight.slot1 = {kind: "issue", target: 1252, claimed_paths: {hard: [], soft: []}, agent_id: "abc", started_at: "2026-08-10T12:00:00Z"}' >/dev/null
+
 # Reap with --reap-audit. The audit log lands in $SHIPYARD_HOME/reap-audit.jsonl.
 SHIPYARD_HOME="$tmphome" bash "$helper" cleanup \
   --session-id "victim" \
@@ -1796,6 +1810,15 @@ assert_equals "$out" "setup-1.6" "audit line carries phase"
 out=$(printf '%s' "$audit_line" | jq -r '.reaped_pid | type')
 assert_equals "$out" "number" "audit line carries reaped_pid as a number"
 
+# Issue #1252 — the abnormal-exit signature: non-empty in_flight AND a
+# still-null session_end at the moment of reap. This is what lets the
+# orphan sweep (scripts/sweep-orphan-sessions.sh) tell a session that died
+# mid-flight apart from one that reached its own normal exit.
+out=$(printf '%s' "$audit_line" | jq -r '.reaped_in_flight_count')
+assert_equals "$out" "1" "audit line captures reaped_in_flight_count (#1252)"
+out=$(printf '%s' "$audit_line" | jq -c '.reaped_session_end')
+assert_equals "$out" "null" "audit line captures reaped_session_end = null for a session that never recorded why it ended (#1252)"
+
 # Usage error: --reap-audit without --reaper-session-id is rejected.
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "victim2" --repo "v/r" >/dev/null 2>&1
 SHIPYARD_HOME="$tmphome" bash "$helper" cleanup \
@@ -1809,6 +1832,25 @@ prev_lines=$(wc -l <"$audit_log" | tr -d ' ')
 SHIPYARD_HOME="$tmphome" bash "$helper" cleanup --session-id "self-cleanup" 2>/dev/null
 curr_lines=$(wc -l <"$audit_log" | tr -d ' ')
 assert_equals "$curr_lines" "$prev_lines" "cleanup without --reap-audit does not write audit-log line"
+
+# Issue #1252 — the clean-completion counterpart: a session that DID reach
+# record-session-end before its file happened to linger (e.g.
+# SHIPYARD_KEEP_SESSIONS, or a delayed sweep) is captured with the reason
+# it recorded, not null — so a reader can tell "this one finished, the
+# file just outlived it" apart from the abnormal case above.
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tidy" --repo "tidy/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "tidy" --reason "completed" \
+  --detail "drain exited via all PRs settled; session_prs merged=3 blocked:ci=0 rebase-blocked=0 pending=0" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" cleanup \
+  --session-id "tidy" \
+  --reap-audit --reaper-session-id "reaper-281" 2>/dev/null
+tidy_audit_line=$(tail -1 "$audit_log")
+out=$(printf '%s' "$tidy_audit_line" | jq -r '.reaped_session_end.reason')
+assert_equals "$out" "completed" "audit line captures reaped_session_end.reason for a session that recorded why it ended (#1252)"
+out=$(printf '%s' "$tidy_audit_line" | jq -r '.reaped_in_flight_count')
+assert_equals "$out" "0" "audit line captures reaped_in_flight_count = 0 for a cleanly-ended session (#1252)"
+prev_lines=$(wc -l <"$audit_log" | tr -d ' ')
 
 # Idempotency: cleaning up an already-gone session with --reap-audit is a no-op
 # (no audit line, no error). Matches the existing cleanup contract.
@@ -1981,6 +2023,115 @@ prs=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-9" --path
 assert_equals "$prs" "33" "degraded-recovery wrote .session_prs"
 repo=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "xrepo-9" --path ".repo")
 assert_equals "$repo" "owner/repo-A" "degraded-recovery init set .repo from --degraded-init-repo"
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== record-session-end (issue #1252)"
+# --------------------------------------------------------------------------
+# Three of six recent /shipyard:do-work sessions terminated with a
+# non-empty .in_flight and no record of why — the orchestrator process
+# ended before it ever reached cleanup-summary.md's normal exit path. This
+# subcommand stamps a terminal .session_end reason on the way out so a
+# reader (a human, or the next session's orphan sweep) can tell "finished
+# cleanly" from "stopped short" without hand-narrating it fresh.
+
+# init not present at all yet — .session_end must default to null so a
+# freshly-started session reads unambiguously as "hasn't ended."
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "end-1" --repo "o/r" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-1" --path ".session_end")
+assert_equals "$out" "null" "init leaves .session_end null (#1252)"
+
+# --- Clean-completion case ("finished cleanly"). ---------------------------
+SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "end-1" --reason "completed" \
+  --detail "drain exited via all PRs settled; session_prs merged=2 blocked:ci=0 rebase-blocked=0 pending=0; ledger dispatchable=0 unaccounted=0" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "record-session-end --reason completed exits 0"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-1" --path ".session_end.reason")
+assert_equals "$out" "completed" "record-session-end writes .session_end.reason = completed"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-1" --path ".session_end.detail")
+assert_contains "$out" "all PRs settled" ".session_end.detail carries the drain-exit detail"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-1" --path ".session_end.recorded_at")
+if [[ -n "$out" && "$out" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" ".session_end.recorded_at is stamped"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" ".session_end.recorded_at is stamped" "$out"
+  fail=$((fail+1))
+fi
+rm -rf "$tmphome"
+
+# --- Stopped-short case ("bounded-exit"). -----------------------------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "end-2" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "end-2" --reason "bounded-exit" \
+  --detail "drain exited via max_drain_hours ceiling (8h); session_prs merged=1 blocked:ci=1 rebase-blocked=0 pending=1" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-2" --path ".session_end.reason")
+assert_equals "$out" "bounded-exit" "record-session-end writes .session_end.reason = bounded-exit"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-2" --path ".session_end.detail")
+assert_contains "$out" "max_drain_hours" ".session_end.detail names the bound the session stopped on"
+
+# --- user-stop case. ---------------------------------------------------
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "end-3" --repo "o/r" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "end-3" --reason "user-stop" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-3" --path ".session_end.reason")
+assert_equals "$out" "user-stop" "record-session-end writes .session_end.reason = user-stop"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-3" --path ".session_end.detail")
+assert_equals "$out" "null" "omitted --detail is stored as null, not empty string"
+rm -rf "$tmphome"
+
+# --- Input validation. -------------------------------------------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "end-4" --repo "o/r" >/dev/null
+
+# Unknown --reason value is rejected rather than silently persisted.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "end-4" --reason "crashed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-session-end rejects an unrecognized --reason"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "end-4" --path ".session_end")
+assert_equals "$out" "null" "rejected --reason leaves .session_end untouched"
+
+# Missing --session-id.
+out=$(bash "$helper" record-session-end --reason "completed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-session-end without --session-id exits 64"
+
+# Missing --reason.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end --session-id "end-4" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-session-end without --reason exits 64"
+
+# Missing session file, no --allow-degraded-init: exit 3, matching update's contract.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "missing-end" --reason "completed" 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "record-session-end on missing session (no degraded-init) exits 3"
+
+# Missing session file WITH --allow-degraded-init: recovers and writes through,
+# same recovery contract `update` already carries (issues #253/#281).
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "recovered-end" --reason "bounded-exit" \
+  --allow-degraded-init --degraded-init-repo "owner/repo" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=0" "record-session-end --allow-degraded-init recovers a missing file"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "recovered-end" --path ".session_end.reason")
+assert_equals "$out" "bounded-exit" "degraded-recovered file carries the recorded reason"
+rm -rf "$tmphome"
+
+# --- Non-fatal write-through posture: a failed call must not be treated as
+# fatal by a caller following the documented `|| echo ... ; continuing`
+# pattern (session-state-file.md's "Failure mode" section) — exercised here
+# as a direct exit-code check rather than re-deriving the orchestrator's
+# prose fallback.
+tmphome=$(mktmphome)
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-session-end \
+  --session-id "no-such-session" --reason "completed" 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "record-session-end failure is a plain non-zero exit a caller can || and continue past"
 rm -rf "$tmphome"
 
 echo
