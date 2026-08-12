@@ -370,6 +370,12 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
+   # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
+   # (issue #1059/#1064) — otherwise this read silently drops
+   # .shipyard/config.local.json post-relocation.
+   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   export SHIPYARD_REPO_ROOT
    MILESTONES_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
    SWEEP_ON_LOOP_END=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get milestones.sweep_on_loop_end 2>/dev/null || echo "false")
    roadmap_sweep_ran=false
