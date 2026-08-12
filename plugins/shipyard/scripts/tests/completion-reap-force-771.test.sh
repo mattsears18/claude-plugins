@@ -172,23 +172,28 @@ assert_not_contains "$dispatch_rules_path" \
   "--action deferred" \
   "dispatch-rules.md has no remaining --action deferred call (2d's was the only one)"
 
-# 2d's reap block must classify-override to peer-alive-force, same idiom
-# as step B.
+# 2d's reap logic was extracted from dispatch-rules.md to
+# pre-dispatch-branch-reap.sh, issue #1289 — assert the classify-override to
+# peer-alive-force (same idiom as step B) against the script now, not the
+# removed inline prose.
+pre_dispatch_branch_reap_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh"
+assert_file_exists "$pre_dispatch_branch_reap_path" "scripts/pre-dispatch-branch-reap.sh exists"
+
 # shellcheck disable=SC2016  # literal needles — must NOT expand $classification / $local_classification
-assert_contains "$dispatch_rules_path" \
+assert_contains "$pre_dispatch_branch_reap_path" \
   'local_classification="$classification"' \
-  "dispatch-rules.md 2d overrides classification via local_classification"
+  "pre-dispatch-branch-reap.sh overrides classification via local_classification"
 
 # shellcheck disable=SC2016  # literal needle — must NOT expand $classification
-assert_contains "$dispatch_rules_path" \
+assert_contains "$pre_dispatch_branch_reap_path" \
   '[ "$classification" = "peer-alive" ] && local_classification="peer-alive-force"' \
-  "dispatch-rules.md 2d's override maps peer-alive -> peer-alive-force"
+  "pre-dispatch-branch-reap.sh's override maps peer-alive -> peer-alive-force"
 
-# 2d's --action reaped call must use the overridden classification variable.
+# --action reaped call must use the overridden classification variable.
 # shellcheck disable=SC2016  # literal needle — must NOT expand $local_classification
-assert_contains "$dispatch_rules_path" \
+assert_contains "$pre_dispatch_branch_reap_path" \
   '--classification "$local_classification"' \
-  "dispatch-rules.md 2d's reap call uses the overridden classification variable"
+  "pre-dispatch-branch-reap.sh's reap call uses the overridden classification variable"
 
 echo ""
 echo "Runtime: worktree-reap.sh — peer-alive-force phase support at both new call sites"

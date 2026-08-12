@@ -54,6 +54,7 @@ label_recovery_path="$repo_root/plugins/shipyard/commands/do-work/setup/01c-labe
 backlog_divert_path="$repo_root/plugins/shipyard/commands/do-work/setup/04-backlog-divert.md"
 scope_handling_path="$repo_root/plugins/shipyard/commands/do-work/setup/06c-scope-handling-ui.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+classify_blocked_bail_path="$repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh"
 operator_sweep_path="$repo_root/plugins/shipyard/commands/do-work/operate/04-steady-state-hooks.md"
 my_turn_path="$repo_root/plugins/shipyard/commands/my-turn.md"
 
@@ -110,6 +111,7 @@ assert_file_exists "$label_recovery_path"  "setup/01c-label-recovery-refine.md e
 assert_file_exists "$backlog_divert_path"  "setup/04-backlog-divert.md exists"
 assert_file_exists "$scope_handling_path"  "setup/06c-scope-handling-ui.md exists"
 assert_file_exists "$steady_state_path"    "steady-state.md exists"
+assert_file_exists "$classify_blocked_bail_path" "classify-blocked-bail.sh exists"
 assert_file_exists "$operator_sweep_path"  "operate/04-steady-state-hooks.md exists"
 assert_file_exists "$my_turn_path"         "my-turn.md exists"
 
@@ -166,17 +168,20 @@ assert_contains "$scope_handling_path" \
   'GATE_LABEL="agent-console"' \
   "setup/06c-scope-handling-ui.md's external-dependency branch applies agent-console"
 
-assert_contains "$steady_state_path" \
-  "gh label create agent-console --repo" \
-  "steady-state.md's provisioning-bail branch creates agent-console"
+# The provisioning-bail (operator) branch was extracted from steady-state.md
+# to classify-blocked-bail.sh, issue #1289 — the agent-console label-create
+# and --add-label calls now live in the script, not the .md prose.
+assert_contains "$classify_blocked_bail_path" \
+  'label create agent-console --repo' \
+  "classify-blocked-bail.sh's provisioning-bail branch creates agent-console"
 
-assert_not_contains "$steady_state_path" \
-  "gh label create needs-operator --repo" \
-  "steady-state.md does NOT (re-)create the legacy needs-operator label"
+assert_not_contains "$classify_blocked_bail_path" \
+  "label create needs-operator --repo" \
+  "classify-blocked-bail.sh does NOT (re-)create the legacy needs-operator label"
 
-assert_contains "$steady_state_path" \
+assert_contains "$classify_blocked_bail_path" \
   '--add-label "agent-console"' \
-  "steady-state.md applies the agent-console label to the provisioning bail"
+  "classify-blocked-bail.sh applies the agent-console label to the provisioning bail"
 
 echo ""
 echo "Matching / filtering sites recognize ONLY agent-console now that the #995 migration window is closed (#1082)"

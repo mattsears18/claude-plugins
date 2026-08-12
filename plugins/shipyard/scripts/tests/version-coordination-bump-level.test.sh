@@ -53,6 +53,7 @@ fi
 
 dispatch_rules="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 steady_state="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+next_available_version_script="$repo_root/plugins/shipyard/scripts/next-available-version.sh"
 
 pass=0
 fail=0
@@ -85,16 +86,6 @@ if [[ -f "$dispatch_rules" ]]; then
     "dispatch-rules.md calls the computation bump-type-aware"
   assert_contains "$dispatch_rules" 'bump_level=' \
     "dispatch-rules.md infers a bump_level"
-  assert_contains "$dispatch_rules" 'bump_level="minor"' \
-    "dispatch-rules.md maps feat → minor"
-  assert_contains "$dispatch_rules" 'bump_level="major"' \
-    "dispatch-rules.md maps breaking-change → major"
-  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the spec, not expanded
-  assert_contains "$dispatch_rules" 'major)   next_available_version="$((MAJ + 1)).0.0"' \
-    "dispatch-rules.md major bump zeroes minor+patch"
-  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the spec, not expanded
-  assert_contains "$dispatch_rules" 'minor)   next_available_version="${MAJ}.$((MIN + 1)).0"' \
-    "dispatch-rules.md minor bump zeroes patch"
   # The weakened paragraph must present a floor + level, NOT a patch-only
   # "use this exact value" directive.
   assert_contains "$dispatch_rules" 'collision-avoidance **floor**' \
@@ -107,10 +98,32 @@ if [[ -f "$dispatch_rules" ]]; then
   else
     ok "dispatch-rules.md dropped the patch-only 'Use this exact value' directive"
   fi
-  # Cursor still advances to the exact computed value (monotonicity preserved).
-  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the spec, not expanded
-  assert_contains "$dispatch_rules" 'version_cursor="$next_available_version"' \
-    "dispatch-rules.md still advances the cursor to the exact computed value"
+fi
+
+# The bump-level inference + next_available_version computation itself was
+# extracted from dispatch-rules.md to next-available-version.sh, issue #1289
+# — assert the actual computation logic against the script now, not the
+# removed inline prose.
+if [[ -f "$next_available_version_script" ]]; then
+  ok "scripts/next-available-version.sh exists"
+  assert_contains "$next_available_version_script" 'bump_level="minor"' \
+    "next-available-version.sh maps feat → minor"
+  assert_contains "$next_available_version_script" 'bump_level="major"' \
+    "next-available-version.sh maps breaking-change → major"
+  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+  assert_contains "$next_available_version_script" 'major)   next_available_version="$((MAJ + 1)).0.0"' \
+    "next-available-version.sh major bump zeroes minor+patch"
+  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+  assert_contains "$next_available_version_script" 'minor)   next_available_version="${MAJ}.$((MIN + 1)).0"' \
+    "next-available-version.sh minor bump zeroes patch"
+  # Cursor still advances to the exact computed value (monotonicity preserved) —
+  # now via a persisted --cursor-file rather than an in-memory variable.
+  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+  assert_contains "$next_available_version_script" \
+    'next_available_version" > "$cursor_file"' \
+    "next-available-version.sh still advances the cursor to the exact computed value"
+else
+  bad "scripts/next-available-version.sh exists (missing)"
 fi
 
 if [[ -f "$steady_state" ]]; then

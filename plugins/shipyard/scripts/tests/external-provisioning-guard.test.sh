@@ -154,13 +154,21 @@ assert_file_exists "$steady_state_path" "commands/do-work/steady-state.md exists
 if [[ -f "$steady_state_path" ]]; then
   assert_contains "$steady_state_path" "external provisioning required" \
     "steady-state.md recognizes the provisioning bail string"
-  # It routes to agent-console (operator action), NOT needs-human-review.
-  assert_contains "$steady_state_path" 'grep -qi "external provisioning required"' \
-    "steady-state.md classifies the bail before the refuse default"
-  assert_contains "$steady_state_path" '--add-label "agent-console"' \
-    "steady-state.md applies the agent-console label to the provisioning bail"
   assert_contains "$steady_state_path" "Why a provisioning bail routes to" \
     "steady-state.md documents the agent-console routing rationale"
+fi
+
+# The classification implementation (the operator-branch check + agent-console
+# label apply) was extracted from steady-state.md to classify-blocked-bail.sh,
+# issue #1289 — assert against the script now, not the removed inline prose.
+classify_blocked_bail_path="$repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh"
+assert_file_exists "$classify_blocked_bail_path" "scripts/classify-blocked-bail.sh exists"
+if [[ -f "$classify_blocked_bail_path" ]]; then
+  # It routes to agent-console (operator action), NOT needs-human-review.
+  assert_contains "$classify_blocked_bail_path" 'grep -qi "external provisioning required"' \
+    "classify-blocked-bail.sh classifies the bail before the refuse default"
+  assert_contains "$classify_blocked_bail_path" '--add-label "agent-console"' \
+    "classify-blocked-bail.sh applies the agent-console label to the provisioning bail"
 fi
 
 # --- Layer 3: scope-preflight carve-out (06-scope-preflight.md) ---

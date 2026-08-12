@@ -135,7 +135,7 @@ if [ "$VERDICT" = "gated" ]; then
   # site previously threw the error away unread, so an inline-shipped
   # workflow-touching PR failed to arm with zero visibility (#850).
   MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch 2>&1 1>/dev/null) || true
-  if printf '%s' "$MERGE_ARM_ERR" | grep -qi "without .workflow. scope"; then
+  if grep -qi "without .workflow. scope" <<< "$MERGE_ARM_ERR"; then
     echo "[inline-trivial] PR #<pr-num> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
   fi
 else

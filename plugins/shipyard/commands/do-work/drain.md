@@ -77,7 +77,9 @@ Once every row above reports empty (subject to row 7's degraded-path exception),
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    ME_LOGIN=$(gh api user --jq '.login')
-   SUMMARY=$(printf '%s' "$FRESH_FETCH_JSON" | "${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN")
+   # Herestring, not a pipe — feeds the same stdin content without spanning a
+   # shell command boundary (issue #1289, mirrors #1277's decomposition rule).
+   SUMMARY=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FRESH_FETCH_JSON")
    "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "<session-id>" \
      --set ".unfiltered_open_count = $(printf '%s' "$SUMMARY" | jq -r '.unfiltered_open_count')" \
      --set ".me_assigned_open = $(printf '%s' "$SUMMARY" | jq -r '.me_assigned_open')" \
@@ -300,13 +302,13 @@ The wrapper auto-chunks at 50 aliases per query (override via `SHIPYARD_GH_BATCH
 # D_dirty_red (>0 AND DIRTY → informational subset of D_dirty, still routed to fix-rebase).
 # D_dirty's own membership test no longer reads this at all — mergeStateStatus == DIRTY is
 # sufficient (issue #1060).
-fails=$(echo "$pr_rollup_json" | jq '
+fails=$(jq '
   [.statusCheckRollup
    | group_by(.name)
    | map(sort_by(.completedAt // .startedAt // "") | last)
    | .[]
    | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
-  | length')
+  | length' <<< "$pr_rollup_json")
 ```
 
 The `group_by(.name) | map(... | last)` reduction is load-bearing: it collapses N entries per check name to 1 (the latest), so a stale FAILURE entry superseded by a later SUCCESS is correctly filtered out. Apply this projection in every per-PR rollup walk in both the per-poll snapshot and any fan-out re-snapshot via `gh-batch.sh pr-status`.
@@ -329,146 +331,16 @@ Closes [#370](https://github.com/mattsears18/shipyard/issues/370). Before dispat
 
 **The reap.** For each PR `#<M>` the drain is about to dispatch a worker against, resolve its head branch, find any `agent-*` worktree **or the primary checkout** locked against that branch, and reap / restore it iff safe. The two holders are handled differently: an `agent-*` worktree is reaped iff the lock classifies as reapable (`no-lock` / `dead` / `self-ancestor`), deferring only on `peer-alive` / `unknown`; the **primary checkout** holding the head branch is the [#387](https://github.com/mattsears18/shipyard/issues/387) harness-leak case — restore it to the default branch iff its tree is clean (never reap the primary; it's the user's checkout), warn-and-skip if dirty. The drain-entry guard above usually handles the primary case first, but this per-PR check is the belt-and-suspenders for a leak that lands *mid-drain* (after the entry guard ran).
 
+**Extracted to [`scripts/drain-pre-dispatch-branch-reap.sh`](../../scripts/drain-pre-dispatch-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop wrapping several pipes, plus a preceding primary-checkout-leak restore section with its own `git worktree list --porcelain | awk` pipes — the same shapes the worktree-isolation guard refuses post-relocation. This is the drain-phase sibling of dispatch-rules.md §2d's extraction, kept as a **separate script** (not a shared abstraction) because the two reap policies genuinely differ — this one additionally handles the primary-checkout leak and conditions its peer-alive/unknown override on the `do-work/issue-*` branch pattern, where §2d's force-reaps unconditionally. The script's own header comment restates both hard prohibitions (#832's in-flight-before-classify-lock ordering, #836's never-infer-from-branch-name-alone rule) and every classification branch is preserved exactly as it read here before extraction. `$head_ref` is the PR's headRefName (already in the drain snapshot's `headRefName` field — no extra `gh` round-trip needed):
+
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-cd "$(git rev-parse --show-toplevel)"
-# Declare the orchestrator PID once so classify-lock short-circuits self-locks
-# to `self-ancestor` (issue #263) regardless of process-tree shape.
-export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
-
-# $head_ref is the PR's headRefName (already in the drain snapshot's
-# `headRefName` field — no extra `gh` round-trip needed).
-
-# --- Primary-checkout holder (issue #387) ---------------------------------
-# Before scanning agent-* worktrees, check whether the PRIMARY checkout is
-# the one parked on this PR's head branch (the harness-leak case). If so,
-# restore-if-clean / warn-if-dirty per the A.0.6 guard — NEVER reap the
-# primary. Frees the per-branch lock so the fix-rebase worker can switch.
-# Derive PRIMARY_CHECKOUT independent of cwd (issue #452) — the harness can
-# leak the orchestrator's cwd into a dispatched agent-* worktree, and a
-# cwd-strip that only handles orchestrator-* would mis-derive the primary
-# and mutate the wrong tree. `git worktree list --porcelain`'s first
-# `worktree ` entry is always the primary, whatever the cwd. Fall back to
-# the cwd-strip (now covering agent-* too) only if the porcelain read is empty.
-PRIMARY_CHECKOUT="$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10); exit}')"
-if [ -z "$PRIMARY_CHECKOUT" ]; then
-  PRIMARY_CHECKOUT="$(git rev-parse --show-toplevel)"
-  case "$PRIMARY_CHECKOUT" in
-    */.claude/worktrees/orchestrator-*) PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/orchestrator-*}" ;;
-    */.claude/worktrees/agent-*)        PRIMARY_CHECKOUT="${PRIMARY_CHECKOUT%/.claude/worktrees/agent-*}" ;;
-  esac
-fi
-PRIMARY_BRANCH=$(git -C "$PRIMARY_CHECKOUT" symbolic-ref --short -q HEAD 2>/dev/null || echo "<detached>")
-if [ "$PRIMARY_BRANCH" = "$head_ref" ]; then
-  DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-  if [ -z "$(git -C "$PRIMARY_CHECKOUT" status --porcelain 2>/dev/null)" ]; then
-    git -C "$PRIMARY_CHECKOUT" checkout "$DEFAULT_BRANCH" 2>/dev/null \
-      && git -C "$PRIMARY_CHECKOUT" pull --ff-only 2>/dev/null || true
-    echo "[primary-leak] restored primary from $head_ref to $DEFAULT_BRANCH before fix-rebase dispatch (#387)"
-    primary_leak_restores=$((primary_leak_restores + 1))
-  else
-    echo "[primary-leak] WARNING: primary checkout holds head branch $head_ref AND has uncommitted changes; NOT auto-restoring (possible real edits). fix-rebase for this PR will bail until you restore manually: git -C \"$PRIMARY_CHECKOUT\" checkout $DEFAULT_BRANCH (#387)"
-    primary_leak_dirty_skips=$((primary_leak_dirty_skips + 1))
-  fi
-fi
-# --------------------------------------------------------------------------
-
-# In-flight guard (issue #832) — snapshot this session's currently in-flight
-# agent-ids BEFORE the loop below ever consults classify-lock. Drain can run
-# concurrent fix-checks-only / fix-rebase workers against OTHER PRs while
-# this per-PR reap fires — in-flight membership is authoritative liveness;
-# the lock file's classification is only a fallback for a worktree this
-# session doesn't currently own. See `dont.md`'s "Don't reap a live-PID
-# worktree" bullet.
-in_flight_agent_ids=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" read \
-  --session-id "<session-id>" --path .in_flight 2>/dev/null \
-  | jq -r '.[]?.agent_id // empty' 2>/dev/null)
-
-for wt_dir in $(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null); do
-  [ -d "$wt_dir" ] || continue
-  branch_ref=$(sed 's|ref: refs/heads/||' "$wt_dir/HEAD" 2>/dev/null)
-  [ "$branch_ref" = "$head_ref" ] || continue
-
-  name=$(basename "$wt_dir")
-  # In-flight guard (issue #832) — skip BEFORE classify-lock, not after.
-  case $'\n'"$in_flight_agent_ids"$'\n' in
-    *$'\n'"${name#agent-}"$'\n'*) continue ;;
-  esac
-  worktree_path=$(git worktree list | awk -v n="$name" '$0 ~ n {print $1; exit}')
-  [ -z "$worktree_path" ] && continue
-
-  classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" classify-lock "$wt_dir/locked")
-  # Anchor on the literal `pid` keyword, not "first digit-run before a
-  # close-paren" — the latter misparses a real `(pid <N> start <ctime>)`
-  # lock as the ctime's trailing year (issue #1206). Same fix as
-  # `worktree-reap.sh`'s own `extract_lock_pid` helper.
-  lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
-  [ -z "$lock_pid" ] && lock_pid="null"
-
-  if [ "$classification" = "peer-alive" ] || [ "$classification" = "unknown" ]; then
-    # Check whether this is a completed issue-work worktree (i.e., the
-    # branch follows the do-work/issue-<N> pattern). If so, the originating
-    # worker has already returned its terminal string — the worktree is
-    # logically done and the peer-alive PID is a transient harness artifact.
-    # Force-reap it so the drain worker can claim the branch, matching A.0.5's
-    # posture for crash returns (issue #576). For any other branch pattern
-    # (e.g., a live fix-checks or fix-rebase worker), preserve the conservative
-    # defer — yanking a genuinely-live worker's worktree is unsafe. `unknown`
-    # (issue #1206 — the lock exists but couldn't be parsed at all) rides
-    # the SAME branch-pattern override as `peer-alive`: fail closed on a
-    # non-issue-work branch (defer), force-reap only where the originating
-    # worker is already known-done by branch pattern alone.
-    case "$branch_ref" in
-      do-work/issue-*)
-        # Completed issue-work worktree — force-reap. Audit with
-        # "peer-alive-force-drain" so the override is distinguishable
-        # from normal reaps in ~/.shipyard/reap-audit.jsonl.
-        ;;
-      *)
-        # A genuinely-live non-orchestrator PID holds the lock (or its lock
-        # couldn't be parsed at all). Don't yank it. Defer; the fresh worker
-        # will bail with `blocked rebase` and the PR is surfaced in the
-        # summary — same outcome as pre-#370, but only for the truly-unsafe
-        # case rather than the common self-PID case. `--reason` carries the
-        # ACTUAL classification so the audit line doesn't misreport an
-        # `unknown` defer as `peer-alive`.
-        "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-          --action deferred \
-          --worktree-path "$worktree_path" \
-          --worktree-name "$name" \
-          --session-id "<session-id>" \
-          --reason "$classification" \
-          --lock-pid "$lock_pid" \
-          --phase "drain-pre-dispatch" 2>/dev/null || true
-        break
-        ;;
-    esac
-  fi
-
-  # no-lock / dead / self-ancestor / peer-alive-force-drain / unknown-force-
-  # drain (for completed issue-work worktrees) — safe to reap. The helper
-  # does the `git worktree unlock` + `git worktree remove --force` AND the
-  # audit-log write in one transaction (issue #284).
-  drain_classification="$classification"
-  [ "$classification" = "peer-alive" ] && drain_classification="peer-alive-force-drain"
-  [ "$classification" = "unknown" ] && drain_classification="unknown-force-drain"
-  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-    --action reaped \
-    --worktree-path "$worktree_path" \
-    --worktree-name "$name" \
-    --session-id "<session-id>" \
-    --classification "$drain_classification" \
-    --lock-pid "$lock_pid" \
-    --phase "drain-pre-dispatch" 2>/dev/null || true
-
-  # Drop the local branch ref so the fresh worker's `git switch <head>`
-  # recreates it cleanly without the "already checked out" collision.
-  git branch -D "$head_ref" 2>/dev/null || true
-  break   # at most one worktree per head branch
-done
-git worktree prune 2>/dev/null || true
+reap_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/drain-pre-dispatch-branch-reap.sh" reap \
+  --head-ref "$head_ref" --repo <owner/repo> --session-id "<session-id>")
 ```
+
+Parse `reap_result`'s seven `key=value` lines: `primary_leak_restored=<true|false>`, `primary_leak_dirty_skip=<true|false>`, `reap_outcome=<none|reaped|deferred>`, `worktree_path`, `worktree_name`, `classification`, `lock_pid`. Increment the session-local `primary_leak_restores` / `primary_leak_dirty_skips` counters when their respective booleans are `true` (the script already printed the matching `[primary-leak] ...` log line to stdout).
 
 This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the drain poll. It runs **once per PR per dispatch**, immediately before the `Agent` dispatch for that PR — NOT once per poll across all PRs (a PR not being dispatched this poll, e.g. one held back by the `max_drain_rebases` cap, doesn't need its lock released yet). The `peer-alive` defer is intentionally conservative for non-issue-work branches (a live fix-checks or fix-rebase worker's lock must not be yanked), but completed issue-work worktrees (`do-work/issue-*` branch pattern) are force-reaped even on `peer-alive` — those workers have already returned their terminal strings and their worktrees are logically done. Audit entries carry `"phase":"drain-pre-dispatch"` and classification `"peer-alive-force-drain"` (for the force-reap path) or `"peer-alive"` (for the conservative defer path) so an operator can distinguish these cases and distinguish drain-phase reaps from setup-3b (session start), steady-state-A1-shipped (#282 immediate-reap, with `"peer-alive-force"` for its own force-reap path), and reconcile-A.0.5 (#358 crash-recovery) in `~/.shipyard/reap-audit.jsonl`.
 
@@ -575,8 +447,8 @@ mb_exit=$?
          # lowest-first per the drain spec). Increment drain_rebases_dispatched
          # once per dispatch — NOT once per `rebased` return — so the cap
          # bounds CI cost regardless of outcome.
-         D_dirty_to_dispatch=$(echo "$D_dirty" | head -n "$remaining_cap")
-         D_dirty_to_skip=$(echo "$D_dirty" | tail -n "+$((remaining_cap + 1))")
+         D_dirty_to_dispatch=$(head -n "$remaining_cap" <<< "$D_dirty")
+         D_dirty_to_skip=$(tail -n "+$((remaining_cap + 1))" <<< "$D_dirty")
          for pr in $D_dirty_to_skip; do
            ci_session_counters.drain_rebases_skipped=$((ci_session_counters.drain_rebases_skipped + 1))
          done
@@ -622,7 +494,7 @@ mb_exit=$?
      else
        # No rebase in flight — dispatch exactly the lowest-numbered DIRTY PR
        # (D_dirty is already sorted lowest-first) and defer the rest.
-       D_dirty=$(echo "$D_dirty" | head -n 1)
+       D_dirty=$(head -n 1 <<< "$D_dirty")
      fi
    fi
    ```
@@ -754,7 +626,7 @@ if [ "$merge_gating" = "gated" ]; then
   # auto-merge.md step 1.1, #812) can hit this release-train arm too, and a
   # release-please PR routinely touches .github/workflows/ version pins.
   merge_arm_err=$(gh pr merge <M> --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
-  if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
+  if grep -qi "without .workflow. scope" <<< "$merge_arm_err"; then
     echo "[release-train] PR #<M> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
   fi
 else
@@ -789,7 +661,7 @@ Add `<M>` to `session_prs` (deduped) so the existing drain termination machinery
 # `shipyard:worker-preamble` § "An absence-assertion that observed nothing is not
 # a pass", fragment `skills/worker-preamble/ci-pitfalls.md`).
 merge_sha=$(gh pr view <M> --repo <owner/repo> --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")
-if ! printf '%s' "$merge_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+if ! grep -Eq '^[0-9a-f]{40}$' <<< "$merge_sha"; then
   echo "[release-train] could not read a full merge SHA for PR #<M> — deploy watch NOT VERIFIED (skipping, not concluding green)"
   merge_sha=""
 fi
