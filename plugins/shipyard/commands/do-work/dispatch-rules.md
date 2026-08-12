@@ -669,13 +669,27 @@ Fire-and-forget, exactly like the other reap blocks. The same cleanup applies to
 
 ### 1. Record the denial — never let it silently cost a slot
 
-A denial that is not recorded is invisible: the slot goes unfilled and the target quietly stops being worked, with nothing in the summary to say why. Append an entry to the session-local **`dispatch_denials`** struct (see [`orchestrator-state-reference.md`](./orchestrator-state-reference.md)):
+A denial that is not recorded is invisible: the slot goes unfilled and the target quietly stops being worked, with nothing in the summary to say why. Append an entry to the session-local **`dispatch_denials`** struct (see [`orchestrator-state-reference.md`](./orchestrator-state-reference.md)) held in working memory for same-turn decisions, **and** mirror it to the durable session-state file via `session-state.sh record-denial` (issue [#1302](https://github.com/mattsears18/shipyard/issues/1302)) so `/shipyard:status` and a crashed session's forensics can see it without waiting for the end-of-session summary:
 
 ```
 { target: <#N | #M | "main" | "pr-pileup">, mode: "<mode>", denied_at: "<iso-8601 UTC>",
   denial_text: "<verbatim first line of the harness denial>",
   attempt: 1 | 2, outcome: "reframed" | "handed-back" | "shipped-after-reframe" }
 ```
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" record-denial \
+  --session-id "$session_id" --expected-repo "<owner/repo>" \
+  --target "<#N|#M|main|pr-pileup>" --mode "<mode>" \
+  --denial-text "<verbatim first line of the harness denial>" \
+  --attempt "<1|2>" --outcome "<reframed|handed-back|shipped-after-reframe>" \
+  2>/tmp/do-work-record-denial-err.log \
+  || { echo "[session-state] record-denial denied or failed: $(cat /tmp/do-work-record-denial-err.log)"; session_state_degraded_since="${session_state_degraded_since:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; }
+```
+
+**One call, typed scalar args, no nested-JSON literal** — this is the concrete fix for the [#1302](https://github.com/mattsears18/shipyard/issues/1302) repro, where a hand-built `.dispatch_denials = [...]` `--set` payload got denied outright by Auto Mode's classifier. If this call is itself denied or fails (fire-and-forget — never block the turn on it), log the advisory and hold the session-local `session_state_degraded_since` timestamp per [step E's `state=degraded` definition](./steady-state.md#e-invariant-line-end-of-every-steady-state-turn) — do not retry, do not treat it as a reason to skip the working-memory `dispatch_denials` append above.
 
 Do **not** write an `.in_flight` slot (per the ordering rule above there is nothing to write) and do **not** decrement any queue yet. Log the advisory inline so the denial is visible in the turn transcript, not just at exit:
 
@@ -704,7 +718,7 @@ The tempting default under a denial is to keep rewording until it gets through. 
 
 If the corrected dispatch is *also* denied, the denial is not about phrasing — stop.
 
-1. Record the second denial in `dispatch_denials` with `attempt: 2, outcome: "handed-back"`.
+1. Record the second denial in `dispatch_denials` with `attempt: 2, outcome: "handed-back"` — both the working-memory struct and the `session-state.sh record-denial --attempt 2 --outcome handed-back` mirror call from step 1 above.
 2. Remove the target from this session's dispatch queues (`ready_issues` / `raw_backlog` / `failed_prs` / `divert_queue` as applicable) and add it to a session-local **do-not-redispatch** set so step C's lightweight backlog re-check cannot re-append it and re-deny in a loop.
 3. **For an issue target** (`issue-work` / `investigate` mode), apply `needs-human-review` — the label class for "no automated path exists" ([#521](https://github.com/mattsears18/shipyard/issues/521)) — and post **one** comment whose **literal first line** is the `<!-- do-work-classifier-undispatchable -->` marker, followed by the fact-and-outcome-only body ([#953](https://github.com/mattsears18/shipyard/issues/953)):
 

@@ -2134,6 +2134,268 @@ rc=$(printf '%s' "$out" | tail -1)
 assert_equals "$rc" "rc=3" "record-session-end failure is a plain non-zero exit a caller can || and continue past"
 rm -rf "$tmphome"
 
+echo "== record-stall (issue #1302)"
+# --------------------------------------------------------------------------
+# Typed alternative to a hand-built `.stalled_dispatches = [...]` jq literal
+# through `update` — issue #1302 found that shape gets denied outright by
+# Auto Mode's classifier when the payload carries nested JSON, silently
+# degrading the session-state mirror for the rest of the session. A single-
+# entry typed call keeps the argument small.
+
+# init already seeds .stalled_dispatches to an empty array.
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "stall-1" --repo "o/r" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches")
+assert_equals "$out" "[]" "init seeds .stalled_dispatches to an empty array (#1302)"
+
+# Happy path — resumed outcome carries a resumed_pr.
+SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-1" --target "#1263" --mode "issue-work" \
+  --trigger "non-terminal-return" --outcome "resumed" --resumed-pr 1280 >/dev/null
+rc=$?
+assert_equals "$rc" "0" "record-stall exits 0 on a valid entry"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches[0].target")
+assert_equals "$out" "#1263" ".stalled_dispatches[0].target written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches[0].mode")
+assert_equals "$out" "issue-work" ".stalled_dispatches[0].mode written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches[0].trigger")
+assert_equals "$out" "non-terminal-return" ".stalled_dispatches[0].trigger written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches[0].outcome")
+assert_equals "$out" "resumed" ".stalled_dispatches[0].outcome written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches[0].resumed_pr")
+assert_equals "$out" "1280" ".stalled_dispatches[0].resumed_pr written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches[0].detected_at")
+if [[ -n "$out" && "$out" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" ".stalled_dispatches[0].detected_at is stamped"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" ".stalled_dispatches[0].detected_at is stamped" "$out"
+  fail=$((fail+1))
+fi
+
+# --resumed-pr omitted defaults to null (dropped-clean has no PR to point at).
+SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-1" --target "#1281" --mode "fix-checks-only" \
+  --trigger "harness-failed" --outcome "dropped-clean" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches[1].resumed_pr")
+assert_equals "$out" "null" "omitted --resumed-pr defaults to null"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-1" --path ".stalled_dispatches")
+n=$(printf '%s' "$out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+assert_equals "$n" "2" "second record-stall call appends rather than overwrites"
+rm -rf "$tmphome"
+
+# --- Falls back to [] for a pre-#1302 session file missing the field. ------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "stall-legacy" --repo "o/r" >/dev/null
+legacy_file="$tmphome/sessions/stall-legacy.json"
+python3 -c "
+import json
+with open('$legacy_file') as f:
+    d = json.load(f)
+del d['stalled_dispatches']
+with open('$legacy_file', 'w') as f:
+    json.dump(d, f)
+"
+SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-legacy" --target "#1" --mode "spike" \
+  --trigger "non-terminal-return" --outcome "handed-back" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "record-stall succeeds against a file missing .stalled_dispatches entirely"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-legacy" --path ".stalled_dispatches[0].target")
+assert_equals "$out" "#1" "legacy-file record-stall lands the entry via the // [] fallback"
+rm -rf "$tmphome"
+
+# --- Input validation. -------------------------------------------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "stall-2" --repo "o/r" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-2" --target "#1" --mode "not-a-real-mode" \
+  --trigger "non-terminal-return" --outcome "resumed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-stall rejects an unrecognized --mode"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-2" --target "#1" --mode "issue-work" \
+  --trigger "bogus-trigger" --outcome "resumed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-stall rejects an unrecognized --trigger"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-2" --target "#1" --mode "issue-work" \
+  --trigger "non-terminal-return" --outcome "bogus-outcome" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-stall rejects an unrecognized --outcome"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-2" --target "#1" --mode "issue-work" \
+  --trigger "non-terminal-return" --outcome "resumed" --resumed-pr "not-a-number" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-stall rejects a non-numeric --resumed-pr"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-2" --mode "issue-work" \
+  --trigger "non-terminal-return" --outcome "resumed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-stall without --target exits 64"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-2" --path ".stalled_dispatches")
+assert_equals "$out" "[]" "every rejected record-stall call above left .stalled_dispatches untouched"
+
+# Missing session file, no --allow-degraded-init: exit 3, matching update's contract.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-missing" --target "#1" --mode "issue-work" \
+  --trigger "non-terminal-return" --outcome "resumed" 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "record-stall on missing session (no degraded-init) exits 3"
+
+# Missing session file WITH --allow-degraded-init: recovers and writes through.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "stall-recovered" --target "#2" --mode "issue-work" \
+  --trigger "harness-failed" --outcome "handed-back" \
+  --allow-degraded-init --degraded-init-repo "owner/repo" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=0" "record-stall --allow-degraded-init recovers a missing file"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "stall-recovered" --path ".stalled_dispatches[0].target")
+assert_equals "$out" "#2" "degraded-recovered file carries the recorded stall entry"
+rm -rf "$tmphome"
+
+echo "== record-denial (issue #1302)"
+# --------------------------------------------------------------------------
+# Typed alternative to a hand-built `.dispatch_denials = [...]` jq literal
+# through `update`, mirroring record-stall above for the harness permission
+# classifier denying a worker dispatch call outright (issue #718).
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "denial-1" --repo "o/r" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials")
+assert_equals "$out" "[]" "init seeds .dispatch_denials to an empty array (#1302)"
+
+SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-1" --target "#1263" --mode "fix-main-ci" \
+  --denial-text "git checkout -B main --force is destructive" \
+  --attempt 1 --outcome "reframed" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "record-denial exits 0 on a valid entry"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials[0].target")
+assert_equals "$out" "#1263" ".dispatch_denials[0].target written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials[0].mode")
+assert_equals "$out" "fix-main-ci" ".dispatch_denials[0].mode written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials[0].denial_text")
+assert_contains "$out" "destructive" ".dispatch_denials[0].denial_text written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials[0].attempt")
+assert_equals "$out" "1" ".dispatch_denials[0].attempt written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials[0].outcome")
+assert_equals "$out" "reframed" ".dispatch_denials[0].outcome written"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials[0].denied_at")
+if [[ -n "$out" && "$out" != "null" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" ".dispatch_denials[0].denied_at is stamped"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s (got: %s)\n' "$RED" "$RESET" ".dispatch_denials[0].denied_at is stamped" "$out"
+  fail=$((fail+1))
+fi
+
+# Second denial on the same target appends (never overwrites) — the
+# second-denial hand-back case still wants both attempts on record.
+SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-1" --target "#1263" --mode "fix-main-ci" \
+  --denial-text "git checkout -B main --force is destructive" \
+  --attempt 2 --outcome "handed-back" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials")
+n=$(printf '%s' "$out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+assert_equals "$n" "2" "second record-denial call appends rather than overwrites"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-1" --path ".dispatch_denials[1].attempt")
+assert_equals "$out" "2" ".dispatch_denials[1].attempt records the second attempt"
+rm -rf "$tmphome"
+
+# --- Falls back to [] for a pre-#1302 session file missing the field. ------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "denial-legacy" --repo "o/r" >/dev/null
+legacy_file="$tmphome/sessions/denial-legacy.json"
+python3 -c "
+import json
+with open('$legacy_file') as f:
+    d = json.load(f)
+del d['dispatch_denials']
+with open('$legacy_file', 'w') as f:
+    json.dump(d, f)
+"
+SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-legacy" --target "main" --mode "fix-main-ci" \
+  --denial-text "denied" --attempt 1 --outcome "reframed" >/dev/null
+rc=$?
+assert_equals "$rc" "0" "record-denial succeeds against a file missing .dispatch_denials entirely"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-legacy" --path ".dispatch_denials[0].target")
+assert_equals "$out" "main" "legacy-file record-denial lands the entry via the // [] fallback"
+rm -rf "$tmphome"
+
+# --- Input validation. -------------------------------------------------
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "denial-2" --repo "o/r" >/dev/null
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-2" --target "#1" --mode "not-a-real-mode" \
+  --denial-text "x" --attempt 1 --outcome "reframed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-denial rejects an unrecognized --mode"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-2" --target "#1" --mode "issue-work" \
+  --denial-text "x" --attempt 3 --outcome "reframed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-denial rejects an --attempt outside 1|2"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-2" --target "#1" --mode "issue-work" \
+  --denial-text "x" --attempt 1 --outcome "bogus-outcome" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-denial rejects an unrecognized --outcome"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-2" --target "#1" --mode "issue-work" \
+  --attempt 1 --outcome "reframed" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=64" "record-denial without --denial-text exits 64"
+
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-2" --path ".dispatch_denials")
+assert_equals "$out" "[]" "every rejected record-denial call above left .dispatch_denials untouched"
+
+# Missing session file, no --allow-degraded-init: exit 3, matching update's contract.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-missing" --target "#1" --mode "issue-work" \
+  --denial-text "x" --attempt 1 --outcome "reframed" 2>/dev/null; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=3" "record-denial on missing session (no degraded-init) exits 3"
+
+# Missing session file WITH --allow-degraded-init: recovers and writes through.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "denial-recovered" --target "#2" --mode "issue-work" \
+  --denial-text "x" --attempt 1 --outcome "reframed" \
+  --allow-degraded-init --degraded-init-repo "owner/repo" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=0" "record-denial --allow-degraded-init recovers a missing file"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "denial-recovered" --path ".dispatch_denials[0].target")
+assert_equals "$out" "#2" "degraded-recovered file carries the recorded denial entry"
+rm -rf "$tmphome"
+
+# --- Cross-repo write guard applies to both new subcommands too (issue #365). ---
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "guard-1" --repo "owner/repo-a" >/dev/null
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-stall \
+  --session-id "guard-1" --target "#1" --mode "issue-work" \
+  --trigger "non-terminal-return" --outcome "resumed" \
+  --expected-repo "owner/repo-b" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=66" "record-stall refuses a cross-repo write"
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" record-denial \
+  --session-id "guard-1" --target "#1" --mode "issue-work" \
+  --denial-text "x" --attempt 1 --outcome "reframed" \
+  --expected-repo "owner/repo-b" 2>&1; echo "rc=$?")
+rc=$(printf '%s' "$out" | tail -1)
+assert_equals "$rc" "rc=66" "record-denial refuses a cross-repo write"
+rm -rf "$tmphome"
+
 echo
 echo "Results: ${GREEN}${pass} passed${RESET}, ${RED}${fail} failed${RESET}"
 [[ $fail -eq 0 ]]

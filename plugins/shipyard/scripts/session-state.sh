@@ -142,6 +142,43 @@
 #              on an unrecognized `--reason`; exit 3 if the session file
 #              does not exist and --allow-degraded-init was not passed.
 #
+#   record-stall — append one entry to `.stalled_dispatches` (issue
+#              #1302). Typed alternative to hand-building a
+#              `.stalled_dispatches = [...]` jq literal through `update`
+#              — the orchestrator's own working-memory bash array (see
+#              do-work/steady-state.md's A.0.5) is still the fast
+#              same-turn source of truth for cap/collision decisions;
+#              this call mirrors ONE freshly-appended entry to the
+#              durable file so `/shipyard:status` and post-crash
+#              forensics can see it without waiting for the end-of-
+#              session summary. A single-entry typed call keeps the
+#              argument small specifically to avoid the large nested-
+#              JSON `--set` payload issue #1302 found gets denied
+#              outright by Auto Mode's classifier. `--target`, `--mode`,
+#              `--trigger` (`non-terminal-return`|`harness-failed`), and
+#              `--outcome` (`resumed`|`handed-back`|`dropped-clean`) are
+#              required; `--resumed-pr <N>` is optional (omit or pass
+#              `null` for no PR). `detected_at` is stamped internally at
+#              call time — never caller-supplied, so entries are always
+#              ordered by actual write time. Shares
+#              --allow-degraded-init / --degraded-init-repo and
+#              --expected-repo / --skip-repo-check with `update`. Exit 64
+#              on an unrecognized enum value; exit 3 if the session file
+#              does not exist and --allow-degraded-init was not passed.
+#
+#   record-denial — append one entry to `.dispatch_denials` (issue
+#              #1302). Same rationale and shape as `record-stall` above,
+#              for the harness permission classifier denying a worker
+#              dispatch call outright (issue #718) instead of a stalled
+#              worker. `--target`, `--mode`, `--denial-text`, `--attempt`
+#              (`1`|`2`), and `--outcome`
+#              (`reframed`|`shipped-after-reframe`|`handed-back`) are
+#              required. `denied_at` is stamped internally at call time.
+#              Shares the same degraded-init / cross-repo-guard flags as
+#              `update`. Exit 64 on an unrecognized enum value; exit 3 if
+#              the session file does not exist and --allow-degraded-init
+#              was not passed.
+#
 # Pricing table:
 #
 #   The USD estimate in `bump-tokens` and `read-tokens` uses a hardcoded
@@ -251,6 +288,19 @@ Usage:
   session-state.sh record-session-end --session-id <id>
                                --reason completed|bounded-exit|user-stop
                                [--detail <str>]
+                               [--allow-degraded-init] [--degraded-init-repo <r>]
+                               [--expected-repo <owner/repo>] [--skip-repo-check]
+  session-state.sh record-stall --session-id <id>
+                               --target <str> --mode <kind>
+                               --trigger non-terminal-return|harness-failed
+                               --outcome resumed|handed-back|dropped-clean
+                               [--resumed-pr N]
+                               [--allow-degraded-init] [--degraded-init-repo <r>]
+                               [--expected-repo <owner/repo>] [--skip-repo-check]
+  session-state.sh record-denial --session-id <id>
+                               --target <str> --mode <kind>
+                               --denial-text <str> --attempt 1|2
+                               --outcome reframed|shipped-after-reframe|handed-back
                                [--allow-degraded-init] [--degraded-init-repo <r>]
                                [--expected-repo <owner/repo>] [--skip-repo-check]
 
@@ -552,6 +602,8 @@ cmd_init() {
        session_prs: [],
        deferred_issues: [],
        soft_caps: {},
+       stalled_dispatches: [],
+       dispatch_denials: [],
        main_ci: {
          status: "unknown",
          earliest_red_run_id: null,
@@ -1531,6 +1583,264 @@ cmd_record_session_end() {
   fi
 }
 
+# cmd_record_stall — append one entry to `.stalled_dispatches` (issue
+# #1302). See the "record-stall" subcommand doc in the header comment for
+# the full rationale: a typed, single-entry call keeps the argument small
+# enough that Auto Mode's classifier doesn't refuse it the way it refused
+# the large nested-JSON `.stalled_dispatches = [...]` `--set` payload the
+# issue's repro hit. `--target` / `--mode` / `--trigger` / `--outcome` are
+# a closed shape mirroring do-work/orchestrator-state-reference.md's
+# documented `stalled_dispatches` entry — validated here so a typo can't
+# silently produce a value nothing downstream expects. `detected_at` is
+# always stamped internally at call time, never caller-supplied.
+#
+# Shares the same missing-file recovery (--allow-degraded-init /
+# --degraded-init-repo) and cross-repo write guard (--expected-repo /
+# --skip-repo-check) as `update` / `record-session-end`, for the same
+# reasons (issues #253/#281, #365) — this call fires from the same
+# reconcile path those callers write from.
+cmd_record_stall() {
+  local session_id=""
+  local target=""
+  local mode=""
+  local trigger=""
+  local outcome=""
+  local resumed_pr=""
+  local allow_degraded_init=0
+  local degraded_init_repo=""
+  local expected_repo="${SHIPYARD_EXPECTED_REPO:-}"
+  local skip_repo_check=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      --target) target="${2:-}"; shift 2 ;;
+      --mode) mode="${2:-}"; shift 2 ;;
+      --trigger) trigger="${2:-}"; shift 2 ;;
+      --outcome) outcome="${2:-}"; shift 2 ;;
+      --resumed-pr) resumed_pr="${2:-}"; shift 2 ;;
+      --allow-degraded-init) allow_degraded_init=1; shift ;;
+      --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
+      --expected-repo) expected_repo="${2:-}"; shift 2 ;;
+      --skip-repo-check) skip_repo_check=1; shift ;;
+      *) echo "record-stall: unknown arg $1" >&2; usage_error "record-stall" ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "record-stall: --session-id is required" >&2
+    usage_error "record-stall"
+  fi
+  if [[ -z "$target" ]]; then
+    echo "record-stall: --target is required" >&2
+    usage_error "record-stall"
+  fi
+  case "$mode" in
+    issue-work|fix-checks-only|fix-rebase|fix-main-ci|fix-failing-prs-batch|investigate|spike) ;;
+    *)
+      echo "record-stall: --mode must be one of issue-work|fix-checks-only|fix-rebase|fix-main-ci|fix-failing-prs-batch|investigate|spike (got: '$mode')" >&2
+      exit 64
+      ;;
+  esac
+  case "$trigger" in
+    non-terminal-return|harness-failed) ;;
+    *)
+      echo "record-stall: --trigger must be one of non-terminal-return|harness-failed (got: '$trigger')" >&2
+      exit 64
+      ;;
+  esac
+  case "$outcome" in
+    resumed|handed-back|dropped-clean) ;;
+    *)
+      echo "record-stall: --outcome must be one of resumed|handed-back|dropped-clean (got: '$outcome')" >&2
+      exit 64
+      ;;
+  esac
+
+  local resumed_pr_json="null"
+  if [[ -n "$resumed_pr" ]] && [[ "$resumed_pr" != "null" ]]; then
+    if ! [[ "$resumed_pr" =~ ^[0-9]+$ ]]; then
+      echo "record-stall: --resumed-pr must be a non-negative integer, 'null', or omitted (got: '$resumed_pr')" >&2
+      exit 64
+    fi
+    resumed_pr_json="$resumed_pr"
+  fi
+
+  local target_path
+  target_path=$(session_path "$session_id")
+
+  if [[ "$skip_repo_check" -eq 0 ]]; then
+    if ! check_repo_match "$target_path" "$expected_repo" "record-stall"; then
+      exit 66
+    fi
+  fi
+
+  if [[ ! -f "$target_path" ]]; then
+    if [[ "$allow_degraded_init" -eq 1 ]]; then
+      local recovery_repo="${degraded_init_repo:-unknown/unknown}"
+      if ! cmd_init \
+            --session-id "$session_id" \
+            --repo "$recovery_repo" \
+            --degraded-recovery \
+            >/dev/null; then
+        echo "record-stall: degraded recovery init failed for $target_path" >&2
+        exit 68
+      fi
+      echo "record-stall: $target_path was missing — degraded-init recovered (state from before the disappear is lost)" >&2
+    else
+      echo "record-stall: $target_path does not exist (use init first)" >&2
+      exit 3
+    fi
+  fi
+
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  if ! jq \
+        --arg target "$target" \
+        --arg mode "$mode" \
+        --arg trigger "$trigger" \
+        --arg outcome "$outcome" \
+        --argjson resumed_pr "$resumed_pr_json" \
+        --arg now "$now" \
+        '.stalled_dispatches = ((.stalled_dispatches // []) + [{
+           target: $target,
+           mode: $mode,
+           trigger: $trigger,
+           outcome: $outcome,
+           resumed_pr: $resumed_pr,
+           detected_at: $now
+         }]) | .updated_at = $now' \
+        "$target_path" | atomic_write "$target_path"; then
+    echo "record-stall: jq expression failed — file left unchanged" >&2
+    exit 68
+  fi
+}
+
+# cmd_record_denial — append one entry to `.dispatch_denials` (issue
+# #1302). Same rationale as cmd_record_stall above — a typed, single-
+# entry call for the harness permission classifier denying a worker
+# dispatch call outright (issue #718), instead of a hand-built
+# `.dispatch_denials = [...]` jq literal through `update`. `--target` /
+# `--mode` / `--denial-text` / `--attempt` / `--outcome` mirror do-work/
+# orchestrator-state-reference.md's documented `dispatch_denials` entry
+# shape. `denied_at` is always stamped internally at call time.
+#
+# Shares the same missing-file recovery and cross-repo write guard as
+# `update` / `record-session-end` / `record-stall`.
+cmd_record_denial() {
+  local session_id=""
+  local target=""
+  local mode=""
+  local denial_text=""
+  local attempt=""
+  local outcome=""
+  local allow_degraded_init=0
+  local degraded_init_repo=""
+  local expected_repo="${SHIPYARD_EXPECTED_REPO:-}"
+  local skip_repo_check=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --session-id) session_id="${2:-}"; shift 2 ;;
+      --target) target="${2:-}"; shift 2 ;;
+      --mode) mode="${2:-}"; shift 2 ;;
+      --denial-text) denial_text="${2:-}"; shift 2 ;;
+      --attempt) attempt="${2:-}"; shift 2 ;;
+      --outcome) outcome="${2:-}"; shift 2 ;;
+      --allow-degraded-init) allow_degraded_init=1; shift ;;
+      --degraded-init-repo) degraded_init_repo="${2:-}"; shift 2 ;;
+      --expected-repo) expected_repo="${2:-}"; shift 2 ;;
+      --skip-repo-check) skip_repo_check=1; shift ;;
+      *) echo "record-denial: unknown arg $1" >&2; usage_error "record-denial" ;;
+    esac
+  done
+
+  if [[ -z "$session_id" ]]; then
+    echo "record-denial: --session-id is required" >&2
+    usage_error "record-denial"
+  fi
+  if [[ -z "$target" ]]; then
+    echo "record-denial: --target is required" >&2
+    usage_error "record-denial"
+  fi
+  case "$mode" in
+    issue-work|fix-checks-only|fix-rebase|fix-main-ci|fix-failing-prs-batch|investigate|spike) ;;
+    *)
+      echo "record-denial: --mode must be one of issue-work|fix-checks-only|fix-rebase|fix-main-ci|fix-failing-prs-batch|investigate|spike (got: '$mode')" >&2
+      exit 64
+      ;;
+  esac
+  if [[ -z "$denial_text" ]]; then
+    echo "record-denial: --denial-text is required" >&2
+    usage_error "record-denial"
+  fi
+  case "$attempt" in
+    1|2) ;;
+    *)
+      echo "record-denial: --attempt must be 1 or 2 (got: '$attempt')" >&2
+      exit 64
+      ;;
+  esac
+  case "$outcome" in
+    reframed|shipped-after-reframe|handed-back) ;;
+    *)
+      echo "record-denial: --outcome must be one of reframed|shipped-after-reframe|handed-back (got: '$outcome')" >&2
+      exit 64
+      ;;
+  esac
+
+  local target_path
+  target_path=$(session_path "$session_id")
+
+  if [[ "$skip_repo_check" -eq 0 ]]; then
+    if ! check_repo_match "$target_path" "$expected_repo" "record-denial"; then
+      exit 66
+    fi
+  fi
+
+  if [[ ! -f "$target_path" ]]; then
+    if [[ "$allow_degraded_init" -eq 1 ]]; then
+      local recovery_repo="${degraded_init_repo:-unknown/unknown}"
+      if ! cmd_init \
+            --session-id "$session_id" \
+            --repo "$recovery_repo" \
+            --degraded-recovery \
+            >/dev/null; then
+        echo "record-denial: degraded recovery init failed for $target_path" >&2
+        exit 68
+      fi
+      echo "record-denial: $target_path was missing — degraded-init recovered (state from before the disappear is lost)" >&2
+    else
+      echo "record-denial: $target_path does not exist (use init first)" >&2
+      exit 3
+    fi
+  fi
+
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  if ! jq \
+        --arg target "$target" \
+        --arg mode "$mode" \
+        --arg denial_text "$denial_text" \
+        --argjson attempt "$attempt" \
+        --arg outcome "$outcome" \
+        --arg now "$now" \
+        '.dispatch_denials = ((.dispatch_denials // []) + [{
+           target: $target,
+           mode: $mode,
+           denied_at: $now,
+           denial_text: $denial_text,
+           attempt: $attempt,
+           outcome: $outcome
+         }]) | .updated_at = $now' \
+        "$target_path" | atomic_write "$target_path"; then
+    echo "record-denial: jq expression failed — file left unchanged" >&2
+    exit 68
+  fi
+}
+
 # cmd_is_active — liveness check used by the orphan-sweep (setup.md step
 # 1.6). The race the sweep guards against: a concurrent /do-work session
 # in another terminal runs the sweep against this session's file. The
@@ -1752,6 +2062,8 @@ case "$subcmd" in
   read-tokens)  cmd_read_tokens "$@" ;;
   set-progress) cmd_set_progress "$@" ;;
   record-session-end) cmd_record_session_end "$@" ;;
+  record-stall) cmd_record_stall "$@" ;;
+  record-denial) cmd_record_denial "$@" ;;
   is-active)    cmd_is_active "$@" ;;
   -h|--help|help)
     usage
