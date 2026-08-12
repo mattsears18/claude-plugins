@@ -914,6 +914,33 @@ run_reap --action bogus --worktree-path "$reap_repo/x" --worktree-name "x" \
 assert_exit_code "$?" "64" \
   "(41) unknown --action → exit 64"
 
+# --- (41a) issue #1305 — an unrecognized flag on the `reap` subcommand must
+# exit non-zero (EX_USAGE, 64), never silently exit 0. The reported repro
+# used `--repo-root` (the flag every OTHER subcommand in this script takes,
+# making it an easy mistake to carry over to `reap`, which does not accept
+# it) alongside `--worktree`, neither of which `reap` recognizes. A caller
+# that only checks the exit code must not record a successful reap that
+# never happened. ---
+run_reap --repo-root "$reap_repo" --worktree "$reap_repo/x"
+assert_exit_code "$?" "64" \
+  "(41a) unrecognized --repo-root flag on reap → exit 64, not 0"
+if grep -q "unknown flag: --repo-root" "$tmpdir/reap.stderr" 2>/dev/null; then
+  printf '  %sPASS%s  (41a-msg) stderr names the offending flag\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (41a-msg) stderr did not name --repo-root as the unknown flag — was: %s\n' \
+    "$RED" "$RESET" "$(cat "$tmpdir/reap.stderr" 2>/dev/null)"
+  fail=$((fail+1))
+fi
+
+# --- (41b) a second, differently-shaped unrecognized flag on `reap` also
+# exits 64 — confirms the guard isn't special-cased to --repo-root alone. ---
+run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
+  --session-id s --classification "dead" --lock-pid null --skip-remove \
+  --some-bogus-flag value
+assert_exit_code "$?" "64" \
+  "(41b) unrecognized trailing flag on an otherwise well-formed reap call → exit 64"
+
 # --- (42) bad usage: --lock-pid must be 'null' or non-negative integer ---
 run_reap --action reaped --worktree-path "$reap_repo/x" --worktree-name "x" \
   --session-id s --classification "dead" --lock-pid "not-a-pid" --skip-remove
