@@ -33,10 +33,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-
       - name: Lint shell scripts under plugins/
+        # No separate shellcheck install step: run-shellcheck.sh resolves and
+        # verifies a PINNED shellcheck version itself (downloading it from
+        # GitHub Releases on first use), rather than whatever `apt-get
+        # install shellcheck` happens to ship on this runner image. This is
+        # the same pinned binary a local `bash
+        # plugins/shipyard/scripts/tests/shellcheck.test.sh` run resolves —
+        # see run-shellcheck.sh's header (issue #1296) for why the previous
+        # apt-installed version could disagree with a developer's local
+        # shellcheck on real findings (SC2015) even when both were "just
+        # shellcheck".
         run: |
           set -euo pipefail
           # Pick up production scripts and test scripts. `find` is portable
@@ -48,7 +55,7 @@ jobs:
           fi
           printf 'Linting %d script(s):\n' "${#scripts[@]}"
           printf '  %s\n' "${scripts[@]}"
-          shellcheck "${scripts[@]}"
+          plugins/shipyard/scripts/run-shellcheck.sh "${scripts[@]}"
 
   shell-tests:
     name: shell tests
