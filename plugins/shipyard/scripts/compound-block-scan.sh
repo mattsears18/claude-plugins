@@ -98,9 +98,12 @@ repo_root="$(git rev-parse --show-toplevel)"
 # #1277's own fix time found roughly a dozen more compound-shape instances
 # across these four files beyond setup/04-backlog-divert.md; #1289 verified
 # and swept 17 of the 18 flagged locations clean. steady-state.md's single
-# remaining block (the ~420-line A.0.5 crash-recovery reap) is deliberately
+# remaining block (the ~420-line A.0.5 crash-recovery reap) was deliberately
 # exempted via an inline `<!-- compound-block-scan: allow -->` marker rather
-# than left off this list entirely — tracked as issue #1291.
+# than left off this list entirely, tracked as issue #1291 — #1291 has since
+# extracted that block to scripts/crash-recovery-reap.sh and removed the
+# marker, so steady-state.md is now clean on its own merits like the other
+# three files, with no exemption left in place.
 FILES=(
   "$repo_root/plugins/shipyard/commands/do-work/setup/04-backlog-divert.md"
   "$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"

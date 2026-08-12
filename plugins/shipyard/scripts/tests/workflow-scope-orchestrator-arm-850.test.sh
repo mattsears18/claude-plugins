@@ -97,6 +97,10 @@ SETUP_WORKTREE="$repo_root/plugins/shipyard/commands/do-work/setup/01c-label-rec
 DRAIN="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 DO_WORK="$repo_root/plugins/shipyard/commands/do-work.md"
 RATIONALE="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+# A.0.5's merge-arm call moved from steady-state.md's inline prose into
+# scripts/crash-recovery-reap.sh with issue #1291's extraction — the
+# call-site assertions below target the script now, not the .md.
+CRASH_RECOVERY_REAP="$repo_root/plugins/shipyard/scripts/crash-recovery-reap.sh"
 
 # ---------------------------------------------------------------------------
 # (A) + (B) Each of the four call sites: captures stderr, matches the shared
@@ -116,17 +120,19 @@ else
   assert_fail "inline-trivial.md exists (missing at $INLINE_TRIVIAL)"
 fi
 
-if [[ -f "$STEADY_STATE" ]]; then
-  assert_contains "$STEADY_STATE" 'without .workflow. scope' \
-    "steady-state.md A.0.5 matches the shared GraphQL 'without \`workflow\` scope' signature"
+if [[ -f "$CRASH_RECOVERY_REAP" ]]; then
+  assert_contains "$CRASH_RECOVERY_REAP" 'without .workflow. scope' \
+    "crash-recovery-reap.sh (A.0.5) matches the shared GraphQL 'without \`workflow\` scope' signature"
   # shellcheck disable=SC2016
-  assert_contains "$STEADY_STATE" '[reconcile-A.0.5-recovery] PR #${recovered_pr} auto-merge arm blocked' \
-    "steady-state.md A.0.5 logs a distinctly-tagged line on match"
+  assert_contains "$CRASH_RECOVERY_REAP" '[reconcile-A.0.5-recovery] PR #${recovered_pr} auto-merge arm blocked' \
+    "crash-recovery-reap.sh (A.0.5) logs a distinctly-tagged line on match"
   # shellcheck disable=SC2016
-  assert_contains "$STEADY_STATE" 'merge_arm_err=$(gh pr merge "$recovered_pr"' \
-    "steady-state.md A.0.5 captures the merge-arm call's stderr into a variable"
+  # $GH (not a literal `gh`) — every gh invocation in the extracted script
+  # goes through the testable wrapper (see the script's own header).
+  assert_contains "$CRASH_RECOVERY_REAP" 'merge_arm_err=$("$GH" pr merge "$recovered_pr"' \
+    "crash-recovery-reap.sh (A.0.5) captures the merge-arm call's stderr into a variable"
 else
-  assert_fail "steady-state.md exists (missing at $STEADY_STATE)"
+  assert_fail "scripts/crash-recovery-reap.sh exists (missing at $CRASH_RECOVERY_REAP)"
 fi
 
 if [[ -f "$SETUP_WORKTREE" ]]; then
@@ -213,6 +219,11 @@ if [[ -f "$STEADY_STATE" ]]; then
   # shellcheck disable=SC2016
   assert_not_contains "$STEADY_STATE" 'gh pr merge "$recovered_pr" --repo <owner/repo> --auto --merge --delete-branch 2>/dev/null || true' \
     "steady-state.md A.0.5 no longer discards the merge-arm call's stderr unconditionally"
+fi
+if [[ -f "$CRASH_RECOVERY_REAP" ]]; then
+  # shellcheck disable=SC2016
+  assert_not_contains "$CRASH_RECOVERY_REAP" '"$GH" pr merge "$recovered_pr" --repo "$repo" --auto --"${auto_merge_method}" --delete-branch 2>/dev/null || true' \
+    "crash-recovery-reap.sh (A.0.5) no longer discards the merge-arm call's stderr unconditionally"
 fi
 if [[ -f "$SETUP_WORKTREE" ]]; then
   # shellcheck disable=SC2016

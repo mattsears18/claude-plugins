@@ -48,21 +48,23 @@ if [[ "$repo_root" == "/" ]]; then
   exit 1
 fi
 
-# The four worktree-reap blocks live across the steady-state phase's two
-# files plus two extracted scripts: A.0.5 / step B stayed inline in the
-# hot-path steady-state.md; A.1's shipped-immediate reap and the step-C 2d
-# fix-checks dispatch-site reap (which moved to dispatch-rules.md, issue
-# #616) were BOTH further extracted to their own scripts
-# (shipped-immediate-branch-reap.sh, pre-dispatch-branch-reap.sh) per issue
-# #1289 — the cd-anchor preamble moved with them. Concatenate all four
-# sources so the count-at-least assertions still see all four reap blocks
-# regardless of which file/script each now lives in.
+# The four worktree-reap blocks live across the steady-state phase's files
+# plus three extracted scripts: step B stayed inline in the hot-path
+# steady-state.md; A.0.5's crash-recovery reap (issue #1291), A.1's
+# shipped-immediate reap, and the step-C 2d fix-checks dispatch-site reap
+# (which moved to dispatch-rules.md, issue #616) were ALL further extracted
+# to their own scripts (crash-recovery-reap.sh, shipped-immediate-branch-reap.sh,
+# pre-dispatch-branch-reap.sh) per issues #1289/#1291 — the cd-anchor
+# preamble moved with each. Concatenate all sources so the count-at-least
+# assertions still see all four reap blocks regardless of which file/script
+# each now lives in.
 steady_state_hot_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
+crash_recovery_reap_path="$repo_root/plugins/shipyard/scripts/crash-recovery-reap.sh"
 shipped_immediate_reap_path="$repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh"
 pre_dispatch_branch_reap_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh"
 steady_state_path="$(mktemp -t reconcile-reap-concat.XXXXXX)"
-cat "$steady_state_hot_path" "$dispatch_rules_path" \
+cat "$steady_state_hot_path" "$dispatch_rules_path" "$crash_recovery_reap_path" \
   "$shipped_immediate_reap_path" "$pre_dispatch_branch_reap_path" \
   > "$steady_state_path" 2>/dev/null
 trap 'rm -f "$steady_state_path"' EXIT

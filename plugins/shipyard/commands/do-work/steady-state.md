@@ -345,374 +345,30 @@ When the return text fails the prefix check, treat it as crash-like and proceed 
 
 **Skip silently on clean terminal returns** — when the prefix check passes (`shipped` / `green` / `noop:` / `blocked` / `rebased` / `reaped:`), do NOT run this step. Step B's per-completion reap is the right path for clean returns; running A.0.5 too would double-call into `classify-lock` for the common case and waste tool calls. The skip is a no-op — proceed directly to A.1.
 
-**This block still carries the compound shapes issue [#1289](https://github.com/mattsears18/shipyard/issues/1289) swept everywhere else in `dispatch-rules.md` / `drain.md` / `inline-trivial.md` / the rest of `steady-state.md` — deliberately, not by oversight.** At ~420 lines (crash-recovery reap, stalled-worker resume, and a version-bump helper function all interleaved) this is by a wide margin the single largest and most complex block in the whole corpus — the exact "too large to do safely in one PR" case that issue's own scope guidance sanctions deferring, the same judgment #1277's worker exercised for the two blocks #1289 itself went on to resolve. Tracked as a dedicated follow-up: [#1291](https://github.com/mattsears18/shipyard/issues/1291). The `compound-block-scan: allow` marker below is this exception, not a blanket exemption — remove it the moment #1291 lands.
+**Extracted to [`scripts/crash-recovery-reap.sh`](../../scripts/crash-recovery-reap.sh) (issue [#1291](https://github.com/mattsears18/shipyard/issues/1291), the deliberately-deferred follow-up to #1289) — the block below is a translation, not a rewrite.** At ~420 lines (crash-recovery reap, and an embedded version-bump helper function) this was by a wide margin the single largest and most complex block in the whole corpus — the exact "too large to do safely in one PR" case #1289's own scope guidance sanctioned deferring at the time, the same judgment #1277's worker exercised for the two blocks #1289 itself went on to resolve. The script's own header comment restates the two invariants that govern any future edit here — never reap before inspecting, and the is_terminal gate is a genuine no-op path, not a shortcut — and preserves every recovery branch, every fire-and-forget guard, and every log-line prefix exactly as they read here before extraction. `${a05_bump_applied:+...}` in the dirty-worktree commit message is a pre-existing bug carried over unchanged (it checks non-empty, not `= true`, so the "release bump" suffix appears even when no bump was applied, since `a05_bump_applied` is always the literal string `"true"` or `"false"`) — tracked as a separate follow-up rather than fixed in this extraction, per the "don't change behavior while reshaping" rule.
 
-<!-- compound-block-scan: allow -->
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-# Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
-# (issue #1059/#1064) — the version-coordination + auto_merge.method reads
-# further down this block would otherwise silently drop
-# .shipyard/config.local.json post-relocation.
-SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
-export SHIPYARD_REPO_ROOT
-# The agent's last-line return text from the harness notification. The
-# orchestrator already has this in working memory for A.1's parse below.
-return_text="<the agent's last-line return text, trimmed>"
-# The harness task-notification's own status field: "completed" or "failed".
-# A "failed" status is the #833 stall-watchdog trigger ("no progress for
-# 600s (stream watchdog did not recover)") and is treated as non-terminal
-# UNCONDITIONALLY below, independent of what return_text says.
-harness_status="<the harness task-notification's status field>"
+# The agent's last-line return text from the harness notification, and the
+# harness task-notification's own status field ("completed" or "failed") —
+# the orchestrator already has both in working memory for A.1's parse
+# below. slot-id/agent-id/repo/slot-kind/slot-issue are the same
+# .in_flight.<slot-id> fields and dispatch-target values used throughout
+# this file's other reap sites.
+crash_result=$("${CLAUDE_PLUGIN_ROOT}/scripts/crash-recovery-reap.sh" reap \
+  --repo <owner/repo> \
+  --slot-id <slot-id> \
+  --agent-id <agent-id> \
+  --slot-kind "${.in_flight[<slot-id>].kind}" \
+  --slot-issue "${.in_flight[<slot-id>].target}" \
+  --return-text "<the agent's last-line return text, trimmed>" \
+  --harness-status "<the harness task-notification's status field>")
+```
 
-# Terminal-prefix check — case-insensitive match against the six valid
-# prefixes from the per-mode return contracts. Skipped entirely when
-# harness_status == "failed": the watchdog firing means this dispatch never
-# reached its own terminal return, so a text prefix that happens to look
-# terminal is not trusted as a real completion (#833).
-is_terminal=false
-if [ "$harness_status" != "failed" ]; then
-  case "$return_text" in
-    shipped*|green*|noop:*|blocked*|rebased*|reaped:*)
-      is_terminal=true
-      ;;
-  esac
-fi
+Parse `crash_result` — either `terminal=true` (clean terminal return; nothing else ran — no reap, no recovery, no side effect of any kind, matching "Skip silently on clean terminal returns" above; proceed directly to A.1) or `terminal=false worktree_path=<path> worktree_name=<name> classification=<c-or-empty> lock_pid=<pid-or-empty> session_id=<sid-or-unknown> recovered_pr=<M-or-empty>` (a crash/narrative-non-terminal/harness-failed return; the script already ran the full pre-reap recovery and force-reaped the worktree). On `terminal=false` with a non-empty `recovered_pr`, append it to `session_prs` — that array is orchestrator in-session working memory, not something a stateless script invocation can own — so the cost-tracking, drain, and end-of-session summary paths all see it as a session-opened PR (mirrors step A.1's `session_prs+=` for a `shipped` return). Hold onto every other field for the separate verify call and the wasted/stalled bookkeeping immediately below.
 
-if [ "$is_terminal" = "false" ]; then
-  # Crash / narrative-non-terminal / harness-failed — fire the reap.
-  log_prefix=$(printf '%s' "$return_text" | head -c 80)
-  echo "[reconcile-A.0.5] non-terminal stop for slot=<slot-id> agent=<agent-id> harness_status=${harness_status}: \"$log_prefix\"; firing post-return inspect-before-reap (#358/#838/#833)"
-
-  completed_agent_id="${.in_flight[<slot-id>].agent_id}"
-  wt_dir=".git/worktrees/agent-${completed_agent_id}"
-  worktree_path="$(git rev-parse --show-toplevel)/.claude/worktrees/agent-${completed_agent_id}"
-
-  # In-flight guard (issue #832) — NOT applicable as an exclusion here, and
-  # that's intentional. Unlike the sweep-style reap sites (setup 3b,
-  # dispatch-rules §2d, drain's pre-dispatch reap), this block never scans
-  # `.git/worktrees/agent-*` for candidates — it targets exactly ONE
-  # worktree: `<slot-id>`'s own `completed_agent_id`, and only because THIS
-  # slot's agent has already returned (even if the return itself is
-  # crash-like / non-terminal). The harness's own completion notification —
-  # not classify-lock's PID check — is the authoritative liveness signal
-  # here, and it has already fired by the time this code runs. `.in_flight`
-  # still nominally holds this slot's entry (release happens later in step
-  # B), so a naive "skip if present in in_flight" check would wrongly
-  # defer reaping the very return this step exists to reconcile. Do not
-  # add one. classify-lock is still consulted below for its OTHER
-  # classifications (peer-alive vs. safe-to-reap) — just not as a liveness
-  # override of the fact that this slot has already terminated.
-  if [ -d "$wt_dir" ]; then
-    # Bootstrap the orchestrator PID so classify-lock can short-circuit on
-    # our own session's locks (issue #263 — same pattern as A.1/B's reaps).
-    export SHIPYARD_ORCHESTRATOR_PID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" detect-orchestrator-pid)
-
-    classification=$("${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" \
-      classify-lock "$wt_dir/locked")
-
-    # Anchor on the literal `pid` keyword, not "first digit-run before a
-    # close-paren" — the latter misparses a real `(pid <N> start <ctime>)`
-    # lock as the ctime's trailing year (issue #1206). Same fix as
-    # `worktree-reap.sh`'s own `extract_lock_pid` helper.
-    lock_pid=$(grep -oE '\(pid[[:space:]]+[0-9]+' "$wt_dir/locked" 2>/dev/null | grep -oE '[0-9]+' | head -1)
-    [ -z "$lock_pid" ] && lock_pid="null"
-
-    # Pre-reap recovery check (#493): before reaping, check whether the
-    # crashed worker left committed work that hasn't been pushed yet. This
-    # only applies to issue-work dispatches (the slot's kind == "issue")
-    # since those are the only ones with a named do-work/issue-<N> branch
-    # and a linked issue to recover against. The issue number is the slot's
-    # `target` field (per the do-work.md in_flight schema).
-    slot_kind="${.in_flight[<slot-id>].kind}"
-    slot_issue="${.in_flight[<slot-id>].target}"
-    if [ "$slot_kind" = "issue" ] && [ -n "$slot_issue" ] && [ -d "$worktree_path" ]; then
-      DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null || echo "main")
-      # Fetch so origin/<default> ref is current.
-      git -C "$worktree_path" fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true
-      ahead_count=$(git -C "$worktree_path" rev-list --count "origin/${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo "0")
-
-      # ── Version-coordination bump helper (#575) ───────────────────────────
-      # Shared logic called by both recovery branches below. Applies the manifest
-      # version bump + CHANGELOG stub directly into the worktree's working tree
-      # (file edits only — does NOT commit). The caller is responsible for staging
-      # and committing (dirty-worktree path folds it into the auto-commit;
-      # committed-but-unpushed path adds a dedicated bump commit).
-      #
-      # Usage: call a05_version_bump "$worktree_path" "$DEFAULT_BRANCH" "$slot_issue"
-      # Sets: a05_bump_applied=true|false, a05_bump_version (when applied).
-      a05_version_bump() {
-        local wt="$1" defbr="$2" issue_num="$3"
-        a05_bump_applied=false
-        a05_bump_version=""
-
-        # Read coordination config. Fire-and-forget: any failure → skip.
-        vc_enabled=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
-        [ "$vc_enabled" != "true" ] && return 0
-
-        vc_manifest=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
-        [ -z "$vc_manifest" ] && return 0
-
-        vc_version_jq=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.manifest_version_jq 2>/dev/null || echo ".version")
-        vc_changelog=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get version_coordination.changelog_path 2>/dev/null || echo "")
-
-        # Read the manifest version from origin/<default> (the floor).
-        origin_version=$(gh api "repos/<owner/repo>/contents/${vc_manifest}?ref=${defbr}" \
-          --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | jq -r "$vc_version_jq" 2>/dev/null || echo "")
-        if [ -z "$origin_version" ]; then
-          echo "[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required (could not read origin manifest version for ${vc_manifest})"
-          return 0
-        fi
-
-        # Read the manifest version from the worktree (HEAD for committed path,
-        # working tree file for dirty path — reading the file directly covers both).
-        wt_version=$(jq -r "$vc_version_jq" "${wt}/${vc_manifest}" 2>/dev/null || echo "")
-        if [ -z "$wt_version" ]; then
-          echo "[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required (could not read worktree manifest version for ${vc_manifest})"
-          return 0
-        fi
-
-        # Only bump when the worktree version equals the origin version —
-        # i.e., the worker never reached its own bump step. If they differ,
-        # the worker already bumped (or partially bumped); don't overwrite.
-        if [ "$wt_version" != "$origin_version" ]; then
-          echo "[reconcile-A.0.5-recovery] version-bump: worktree already at ${wt_version} (origin=${origin_version}); skipping bump"
-          return 0
-        fi
-
-        # Infer the release bump LEVEL from the recovered issue's Conventional
-        # Commits signals (#671) — the same bump-type-awareness as the
-        # dispatch-time next-available-version computation in dispatch-rules.md.
-        # A patch-only bump stamps a semver-wrong version on a recovered PR whose
-        # issue requires a major (breaking) or minor (feature) release. Best-effort:
-        # a failed title/body read falls back to the patch default.
-        a05_title=$(gh issue view "$issue_num" --repo <owner/repo> --json title -q .title 2>/dev/null || echo "")
-        a05_body=$(gh issue view "$issue_num" --repo <owner/repo> --json body -q .body 2>/dev/null || echo "")
-        a05_level="patch"
-        printf '%s' "$a05_title" | grep -qiE '^[[:space:]]*feat(\([^)]*\))?[[:space:]]*:' && a05_level="minor"
-        if printf '%s' "$a05_title" | grep -qiE '^[[:space:]]*[a-z]+(\([^)]*\))?!:' \
-           || printf '%s\n%s' "$a05_title" "$a05_body" | grep -qiE 'BREAKING[ -]CHANGE|major version bump|\(X\.0\.0\)'; then
-          a05_level="major"
-        fi
-
-        # Compute next_ver = origin_version bumped at the inferred level
-        # (major → (X+1).0.0, minor → X.(Y+1).0, patch → X.Y.(Z+1)).
-        IFS='.' read -r vc_maj vc_min vc_pat <<< "$origin_version"
-        case "$a05_level" in
-          major)   next_ver="$((vc_maj + 1)).0.0" ;;
-          minor)   next_ver="${vc_maj}.$((vc_min + 1)).0" ;;
-          patch|*) next_ver="${vc_maj}.${vc_min}.$((vc_pat + 1))" ;;
-        esac
-
-        # Apply the version bump to the manifest file in the worktree.
-        # Use jq to rewrite the file in-place (temp-file dance for safety).
-        jq_script="$(printf '%s = "%s"' "$vc_version_jq" "$next_ver")"
-        tmp_manifest="$(mktemp)"
-        if jq "$jq_script" "${wt}/${vc_manifest}" > "$tmp_manifest" 2>/dev/null && [ -s "$tmp_manifest" ]; then
-          mv "$tmp_manifest" "${wt}/${vc_manifest}" 2>/dev/null || rm -f "$tmp_manifest"
-        else
-          rm -f "$tmp_manifest"
-          echo "[reconcile-A.0.5-recovery] WARNING: recovered PR has no version bump — manual release bump required (jq write failed for ${vc_manifest})"
-          return 0
-        fi
-
-        # Prepend a minimal CHANGELOG stub (when changelog_path is configured).
-        if [ -n "$vc_changelog" ] && [ -f "${wt}/${vc_changelog}" ]; then
-          today=$(date -u +%Y-%m-%d)
-          stub="### ${next_ver} — ${today}
-
-Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing release bump for issue #${issue_num}. Verify acceptance criteria are met.
-
-"
-          # Prepend the stub to the CHANGELOG file (tmp-file dance).
-          tmp_cl="$(mktemp)"
-          { printf '%s' "$stub"; cat "${wt}/${vc_changelog}"; } > "$tmp_cl" 2>/dev/null \
-            && mv "$tmp_cl" "${wt}/${vc_changelog}" 2>/dev/null \
-            || rm -f "$tmp_cl"
-        fi
-
-        a05_bump_applied=true
-        a05_bump_version="$next_ver"
-        echo "[reconcile-A.0.5-recovery] version-bump: applied ${origin_version} → ${next_ver} to ${vc_manifest}${vc_changelog:+ and ${vc_changelog}}"
-      }
-      # ─────────────────────────────────────────────────────────────────────
-
-      if [ "$ahead_count" -gt 0 ] 2>/dev/null; then
-        echo "[reconcile-A.0.5-recovery] slot=<slot-id> issue=#${slot_issue} has ${ahead_count} committed-but-unpushed commit(s); attempting pre-reap recovery (#493)"
-
-        # Step 1.5: version-coordination bump (#575). The committed work may
-        # not include the manifest bump (worker crashed before reaching it).
-        # Apply the bump as an additional commit on top of the existing
-        # commits, before pushing. Fire-and-forget: failure logs an advisory
-        # and we push the PR anyway so the worker's real work isn't lost.
-        a05_version_bump "$worktree_path" "$DEFAULT_BRANCH" "$slot_issue"
-        if [ "$a05_bump_applied" = "true" ]; then
-          git -C "$worktree_path" add "$vc_manifest" ${vc_changelog:+"$vc_changelog"} 2>/dev/null || true
-          git -C "$worktree_path" commit --no-verify \
-            -m "chore: release bump ${a05_bump_version} for issue #${slot_issue} (orchestrator A.0.5 recovery #575)" \
-            2>/dev/null || true
-        fi
-
-        # Step 2: push the branch. Pre-commit hooks already passed (the commit
-        # succeeded); this is an orchestrator-side recovery push on a dead
-        # agent's branch.
-        push_out=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1) && push_ok=true || push_ok=false
-        echo "[reconcile-A.0.5-recovery] push do-work/issue-${slot_issue}: ok=${push_ok} (${push_out:0:120})"
-
-      elif [ -n "$(git -C "$worktree_path" status --porcelain 2>/dev/null)" ]; then
-        # Dirty-working-tree recovery (#495): the worker crashed/stalled before
-        # committing, but left edits in the working tree. Stage all changes and
-        # commit with --no-verify (the pre-commit gate may be exactly what hung
-        # the worker; CI is the real gate for an uncommitted-worktree recovery).
-        # This mirrors the #493 committed-but-unpushed path: auto-commit first,
-        # then fall through to the shared push+PR-create+auto-merge block below.
-        echo "[reconcile-A.0.5-recovery] slot=<slot-id> issue=#${slot_issue} has dirty working tree but no commits; attempting dirty-worktree auto-commit recovery (#495)"
-
-        # Step 1.5: version-coordination bump (#575). Apply the bump to the
-        # working tree files before staging so it folds into the auto-commit.
-        # Fire-and-forget: failure logs an advisory; the auto-commit proceeds
-        # with whatever working-tree files the worker left.
-        a05_version_bump "$worktree_path" "$DEFAULT_BRANCH" "$slot_issue"
-
-        git -C "$worktree_path" add -A 2>/dev/null || true
-        autocommit_out=$(git -C "$worktree_path" commit --no-verify \
-          -m "fix: crash-recovery auto-commit for issue #${slot_issue} (orchestrator A.0.5 #495${a05_bump_applied:+, release bump ${a05_bump_version} #575})" \
-          2>&1) && autocommit_ok=true || autocommit_ok=false
-        autocommit_sha=$(git -C "$worktree_path" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-        echo "[reconcile-A.0.5-recovery] dirty-worktree auto-commit: ok=${autocommit_ok} sha=${autocommit_sha} (${autocommit_out:0:120})"
-
-        if [ "$autocommit_ok" = "true" ]; then
-          push_out=$(git -C "$worktree_path" push origin "do-work/issue-${slot_issue}" 2>&1) && push_ok=true || push_ok=false
-          echo "[reconcile-A.0.5-recovery] push do-work/issue-${slot_issue}: ok=${push_ok} (${push_out:0:120})"
-        else
-          push_ok=false
-        fi
-      fi
-
-      # Shared PR-create + auto-merge block for both committed-but-unpushed
-      # (#493) and dirty-worktree auto-commit (#495) recovery paths.
-      # push_ok is set by whichever branch above ran; if neither ran (no
-      # committed work AND clean working tree) push_ok is unset — guard with
-      # a default to avoid an unbound-variable error under set -u.
-      push_ok="${push_ok:-false}"
-      if [ "$push_ok" = "true" ]; then
-          # Step 2: check whether an open PR already exists for this branch.
-          existing_pr=$(gh pr list --repo <owner/repo> --state open \
-            --head "do-work/issue-${slot_issue}" \
-            --json number --jq '.[0].number // empty' 2>/dev/null || true)
-
-          if [ -z "$existing_pr" ]; then
-            # No PR yet — create one with the standard issue-work template.
-            recovered_pr=$(gh pr create \
-              --repo <owner/repo> \
-              --head "do-work/issue-${slot_issue}" \
-              --label shipyard \
-              --title "fix: crash-recovered work for issue #${slot_issue}" \
-              --body "$(printf 'Closes #%s\n\n## Summary\nCrash-recovered by orchestrator A.0.5 pre-reap recovery (#493/#495). Worker crashed/stalled before or after committing. CI is the safety net for uncommitted-worktree recoveries.\n\n## Test plan\n- [ ] Verify acceptance criteria from #%s are met\n' "$slot_issue" "$slot_issue")" \
-              2>/dev/null) && pr_ok=true || pr_ok=false
-            echo "[reconcile-A.0.5-recovery] gh pr create: ok=${pr_ok} pr=${recovered_pr}"
-          else
-            recovered_pr="$existing_pr"
-            pr_ok=true
-            echo "[reconcile-A.0.5-recovery] PR #${existing_pr} already open for do-work/issue-${slot_issue}; skipping create"
-          fi
-
-          if [ "$pr_ok" = "true" ] && [ -n "$recovered_pr" ]; then
-            # Step 3: arm auto-merge and snapshot, exactly as step 6-7 of
-            # issue-work.md. Fire-and-forget — recovery must not block reap.
-            #
-            # #720: gate the arm behind the ungated-merge detector. A recovered
-            # PR may have been auto-committed with --no-verify from a dirty
-            # worktree, so CI is the ONLY thing that ever validates it. On an
-            # ungated repo `--auto` is not a queue — it direct-merges that
-            # unvalidated diff immediately, and the `2>/dev/null || true` below
-            # makes it silent. Fail-safe: an unreadable verdict resolves to
-            # `ungated` (defer), never to an immediate merge.
-            verdict=$(bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-ungated-admin-direct-merge.sh" \
-              <owner/repo> 2>/dev/null || echo ungated)
-            # Resolve the merge method from config — never hardcode --merge
-            # (#989). Repo policy, not a literal to copy verbatim.
-            auto_merge_method=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
-            case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
-            if [ "$verdict" = "gated" ]; then
-              # Capture stderr instead of discarding it (#850) — the same
-              # missing-`workflow`-OAuth-scope block a worker's own arm can
-              # hit (worker-preamble auto-merge.md step 1.1, #812) can hit
-              # this reconcile-turn arm too, and `2>/dev/null || true` was
-              # previously swallowing it with zero visibility.
-              merge_arm_err=$(gh pr merge "$recovered_pr" --repo <owner/repo> --auto --${auto_merge_method} --delete-branch 2>&1 1>/dev/null) || true
-              if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
-                echo "[reconcile-A.0.5-recovery] PR #${recovered_pr} auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
-              fi
-            else
-              # Leave OPEN + unarmed. The session_prs append below hands it to
-              # drain's deferred-merge lander, which merges it once CI is green.
-              # Do NOT `gh pr checks --watch` here — this is the reconcile hot
-              # path and a block would stall every in-flight dispatch.
-              echo "[reconcile-A.0.5-recovery] PR #${recovered_pr} left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
-            fi
-            # Snapshot state for the log line.
-            snap=$(gh pr view "$recovered_pr" --repo <owner/repo> \
-              --json state,autoMergeRequest \
-              --jq '{state, autoMerge: (.autoMergeRequest != null)}' 2>/dev/null || echo '{}')
-            echo "[reconcile-A.0.5-recovery] PR #${recovered_pr} snapshot: ${snap}"
-            # Add to session_prs so drain/summary see it.
-            session_prs+=("$recovered_pr")
-          fi
-      fi
-    fi
-
-    # Anchor cwd to a stable directory BEFORE the reap (issue #497). The
-    # harness can leak the orchestrator's Bash-tool cwd into the very
-    # `agent-*` worktree we're about to `git worktree remove --force`; once
-    # that directory is gone, EVERY subsequent bare git command in this
-    # block (the `prune` below, any follow-up `fetch`/`log`) fails with
-    # `fatal: Unable to read current working directory`. `git rev-parse
-    # --show-toplevel` can't rescue it either — git resolves its own cwd
-    # before reading anything, so it fails first. The fix is to `cd` away
-    # from the doomed directory while cwd is STILL valid (here, before the
-    # remove). Derive the anchor cwd-independently via the #477 porcelain
-    # idiom — orchestrator worktree first, primary (first `worktree ` entry)
-    # as fallback — so we never re-derive from the leaked cwd. `cd /` is the
-    # last-resort floor (any extant dir works; the reap uses absolute paths).
-    STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-      | awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}')
-    [ -z "$STABLE_DIR" ] && STABLE_DIR=$(git worktree list --porcelain 2>/dev/null \
-      | awk '/^worktree /{print substr($0,10); exit}')
-    cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
-    # Derive the session id cwd-independently after anchoring to STABLE_DIR.
-    # The A.0 preamble may not have run yet in this Bash tool call (A.0.5
-    # fires before A.1), so derive fresh here rather than assuming SESSION_ID
-    # was set earlier. Closes #548: the reap's --session-id must come from the
-    # orchestrator worktree stash, not from a bare `cat .shipyard-session-id`
-    # that reads from the (possibly leaked-to-agent) cwd.
-    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-    SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
-      --repo-root "$REPO_ROOT" 2>/dev/null)
-    [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
-    [ -z "$SESSION_ID" ] && echo "[session-id-derive] empty — A.0.5 reap audit-log entry will lack session-id; check for #477 cwd-leak (#548)"
-
-    # Crash-aware reap: A.0.5 reaps on every classification including
-    # peer-alive (step B now does too, per #771, but A.0.5 fires earlier —
-    # before A.1/step B even run). The agent is non-recoverable by
-    # definition (it crashed or violated the return contract); a
-    # still-alive subprocess holding the lock is exactly the failure mode
-    # #358 documents, not a signal to wait. The audit-log entry records
-    # the actual classification so the override is traceable.
-    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
-      --action reaped \
-      --worktree-path "$worktree_path" \
-      --worktree-name "agent-${completed_agent_id}" \
-      --session-id "${SESSION_ID:-unknown}" \
-      --classification "$classification" \
-      --lock-pid "$lock_pid" \
-      --phase "reconcile-A.0.5" 2>/dev/null || true
-    git worktree prune 2>/dev/null || true
-    ```
-
-    **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** The `2>/dev/null || true` above is fire-and-forget against an ordinary filesystem race, but it cannot surface a classifier denial: when Claude Code's auto-mode permission classifier denies the reap call outright (a real, reproduced outcome against `.claude/worktrees/agent-*` — see the issue), the ENTIRE Bash tool call is refused before any of its own code runs, so no audit line is ever written and the denial is indistinguishable from success to anything that only inspects this call's own exit path. A verification step written *inside* the same call would never run either — it has to be a genuinely separate call the orchestrator issues next, regardless of what the reap call above returned. This one performs no destructive operation (a read plus, at most, an audit-log JSONL append), so it should never itself be denied. Substitute the literal `$worktree_path` / `$classification` / `$lock_pid` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
+    **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Skip this call entirely when `crash_result` was `terminal=true` — there was no reap to verify. The `2>/dev/null || true` inside the script is fire-and-forget against an ordinary filesystem race, but it cannot surface a classifier denial: when Claude Code's auto-mode permission classifier denies the reap call outright (a real, reproduced outcome against `.claude/worktrees/agent-*` — see the issue), the ENTIRE Bash tool call is refused before any of its own code runs, so no audit line is ever written and the denial is indistinguishable from success to anything that only inspects this call's own exit path. A verification step written *inside* the same call would never run either — it has to be a genuinely separate call the orchestrator issues next, regardless of what the reap call above returned. This one performs no destructive operation (a read plus, at most, an audit-log JSONL append), so it should never itself be denied. Substitute the literal `worktree_path` / `worktree_name` / `classification` / `lock_pid` / `session_id` values parsed from `crash_result` above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
 
     ```bash
     CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
@@ -721,8 +377,8 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
       "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
         --action reaped-failed \
         --worktree-path "$worktree_path" \
-        --worktree-name "agent-${completed_agent_id}" \
-        --session-id "${SESSION_ID:-unknown}" \
+        --worktree-name "$worktree_name" \
+        --session-id "${session_id:-unknown}" \
         --classification "$classification" \
         --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
         --lock-pid "$lock_pid" \
@@ -731,10 +387,12 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
     fi
     ```
 
+    Skip the block below too when `crash_result` was `terminal=true` — both the wasted-dispatch and stalled-dispatch bookkeeping only apply to an actual crash-recovery reap. `recovered_pr` here is the field parsed from `crash_result` above; `harness_status` / `slot_issue` / `slot_kind` are the same literal values already passed as `--harness-status` / `--slot-issue` / `--slot-kind` to the script call. Both `stalled_dispatches` and the wasted-dispatch counters are orchestrator in-session working memory — not something the stateless script invocation can own — so they're recorded here, not inside the script:
+
     ```bash
     # Wasted-dispatch accounting (#529). A crash-like / narrative-non-terminal
     # return that left NO recoverable work (no committed-but-unpushed branch,
-    # no dirty working tree → recovered_pr unset) is a fully-wasted dispatch:
+    # no dirty working tree → recovered_pr empty) is a fully-wasted dispatch:
     # the worker armed a background waiter / returned a progress narrative and
     # produced zero output, so this reap fully discards it and step C will
     # re-dispatch the issue from scratch. Surface its cost in the end-of-session
@@ -767,9 +425,7 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
     fi
     stalled_dispatches+=("{\"target\":\"#${slot_issue:-unknown}\",\"mode\":\"${slot_kind:-unknown}\",\"trigger\":\"${stalled_trigger}\",\"outcome\":\"${stalled_outcome}\",\"resumed_pr\":${recovered_pr:-null},\"detected_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}")
     echo "[reconcile-A.0.5] stalled_dispatches entry recorded: target=#${slot_issue:-unknown} trigger=${stalled_trigger} outcome=${stalled_outcome}"
-  fi
-fi
-```
+    ```
 
 **Fire-and-forget discipline.** Every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the reconcile turn. If the reap silently fails, step B's per-completion sweep is the next safety net and end-of-session cleanup is the ultimate one. The same discipline applies to the pre-reap recovery steps — a failed push or PR-create is logged but never blocks the reconcile turn.
 

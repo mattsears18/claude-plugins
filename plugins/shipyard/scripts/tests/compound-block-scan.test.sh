@@ -263,24 +263,33 @@ else
   bad "scanner's built-in FILES array lists fewer than 5 files (found $files_count) — #1289's additions may have regressed"
 fi
 
-# (15) Regression: steady-state.md's deferred A.0.5 block (issue #1291)
-# carries a real, load-bearing `<!-- compound-block-scan: allow -->` marker
-# — not just documentation prose citing the issue. If a future edit removes
-# the marker without actually fixing the block, the file-level scan above
-# (test 13) already catches it; this test additionally confirms the marker
-# itself is present so a reader knows the exemption is real, not aspirational.
+# (15) Regression: steady-state.md's formerly-deferred A.0.5 block (issue
+# #1291) has been extracted to scripts/crash-recovery-reap.sh, and the
+# `<!-- compound-block-scan: allow -->` marker that exempted it has been
+# removed — steady-state.md is now clean on its own merits, the same as
+# the other three #1289 files (test 13 already covers that). This
+# assertion guards the OTHER direction: a future edit must not reintroduce
+# the marker as a shortcut around a NEW compound shape rather than fixing
+# it. If this ever legitimately needs re-exempting, update this assertion
+# alongside the marker, not silently.
 steady_state_real="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+crash_recovery_reap_real="$repo_root/plugins/shipyard/scripts/crash-recovery-reap.sh"
 if [[ -f "$steady_state_real" ]]; then
   if grep -qF -- '<!-- compound-block-scan: allow -->' "$steady_state_real"; then
-    ok "steady-state.md carries the compound-block-scan allow marker for its deferred A.0.5 block (#1291)"
+    bad "steady-state.md still carries a compound-block-scan allow marker — #1291's extraction should have removed it entirely (no exemption should remain)"
   else
-    bad "steady-state.md is missing the compound-block-scan allow marker — either the A.0.5 block was fixed (remove it from FILES's exemption note) or the marker was dropped by mistake"
+    ok "steady-state.md carries no compound-block-scan allow marker — #1291's A.0.5 extraction removed the exemption entirely"
   fi
   if grep -qF -- 'issues/1291' "$steady_state_real"; then
-    ok "steady-state.md cites the #1291 follow-up issue for its deferred A.0.5 block"
+    ok "steady-state.md cites the #1291 extraction near its (now-extracted) A.0.5 block"
   else
-    bad "steady-state.md does not cite issue #1291 near its deferred A.0.5 block"
+    bad "steady-state.md does not cite issue #1291 near its A.0.5 block"
   fi
+fi
+if [[ -f "$crash_recovery_reap_real" ]]; then
+  ok "scripts/crash-recovery-reap.sh exists — the #1291 extraction target for A.0.5's crash-recovery reap logic"
+else
+  bad "scripts/crash-recovery-reap.sh is missing — #1291's A.0.5 extraction target should exist"
 fi
 
 echo
