@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.29.4 — 2026-08-11
+
+`/do-work` step 4's "drop issues with an open, `@me`-authored, healthy PR" gate mis-classified a PR whose required checks were merely queued as unhealthy on a ruleset-protected default branch — `mergeStateStatus` reports `BLOCKED` in that state, and the gate's allowlist (`CLEAN`/`HAS_HOOKS`/`UNSTABLE`) excluded it, leaving the linked issue in the workable backlog and risking a duplicate PR against work already in flight. A live session against `mattsears18/lightwork` found 15 such issues in one pass, every one with an open, zero-failing-check PR reporting `BLOCKED` purely because a busy self-hosted runner pool had checks queued. The gate's own group-by rollup filter was already written to catch exactly this, but silently never ran: `scripts/backlog-filter.sh closed-by-healthy-pr` sourced its check data from `gh-batch.sh pr-status`, whose GraphQL projection returns only the aggregate `statusCheckRollup.state`, not the per-check array the group-by needs — so the filter clause always evaluated against an empty `[]` and the `mergeStateStatus` allowlist was, in practice, the entire gate. (closes #1262)
+
+- `plugins/shipyard/scripts/backlog-filter.sh` — `cmd_closed_by_healthy_pr` now queries `gh pr list --json number,mergeStateStatus,statusCheckRollup,closingIssuesReferences` directly (the same idiom already used by the other rollup walks in `setup/04-backlog-divert.md` and `drain.md`) instead of batching through `gh-batch.sh pr-status`, and decides health from the latest-per-name check-rollup projection (zero failing checks) rather than the `mergeStateStatus` allowlist. `DIRTY` stays excluded on its own — that state belongs to the fix-rebase path, never "healthy." Header doc comment updated to match.
+- `plugins/shipyard/commands/do-work/setup/04-backlog-divert.md` — step 4's non-normative healthy-PR bullet now states the corrected health definition and the `#1262` failure mode explicitly.
+- Verified against real data: `mattsears18/lightwork` PR #3935 (open, `@me`-authored, `mergeStateStatus: BLOCKED`, zero failing checks — some still `QUEUED`/`IN_PROGRESS`) closes issue #3838. Before this fix, `backlog-filter.sh closed-by-healthy-pr` returned nothing for it (issue #3838 stayed workable); after, it correctly returns `3838`.
+
 ### 4.29.3 — 2026-08-11
 
 Observability half of the reap-denial gap diagnosed on #1274: a session that shipped 11+ PRs against ~12 worktrees stranded on disk wrote zero entries to `~/.shipyard/reap-audit.jsonl`, because every per-dispatch reap call site (A.0.5, A.1's shipped-immediate reap, step B, `dispatch-rules.md` §2d) is fire-and-forget (`2>/dev/null || true`) and a classifier denial of the removal kills the whole Bash tool call before any of that call's own code — including a would-be audit write — ever runs. (closes #1274)
