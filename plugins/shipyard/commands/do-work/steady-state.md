@@ -707,7 +707,28 @@ Crash-recovered by orchestrator A.0.5 (#575). Worker stalled before completing r
       --lock-pid "$lock_pid" \
       --phase "reconcile-A.0.5" 2>/dev/null || true
     git worktree prune 2>/dev/null || true
+    ```
 
+    **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** The `2>/dev/null || true` above is fire-and-forget against an ordinary filesystem race, but it cannot surface a classifier denial: when Claude Code's auto-mode permission classifier denies the reap call outright (a real, reproduced outcome against `.claude/worktrees/agent-*` — see the issue), the ENTIRE Bash tool call is refused before any of its own code runs, so no audit line is ever written and the denial is indistinguishable from success to anything that only inspects this call's own exit path. A verification step written *inside* the same call would never run either — it has to be a genuinely separate call the orchestrator issues next, regardless of what the reap call above returned. This one performs no destructive operation (a read plus, at most, an audit-log JSONL append), so it should never itself be denied. Substitute the literal `$worktree_path` / `$classification` / `$lock_pid` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
+
+    ```bash
+    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+    export CLAUDE_PLUGIN_ROOT
+    if [ -e "$worktree_path" ]; then
+      "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+        --action reaped-failed \
+        --worktree-path "$worktree_path" \
+        --worktree-name "agent-${completed_agent_id}" \
+        --session-id "${SESSION_ID:-unknown}" \
+        --classification "$classification" \
+        --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
+        --lock-pid "$lock_pid" \
+        --phase "reconcile-A.0.5" 2>/dev/null || true
+      echo "[reconcile-A.0.5] worktree still present after reap attempt — reaped-failed recorded (#1274); will surface in end-of-session Cleanup line"
+    fi
+    ```
+
+    ```bash
     # Wasted-dispatch accounting (#529). A crash-like / narrative-non-terminal
     # return that left NO recoverable work (no committed-but-unpushed branch,
     # no dirty working tree → recovered_pr unset) is a fully-wasted dispatch:
@@ -1080,6 +1101,25 @@ For **issue work** (`shipped` / `blocked` / `errored`):
     break   # at most one match per issue number
   done
   git worktree prune 2>/dev/null || true
+  ```
+
+  **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Same reasoning as A.0.5's own verify step: a classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when the loop above found no match (`$worktree_path` unset). Substitute the literal `$worktree_path` / `$name` / `$local_classification` / `$lock_pid` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
+
+  ```bash
+  CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+  export CLAUDE_PLUGIN_ROOT
+  if [ -n "${worktree_path:-}" ] && [ -e "$worktree_path" ]; then
+    "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+      --action reaped-failed \
+      --worktree-path "$worktree_path" \
+      --worktree-name "$name" \
+      --session-id "${SESSION_ID:-unknown}" \
+      --classification "$local_classification" \
+      --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
+      --lock-pid "$lock_pid" \
+      --phase "steady-state-A1-shipped" 2>/dev/null || true
+    echo "[steady-state-A1-shipped] worktree still present after reap attempt — reaped-failed recorded (#1274); will surface in end-of-session Cleanup line"
+  fi
   ```
 
   The reap and local-branch drop are **fire-and-forget** — every command suffixes `2>/dev/null` and / or `|| true` so a filesystem race (the worktree was already reaped by a concurrent path, the lock file is gone, etc.) cannot abort the steady-state loop. If the reap silently fails for any reason, end-of-session cleanup is still the safety net. The end-of-session pass is intentionally NOT removed — it remains the ultimate sweep for any agent worktree that this immediate-reap path missed (blocked / errored returns, etc.).
@@ -1479,6 +1519,25 @@ if [ -d "$wt_dir" ]; then
     --lock-pid "$lock_pid" \
     --phase "steady-state-B-completion" 2>/dev/null || true
   git worktree prune 2>/dev/null || true
+fi
+```
+
+**Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** Same reasoning as A.0.5's own verify step: a classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Substitute the literal `$worktree_path` / `$local_classification` / `$lock_pid` / `$completed_agent_id` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+if [ -e "$worktree_path" ]; then
+  "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+    --action reaped-failed \
+    --worktree-path "$worktree_path" \
+    --worktree-name "agent-${completed_agent_id}" \
+    --session-id "<session-id>" \
+    --classification "$local_classification" \
+    --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
+    --lock-pid "$lock_pid" \
+    --phase "steady-state-B-completion" 2>/dev/null || true
+  echo "[steady-state-B-completion] worktree still present after reap attempt — reaped-failed recorded (#1274); will surface in end-of-session Cleanup line"
 fi
 ```
 

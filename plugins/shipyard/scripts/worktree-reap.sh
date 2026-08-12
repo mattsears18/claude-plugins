@@ -547,7 +547,7 @@ Usage:
   worktree-reap.sh report-unreaped --repo-root <path> \
                                    [--current-session-id <id>]
   worktree-reap.sh sweep-tombstones --repo-root <path> [--dry-run]
-  worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator> \
+  worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator|reaped-failed> \
                         --worktree-path <path> --worktree-name <name> \
                         --session-id <id> [--actor-pid <pid>] \
                         [--classification <c>] [--reason <r>] \
@@ -702,6 +702,35 @@ reap                    — Performs the worktree-remove (when applicable)
                                                     unsafe-to-force-unpushed-work
                                                     | worktree-remove-failed).
                                                     Never swallowed.
+                                                    Issue #1274 — ALSO
+                                                    directly invocable as
+                                                    its own --action (not
+                                                    only an internal
+                                                    downgrade of `reaped`):
+                                                    writes the audit line
+                                                    with NO removal
+                                                    attempt, for a caller
+                                                    that already knows
+                                                    (via a separate,
+                                                    non-destructive
+                                                    post-hoc existence
+                                                    check) that a prior
+                                                    reap attempt did not
+                                                    happen — most commonly
+                                                    because the Bash tool
+                                                    call invoking `reap
+                                                    --action reaped` was
+                                                    itself denied outright
+                                                    by the auto-mode
+                                                    permission classifier,
+                                                    which kills the whole
+                                                    call before this
+                                                    script's own internal
+                                                    reaped-vs-reaped-failed
+                                                    branching ever runs.
+                                                    Requires
+                                                    --classification,
+                                                    --reason, --lock-pid.
                             deferred             — agent worktree reap
                                                     skipped (peer-alive)
                                                     (requires --reason,
@@ -2267,6 +2296,40 @@ reap_action() {
         fi
       fi
       emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":$(json_str "$actual_action"),\"reaped_session_id\":$(json_str "$reaped_session_id")$phase_suffix}"
+      ;;
+    reaped-failed)
+      # Issue #1274 — directly-invocable failure log, NO removal attempt.
+      #
+      # The `reaped` action above already downgrades to a `reaped-failed`
+      # audit line when `fast_worktree_remove` runs and fails (issue #712)
+      # — but that only helps when the script gets to run at all. Claude
+      # Code's auto-mode permission classifier can deny the ENTIRE Bash
+      # tool call that would have invoked `worktree-reap.sh reap --action
+      # reaped ...` against a real `.claude/worktrees/agent-*` path,
+      # before any of this script's own code executes — so no audit line
+      # is written and the failure is indistinguishable from success to
+      # every caller that swallows the tool result with `2>/dev/null ||
+      # true` (the #1274 repro: a full `/do-work` session shipped 11+ PRs
+      # and wrote zero audit-log entries despite ~12 worktrees surviving
+      # on disk).
+      #
+      # This action exists for a caller that has ALREADY determined, via
+      # a separate and genuinely non-destructive post-hoc check (e.g. `[
+      # -e "$worktree_path" ]` run as its own Bash tool call, immediately
+      # after — never bundled into the same call as — a reap attempt),
+      # that the removal did not happen. It only writes the audit line;
+      # it never touches the filesystem or calls `fast_worktree_remove`,
+      # so it cannot itself trip the classifier and cannot compound a
+      # denial by retrying the denied operation.
+      if [ -z "$classification" ]; then
+        echo "reap: --classification is required when --action=reaped-failed" >&2
+        return 64
+      fi
+      if [ -z "$reason" ]; then
+        echo "reap: --reason is required when --action=reaped-failed" >&2
+        return 64
+      fi
+      emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reaped-failed\",\"classification\":$(json_str "$classification"),\"reason\":$(json_str "$reason"),\"lock_pid\":$lock_pid$phase_suffix}"
       ;;
     *)
       echo "reap: unknown --action: $action" >&2

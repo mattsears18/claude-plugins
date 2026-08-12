@@ -300,6 +300,25 @@ When filling a slot, walk this decision tree:
    git worktree prune 2>/dev/null || true
    ```
 
+   **Verify the reap above actually happened — as its OWN, separate Bash tool call ([#1274](https://github.com/mattsears18/shipyard/issues/1274)).** A classifier denial of the reap call above kills the whole tool call before any code in that same call can run, so a check bundled into it would never execute either — it has to be a genuinely separate call. This one performs no destructive operation, so it should never itself be denied. Skip entirely when the loop above found no match (`$worktree_path` unset). Substitute the literal `$worktree_path` / `$name` / `$local_classification` / `$lock_pid` values already known from the block above (shell variables don't survive across Bash tool calls, but the orchestrator composing this call still has them):
+
+   ```bash
+   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+   export CLAUDE_PLUGIN_ROOT
+   if [ -n "${worktree_path:-}" ] && [ -e "$worktree_path" ]; then
+     "${CLAUDE_PLUGIN_ROOT}/scripts/worktree-reap.sh" reap \
+       --action reaped-failed \
+       --worktree-path "$worktree_path" \
+       --worktree-name "$name" \
+       --session-id "<session-id>" \
+       --classification "$local_classification" \
+       --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
+       --lock-pid "$lock_pid" \
+       --phase "steady-state-pre-dispatch" 2>/dev/null || true
+     echo "[steady-state-pre-dispatch] worktree still present after reap attempt — reaped-failed recorded (#1274); will surface in end-of-session Cleanup line"
+   fi
+   ```
+
    This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the steady-state loop. It runs **once per PR per dispatch**, immediately before the `Workflow` dispatch for that PR (and before the `git worktree add` that pre-provisions its worktree — the reap is what frees the head branch that `worktree add -B <headRefName>` is about to claim). **`peer-alive` is force-reaped, not deferred (issue [#771](https://github.com/mattsears18/shipyard/issues/771)).** Audit entries carry `"phase":"steady-state-pre-dispatch"` and classification `"peer-alive-force"` (for the force-reap path) so an operator can distinguish this reap site from the others in `~/.shipyard/reap-audit.jsonl`. See [RATIONALE → Why peer-alive is force-reaped at steady-state pre-dispatch](../do-work-RATIONALE.md#dispatch-rules--why-peer-alive-is-force-reaped-at-steady-state-pre-dispatch-771) for why this is safe and the pre-#771 gap it closes.
 
    After 2a, 2b, and 2d clear (or the cost-discipline keys are at their defaults), dispatch a `mode: fix-checks-only` worker (Haiku-pinned per the table above).
