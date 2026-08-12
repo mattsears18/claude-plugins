@@ -151,6 +151,74 @@ else
   bad "scanner FALSE-POSITIVED on benign marker-like prose (regex too broad)"
 fi
 
+# (8) Each of the three marker forms is independently detected, including a
+# LONE `=======` with no matching `<<<<<<<` / `>>>>>>>` anywhere else in the
+# file — the exact shape issue #1282 found live on `main`.
+lone_open="$work/lone-open.md"
+printf 'line before\n<<<<<<< HEAD\nline after\n' > "$lone_open"
+if bash "$scanner" "$lone_open" >/dev/null 2>&1; then
+  bad "scanner FAILED to detect a lone <<<<<<< marker (exited 0)"
+else
+  ok "scanner detects a lone <<<<<<< marker"
+fi
+
+lone_equals="$work/lone-equals.md"
+printf 'line before\n=======\nline after\n' > "$lone_equals"
+if bash "$scanner" "$lone_equals" >/dev/null 2>&1; then
+  bad "scanner FAILED to detect a lone ======= marker with no matching <<<<<<< / >>>>>>> (issue #1282)"
+else
+  ok "scanner detects a lone ======= marker with no matching <<<<<<< / >>>>>>>"
+fi
+
+lone_close="$work/lone-close.md"
+printf 'line before\n>>>>>>> 0ff725a\nline after\n' > "$lone_close"
+if bash "$scanner" "$lone_close" >/dev/null 2>&1; then
+  bad "scanner FAILED to detect a lone >>>>>>> marker (exited 0)"
+else
+  ok "scanner detects a lone >>>>>>> marker"
+fi
+
+# (9) Regression for issue #1282: a file whose ONLY occurrence of the allow
+# directive is a backtick-quoted mention inside a running prose sentence
+# (exactly the shape of CHANGELOG.md's own #436-era release note, which
+# documents this very convention) must NOT opt the file out of scanning. A
+# real marker elsewhere in that same file must still be caught. This is the
+# root cause #1282 diagnosed: the old `grep -qF` substring check treated any
+# occurrence anywhere in the file as an opt-out, so that single doc mention
+# permanently silenced the gate for the rest of CHANGELOG.md.
+prose_mention="$work/prose-mention.md"
+cat > "$prose_mention" <<'FIXTURE'
+# Changelog
+
+Some entry describing the scanner: fixtures opt out with a
+`conflict-marker-scan: allow` directive somewhere in the file, per the
+usual convention.
+=======
+### next entry
+FIXTURE
+if bash "$scanner" "$prose_mention" >/dev/null 2>&1; then
+  bad "scanner FAILED to catch a real marker in a file that only mentions the allow directive in prose (issue #1282 regression)"
+else
+  ok "scanner ignores a prose/backtick-quoted mention of the allow directive and still catches a real marker (issue #1282)"
+fi
+
+# (10) The legitimate opt-out shapes still work: a bare directive line (no
+# comment wrapper — already covered by test (6) above) and a `#`-prefixed
+# comment-line directive, the exact shape this test file itself uses to
+# exempt its own conflict-marker fixtures.
+comment_directive="$work/comment-directive.md"
+cat > "$comment_directive" <<'FIXTURE'
+line before
+=======
+line after
+#   conflict-marker-scan: allow
+FIXTURE
+if bash "$scanner" "$comment_directive" >/dev/null 2>&1; then
+  ok "scanner honors a #-prefixed comment-line allow directive"
+else
+  bad "scanner did NOT honor a #-prefixed comment-line allow directive (still exited non-zero)"
+fi
+
 echo
 echo "  ${pass} passed, ${fail} failed"
 [[ "$fail" -eq 0 ]]
