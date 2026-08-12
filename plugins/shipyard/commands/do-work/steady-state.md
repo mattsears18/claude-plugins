@@ -423,7 +423,8 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     else
       stalled_outcome="dropped-clean"
     fi
-    stalled_dispatches+=("{\"target\":\"#${slot_issue:-unknown}\",\"mode\":\"${slot_kind:-unknown}\",\"trigger\":\"$stalled_trigger\",\"outcome\":\"$stalled_outcome\",\"resumed_pr\":${recovered_pr:-null},\"detected_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}")
+    detected_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    stalled_dispatches+=("{\"target\":\"#${slot_issue:-unknown}\",\"mode\":\"${slot_kind:-unknown}\",\"trigger\":\"$stalled_trigger\",\"outcome\":\"$stalled_outcome\",\"resumed_pr\":${recovered_pr:-null},\"detected_at\":\"$detected_at\"}")
     echo "[reconcile-A.0.5] stalled_dispatches entry recorded: target=#${slot_issue:-unknown} trigger=$stalled_trigger outcome=$stalled_outcome"
     ```
 
@@ -432,6 +433,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     ```bash
     CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
     export CLAUDE_PLUGIN_ROOT
+    DEGRADED_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     RESUMED_PR_ARG=()
     [ -n "${recovered_pr:-}" ] && RESUMED_PR_ARG=(--resumed-pr "$recovered_pr")
     bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-stall \
@@ -440,7 +442,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
       --trigger "$stalled_trigger" --outcome "$stalled_outcome" \
       "${RESUMED_PR_ARG[@]}" \
       2>/tmp/do-work-record-stall-err.log \
-      || { echo "[session-state] record-stall denied or failed: $(cat /tmp/do-work-record-stall-err.log)"; session_state_degraded_since="${session_state_degraded_since:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; }
+      || { printf '[session-state] record-stall denied or failed: '; cat /tmp/do-work-record-stall-err.log; session_state_degraded_since="${session_state_degraded_since:-$DEGRADED_TS}"; }
     ```
 
     If this call is itself denied or fails, log the advisory and hold the session-local `session_state_degraded_since` timestamp per [step E's `state=degraded` definition](#e-invariant-line-end-of-every-steady-state-turn) — do not retry, do not treat it as a reason to skip the working-memory `stalled_dispatches` append above.
@@ -526,7 +528,8 @@ PRIMARY_BRANCH=$(git -C "$PRIMARY_CHECKOUT" symbolic-ref --short -q HEAD 2>/dev/
 
 if [ "$PRIMARY_BRANCH" != "$DEFAULT_BRANCH" ]; then
   # The primary leaked off the default branch. Two cases:
-  if [ -z "$(git -C "$PRIMARY_CHECKOUT" status --porcelain 2>/dev/null)" ]; then
+  PRIMARY_STATUS=$(git -C "$PRIMARY_CHECKOUT" status --porcelain 2>/dev/null)
+  if [ -z "$PRIMARY_STATUS" ]; then
     # CLEAN tree → lossless restore. Move it back to the default branch and
     # fast-forward. `--ff-only` can't clobber anything (no local edits exist).
     git -C "$PRIMARY_CHECKOUT" checkout "$DEFAULT_BRANCH" 2>/dev/null \
@@ -569,8 +572,9 @@ SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id
   --repo-root "$REPO_ROOT" 2>/dev/null)
 [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
 agent_id="${.in_flight[<slot-id>].agent_id}"
+RETURNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "${SESSION_ID:-unknown}" \
-  --set ".returned_agent_ids[\"$agent_id\"] = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+  --set ".returned_agent_ids[\"$agent_id\"] = \"$RETURNED_AT\"" \
   >/dev/null 2>&1 || true
 ```
 
@@ -586,8 +590,9 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-  SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+  SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+  SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
   export SHIPYARD_REPO_ROOT
   EXPECTED_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
   case "$EXPECTED_METHOD" in squash|merge|rebase) ;; *) EXPECTED_METHOD=squash ;; esac
@@ -635,8 +640,9 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-  SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+  SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+  SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
   export SHIPYARD_REPO_ROOT
   # cost_tracking.comment_on_pr opt-out (#855) — checked first, cheaply,
   # before any session-id derivation or gh call. Defaults to true (fail
@@ -969,7 +975,7 @@ completed_agent_id="${.in_flight[<slot-id>].agent_id}"
 # Anchor cwd to a stable directory BEFORE deriving paths or reaping (issue
 # #497). The harness can leak the orchestrator's cwd into the very
 # `agent-$completed_agent_id` worktree this block removes; once it's gone,
-# the `git worktree prune` below and the `$(git rev-parse --show-toplevel)`
+# the `git worktree prune` below and the `git rev-parse --show-toplevel`
 # path derivation both fail with `fatal: Unable to read current working
 # directory` (git resolves its own cwd before doing anything). Derive a
 # stable anchor cwd-independently via the #477 porcelain idiom (orchestrator
@@ -1091,10 +1097,14 @@ FETCHED_ISSUES_JSON=$(gh issue list --repo <owner/repo> --state open --limit 200
   --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, updatedAt, milestone: (.milestone.title // null)}]')
 
 SUMMARY=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FETCHED_ISSUES_JSON")
+# Herestrings, not pipes — same #1289 reason as the SUMMARY line above.
+UNFILTERED_OPEN=$(jq -r '.unfiltered_open_count' <<< "$SUMMARY")
+ME_ASSIGNED_OPEN=$(jq -r '.me_assigned_open' <<< "$SUMMARY")
+FETCH_TS=$(date -u +%H:%M:%S)
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
-  --set ".unfiltered_open_count = $(printf '%s' "$SUMMARY" | jq -r '.unfiltered_open_count')" \
-  --set ".me_assigned_open = $(printf '%s' "$SUMMARY" | jq -r '.me_assigned_open')" \
-  --set ".last_fresh_fetch = \"$(date -u +%H:%M:%S)\"" \
+  --set ".unfiltered_open_count = $UNFILTERED_OPEN" \
+  --set ".me_assigned_open = $ME_ASSIGNED_OPEN" \
+  --set ".last_fresh_fetch = \"$FETCH_TS\"" \
   --allow-degraded-init --degraded-init-repo "<owner/repo>"
 ```
 
@@ -1106,8 +1116,9 @@ SUMMARY=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGI
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
 export SHIPYARD_REPO_ROOT
 # blocked_agent.soft_retry_minutes — default 30 — from shipyard-config.sh.
 soft_retry_minutes=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" \
@@ -1160,8 +1171,9 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
   # shipyard-config.sh reads below — each Bash-tool call is a fresh,
   # hermetic subshell, so nothing set in an earlier call (including step
   # 0.56's original stash-and-export) survives into this one.
-  SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+  SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+  SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
   export SHIPYARD_REPO_ROOT
   multiplier=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_multiplier 2>/dev/null)
   min_in_flight=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_min_in_flight 2>/dev/null)

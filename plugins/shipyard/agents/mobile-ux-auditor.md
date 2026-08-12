@@ -93,7 +93,8 @@ Embed the screenshot path in every body: `Evidence: \`store-assets/screenshots/i
 If you produced derived screenshots in step 5, delete any that did NOT end up referenced in an issue body before returning. Only touch `.shipyard/audits/<YYYY-MM-DD>/screenshots/` from this run — never `store-assets/` (those are committed source-of-truth files) and never prior dates.
 
 ```bash
-DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
+TODAY=$(date +%Y-%m-%d)
+DIR=".shipyard/audits/$TODAY/screenshots"
 [ -d "$DIR" ] || exit 0
 # For each file in $DIR, check whether any filed issue's body referenced it. If not, remove it.
 ```

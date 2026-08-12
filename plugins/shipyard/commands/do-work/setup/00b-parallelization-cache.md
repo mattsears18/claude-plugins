@@ -41,8 +41,9 @@ export CLAUDE_PLUGIN_ROOT
 # max_per_session, auto_merge_method) would otherwise silently drop
 # .shipyard/config.local.json. Exported here so the background subshell
 # below inherits it.
-SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
 export SHIPYARD_REPO_ROOT
 (
   # 1.6 — Orphan session-file sweep (cost-ledger recovery). Cleanup-only — recovery
@@ -131,8 +132,9 @@ The `(...) &` block above is submitted as **one** Bash tool call. The permission
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    setup_reap_denial_unreaped=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" report-unreaped \
-     --repo-root "$(git rev-parse --show-toplevel)" \
+     --repo-root "$SY_TOPLEVEL" \
      --current-session-id "<session-id>" | wc -l | tr -d ' ')
    echo "setup-background-group-denied: unreaped=$setup_reap_denial_unreaped"
    ```

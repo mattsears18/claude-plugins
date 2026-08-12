@@ -73,7 +73,7 @@ The skill at [`plugins/shipyard/skills/filing-github-issues/SKILL.md`](../skills
 - Label discovery (`gh label list`, apply existing labels; don't create new ones autonomously)
 - Duplicate search before filing (so the human doesn't accidentally file a second copy of an open issue)
 - Body template (`## Finding` / `## Why it matters` / `## Suggested approach` / `## Acceptance criteria`)
-- The `gh issue create` HEREDOC pattern
+- The `gh issue create` `--body-file` pattern
 
 Read that skill's rules and follow them. **Don't duplicate the rules into this command body** — the skill is the single source of truth; this command is the entry point.
 
@@ -221,7 +221,7 @@ Do NOT prompt the user to enter values interactively for these failure modes —
 
 ## Related
 
-- [`shipyard:filing-github-issues`](../skills/filing-github-issues/SKILL.md) — title prefix conventions, label discovery, duplicate search, body templates, the `gh issue create` HEREDOC pattern.
+- [`shipyard:filing-github-issues`](../skills/filing-github-issues/SKILL.md) — title prefix conventions, label discovery, duplicate search, body templates, the `gh issue create` `--body-file` pattern.
 - [`shipyard:audit-rubrics`](../skills/audit-rubrics/SKILL.md) — P0/P1/P2 severity buckets, grouping rules, what NOT to file.
 - [`/shipyard:audit`](./audit.md) — autonomous audit dispatch. Each auditor invokes the filing skill directly inside its own dispatch.
 - [`/shipyard:my-turn`](./my-turn.md) — survey what's blocked on **you** across PRs and issues. Pairs with this command — file what you notice, then read what needs your attention.

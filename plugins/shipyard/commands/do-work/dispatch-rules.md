@@ -38,8 +38,9 @@ export CLAUDE_PLUGIN_ROOT
 # (issue #1059/#1064) — resolve-dispatch-model.sh shells out to
 # shipyard-config.sh, and a bare call here would silently read the
 # orchestrator worktree's config instead of the primary checkout's.
-SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
 export SHIPYARD_REPO_ROOT
 
 # <mode> is the dispatch's mode, hyphenated or underscored — both are accepted.
@@ -93,8 +94,9 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    triage_auto_close=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.auto_close 2>/dev/null || echo "confident-only")
    ```
@@ -117,8 +119,9 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    verify_stale=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.verify_check_failing_on_head_before_dispatch 2>/dev/null || echo "false")
@@ -142,8 +145,9 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    require_settle=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.require_in_progress_check_to_settle 2>/dev/null || echo "false")
@@ -283,8 +287,9 @@ When filling a slot, walk this decision tree:
      CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
      export CLAUDE_PLUGIN_ROOT
      # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-     SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-     [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+     SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+     SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+     [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
      export SHIPYARD_REPO_ROOT
      SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
      if [ "$SELF_ASSIGN" = "true" ]; then
@@ -328,8 +333,9 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    vc_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
    vc_manifest=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
@@ -343,11 +349,12 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    default_branch=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    version_result=$("$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" compute \
      --repo <owner/repo> --manifest "$vc_manifest" --version-jq "$vc_version_jq" \
      --default-branch "$default_branch" --issue <N> \
      --session-prs "<session_prs, space or comma separated>" \
-     --cursor-file "$(git rev-parse --show-toplevel)/.shipyard-version-cursor")
+     --cursor-file "$SY_TOPLEVEL/.shipyard-version-cursor")
    ```
 
    Parse `version_result`'s three `key=value` lines: `max_inflight_version=<semver-or-empty>`, `bump_level=<major|minor|patch>`, `next_available_version=<semver-or-empty>`. `next_available_version` empty means no floor could be established at all (manifest read failed AND no in-flight bump AND no cursor) — omit the coordination paragraph and let the worker bump from `origin/<default-branch>` on its own, exactly as the pre-extraction fallback did.
@@ -373,8 +380,9 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    decompose_max_subissues=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get decompose.max_subissues 2>/dev/null || echo "8")
    ```
@@ -411,8 +419,9 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    verify_gate=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get verify_gate.enabled 2>/dev/null || echo "false")
    ```
@@ -487,7 +496,8 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
    - **`issue-work` / `investigate` / `spike`** — fresh branch off default:
 
      ```bash
-     WORKTREE_ID="agent-workflow-$(date +%s)-$$"
+     WORKTREE_STAMP=$(date +%s)
+     WORKTREE_ID="agent-workflow-$WORKTREE_STAMP-$$"
      WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
      DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
      git worktree add "$WORKTREE_PATH" -b "do-work/issue-<N>" "origin/$DEFAULT_BRANCH"
@@ -496,7 +506,8 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
    - **`fix-checks-only` / `fix-rebase`** — checked out directly onto the **existing** PR branch being fixed/rebased, not a fresh branch off default. This makes `fix-checks-only.md`'s own Setup step (`git fetch origin "$HEAD_REF" && git switch "$HEAD_REF"`) a no-op safety net rather than required additional setup:
 
      ```bash
-     WORKTREE_ID="agent-workflow-$(date +%s)-$$"
+     WORKTREE_STAMP=$(date +%s)
+     WORKTREE_ID="agent-workflow-$WORKTREE_STAMP-$$"
      WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
      git worktree add "$WORKTREE_PATH" -B "<headRefName>" "origin/<headRefName>"
      ```
@@ -504,7 +515,8 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
    - **`fix-main-ci` / `fix-failing-prs-batch`** — synthetic-divert branch naming, same fresh-off-default shape as issue-work:
 
      ```bash
-     WORKTREE_ID="agent-workflow-$(date +%s)-$$"
+     WORKTREE_STAMP=$(date +%s)
+     WORKTREE_ID="agent-workflow-$WORKTREE_STAMP-$$"
      WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
      DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
      git worktree add "$WORKTREE_PATH" -b "<synthetic-divert-branch>" "origin/$DEFAULT_BRANCH"
@@ -680,13 +692,14 @@ A denial that is not recorded is invisible: the slot goes unfilled and the targe
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
+DEGRADED_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-denial \
   --session-id "$session_id" --expected-repo "<owner/repo>" \
   --target "<#N|#M|main|pr-pileup>" --mode "<mode>" \
   --denial-text "<verbatim first line of the harness denial>" \
   --attempt "<1|2>" --outcome "<reframed|handed-back|shipped-after-reframe>" \
   2>/tmp/do-work-record-denial-err.log \
-  || { echo "[session-state] record-denial denied or failed: $(cat /tmp/do-work-record-denial-err.log)"; session_state_degraded_since="${session_state_degraded_since:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; }
+  || { printf '[session-state] record-denial denied or failed: '; cat /tmp/do-work-record-denial-err.log; session_state_degraded_since="${session_state_degraded_since:-$DEGRADED_TS}"; }
 ```
 
 **One call, typed scalar args, no nested-JSON literal** — this is the concrete fix for the [#1302](https://github.com/mattsears18/shipyard/issues/1302) repro, where a hand-built `.dispatch_denials = [...]` `--set` payload got denied outright by Auto Mode's classifier. If this call is itself denied or fails (fire-and-forget — never block the turn on it), log the advisory and hold the session-local `session_state_degraded_since` timestamp per [step E's `state=degraded` definition](./steady-state.md#e-invariant-line-end-of-every-steady-state-turn) — do not retry, do not treat it as a reason to skip the working-memory `dispatch_denials` append above.

@@ -137,11 +137,13 @@ if ! git checkout -B "$LOCAL_BRANCH" "origin/$DEFAULT_BRANCH" 2>/tmp/do-work-che
     # back to a collision-free LOCAL branch name for this worktree only;
     # REMOTE_BRANCH stays the canonical `do-work/issue-<N>` so the pushed
     # branch, the PR, and orphan triage all still resolve correctly.
-    LOCAL_BRANCH="do-work/issue-<N>-$(date +%s)"
+    COLLISION_STAMP=$(date +%s)
+    LOCAL_BRANCH="do-work/issue-<N>-$COLLISION_STAMP"
     git checkout -B "$LOCAL_BRANCH" "origin/$DEFAULT_BRANCH"
   else
+    CHECKOUT_ERR=$(cat /tmp/do-work-checkout-err.log)
     cat /tmp/do-work-checkout-err.log >&2
-    echo "blocked #<N> at branch-setup: git checkout -B failed for a reason other than a worktree name collision — $(cat /tmp/do-work-checkout-err.log)"
+    echo "blocked #<N> at branch-setup: git checkout -B failed for a reason other than a worktree name collision — $CHECKOUT_ERR"
     exit 0
   fi
 fi
@@ -157,7 +159,8 @@ Branch name comes from the orchestrator's dispatch prompt and must be exactly `d
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-branch-switched.sh" "$(git rev-parse --show-toplevel)" "${LOCAL_BRANCH:-do-work/issue-<N>}"
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-branch-switched.sh" "$WORKTREE_PATH" "${LOCAL_BRANCH:-do-work/issue-<N>}"
 ```
 
 `match` → proceed below. Anything else (`mismatch`/`error`) → **stop, no `Edit`/`Write` yet** — complete [step 3](#3-sync--branch) first (the diagnostic names the harness placeholder branch explicitly if that's the cause).
@@ -245,7 +248,8 @@ Closes [#356](https://github.com/mattsears18/shipyard/issues/356) — the **phan
 # Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch"
 # (variables don't survive across Bash tool calls).
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
   LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
@@ -353,7 +357,8 @@ A dispatch can run long enough for a **concurrent session** — a `/shipyard:my-
 # Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch"
 # (variables don't survive across Bash tool calls).
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
   LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
@@ -427,7 +432,8 @@ A belt-and-suspenders complement to [§4.5](#45-pre-pr-create-diff-sanity-check)
 ```bash
 # Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch".
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
   LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
@@ -459,7 +465,8 @@ Closes [#481](https://github.com/mattsears18/shipyard/issues/481) — the **stuc
 ```bash
 # Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch".
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-if [ ! -d "$WORKTREE_PATH" ] || [ "$(git rev-parse --show-toplevel 2>/dev/null)" != "$WORKTREE_PATH" ]; then
+CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
   LAST_PUSH=$(git log -1 --format='%H' 2>/dev/null | head -c 12)
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0

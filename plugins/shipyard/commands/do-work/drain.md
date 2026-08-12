@@ -80,10 +80,14 @@ Once every row above reports empty (subject to row 7's degraded-path exception),
    # Herestring, not a pipe — feeds the same stdin content without spanning a
    # shell command boundary (issue #1289, mirrors #1277's decomposition rule).
    SUMMARY=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FRESH_FETCH_JSON")
+   # Herestrings again, for the same #1289 reason as the SUMMARY line above.
+   UNFILTERED_OPEN=$(jq -r '.unfiltered_open_count' <<< "$SUMMARY")
+   ME_ASSIGNED_OPEN=$(jq -r '.me_assigned_open' <<< "$SUMMARY")
+   FETCH_TS=$(date -u +%H:%M:%S)
    "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
-     --set ".unfiltered_open_count = $(printf '%s' "$SUMMARY" | jq -r '.unfiltered_open_count')" \
-     --set ".me_assigned_open = $(printf '%s' "$SUMMARY" | jq -r '.me_assigned_open')" \
-     --set ".last_fresh_fetch = \"$(date -u +%H:%M:%S)\"" \
+     --set ".unfiltered_open_count = $UNFILTERED_OPEN" \
+     --set ".me_assigned_open = $ME_ASSIGNED_OPEN" \
+     --set ".last_fresh_fetch = \"$FETCH_TS\"" \
      --allow-degraded-init --degraded-init-repo "<owner/repo>"
    ```
 
@@ -246,8 +250,9 @@ export CLAUDE_PLUGIN_ROOT
 # Re-derive & re-export the SHIPYARD_REPO_ROOT pin from the step-0.56 stash
 # (issue #1059/#1064) — otherwise this read silently drops
 # .shipyard/config.local.json post-relocation.
-SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
 export SHIPYARD_REPO_ROOT
 settled_minutes=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.settled_minutes 2>/dev/null || echo 20)
 max_drain_hours=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.max_drain_hours 2>/dev/null || echo 8)
@@ -407,8 +412,9 @@ mb_exit=$?
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    # Read both keys once per poll (cheap — the helper short-circuits on cached defaults).
    skip_rebase=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
@@ -469,8 +475,9 @@ mb_exit=$?
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
    export SHIPYARD_REPO_ROOT
    # Read the coordination keys once per poll. Defaults preserve pre-#438
    # behavior on non-coordinated repos: serialize_drain_rebase defaults true,
@@ -559,8 +566,9 @@ The default drain protocol assumes **cloud CI auto-runs on every PR push** — p
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
 export SHIPYARD_REPO_ROOT
 mg_command=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get merge_gate.command 2>/dev/null || echo "")
 ```
@@ -611,8 +619,9 @@ Never infer "release PR" from a version bump *inside a feature PR* — on this r
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
 export SHIPYARD_REPO_ROOT
 # Resolve the merge method from config — never hardcode --merge (#989).
 auto_merge_method=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)

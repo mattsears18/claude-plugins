@@ -85,9 +85,8 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
 
    ```bash
    # repo.owner + repo.name are a schema-required pair → write as one JSON object.
-   plugins/shipyard/scripts/shipyard-config.sh set repo \
-     "$(jq -nc --arg owner "$OWNER" --arg name "$REPO" '{owner: $owner, name: $name}')" \
-     --repo
+   REPO_JSON=$(jq -nc --arg owner "$OWNER" --arg name "$REPO" '{owner: $owner, name: $name}')
+   plugins/shipyard/scripts/shipyard-config.sh set repo "$REPO_JSON" --repo
 
    # All other fields are independent — one set call per field.
    plugins/shipyard/scripts/shipyard-config.sh set auto_merge.policy "$AUTO_MERGE" --repo
@@ -115,8 +114,11 @@ The command is intentionally a thin wrapper around `shipyard-config.sh`. The ass
    ```bash
    GITIGNORE="$REPO_ROOT/.gitignore"
    if ! [ -f "$GITIGNORE" ] || { ! grep -qx '\.shipyard/\*' "$GITIGNORE" && ! grep -qx '\.shipyard/' "$GITIGNORE"; }; then
-     # Append a leading newline if the file doesn't end in one.
-     [ -f "$GITIGNORE" ] && [ "$(tail -c 1 "$GITIGNORE")" != "" ] && printf '\n' >> "$GITIGNORE"
+     # Append a leading newline if the file doesn't end in one. Command
+     # substitution strips a trailing newline, so LAST_BYTE is empty exactly
+     # when the file already ends in one.
+     LAST_BYTE=$(tail -c 1 "$GITIGNORE" 2>/dev/null)
+     [ -f "$GITIGNORE" ] && [ "$LAST_BYTE" != "" ] && printf '\n' >> "$GITIGNORE"
      printf '.shipyard/*\n' >> "$GITIGNORE"
    fi
    ```
@@ -225,7 +227,8 @@ That second point is load-bearing and worth re-checking if this ever stops worki
 
    ```bash
    SETTINGS="$SCOPE_SETTINGS_PATH"   # .claude/settings.json | ~/.claude/settings.json
-   mkdir -p "$(dirname "$SETTINGS")"
+   SETTINGS_DIR=$(dirname "$SETTINGS")
+   mkdir -p "$SETTINGS_DIR"
    [ -f "$SETTINGS" ] || printf '{}\n' > "$SETTINGS"
 
    REAP_RULES='[

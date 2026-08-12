@@ -21,7 +21,8 @@ Step 0.5's raw `git worktree add` fallback was written for one case only — "an
 **Don't drop straight to the raw-git-only fallback for case 2 — it works, but it doesn't register harness isolation** (the fallback's own warning applies: `Edit`/`Write` calls get refused on a background-job session afterward). Try this first instead:
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"   # be robust to subdir invocation
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+cd "$SY_TOPLEVEL"   # be robust to subdir invocation
 ORCH_WT=".claude/worktrees/orchestrator-<session-id>"
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
 git fetch origin "$DEFAULT_BRANCH"

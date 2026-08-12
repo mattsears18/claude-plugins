@@ -22,7 +22,8 @@ The discovery uses [`session-identity.sh find-orphan-orchestrators`](../../../sc
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-cd "$(git rev-parse --show-toplevel)"
+SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
+cd "$SY_TOPLEVEL"
 while IFS=$'\t' read -r orph_path orph_session_id; do
   [ -z "$orph_path" ] && continue
   [ -d "$orph_path" ] || continue
@@ -39,7 +40,7 @@ while IFS=$'\t' read -r orph_path orph_session_id; do
     --reaped-session-id "$orph_session_id" \
     --phase "setup-1.6.5" 2>/dev/null || true
 done < <("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" find-orphan-orchestrators \
-           --repo-root "$(pwd)" --current-session-id "<session-id>" \
+           --repo-root "$SY_TOPLEVEL" --current-session-id "<session-id>" \
            --emit-resolved-id 2>/dev/null)
 git worktree prune 2>/dev/null || true
 ```

@@ -27,7 +27,8 @@ You are an accessibility audit agent. You review a live web URL for WCAG complia
 Skip the full Lighthouse audit (`lighthouse-auditor` covers that). Run only the a11y category for speed:
 
 ```bash
-OUT=/tmp/a11y-audit-$(date +%s)
+RUN_STAMP=$(date +%s)
+OUT=/tmp/a11y-audit-$RUN_STAMP
 mkdir -p "$OUT"
 npx --yes lighthouse@latest "<URL>" \
   --only-categories=accessibility \
@@ -97,7 +98,8 @@ Body must include:
 After all issues are filed, delete any screenshot you captured that did NOT end up referenced in an issue body. The signal-to-noise rule is the same as for findings: if it didn't earn a place in an issue, it's residue. Use the issue bodies you just filed as the source of truth — anything in `.shipyard/audits/<YYYY-MM-DD>/screenshots/` that isn't named in at least one filed issue gets `rm`'d. Don't touch screenshots from prior dates; only this run's directory is yours to clean.
 
 ```bash
-DIR=".shipyard/audits/$(date +%Y-%m-%d)/screenshots"
+TODAY=$(date +%Y-%m-%d)
+DIR=".shipyard/audits/$TODAY/screenshots"
 [ -d "$DIR" ] || exit 0
 # After filing, for each file in $DIR, check whether any filed issue's body referenced it.
 # If not, remove it.
