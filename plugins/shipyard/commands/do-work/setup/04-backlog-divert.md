@@ -74,7 +74,11 @@ Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preser
   **This marker is no longer `time-gated`-exclusive ([#1195](https://github.com/mattsears18/shipyard/issues/1195)).** An `external-dependency` defer also writes this same marker (in addition to its `agent-console` label — see [step 4b](06c-scope-handling-ui.md#handling-each-returned-entry-fires-as-each-background-agent-completes)), naming an orchestrator-computed recheck date rather than a human-authored gate. This drop rule is unaffected either way — an `agent-console`-labeled issue is already routed away by the label-route clause above regardless of this marker.
 - **Drop issues that have an open linked PR authored by `@me` AND that PR is healthy** (`--closed-by-healthy-pr`, computed by [`scripts/backlog-filter.sh closed-by-healthy-pr`](../../../scripts/backlog-filter.sh) — the live-network half of the filter, kept as a separate subcommand from the pure `classify` so the classification decision stays fixture-testable with zero network calls; see the script's own header comment for the split's rationale). The "healthy" qualifier is load-bearing: a closed/abandoned PR (the resumable case) does NOT lock the issue against re-dispatch — see [#332](https://github.com/mattsears18/shipyard/issues/332) again — and an open-but-failing PR is in the orchestrator's [`failed_prs` / fix-checks bucket](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) rather than the issue's. Internally the subcommand reuses `closingIssuesReferences` (never a PR-body substring search — issue [#301](https://github.com/mattsears18/shipyard/issues/301)) and the latest-per-name check-rollup projection (issue [#333](https://github.com/mattsears18/shipyard/issues/333)) exactly as this file's earlier revisions did by hand. **"Healthy" is decided from that rollup projection alone — zero failing checks on the latest run per check name — never from `mergeStateStatus` beyond excluding `DIRTY` ([#1262](https://github.com/mattsears18/shipyard/issues/1262)).** A `mergeStateStatus in {CLEAN, HAS_HOOKS, UNSTABLE}` allowlist (the pre-#1262 behavior) misclassifies a PR whose required checks are merely queued — reported as `BLOCKED` on a ruleset-protected default branch — as unhealthy, leaving its issue in the workable backlog and risking a duplicate PR against work already in flight. `DIRTY` stays excluded regardless of rollup state — that `mergeStateStatus` belongs to the fix-rebase path, not this gate.
 
-**Invocation** — build the inputs, then classify:
+**Invocation** — build the inputs, then classify. **No shell pipe spans a tool boundary here ([#1277](https://github.com/mattsears18/shipyard/issues/1277))** — file redirection replaces what used to be `printf | classify` and `printf | jq` pipes, refused post-relocation. See [`dont.md`'s post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277).
+
+`$fetched_issues_json` is the wide-fetch array from the top of this step, held in the orchestrator's own context. Materialize it with the `Write` tool (never a `printf`/heredoc piped into the next command — see [`shipyard:worker-preamble`'s body-file convention](../../../skills/worker-preamble/body-file-convention.md)) to `.shipyard-fetched-issues.json` in the orchestrator worktree root, BEFORE the command sequence below. `Write` and `Bash` are different tools, so there's no variable-survival concern between them.
+
+Then, in **one** `Bash` call (plain sequential statements — no loop/pipe/`if`, so keeping them together avoids re-deriving `$ME_LOGIN` etc. in a second call that could never see them, since variables don't survive between separate `Bash` calls): resolve both pins, fetch the remaining inputs, then classify — redirecting in from the scratch file and out to a second one, so neither the classify call nor the extractions after it need a pipe:
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
@@ -95,27 +99,32 @@ CLOSED_HEALTHY_CSV=$("${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" closed-by
 INVESTIGATE_DISPATCH=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
 RESPECT_ASSIGNEES=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get backlog.respect_assignees 2>/dev/null || echo "false")
 
-# $fetched_issues_json is the wide-fetch array from the top of this step.
 # $TRUSTED_AUTHORS_CSV is trusted_authors (step 1.7), comma-joined, lowercased.
 # $PEER_CLAIMED_CSV is .peer_sessions.claimed_targets (step 1.65), comma-joined.
-CLASSIFIED=$(printf '%s' "$fetched_issues_json" | "${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" classify \
+"${CLAUDE_PLUGIN_ROOT}/scripts/backlog-filter.sh" classify \
   --me "$ME_LOGIN" \
   --trusted-authors "$TRUSTED_AUTHORS_CSV" \
   --closed-by-healthy-pr "$CLOSED_HEALTHY_CSV" \
   --peer-claimed "$PEER_CLAIMED_CSV" \
   --investigate-dispatch "$INVESTIGATE_DISPATCH" \
   --prioritize-label "<--prioritize-label CLI arg value, or empty string if not passed>" \
-  --respect-assignees "$RESPECT_ASSIGNEES")
-
-raw_backlog=$(printf '%s\n' "$CLASSIFIED" | jq -r 'select(.verdict == "eligible") | .number')
-investigate_candidates=$(printf '%s\n' "$CLASSIFIED" | jq -r 'select(.verdict == "route" and .reason == "investigate") | .number')
-# route:operator entries need no further action here (the agent-console
-# label, already on the issue, is what the operator phase's own sweep
-# reads); gate:*/drop:* entries need no further action either — each is
-# already excluded from raw_backlog by construction. Log the full
-# $CLASSIFIED stream (or at least each gate:*/drop:* line's reason) so the
-# unfiltered_open_count invariant token stays auditable.
+  --respect-assignees "$RESPECT_ASSIGNEES" \
+  < .shipyard-fetched-issues.json > .shipyard-classified.ndjson
 ```
+
+Then extract the two ranked lists. `jq` accepts the NDJSON file directly as a positional argument (a literal filename, not a variable — so this is safe as its own call), so neither extraction needs a pipe either:
+
+```bash
+raw_backlog=$(jq -r 'select(.verdict == "eligible") | .number' .shipyard-classified.ndjson)
+investigate_candidates=$(jq -r 'select(.verdict == "route" and .reason == "investigate") | .number' .shipyard-classified.ndjson)
+```
+
+route:operator entries need no further action here (the agent-console
+label, already on the issue, is what the operator phase's own sweep
+reads); gate:*/drop:* entries need no further action either — each is
+already excluded from raw_backlog by construction. Log
+`.shipyard-classified.ndjson` (or at least each gate:*/drop:* line's reason) so the
+unfiltered_open_count invariant token stays auditable. The two scratch files are untracked, ephemeral orchestrator-worktree artifacts — safe to leave (next pass overwrites them) or `rm -f`.
 
 Both `raw_backlog` and `investigate_candidates` arrive from the script **already in rank order** — no separate sort pass is needed. `raw_backlog` ranks by prioritized-label tier (only when `--prioritize-label` was passed), then priority label (`P0` > `P1` > `P2` > unlabeled), then type (`bug` > `fix(...)` titles > `feat(...)` titles > `chore(...)` titles > everything else), then staleness (oldest `updatedAt` first). `investigate_candidates` ranks by priority label then staleness only (no prioritized-label or type tier — see [`04d-investigate-routing.md`](./04d-investigate-routing.md)).
 
@@ -193,54 +202,31 @@ GitHub does **not** re-run a PR's already-completed required check just because 
 
 **Fires immediately after the `main_ci.status == "green"` bullet above, and only on a genuine transition into green** — never on every green evaluation, because a PR carrying a check that's failing against the *current, already-fixed* `main` must NOT get a masking re-run. Before overwriting the cached `main_ci` object with this evaluation's result, capture its existing `.status` as `previous_main_ci_status` (an absent/first-run cache counts as non-green). The refresh below runs only when `previous_main_ci_status != "green"` AND the freshly-computed `main_ci.status == "green"`.
 
+**Extracted to [`scripts/stale-check-refresh.sh`](../../../scripts/stale-check-refresh.sh) ([#1277](https://github.com/mattsears18/shipyard/issues/1277))** — this used to be an inline `for pr in $session_prs; do ... done` loop with three internal `gh pr view | jq` pipes, both shapes the worktree-isolation guard refuses post-relocation. The script is the normative implementation now (mirroring `backlog-filter.sh classify`'s #1247 precedent) — see [`dont.md`'s post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) for when to extract vs. decompose in place. Side benefit: the script's `--state-file` gives "once per PR per fix" a real persistence mechanism — the old inline loop's bash associative array could not actually survive between the separate Bash calls this check runs from, so that guarantee never held in practice.
+
+`$previous_main_ci_status != "green"` → run the command sequence below. `$previous_main_ci_status == "green"` → skip this section entirely; don't run it.
+
+Resolve the pin, read the fix commit's SHA and date, then call the script — all in **one** `Bash` call (plain sequential statements, no loop/pipe/`if`, so keeping them together avoids re-deriving `$fix_commit_sha` / `$fix_commit_date` in a second call that could never see them otherwise — a shell variable does not survive between separate `Bash` tool calls):
+
 ```bash
-# Only fires on a red/pending/unknown → green transition.
-if [ "$previous_main_ci_status" != "green" ]; then
-  # The fix's merge commit — main's current HEAD, now that it's green.
-  fix_commit_sha=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.sha')
-  fix_commit_date=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.commit.committer.date')
-
-  for pr in $session_prs; do
-    pr_snapshot=$(gh pr view "$pr" --repo <owner/repo> --json state,mergeStateStatus,statusCheckRollup --jq '
-      {state, mergeStateStatus,
-       checks: [.statusCheckRollup | group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last) | .[]]}')
-    state=$(echo "$pr_snapshot" | jq -r '.state')
-    merge_state=$(echo "$pr_snapshot" | jq -r '.mergeStateStatus')
-
-    # Skip merged/closed PRs, and skip DIRTY — that's fix-rebase's territory,
-    # not this gate's (see the guard note below).
-    [ "$state" != "OPEN" ] && continue
-    [ "$merge_state" = "DIRTY" ] && continue
-
-    # Any latest-per-name check that's a hard failure AND completed BEFORE the
-    # fix landed is a stale-red carried over from the broken main — not a
-    # genuine failure against the current (fixed) base.
-    has_stale_red=$(echo "$pr_snapshot" | jq --arg cutoff "$fix_commit_date" '
-      [.checks[] | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))
-                  | select((.completedAt // .startedAt // "9999") < $cutoff)] | length > 0')
-    [ "$has_stale_red" != "true" ] && continue
-
-    # Once per PR per fix, never in a loop — update-branch writes a merge
-    # commit, so repeated calls against the same fix churn history for
-    # nothing. stale_check_refresh_done persists for the rest of the session.
-    if [ "${stale_check_refresh_done[$pr]:-}" = "$fix_commit_sha" ]; then
-      continue
-    fi
-
-    gh pr update-branch "$pr" --repo <owner/repo> || true
-    stale_check_refresh_done[$pr]="$fix_commit_sha"
-    echo "[stale-check-refresh] PR #$pr carried a required-check FAILURE that predates <default-branch>'s fix commit $fix_commit_sha (fixed at $fix_commit_date) — ran gh pr update-branch to re-trigger checks against the fixed base (#993)"
-  done
-fi
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+fix_commit_sha=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.sha')
+fix_commit_date=$(gh api "repos/<owner/repo>/commits/<default-branch>" --jq '.commit.committer.date')
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/stale-check-refresh.sh" run \
+  --repo <owner/repo> \
+  --fix-commit-sha "$fix_commit_sha" \
+  --fix-commit-date "$fix_commit_date" \
+  --session-prs "$session_prs"
 ```
 
-**Guards, matching the issue's suggested fix exactly:**
+**Guards, matching the issue's suggested fix exactly (now implemented inside the script):**
 
 - **Only for PRs whose failing check predates the fix.** A PR whose latest failing run completed *after* `fix_commit_date` already ran against the fixed base and is genuinely red — running `gh pr update-branch` there would mask a real failure behind a fresh run rather than surface it. The `completedAt < fix_commit_date` comparison (latest-per-name, the same de-duplication convention used throughout [drain.md](../drain.md#drain-protocol) and [steady-state.md](../steady-state.md#a1-parse-the-return-string)) is what tells stale-red apart from genuinely-red.
-- **Once per PR per fix, never in a loop.** `stale_check_refresh_done[<pr>]` records the `main` SHA the refresh already ran against for that PR; it prevents a second re-poll from calling `update-branch` again for the same fix before the freshly-triggered check has had a chance to complete.
+- **Once per PR per fix, never in a loop.** The script's `--state-file` (`.shipyard-stale-refresh-done` by default, in the orchestrator worktree root) records the `main` SHA the refresh already ran against for that PR; it prevents a second re-poll from calling `update-branch` again for the same fix before the freshly-triggered check has had a chance to complete.
 - **Skip DIRTY PRs.** Those belong to `fix-rebase`, not this gate — `gh pr update-branch` rebases a DIRTY branch onto the new base as a side effect, which is a different, already-bookkept code path (`rebase_success_counts`, `rebase_blocked_prs` in [drain.md](../drain.md#drain-protocol)). Leaving DIRTY PRs to that existing mechanism avoids double-counting a rebase outside its owning bookkeeping.
 
-**Session-scoped state.** `stale_check_refresh_done` is a per-session map (`<pr-number> → <sha>`), initialized empty at session start alongside the other per-session structures ([the `do-work.md` orchestrator-state struct list](../../do-work.md#orchestrator-state)). It is never persisted across sessions — a fresh session re-evaluates from scratch, which is safe because the dedup only prevents redundant `update-branch` calls within a single continuous drive of the same fix.
+**Session-scoped state.** `.shipyard-stale-refresh-done` (a per-session, per-PR-and-SHA append-only text file) lives in the orchestrator worktree, never persisted across sessions — a fresh session starts without it and re-evaluates from scratch, which is safe since the dedup only prevents redundant `update-branch` calls within one continuous drive of the same fix.
 
 This mechanism is **evaluated at every call site that runs 4.5a** — session setup and [step D's periodic refresh](../steady-state.md#d-periodic-refresh) — so it fires automatically the first time either path observes the red→green transition; no separate wiring is needed at either call site. See [drain.md's post-main-CI-fix branch-refresh](../drain.md#post-main-ci-fix-branch-refresh-drain-phase-993) for the corresponding drain-phase health read — drain does not enqueue new `divert_queue` work, but it still needs to observe this same transition so a fix that lands *during* drain un-sticks the PRs it stranded, rather than leaving the whole merge train `BLOCKED` for the next session to discover.
 
@@ -265,7 +251,11 @@ failing_pr_numbers=$(gh pr list --repo <owner/repo> --state open --limit 200 \
      | .[]
      | select((.conclusion // .state // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
     | length > 0) | .number]')
-failing_pr_count_all=$(echo "$failing_pr_numbers" | jq 'length')
+failing_pr_count_all=$(jq 'length' <<< "$failing_pr_numbers")
+# A herestring (`<<<`), not `echo ... | jq` — the latter is a shell pipe
+# spanning a tool boundary, exactly the shape the worktree-isolation guard
+# refuses post-relocation (issue #1277). A herestring is input redirection
+# into a single command, not a pipe between two.
 ```
 
 - If `failing_pr_count_all >= 10` → enqueue `{ kind: "fix-failing-prs-batch", target: "pr-pileup", failing_pr_numbers: [...] }` into `divert_queue` — unless one is already enqueued OR `in_flight`.
@@ -349,51 +339,58 @@ Closes #1069 — a draft PR is invisible to the step-5 scan (checks read SKIPPED
 
 Closes [#385](https://github.com/mattsears18/shipyard/issues/385) — phase 2 of the cross-PR flake registry. [Phase 1](#5-snapshot-failing-prs) (issue #378, `scripts/flake-registry.sh`) shipped the data layer: each `fix-checks-only` worker records a flake event when it concludes a failure was a flake, and `flake-registry.sh crossed` names which (workflow, job, test) flakes have crossed the escalation threshold (≥ `rerun_threshold` events spanning ≥ `distinct_prs_threshold` distinct PRs within `window_days`). Phase 1 deliberately stopped at "name the crossed flakes." This step is the **enforcement consumer** — it reads `crossed` and performs the three configured escalation actions so a chronic flake gets root-caused instead of silently re-run forever. Also closes [#863](https://github.com/mattsears18/shipyard/issues/863): the `--prune-window-days` flag on the `flake-enforce.sh enforce` call below is the scheduled prune this step was missing — see that call's comment for the wiring.
 
-**Gate on `flake_registry.enabled`.** Skip this step entirely unless the effective config has `flake_registry.enabled == true` (it defaults to `false`, preserving pre-#378 behavior). The check is one config read against the already-loaded `EFFECTIVE_CONFIG` (step 0.4):
+**Gate on `flake_registry.enabled`.** Skip this step entirely unless the effective config has `flake_registry.enabled == true` (it defaults to `false`, preserving pre-#378 behavior). The check is one config read against the already-loaded `EFFECTIVE_CONFIG` (step 0.4). **No shell `if` wraps the enforcement calls below, and no pipe carries `flake-enforce.sh`'s output into `sed` ([#1277](https://github.com/mattsears18/shipyard/issues/1277))** — the gate branches in prose instead (same style as step 6.a's ungated-admin-direct-merge check), and the output prefix runs as a second, file-argument `sed` call. See [`dont.md`'s post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277).
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
+# Re-derive the SHIPYARD_REPO_ROOT pin from the step-0.56 stash rather than
+# `git rev-parse --show-toplevel` (issue #1059) — the latter resolves to
+# the orchestrator worktree post-relocation, not the primary checkout where
+# the gitignored flake-suspects.txt persists across sessions, and every
+# shipyard-config.sh call in this step (including this very FLAKE_ENABLED
+# read) must read repo-level config from the primary, not the orchestrator
+# worktree.
+SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+export SHIPYARD_REPO_ROOT
 FLAKE_ENABLED=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
-if [ "$FLAKE_ENABLED" = "true" ]; then
-  # Read crossed flakes and enforce the per-row actions. The helper computes
-  # `crossed` itself (passing the configured window/thresholds through), files
-  # a deduped tracking issue per crossed flake, writes the crossed key to
-  # <repo-root>/.shipyard/flake-suspects.txt, and labels affected PRs blocked:ci
-  # — each action idempotent so re-running across sessions doesn't duplicate
-  # side effects. --repo-root MUST be the PRIMARY checkout, not the
-  # orchestrator worktree (issue #1059) — .shipyard/flake-suspects.txt is
-  # gitignored, so a fresh orchestrator worktree checked out from
-  # origin/<default-branch> never contains a suspects file a prior session
-  # wrote; pointing this call at the orchestrator worktree would silently
-  # restart flake tracking from empty every session instead of accumulating
-  # across them. Use the SHIPYARD_REPO_ROOT pin stashed in step 0.56, not
-  # `git rev-parse --show-toplevel` (which resolves to wherever cwd
-  # currently is — the orchestrator worktree, post-relocation).
-  #
-  # --prune-window-days (issue #863): flake-registry.sh has always shipped a
-  # `prune` subcommand, but nothing ever called it — with flake_registry
-  # enabled, ~/.shipyard/flake-registry.jsonl grew unbounded forever. This is
-  # the scheduled call: once per session, gated on the same
-  # `flake_registry.enabled` flag as the rest of this step, opted into
-  # flake-enforce.sh's own --prune-window-days flag so a bare `enforce`
-  # invocation elsewhere (tests, manual runs) still leaves the registry
-  # untouched by default. PRUNE_WINDOW_DAYS reads flake_registry.
-  # prune_window_days (default 90 — generous; the registry is cheap to keep).
-  PRUNE_WINDOW_DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
-  case "$PRUNE_WINDOW_DAYS" in ''|*[!0-9]*) PRUNE_WINDOW_DAYS=90 ;; esac
-  # Re-derive the SHIPYARD_REPO_ROOT pin from the step-0.56 stash rather than
-  # `git rev-parse --show-toplevel` (issue #1059) — the latter resolves to
-  # the orchestrator worktree post-relocation, not the primary checkout
-  # where the gitignored flake-suspects.txt persists across sessions.
-  FLAKE_REPO_ROOT=$(cat "$ORCH_WT/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$FLAKE_REPO_ROOT" ] && FLAKE_REPO_ROOT="$(git rev-parse --show-toplevel)"
-  "${CLAUDE_PLUGIN_ROOT}/scripts/flake-enforce.sh" enforce \
-    --repo "<owner/repo>" \
-    --repo-root "$FLAKE_REPO_ROOT" \
-    --prune-window-days "$PRUNE_WINDOW_DAYS" \
-    2>&1 | sed 's/^/[flake-enforce] /' || echo "[flake-enforce] advisory: enforce pass errored; continuing setup"
-fi
+```
+
+`FLAKE_ENABLED != "true"` → skip the rest of this step entirely; nothing below runs. `FLAKE_ENABLED == "true"` → continue with the reads and the enforcement call below, in order.
+
+Read crossed flakes and enforce the per-row actions. The helper computes `crossed` itself (passing the configured window/thresholds through), files a deduped tracking issue per crossed flake, writes the crossed key to `<repo-root>/.shipyard/flake-suspects.txt`, and labels affected PRs `blocked:ci` — each action idempotent so re-running across sessions doesn't duplicate side effects. `--repo-root` MUST be the PRIMARY checkout, not the orchestrator worktree (issue #1059) — `.shipyard/flake-suspects.txt` is gitignored, so a fresh orchestrator worktree checked out from `origin/<default-branch>` never contains a suspects file a prior session wrote; pointing this call at the orchestrator worktree would silently restart flake tracking from empty every session instead of accumulating across them. Use the `$SHIPYARD_REPO_ROOT` pin exported above, not `git rev-parse --show-toplevel` (which resolves to wherever cwd currently is — the orchestrator worktree, post-relocation).
+
+`--prune-window-days` (issue #863): `flake-registry.sh` has always shipped a `prune` subcommand, but nothing ever called it — with flake_registry enabled, `~/.shipyard/flake-registry.jsonl` grew unbounded forever. This is the scheduled call: once per session, gated on the same `flake_registry.enabled` flag as the rest of this step, opted into `flake-enforce.sh`'s own `--prune-window-days` flag so a bare `enforce` invocation elsewhere (tests, manual runs) still leaves the registry untouched by default. `PRUNE_WINDOW_DAYS` reads `flake_registry.prune_window_days` (default 90 — generous; the registry is cheap to keep).
+
+Re-derive both pins (variables don't survive across separate Bash calls), read `PRUNE_WINDOW_DAYS`, then run the enforcement call — one plain sequence, output redirected to a scratch log rather than piped into `sed`:
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+SHIPYARD_REPO_ROOT=$(cat "$(git rev-parse --show-toplevel)/.shipyard-primary-root" 2>/dev/null)
+[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+export SHIPYARD_REPO_ROOT
+PRUNE_WINDOW_DAYS=$("${CLAUDE_PLUGIN_ROOT}/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
+case "$PRUNE_WINDOW_DAYS" in ''|*[!0-9]*) PRUNE_WINDOW_DAYS=90 ;; esac
+"${CLAUDE_PLUGIN_ROOT}/scripts/flake-enforce.sh" enforce \
+  --repo "<owner/repo>" \
+  --repo-root "$SHIPYARD_REPO_ROOT" \
+  --prune-window-days "$PRUNE_WINDOW_DAYS" \
+  > .shipyard-flake-enforce.log 2>&1
+FLAKE_ENFORCE_EXIT=$?
+```
+
+Prefix and print the captured log as its own, separate command — `sed` reading a file argument directly is not a pipe:
+
+```bash
+sed 's/^/[flake-enforce] /' .shipyard-flake-enforce.log
+```
+
+If `$FLAKE_ENFORCE_EXIT` was non-zero, this is the same advisory the old `|| echo` fallback gave — log it and continue setup rather than blocking the session on a flake-enforcement hiccup:
+
+```bash
+[ "$FLAKE_ENFORCE_EXIT" -ne 0 ] && echo "[flake-enforce] advisory: enforce pass errored; continuing setup"
 ```
 
 **Read site: setup, once per session.** The issue's open question ("setup once per session vs. per-dispatch") resolves to **setup** — it's the cheapest site and the registry escalation state changes slowly (a flake crosses the threshold over days, not within a single session's dispatch cadence). The one piece of mid-session freshness that matters — a flake escalated by *this* session's own `fix-checks-only` recording — is still honored without a per-dispatch enforce pass, because the `stop-auto-rerunning` consumer (fix-checks-only's [pre-rerun suspects check](../../../agents/issue-worker/fix-checks-only.md#fix-loop)) re-reads `.shipyard/flake-suspects.txt` on every dispatch. So a flake that crosses mid-session is suppressed by the next fix-checks worker even though the issue-filing / PR-labeling actions ran only at setup. Per-dispatch enforcement of the issue-filing and labeling actions is a deliberate non-goal for this slice; see the issue's scope notes.
