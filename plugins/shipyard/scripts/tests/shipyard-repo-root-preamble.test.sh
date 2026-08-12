@@ -41,9 +41,29 @@
 # counting block passes if it ALSO contains the `.shipyard-primary-root`
 # stash-file marker somewhere in the same block — the shared substring both
 # the canonical `SHIPYARD_REPO_ROOT=$(cat ".../.shipyard-primary-root" ...)`
-# re-derivation and the pre-existing flake-enforce block's
-# `$ORCH_WT/.shipyard-primary-root` variant both carry, so the test doesn't
-# hardcode one exact snippet shape and reject an equally-valid alternative.
+# re-derivation and a block-local-variable-prefixed variant (e.g.
+# `$REPO_ROOT/.shipyard-primary-root`, disk-space-guard.md) both carry, so the
+# test doesn't hardcode one exact snippet shape and reject an equally-valid
+# alternative.
+#
+# Block-local variable check (issue #1276). A bareword-variable prefix
+# (`$VAR/.shipyard-primary-root` or `${VAR}/.shipyard-primary-root`) is only
+# a genuine re-derivation if VAR was itself assigned EARLIER IN THE SAME
+# block — every Bash-tool call is its own hermetic subshell (#354), so a
+# variable assigned in an earlier call (a different fenced block, or plain
+# prose describing one) reads back empty here, with no error. #1276's repro
+# was exactly this shape: `setup/04-backlog-divert.md`'s step-5.8 flake-enforce
+# block read `$ORCH_WT/.shipyard-primary-root`, but `$ORCH_WT` is assigned
+# only inside `00-config-worktree.md`'s raw-`git worktree add` fallback block
+# — a different file, read many calls later — so it was always empty, the
+# stash read silently failed, and the pin fell through to
+# `git rev-parse --show-toplevel` (the orchestrator worktree, exactly what
+# the pin exists to avoid). The substring-only check above would have passed
+# that block outright; this second pass is what actually catches it. A
+# `$(git rev-parse --show-toplevel)/.shipyard-primary-root` command
+# substitution, or a bare relative `.shipyard-primary-root` with no prefix,
+# is always valid regardless of block-local assignment — neither is a
+# bareword variable reference.
 #
 # --- File discovery (issue #1105) -------------------------------------------
 #
@@ -218,7 +238,11 @@ done
 # (2) Walk every bash code block in every scanned file, IN FILE ORDER. A
 # block that invokes shipyard-config.sh or resolve-dispatch-model.sh must
 # also carry the .shipyard-primary-root stash marker somewhere in the same
-# block.
+# block — AND, if that marker is reached via a bareword variable prefix
+# (`$VAR/.shipyard-primary-root` / `${VAR}/.shipyard-primary-root`), that
+# variable must itself be assigned earlier in the SAME block (issue #1276 —
+# see the header comment above for why: a variable assigned in a different
+# Bash-tool call, or never assigned at all, reads back empty with no error).
 walk_blocks() {
   local file="$1"
   awk '
@@ -229,24 +253,56 @@ walk_blocks() {
       block_start = NR
       has_call = 0
       has_pin = 0
+      bad_var = ""
+      delete assigned
       next
     }
 
     /^[ \t]*```[ \t]*$/ {
       if (in_block) {
-        printf "%d|%d|%d\n", block_start, has_call, has_pin
+        printf "%d|%d|%d|%s\n", block_start, has_call, has_pin, bad_var
       }
       in_block = 0
       next
     }
 
     in_block {
-      if ($0 ~ /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/shipyard-config\.sh"/ ||
-          $0 ~ /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/resolve-dispatch-model\.sh"/) {
+      line = $0
+      if (line ~ /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/shipyard-config\.sh"/ ||
+          line ~ /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/resolve-dispatch-model\.sh"/) {
         has_call = 1
       }
-      if ($0 ~ /\.shipyard-primary-root/) {
+      if (line ~ /\.shipyard-primary-root/) {
         has_pin = 1
+      }
+
+      # Bareword-variable-prefixed pin reference: $VAR/.shipyard-primary-root
+      # or ${VAR}/.shipyard-primary-root. A $(...) command substitution
+      # (e.g. $(git rev-parse --show-toplevel)/.shipyard-primary-root) never
+      # matches either pattern, so it is never flagged here.
+      matched_var = ""
+      if (match(line, /\$\{[A-Za-z_][A-Za-z0-9_]*\}\/\.shipyard-primary-root/)) {
+        seg = substr(line, RSTART, RLENGTH)
+        sub(/^\$\{/, "", seg)
+        sub(/\}\/\.shipyard-primary-root$/, "", seg)
+        matched_var = seg
+      } else if (match(line, /\$[A-Za-z_][A-Za-z0-9_]*\/\.shipyard-primary-root/)) {
+        seg = substr(line, RSTART, RLENGTH)
+        sub(/^\$/, "", seg)
+        sub(/\/\.shipyard-primary-root$/, "", seg)
+        matched_var = seg
+      }
+      if (matched_var != "" && !(matched_var in assigned) && bad_var == "") {
+        bad_var = matched_var
+      }
+
+      # Track simple `VAR=...` assignments (leading whitespace / `export `
+      # stripped) so a LATER line in this same block can reference them.
+      tmp = line
+      sub(/^[ \t]+/, "", tmp)
+      sub(/^export[ \t]+/, "", tmp)
+      if (match(tmp, /^[A-Za-z_][A-Za-z0-9_]*=/)) {
+        assigned[substr(tmp, 1, RLENGTH - 1)] = 1
       }
     }
   ' "$file"
@@ -256,10 +312,13 @@ offending_blocks=0
 total_call_blocks=0
 for f in "${FILES[@]}"; do
   [[ -f "$f" ]] || continue
-  while IFS='|' read -r fence_line has_call has_pin; do
+  while IFS='|' read -r fence_line has_call has_pin bad_var; do
     if (( has_call )); then
       total_call_blocks=$((total_call_blocks + 1))
-      if (( has_pin )); then
+      if [[ -n "$bad_var" ]]; then
+        offending_blocks=$((offending_blocks + 1))
+        assert_fail "${f#"$repo_root"/}: bash block at line $fence_line reads \"\$${bad_var}/.shipyard-primary-root\" but \$${bad_var} is never assigned earlier in the same block — every Bash-tool call is its own hermetic subshell (#354), so this always reads empty and silently falls through (issue #1276)"
+      elif (( has_pin )); then
         : # pass
       else
         offending_blocks=$((offending_blocks + 1))
