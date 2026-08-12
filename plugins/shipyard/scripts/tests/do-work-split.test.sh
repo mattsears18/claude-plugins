@@ -1284,6 +1284,77 @@ assert_contains "$schema591" \
   'self_modification_paths' \
   "schema defines scope.self_modification_paths (#591)"
 
+# (23c) Pre-scope Detector 3 — orchestrator-only skill/command invocation
+#       proposal (issue #1294).
+#
+# Dispatch can't recognize an issue whose own acceptance criteria call for
+# invoking an orchestrator-only skill/command (e.g. `shipyard:update-roadmap`,
+# which `milestone-prohibition.md` and the skill's own SKILL.md forbid a
+# dispatched worker from ever invoking). #1294's repro: issue #1244 dispatched
+# as mode: issue-work with steps that instructed the worker to run
+# `shipyard:update-roadmap` cold; the worker correctly refused, shipped a safe
+# config-only slice, and filed #1294. Detector 3 catches the whole-issue case
+# at scope pre-flight before a worker burns a dispatch discovering the same
+# prohibition.
+#
+# Surfaces:
+#   - setup.md step 6 grows a `Detector 3 — Orchestrator-only skill/command
+#     invocation proposal` block under "Pre-scope orchestrator-side
+#     detectors".
+#   - The matched skill/command set is config-driven via
+#     scope.orchestrator_only_skills (mirrors Detector 2's
+#     scope.self_modification_paths).
+#   - The evidence_pointer validator's human-decision-required rule accepts
+#     the new structured prefix `Proposes invoking orchestrator-only
+#     skill/command`.
+#   - The per-class shape table example gains the orchestrator-only-skill
+#     example.
+#   - RATIONALE gains a "Step 6 — Detector 3" section documenting the
+#     failure mode and why it stays a whole-issue defer (not an
+#     auto-sliced residual).
+#   - shipyard-config.sh default config + schema carry the new knob.
+setup_path1294="$setup_path"  # concat of router + setup/ sub-files (#611)
+rationale_path1294="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
+config_sh1294="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
+schema1294="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
+
+assert_contains "$setup_path1294" \
+  'Detector 3 — Orchestrator-only skill/command invocation proposal' \
+  "setup.md step 6 names Detector 3 explicitly (#1294)"
+assert_contains "$setup_path1294" \
+  'scope.orchestrator_only_skills' \
+  "setup.md Detector 3 is config-driven via scope.orchestrator_only_skills (#1294)"
+assert_contains "$setup_path1294" \
+  'shipyard:update-roadmap' \
+  "setup.md Detector 3 default set names shipyard:update-roadmap (#1294)"
+assert_contains "$setup_path1294" \
+  'milestone-prohibition.md' \
+  "setup.md Detector 3 cites milestone-prohibition.md as the worker-side boundary (#1294)"
+assert_contains "$setup_path1294" \
+  'Deliverable-vs-mention guard' \
+  "setup.md Detector 3 reuses the deliverable-vs-mention guard (#1294)"
+assert_contains "$setup_path1294" \
+  'Proposes invoking orchestrator-only skill/command' \
+  "setup.md validator's human-decision-required rule accepts the orchestrator-only-skill prefix (#1294)"
+assert_contains "$setup_path1294" \
+  'Whole-issue defer, not a slice' \
+  "setup.md Detector 3 documents staying a whole-issue defer rather than auto-slicing (#1294)"
+assert_contains "$setup_path1294" \
+  'issues/1294' \
+  "setup.md cites issue #1294 as the source of Detector 3"
+assert_contains "$rationale_path1294" \
+  'Detector 3: orchestrator-only skill/command invocation proposal (issue #1294)' \
+  "RATIONALE has a Step 6 — Detector 3 section (#1294)"
+assert_contains "$rationale_path1294" \
+  'issues/1294' \
+  "RATIONALE cites issue #1294 as the source of Detector 3"
+assert_contains "$config_sh1294" \
+  'orchestrator_only_skills' \
+  "shipyard-config.sh default config carries scope.orchestrator_only_skills (#1294)"
+assert_contains "$schema1294" \
+  'orchestrator_only_skills' \
+  "schema defines scope.orchestrator_only_skills (#1294)"
+
 # (24) Batch-dispatch version pre-allocation via a session-local version_cursor
 #      (issue #437).
 #

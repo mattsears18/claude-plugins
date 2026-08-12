@@ -353,6 +353,12 @@
           "default": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"],
           "description": "Path fragments that Detector 2 (setup.md step 6 pre-scope detector batch, issue #591) treats as Claude-Code self-modification targets. When an issue's DELIVERABLE is editing one of these paths, the Claude Code auto-mode classifier applies a HARD BLOCK not cleared by user intent, so a worker dispatch can never ship the change — the orchestrator synthesizes a `human-decision-required` defer instead of burning a ~100k-token worker dispatch. Trailing-slash entries (e.g. `.claude/hooks/`) match any path under that directory. Set to an EMPTY array (`[]`) to disable Detector 2 entirely — appropriate for users NOT running under Auto Mode, where edits to these paths succeed normally and the pre-defer would be a false positive that strands shippable work in the human-review queue. Default covers the four known Auto-Mode-denied agent-config surfaces."
         },
+        "orchestrator_only_skills": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["shipyard:update-roadmap", "update-roadmap"],
+          "description": "Skill/command name tokens that Detector 3 (setup.md step 6 pre-scope detector batch, issue #1294) treats as orchestrator-only — a dispatched `/shipyard:do-work` worker is spec-prohibited from ever invoking them (see `skills/worker-preamble/milestone-prohibition.md` and each named skill's own 'Who runs this'/frontmatter boundary). When an issue's DELIVERABLE explicitly instructs a worker to invoke one of these tokens, the orchestrator synthesizes a `human-decision-required` defer instead of burning a worker dispatch that can only discover the prohibition and bail. Matched as a case-insensitive substring against the issue body in a deliverable context (a suggested-fix/acceptance-criteria framing), ignoring a leading `/` slash-command prefix. Set to an EMPTY array (`[]`) to disable Detector 3 entirely. Default covers the one known orchestrator-only skill, `shipyard:update-roadmap`."
+        },
         "external_dependency_recheck_days": {
           "type": "integer",
           "minimum": 1,

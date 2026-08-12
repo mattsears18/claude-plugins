@@ -857,6 +857,48 @@ JSON
 assert_exit_code "$?" 70 "scope.self_modification_paths rejects non-string array items (#591)"
 
 # --------------------------------------------------------------------------
+echo "== scope.orchestrator_only_skills (issue #1294)"
+repo=$(mktmprepo)
+home=$(mktmprepo)
+export SHIPYARD_REPO_ROOT="$repo"
+export SHIPYARD_HOME="$home"
+
+# Built-in default is the known orchestrator-only skill/command token set
+default_oos="$("$helper" get scope.orchestrator_only_skills)"
+assert_equals "$default_oos" \
+  '["shipyard:update-roadmap","update-roadmap"]' \
+  "scope.orchestrator_only_skills default is the shipyard:update-roadmap set (#1294)"
+
+# Can be emptied to disable Detector 3
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "orchestrator_only_skills": [] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 0 "scope.orchestrator_only_skills accepts an empty array (disable Detector 3) (#1294)"
+assert_equals "$("$helper" get scope.orchestrator_only_skills)" "[]" "scope.orchestrator_only_skills can be emptied to [] (#1294)"
+
+# Can be customized (repo layer)
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "orchestrator_only_skills": ["shipyard:update-roadmap", "shipyard:some-future-orchestrator-only-skill"] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 0 "scope.orchestrator_only_skills accepts a custom string array (#1294)"
+
+# Schema validation rejects a non-array value
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "orchestrator_only_skills": "shipyard:update-roadmap" } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope.orchestrator_only_skills rejects a non-array value (#1294)"
+
+# Schema validation rejects non-string array items
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "scope": { "orchestrator_only_skills": [42] } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "scope.orchestrator_only_skills rejects non-string array items (#1294)"
+
+# --------------------------------------------------------------------------
 echo "== merge_gate — local-only-CI merge gate (issue #643)"
 repo=$(mktmprepo)
 home=$(mktmprepo)
