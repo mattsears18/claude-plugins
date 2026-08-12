@@ -118,7 +118,7 @@ The single highest-leverage action is: identify the root cause and ship the smal
    **7.b — Arm auto-merge (only when 7.a returned `gated`), then snapshot:**
 
    ```bash
-   gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch
+   gh pr merge <pr-num> --repo <owner/repo> --auto --$AUTO_MERGE_METHOD --delete-branch
    gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
    ```
 

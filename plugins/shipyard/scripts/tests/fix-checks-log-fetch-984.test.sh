@@ -105,12 +105,12 @@ assert_contains "$fix_checks_path" \
 
 # shellcheck disable=SC2016  # single-quoted needle is a literal string to grep for, not an expansion
 assert_contains "$fix_checks_path" \
-  'gh api "repos/<owner/repo>/actions/runs/${RUN_ID}/jobs"' \
+  'gh api "repos/<owner/repo>/actions/runs/$RUN_ID/jobs"' \
   "documents resolving the failing job id from /actions/runs/<run-id>/jobs"
 
 # shellcheck disable=SC2016  # single-quoted needle is a literal string to grep for, not an expansion
 assert_count_at_least "$fix_checks_path" \
-  'gh api "repos/<owner/repo>/actions/jobs/${JOBID}/logs"' \
+  'gh api "repos/<owner/repo>/actions/jobs/$JOBID/logs"' \
   2 \
   "documents fetching per-job logs from /actions/jobs/<job-id>/logs (fix-loop + Step A)"
 

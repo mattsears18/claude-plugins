@@ -41,7 +41,7 @@ Then advance the high-water mark to the **highest issue number across the full u
 # NEW_HW = max issue number across this run's untrusted-author drop set,
 # or the current HIGHWATER unchanged if that set is empty.
 if [ "$NEW_HW" -gt "$HIGHWATER" ]; then
-  TMP_HW="$(mktemp "${HW_FILE}.XXXXXX")"
+  TMP_HW="$(mktemp "$HW_FILE.XXXXXX")"
   jq --arg k "<owner/repo>" --argjson v "$NEW_HW" '.[$k] = $v' "$HW_FILE" > "$TMP_HW" && mv -f "$TMP_HW" "$HW_FILE"
 fi
 ```

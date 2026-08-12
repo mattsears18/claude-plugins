@@ -96,9 +96,9 @@ After `gh pr create` returns:
    #     On an UNPROTECTED branch this endpoint 404s — the `2>/dev/null` drops the
    #     error body and the integer guard normalizes any non-numeric result to 0.
    DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef --jq '.defaultBranchRef.name')
-   REQUIRED_CHECKS=$(gh api "repos/<owner/repo>/branches/${DEFAULT_BRANCH}/protection/required_status_checks/contexts" \
+   REQUIRED_CHECKS=$(gh api "repos/<owner/repo>/branches/$DEFAULT_BRANCH/protection/required_status_checks/contexts" \
      --jq 'length' 2>/dev/null)
-   case "${REQUIRED_CHECKS}" in (*[!0-9]*|'') REQUIRED_CHECKS=0;; esac
+   case "$REQUIRED_CHECKS" in (*[!0-9]*|'') REQUIRED_CHECKS=0;; esac
    # Ruleset-aware fallback (#645). Classic branch protection (the contexts
    # endpoint above) and repository RULESETS are two SEPARATE gating mechanisms;
    # the contexts probe only sees CLASSIC protection. On a repo whose default
@@ -121,7 +121,7 @@ After `gh pr create` returns:
    # — which a PR rule blocks — a different question from "will an admin --auto
    # land ungated", which only required status checks answer.)
    if [ "$REQUIRED_CHECKS" = "0" ]; then
-     RULESET_GATED=$(gh api "repos/<owner/repo>/rules/branches/${DEFAULT_BRANCH}" \
+     RULESET_GATED=$(gh api "repos/<owner/repo>/rules/branches/$DEFAULT_BRANCH" \
        --jq '[.[].type] | contains(["required_status_checks"]) | tostring' \
        2>/dev/null || echo "false")
      case "$RULESET_GATED" in (true) REQUIRED_CHECKS=1;; esac   # ruleset requires status checks — gated, NOT ungated
@@ -169,7 +169,7 @@ After `gh pr create` returns:
 
 1. Arm auto-merge (when the step-0.5 ungated-path check did NOT fire). Capture stderr into a local variable — step 1.1 below needs the text, not just the exit status:
    ```bash
-   MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch 2>&1 1>/dev/null) || true
+   MERGE_ARM_ERR=$(gh pr merge <pr-num> --repo <owner/repo> --auto --$AUTO_MERGE_METHOD --delete-branch 2>&1 1>/dev/null) || true
    ```
    If the call errors because auto-merge isn't enabled at the repo level, **don't try to enable it** — that's a repo-config decision. Capture the error to a local variable but proceed to step 1.5 below — the call's exit status alone is NOT a reliable signal of the actual merge outcome (see issue [#340](https://github.com/mattsears18/shipyard/issues/340)).
 

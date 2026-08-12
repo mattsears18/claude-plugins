@@ -21,7 +21,7 @@ Requires the issue's `comments` array (`body`, `createdAt`) — every call site 
 # from a different provenance (scope-preflight, external-author-gate, etc.)
 # — those are different questions with their own freshness handling.
 latest_escalation=$(printf '%s' "$COMMENTS_JSON" | jq -r "
-  [.[] | select(.body | ${ESCALATION_MARKER_JQ})]
+  [.[] | select(.body | $ESCALATION_MARKER_JQ)]
   | sort_by(.createdAt) | last.createdAt // empty")
 
 if [ -z "$latest_escalation" ]; then

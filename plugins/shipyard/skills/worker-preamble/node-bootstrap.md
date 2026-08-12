@@ -106,7 +106,7 @@ Don't sweep the whole tree for every nested `package.json`. Fire on the intersec
 # workspace you already bootstrapped AND (b) contains at least one file your
 # change touches, bootstrap it. Walk up from each changed file to the nearest
 # package.json and install there if its node_modules is missing.
-CHANGED=$(git diff --name-only "origin/${DEFAULT_BRANCH}"...HEAD)
+CHANGED=$(git diff --name-only "origin/$DEFAULT_BRANCH"...HEAD)
 for f in $CHANGED; do
   d=$(dirname "$f")
   while [ "$d" != "." ] && [ "$d" != "/" ]; do

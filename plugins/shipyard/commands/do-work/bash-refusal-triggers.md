@@ -79,10 +79,28 @@ bash some-script.sh "$TOPLEVEL"
 
 ## Regression coverage
 
+Two gates, one per variable-scope, both required on every PR:
+
 [`scripts/tests/claude-plugin-root-preamble.test.sh`](../../scripts/tests/claude-plugin-root-preamble.test.sh) enforces the convention for `CLAUDE_PLUGIN_ROOT` specifically — the highest-traffic case, on essentially every helper invocation:
 
 - check (3) matches the **unbraced** spelling when verifying preamble coverage;
 - check (3b) asserts a floor on the number of blocks observed, so a matcher that stops matching fails loudly instead of passing vacuously over zero blocks;
 - check (3c) bans the braced spelling across every `*.md` file in the plugin.
 
-**Not yet enforced: decorative braces on other variables.** Roughly 120 further `${VAR}` occurrences across ~80 distinct variable names remain in the orchestrator spec tree — tracked in [#1311](https://github.com/mattsears18/shipyard/issues/1311), which also records the three reasons that sweep is not mechanical (blocks refused for a second reason, two identifier-adjacent occurrences that genuinely need braces, and quoted-heredoc literals). They are refused by the same guard, but de-bracing them is not purely mechanical: many sit in blocks that are *also* refused for containing a loop, a pipe, or a required `${VAR:-default}` form, so de-bracing alone would not make those blocks run and the per-block call between de-brace, decompose, and extract needs judgment.
+[`scripts/brace-expansion-scan.sh`](../../scripts/brace-expansion-scan.sh) (driven by [`scripts/tests/brace-expansion-scan.test.sh`](../../scripts/tests/brace-expansion-scan.test.sh)) generalizes that to **every** variable name, per [#1311](https://github.com/mattsears18/shipyard/issues/1311). It is fence-aware rather than a plain grep: it walks ` ```bash ` blocks in every git-tracked `*.md` under `plugins/` (mechanical discovery — a new spec file is covered the day it lands) and flags the closing-brace form `${NAME}` only, so every genuinely-required modifier form stays legal without an exemption. Two deliberate behaviors are worth knowing before you hit them:
+
+- **Quoted-heredoc bodies (`<<'EOF'`) are skipped**, because their text is emitted literally rather than expanded — de-bracing there would change what the block *writes*, not what the shell *does*. Unquoted `<<EOF` bodies do expand and are still checked.
+- **Identifier-adjacent sites (`${count}MB`, `${VAR}_suffix`) ARE flagged**, even though braces are genuinely load-bearing there. That is the point: the fix is to rewrite the site so no adjacency exists — `"free=$disk_free_mb MB"` with the unit as its own word, which is what [`disk-space-guard.md`](./disk-space-guard.md) now does — not to blind-sweep the braces off (`$disk_free_mbMB` expands a different, unset name) and not to silently exempt it.
+
+An intentional bad example inside a ` ```bash ` fence can be exempted with a `<!-- brace-expansion-scan: allow -->` line immediately before the opening fence. It scopes to exactly that one block. The experiment table above needs no marker — it is prose, not a bash fence.
+
+**The decorative-brace sweep is complete.** #1308 swept the 246 `CLAUDE_PLUGIN_ROOT` occurrences; #1311 swept the remaining ~86 across ~80 other names and drove the tree-wide count to zero (132 files, 570 fenced bash blocks scanned clean at fix time).
+
+**Two refused shapes remain, and neither is fixable by de-bracing** — they are the compound-block problem, not the brace problem, and stay tracked under [#1277](https://github.com/mattsears18/shipyard/issues/1277)'s decompose-or-extract rule in [`dont.md`](./dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) plus [`compound-block-scan.sh`](../../scripts/compound-block-scan.sh)'s own (still curated, still incomplete) file list:
+
+| Residual shape | Count in the spec tree | Why de-bracing doesn't help |
+|---|---|---|
+| Required-modifier expansions (`${VAR:-default}`, `${#arr[@]}`, `${VAR%.md}`) | ~126 across 29 files | No unbraced spelling exists. The block must be decomposed (hoist the default onto its own plain line) or extracted to a script. |
+| `$(cmd)` in **argument** position | ~156 across 31 files | Refused by the same guard on a different axis (#1308's experiment L). Fix is the assignment-then-pass-unbraced form, per the convention above. |
+
+A block carrying either shape stays refused post-relocation even though it now scans clean here — `brace-expansion-scan.sh` deliberately says nothing about them, so read a clean scan as "no *decorative* braces," never as "this block will run."

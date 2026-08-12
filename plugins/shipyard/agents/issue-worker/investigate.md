@@ -149,7 +149,7 @@ latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
 
 ```bash
 gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true
-gh issue comment <N> --repo <owner/repo> --body "Not re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at ${latest_decision}). Leaving the gate off; the recorded decision should be read and acted on directly on the next pass."
+gh issue comment <N> --repo <owner/repo> --body "Not re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at $latest_decision). Leaving the gate off; the recorded decision should be read and acted on directly on the next pass."
 ```
 
 Return: `investigated+needs-human-review #<N> (decision already recorded, gate not re-applied)` and stop — do NOT continue to the label-apply block below.

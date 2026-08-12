@@ -49,10 +49,10 @@ SCOPE_ELAPSED=$(( SCOPE_END_EPOCH - SCOPE_START_EPOCH ))
 # Record the per-candidate metrics for reporting.
 "$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" record-scope-preflight \
   --session-id "<session-id>" \
-  --candidates-scoped "${candidates_dispatched}" \
+  --candidates-scoped "$candidates_dispatched" \
   --ready-count "${#ready_issues[@]}" \
-  --deferred-count "${deferred_count}" \
-  --elapsed-seconds "${SCOPE_ELAPSED}" 2>/dev/null || true
+  --deferred-count "$deferred_count" \
+  --elapsed-seconds "$SCOPE_ELAPSED" 2>/dev/null || true
 ```
 
 #### Pre-scope orchestrator-side detectors (synthetic defers)

@@ -241,7 +241,7 @@ Both failure modes leave the worktree path unreusable for the remainder of the s
 **The mechanical check that grounds the judgment call.** Pending-intent language alone is not sufficient to resume — the worker's worktree must still exist AND hold recoverable work, otherwise there is nothing to resume and the case degenerates into the plain crash-like path below. This is the same worktree-state probe step 1 of the "Recovery semantics, in order" list below already performs — run it early, before deciding between resume and reap:
 
 ```bash
-ahead_count=$(git -C "$worktree_path" rev-list --count "origin/${DEFAULT_BRANCH}..HEAD" 2>/dev/null || echo "0")
+ahead_count=$(git -C "$worktree_path" rev-list --count "origin/$DEFAULT_BRANCH..HEAD" 2>/dev/null || echo "0")
 dirty=$(git -C "$worktree_path" status --porcelain 2>/dev/null)
 ```
 
@@ -254,7 +254,7 @@ dirty=$(git -C "$worktree_path" status --porcelain 2>/dev/null)
 2. Otherwise, increment `stalled_resume_counts[<slot-target>]` by 1 and **gather the orchestrator's own reading of the worktree BEFORE composing the resume message.** The stalled agent's last self-report is not trustworthy about how far it actually got — it may have been mid-sentence when the stall watchdog killed it. Run, read-only, against `$worktree_path`:
    ```bash
    git -C "$worktree_path" fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true
-   git -C "$worktree_path" log --oneline "origin/${DEFAULT_BRANCH}..HEAD"
+   git -C "$worktree_path" log --oneline "origin/$DEFAULT_BRANCH..HEAD"
    git -C "$worktree_path" status --porcelain
    # When version_coordination is enabled, also read the manifest's current
    # on-disk version so the resume message states it rather than guessing.
@@ -401,12 +401,12 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     # produced shippable output and is NOT counted. Tokens come from the A.0
     # attribution already computed for this dispatch.
     if [ -z "${recovered_pr:-}" ]; then
-      # ${A05_DISPATCH_TOKENS} is the `total_tokens` the A.0 attribution
+      # $A05_DISPATCH_TOKENS is the `total_tokens` the A.0 attribution
       # extracted from this dispatch's <usage> block earlier in the turn
       # (0 if the block was absent — the rarer full-payload-missing case).
       wasted_narrative_dispatches=$(( ${wasted_narrative_dispatches:-0} + 1 ))
       wasted_narrative_tokens=$(( ${wasted_narrative_tokens:-0} + ${A05_DISPATCH_TOKENS:-0} ))
-      echo "[reconcile-A.0.5] wasted dispatch (#529): non-terminal narrative, no recoverable work; counted (total now ${wasted_narrative_dispatches})"
+      echo "[reconcile-A.0.5] wasted dispatch (#529): non-terminal narrative, no recoverable work; counted (total now $wasted_narrative_dispatches)"
     fi
 
     # Stalled-dispatch ledger (#838/#833) — record every reap this block
@@ -423,8 +423,8 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     else
       stalled_outcome="dropped-clean"
     fi
-    stalled_dispatches+=("{\"target\":\"#${slot_issue:-unknown}\",\"mode\":\"${slot_kind:-unknown}\",\"trigger\":\"${stalled_trigger}\",\"outcome\":\"${stalled_outcome}\",\"resumed_pr\":${recovered_pr:-null},\"detected_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}")
-    echo "[reconcile-A.0.5] stalled_dispatches entry recorded: target=#${slot_issue:-unknown} trigger=${stalled_trigger} outcome=${stalled_outcome}"
+    stalled_dispatches+=("{\"target\":\"#${slot_issue:-unknown}\",\"mode\":\"${slot_kind:-unknown}\",\"trigger\":\"$stalled_trigger\",\"outcome\":\"$stalled_outcome\",\"resumed_pr\":${recovered_pr:-null},\"detected_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}")
+    echo "[reconcile-A.0.5] stalled_dispatches entry recorded: target=#${slot_issue:-unknown} trigger=$stalled_trigger outcome=$stalled_outcome"
     ```
 
     **Mirror the same entry to the durable session-state file** ([#1302](https://github.com/mattsears18/shipyard/issues/1302)) via the typed `record-stall` subcommand — a single-entry, all-scalar-args call, never a hand-built `.stalled_dispatches = [...]` `--set` literal (that shape is exactly what got denied outright by Auto Mode's classifier in the #1302 repro). Fire-and-forget: never block this turn on it.
@@ -570,7 +570,7 @@ SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id
 [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
 agent_id="${.in_flight[<slot-id>].agent_id}"
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "${SESSION_ID:-unknown}" \
-  --set ".returned_agent_ids[\"${agent_id}\"] = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+  --set ".returned_agent_ids[\"$agent_id\"] = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
   >/dev/null 2>&1 || true
 ```
 
@@ -600,21 +600,21 @@ For **issue work** (`shipped` / `blocked` / `errored`):
     --jq '(.autoMergeRequest.mergeMethod // empty) | ascii_downcase' 2>/dev/null || echo "")
 
   if [ "$PR_STATE" = "OPEN" ] && [ -n "$ACTUAL_METHOD" ] && [ "$ACTUAL_METHOD" != "$EXPECTED_METHOD" ]; then
-    echo "[merge-method-drift] PR #<M> armed with mergeMethod=${ACTUAL_METHOD} (expected ${EXPECTED_METHOD}) — correcting (#989)"
+    echo "[merge-method-drift] PR #<M> armed with mergeMethod=$ACTUAL_METHOD (expected $EXPECTED_METHOD) — correcting (#989)"
     # `gh pr merge --auto --<method>` against an ALREADY-ARMED PR is a SILENT
     # no-op (exits 0, changes nothing) — must disable the queue first, then
     # re-arm with the correct method. This is the exact disable-then-rearm
     # dance #989's repro documents; skipping the disable leaves the wrong
     # method in place with no error to signal it.
     gh pr merge <M> --repo <owner/repo> --disable-auto 2>/dev/null || true
-    gh pr merge <M> --repo <owner/repo> --auto --${EXPECTED_METHOD} --delete-branch 2>/dev/null || true
+    gh pr merge <M> --repo <owner/repo> --auto --$EXPECTED_METHOD --delete-branch 2>/dev/null || true
     CORRECTED=$(gh pr view <M> --repo <owner/repo> --json autoMergeRequest \
       --jq '(.autoMergeRequest.mergeMethod // empty) | ascii_downcase' 2>/dev/null || echo "")
     if [ "$CORRECTED" = "$EXPECTED_METHOD" ]; then
-      echo "[merge-method-drift] PR #<M> corrected to mergeMethod=${EXPECTED_METHOD}"
+      echo "[merge-method-drift] PR #<M> corrected to mergeMethod=$EXPECTED_METHOD"
     else
-      echo "[merge-method-drift] PR #<M> correction did NOT take (now reads '${CORRECTED}') — flagging for manual check"
-      gh pr comment <M> --repo <owner/repo> --body "Auto-merge method drift detected (mergeMethod=${ACTUAL_METHOD}, expected ${EXPECTED_METHOD}) and the automatic disable-then-rearm correction did not take. Please verify the armed merge method manually before this PR lands (#989)." 2>/dev/null || true
+      echo "[merge-method-drift] PR #<M> correction did NOT take (now reads '$CORRECTED') — flagging for manual check"
+      gh pr comment <M> --repo <owner/repo> --body "Auto-merge method drift detected (mergeMethod=$ACTUAL_METHOD, expected $EXPECTED_METHOD) and the automatic disable-then-rearm correction did not take. Please verify the armed merge method manually before this PR lands (#989)." 2>/dev/null || true
     fi
   elif [ "$PR_STATE" = "MERGED" ] && [ -n "$ACTUAL_METHOD" ]; then
     : # Already landed via the ungated-admin-direct path or a manual gated-manual
@@ -968,7 +968,7 @@ export CLAUDE_PLUGIN_ROOT
 completed_agent_id="${.in_flight[<slot-id>].agent_id}"
 # Anchor cwd to a stable directory BEFORE deriving paths or reaping (issue
 # #497). The harness can leak the orchestrator's cwd into the very
-# `agent-${completed_agent_id}` worktree this block removes; once it's gone,
+# `agent-$completed_agent_id` worktree this block removes; once it's gone,
 # the `git worktree prune` below and the `$(git rev-parse --show-toplevel)`
 # path derivation both fail with `fatal: Unable to read current working
 # directory` (git resolves its own cwd before doing anything). Derive a
@@ -985,8 +985,8 @@ STABLE_DIR=$(awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orch
 cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
 PRIMARY_CHECKOUT=$(awk '/^worktree /{print substr($0,10); exit}' \
   <(git worktree list --porcelain 2>/dev/null))
-wt_dir="${PRIMARY_CHECKOUT}/.git/worktrees/agent-${completed_agent_id}"
-worktree_path="${PRIMARY_CHECKOUT}/.claude/worktrees/agent-${completed_agent_id}"
+wt_dir="$PRIMARY_CHECKOUT/.git/worktrees/agent-$completed_agent_id"
+worktree_path="$PRIMARY_CHECKOUT/.claude/worktrees/agent-$completed_agent_id"
 
 # In-flight guard (issue #832) — NOT applicable as an exclusion here, same
 # reasoning as A.0.5 and A.1's shipped-path reap above. This block targets
@@ -1038,7 +1038,7 @@ if [ -d "$wt_dir" ]; then
   "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
     --action reaped \
     --worktree-path "$worktree_path" \
-    --worktree-name "agent-${completed_agent_id}" \
+    --worktree-name "agent-$completed_agent_id" \
     --session-id "<session-id>" \
     --classification "$local_classification" \
     --lock-pid "$lock_pid" \
@@ -1056,7 +1056,7 @@ if [ -e "$worktree_path" ]; then
   "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap \
     --action reaped-failed \
     --worktree-path "$worktree_path" \
-    --worktree-name "agent-${completed_agent_id}" \
+    --worktree-name "agent-$completed_agent_id" \
     --session-id "<session-id>" \
     --classification "$local_classification" \
     --reason "reap-attempt-unverified — possible classifier denial (#1274)" \
@@ -1173,7 +1173,7 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
 
   if [ "$verdict" = "hold" ]; then
     threshold=$(awk -v p="$pool_total" -v m="${multiplier:-5}" 'BEGIN{printf "%.0f", p*m}')
-    idle_reason="parked (CI queue backpressure: queued=${queued_live:-0} > threshold=${threshold} = pool_total(${pool_total})×${multiplier:-5})"
+    idle_reason="parked (CI queue backpressure: queued=${queued_live:-0} > threshold=$threshold = pool_total($pool_total)×${multiplier:-5})"
     # Do NOT dispatch this turn — leave the slot empty and go straight to
     # step E's idle-proof with this idle_reason. The next completion (or
     # the next dispatch turn's fresh live re-read) retries.

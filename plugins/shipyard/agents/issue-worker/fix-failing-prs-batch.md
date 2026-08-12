@@ -121,7 +121,7 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
    **7.b — Arm auto-merge (only when 7.a returned `gated`), then snapshot:**
 
    ```bash
-   gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch
+   gh pr merge <pr-num> --repo <owner/repo> --auto --$AUTO_MERGE_METHOD --delete-branch
    gh pr view <pr-num> --repo <owner/repo> --json statusCheckRollup,mergeStateStatus
    ```
 

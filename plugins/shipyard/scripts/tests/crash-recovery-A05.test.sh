@@ -147,7 +147,7 @@ assert_contains "$steady_state_path" \
   "rev-list --count" \
   "A.0.5 prose documents rev-list --count to detect committed work"
 assert_contains "$steady_state_path" \
-  "origin/\${DEFAULT_BRANCH}..HEAD" \
+  "origin/\$DEFAULT_BRANCH..HEAD" \
   "A.0.5 prose compares origin/<default>..HEAD"
 assert_contains "$crash_recovery_reap_path" \
   "rev-list --count" \

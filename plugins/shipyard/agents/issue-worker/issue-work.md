@@ -254,7 +254,7 @@ fi
 # Phantom-merge guard — count changed files vs the base branch.
 # Compare against origin/<default-branch> (already fetched in step 3).
 DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-CHANGED_FILES=$(git diff --name-only "origin/${DEFAULT_BRANCH}"...HEAD | wc -l | tr -d ' ')
+CHANGED_FILES=$(git diff --name-only "origin/$DEFAULT_BRANCH"...HEAD | wc -l | tr -d ' ')
 if [ "$CHANGED_FILES" = "0" ]; then
   # Also check for uncommitted-but-unstaged work (rare — but the worker
   # might have edited files without staging them). If both committed AND
@@ -475,7 +475,7 @@ if [ "$CLOSES" != "true" ]; then
   CURRENT_BODY=$(gh pr view <pr-num> --repo <owner/repo> --json body --jq '.body')
   gh pr edit <pr-num> --repo <owner/repo> --body "Closes #<N>
 
-${CURRENT_BODY}"
+$CURRENT_BODY"
 
   # Re-verify after the patch — GitHub re-parses the body on edit.
   CLOSES=$(gh pr view <pr-num> --repo <owner/repo> --json closingIssuesReferences \
@@ -554,7 +554,7 @@ case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash
 #### 6.b Arm auto-merge (only when §6.a returned `gated`)
 
 ```bash
-gh pr merge <pr-num> --repo <owner/repo> --auto --${AUTO_MERGE_METHOD} --delete-branch
+gh pr merge <pr-num> --repo <owner/repo> --auto --$AUTO_MERGE_METHOD --delete-branch
 ```
 
 If this errors because auto-merge isn't enabled at the repo level, **don't try to enable it** (that's a repo setting). But also **don't trust the exit status alone** — gh can silently direct-merge (without arming auto-merge) on the ungated admin-direct path, returning exit 0 with `autoMergeRequest: null` and the PR already at `state: MERGED`. **First, check whether the error is the `workflow`-OAuth-scope cause** — `shipyard:worker-preamble` § "Auto-merge + snapshot-and-return pattern" step 1.1 (fragment [`auto-merge.md`](../../skills/worker-preamble/auto-merge.md)) matches the captured error text against the GraphQL `without \`workflow\` scope` signature; when it matches, the outcome is fixed at `auto-merge: unavailable — gh token lacks workflow scope` and you skip straight to that [step 8](#8-return) return line — don't run the state-snapshot categorization below for that case, and never attempt to escalate your own token's scope yourself (that's a one-time human action, `gh auth refresh -h github.com -s workflow`). Otherwise, the post-call state snapshot in [step 7](#7-snapshot-check-state--auto-merge-state-then-return--dont-block-on-ci) (and the categorization rules in the same fragment's step 1.5) distinguish the three remaining outcomes — `enabled`, `merged-direct`, and genuinely-`unavailable` — and pick the matching return-string suffix in [step 8](#8-return). Don't try to short-circuit that categorization from the merge call alone; let the post-call snapshot decide. A `merged-direct` outcome reaching step 7 after §6.a returned `gated` means the detector's prediction was wrong — the step-7 `merged-direct-ungated` refinement is the defense-in-depth backstop for exactly that residual case. (If §6.a instead returned `ungated`, you never reach this section at all — that branch's green-checks merge reports `auto-merge: gated-manual` directly and skips step 7, per [#734](https://github.com/mattsears18/shipyard/issues/734).)
@@ -591,7 +591,7 @@ Instead, **resolve the issue author's collaborator permission live as a fallback
 # Fallback trust resolution when the dispatch prompt omits originating_author_trust (#599).
 # The issue author's login is .author.login from the step-0 `gh issue view` projection.
 AUTHOR_LOGIN="<author-login-from-step-0>"
-PERMISSION=$(gh api "repos/<owner/repo>/collaborators/${AUTHOR_LOGIN}/permission" \
+PERMISSION=$(gh api "repos/<owner/repo>/collaborators/$AUTHOR_LOGIN/permission" \
   --jq '.permission' 2>/dev/null)
 case "$PERMISSION" in
   admin|maintain|write) RESOLVED_TRUST="trusted" ;;

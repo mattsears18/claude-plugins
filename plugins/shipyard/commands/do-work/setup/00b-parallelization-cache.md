@@ -134,7 +134,7 @@ The `(...) &` block above is submitted as **one** Bash tool call. The permission
    setup_reap_denial_unreaped=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" report-unreaped \
      --repo-root "$(git rev-parse --show-toplevel)" \
      --current-session-id "<session-id>" | wc -l | tr -d ' ')
-   echo "setup-background-group-denied: unreaped=${setup_reap_denial_unreaped}"
+   echo "setup-background-group-denied: unreaped=$setup_reap_denial_unreaped"
    ```
 
    The final `echo` is load-bearing, not decorative — it's what makes the count visible in this Bash call's own tool result rather than trapped in a shell variable the process discards on exit (a shell variable set in one Bash tool call never survives to the next one).
