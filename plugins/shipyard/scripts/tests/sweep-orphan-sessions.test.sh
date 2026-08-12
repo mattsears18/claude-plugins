@@ -102,6 +102,28 @@ write_session() {
   jq -n --argjson pid "$pid" '{pid: $pid, repo: "test/repo"}' > "$path"
 }
 
+# write_session_with_state — issue #1252 fixtures. Extends write_session
+# with `.in_flight` and `.session_end`, the two fields the abnormal-exit
+# advisory reads. `in_flight_count` seeds that many synthetic slots;
+# `session_end_reason` is either "" (field omitted/null — simulates a
+# session that never reached record-session-end) or one of the recorded
+# reason strings.
+write_session_with_state() {
+  local path="$1" pid="$2" in_flight_count="$3" session_end_reason="$4"
+  mkdir -p "$(dirname "$path")"
+  local in_flight_json="{}"
+  if [[ "$in_flight_count" -gt 0 ]]; then
+    in_flight_json=$(jq -n --argjson n "$in_flight_count" \
+      '[range($n)] | map({("slot" + (. | tostring)): {kind: "issue", target: 1252}}) | add')
+  fi
+  local session_end_json="null"
+  if [[ -n "$session_end_reason" ]]; then
+    session_end_json=$(jq -n --arg r "$session_end_reason" '{reason: $r, detail: null, recorded_at: "2026-08-10T12:00:00Z"}')
+  fi
+  jq -n --argjson pid "$pid" --argjson in_flight "$in_flight_json" --argjson session_end "$session_end_json" \
+    '{pid: $pid, repo: "test/repo", in_flight: $in_flight, session_end: $session_end}' > "$path"
+}
+
 echo "sweep-orphan-sessions.sh tests (issue #1182)"
 echo
 
@@ -259,6 +281,85 @@ write_session "$still_young" "$dead_pid"
 backdate "$still_young" 2
 out=$(bash "$helper" sweep --shipyard-home "$tmphome" --current-session-id "live-session" --stale-min 30 2>&1)
 assert_file_exists "$still_young" "(17) --stale-min 30 (explicit default) still protects a 2-min-old session"
+rm -rf "$tmphome"
+
+# --- abnormal-exit advisory (issue #1252) -----------------------------------
+# A dead-PID orphan with a still-non-empty .in_flight and no .session_end
+# is exactly the signature the issue's own observation table documents: the
+# orchestrator process ended while it still believed workers were running,
+# and never reached cleanup-summary.md's normal exit path to record why.
+# By the time a file reaches this loop the is-active gate has already
+# confirmed the owning PID is dead, so this is the sweep's one chance to
+# surface the abnormal termination before the file (and the signal) is gone.
+
+tmphome=$(mktmphome)
+abnormal_json="$tmphome/sessions/died-mid-flight.json"
+write_session_with_state "$abnormal_json" "$dead_pid" 1 ""
+backdate "$abnormal_json" 45
+out=$(bash "$helper" sweep --shipyard-home "$tmphome" --current-session-id "live-session" 2>&1)
+assert_file_missing "$abnormal_json" "(18) abnormal orphan (in_flight non-empty, no session_end) is still reaped"
+assert_contains "$out" "reaped: died-mid-flight" "(18) abnormal orphan reap line names the session id"
+assert_contains "$out" "[abnormal-exit: no session_end recorded, in_flight=1]" "(18) abnormal orphan reap line carries the #1252 advisory"
+rm -rf "$tmphome"
+
+# --- NOT flagged: session recorded why it ended, even with a residual slot -
+# Defensive coverage of the detector's own logic in isolation — in
+# practice .in_flight is empty by the time record-session-end runs, but the
+# advisory should key off .session_end being present, not off in_flight
+# alone, so this combination (however contrived) must not false-positive.
+
+tmphome=$(mktmphome)
+recorded_json="$tmphome/sessions/recorded-clean.json"
+write_session_with_state "$recorded_json" "$dead_pid" 1 "completed"
+backdate "$recorded_json" 45
+out=$(bash "$helper" sweep --shipyard-home "$tmphome" --current-session-id "live-session" 2>&1)
+assert_file_missing "$recorded_json" "(19) session with .session_end recorded is still reaped"
+assert_contains "$out" "reaped: recorded-clean" "(19) recorded-clean reap line names the session id"
+if [[ "$out" == *"abnormal-exit"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(19) no abnormal-exit advisory when .session_end was recorded"
+  printf '    actual: %s\n' "$out"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(19) no abnormal-exit advisory when .session_end was recorded"
+  pass=$((pass+1))
+fi
+rm -rf "$tmphome"
+
+# --- NOT flagged: no session_end, but in_flight was already empty ----------
+# A session with no residual work (it quiesced before dying, or predates
+# this field entirely) is not the failure mode this advisory targets —
+# only pair with a non-empty in_flight.
+
+tmphome=$(mktmphome)
+quiet_json="$tmphome/sessions/quiet-orphan.json"
+write_session_with_state "$quiet_json" "$dead_pid" 0 ""
+backdate "$quiet_json" 45
+out=$(bash "$helper" sweep --shipyard-home "$tmphome" --current-session-id "live-session" 2>&1)
+assert_file_missing "$quiet_json" "(20) session with no .session_end but empty in_flight is still reaped"
+if [[ "$out" == *"abnormal-exit"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(20) no abnormal-exit advisory when in_flight was already empty"
+  printf '    actual: %s\n' "$out"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(20) no abnormal-exit advisory when in_flight was already empty"
+  pass=$((pass+1))
+fi
+rm -rf "$tmphome"
+
+# --- reap-audit line carries the same #1252 fields (cross-check against
+# session-state.sh's own cleanup --reap-audit coverage, exercised here
+# through the sweep's actual call path rather than a direct helper call).
+
+tmphome=$(mktmphome)
+audit_abnormal_json="$tmphome/sessions/audit-abnormal.json"
+write_session_with_state "$audit_abnormal_json" "$dead_pid" 2 ""
+backdate "$audit_abnormal_json" 45
+bash "$helper" sweep --shipyard-home "$tmphome" --current-session-id "live-session" --reaper-session-id "reaper-1252" >/dev/null 2>&1
+audit_line=$(cat "$tmphome/reap-audit.jsonl" 2>/dev/null)
+out=$(printf '%s' "$audit_line" | jq -r '.reaped_in_flight_count')
+assert_equals "$out" "2" "(21) sweep's reap-audit line carries reaped_in_flight_count"
+out=$(printf '%s' "$audit_line" | jq -c '.reaped_session_end')
+assert_equals "$out" "null" "(21) sweep's reap-audit line carries reaped_session_end = null"
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------

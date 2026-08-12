@@ -156,8 +156,33 @@ sweep() {
 
     age=$(_age_minutes "$orphan") || age="?"
 
+    # Issue #1252 — the abnormal-exit signature. By this point the file's
+    # owning PID is confirmed dead (the is-active gate above already
+    # passed), so a still-null `.session_end` here means the predecessor
+    # never reached cleanup-summary.md's normal exit path (crash,
+    # interrupt, harness limit) — it never got the chance to record why it
+    # stopped. Pair that with a non-empty `.in_flight` (the orchestrator
+    # still believed workers were running) and this is exactly the
+    # signature the issue's own observation table documents. Surface it
+    # on the reap line rather than reaping silently; `cleanup --reap-audit`
+    # below independently persists the same two fields
+    # (`reaped_session_end` / `reaped_in_flight_count`) into
+    # ~/.shipyard/reap-audit.jsonl for a durable record past this stdout
+    # line. Best-effort: a corrupt/unreadable JSON file reads as "null"
+    # and "0" here, which just means no advisory is appended — the reap
+    # itself is unaffected either way.
+    local abnormal_note=""
+    if [[ -f "$SESSION_STATE_SH" || -f "$orphan" ]]; then
+      local session_end_reason in_flight_count
+      session_end_reason=$(jq -r '.session_end.reason // "null"' "$orphan" 2>/dev/null || echo "null")
+      in_flight_count=$(jq -r '(.in_flight // {}) | length' "$orphan" 2>/dev/null || echo 0)
+      if [[ "$session_end_reason" == "null" && "$in_flight_count" =~ ^[0-9]+$ && "$in_flight_count" -gt 0 ]]; then
+        abnormal_note=" [abnormal-exit: no session_end recorded, in_flight=${in_flight_count}]"
+      fi
+    fi
+
     if [[ "$dry_run" -eq 1 ]]; then
-      echo "reaped (dry-run): $orphan_id (age=${age}m)"
+      echo "reaped (dry-run): $orphan_id (age=${age}m)${abnormal_note}"
     else
       # --reap-audit (issue #281) writes one JSONL line to
       # ~/.shipyard/reap-audit.jsonl capturing the reaped session's
@@ -174,7 +199,7 @@ sweep() {
           --reason "orphan-sweep-step-1.6" \
           --phase "setup-1.6" 2>/dev/null || true
       fi
-      echo "reaped: $orphan_id (age=${age}m)"
+      echo "reaped: $orphan_id (age=${age}m)${abnormal_note}"
     fi
     reaped=$((reaped+1))
   done < <(find "$sessions_dir" -maxdepth 1 -type f -name '*.json' -mmin "+$stale_min" 2>/dev/null)

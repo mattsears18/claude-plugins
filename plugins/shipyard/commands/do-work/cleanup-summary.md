@@ -24,6 +24,27 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
 - What is NOT automatic: step 7's `cost-history.sh flush` already ran once for this session id earlier in this same wind-down, so a second plain `flush --session-id <id>` call hits the ledger's own idempotency dedupe gate and silently skips. **If cleanup runs a second time this session**, re-run step 7 with `--reconcile` instead of the plain call: `cost-history.sh flush --session-id <id> --reconcile` MERGES the existing ledger line with the freshly-projected cumulative one instead of skipping it (as of [#745](https://github.com/mattsears18/shipyard/issues/745) this is an element-wise-max/union merge — never write your own `--force-replace`). See the flag's doc comment in `scripts/cost-history.sh` for the exact mechanics. Step 8 (`session-state.sh cleanup`) is already idempotent and needs no special handling on a second call.
 - **This section is not a place to file new issues.** If you find yourself wanting to file a follow-up/friction issue while inside cleanup, or after the [end-of-session summary](#end-of-session-summary) has already printed, the corrective action is documented in [drain.md's termination assertion](./drain.md#termination-assertion), not here.
 
+0. **Record why the session ended, from data already in hand — non-fatal ([#1252](https://github.com/mattsears18/shipyard/issues/1252)).** Runs first, before any reaping starts. Three of six recent sessions terminated with a non-empty `in_flight` and no record of why — the orchestrator process ended before it ever reached this point, indistinguishable after the fact from a clean exit. Stamping a reason here — even though it can't help THAT class of failure directly — means every session that *does* reach cleanup leaves an unambiguous trail, and a predecessor that *doesn't* reach it is exactly what's missing: the next session's orphan sweep (below) now reads a still-null `.session_end` on a dead-PID file as the signal itself.
+
+   **Derive the reason mechanically from state this session already computed while exiting drain — no new queries, no hand-narration.** The drain-exit reason and `session_prs` categorization (merged / `blocked:ci` / rebase-blocked / still-pending counts) are already known at this point — they're the same values the [End-of-session summary](#end-of-session-summary)'s `Drain phase:` line renders from — and the [completion ledger](./setup/04f-completion-ledger.md)'s bucket 10 (dispatchable) / bucket 11 (unaccounted) counts were computed at [drain.md's termination assertion](./drain.md#termination-assertion) immediately before handoff here:
+
+   - **`user-stop`** — the drain-exit reason is the soft-drain second-stop-signal case (`second stop signal — drain skipped`).
+   - **`completed`** — the drain-exit reason is `all PRs settled` AND every `session_prs` entry landed `merged` (`blocked:ci` / rebase-blocked / still-pending counts are all 0) AND the completion ledger's bucket 10 and bucket 11 are both 0. This is [do-work.md's completion contract](../do-work.md) met in full, not merely the dispatch-pool-empty gate.
+   - **`bounded-exit`** — everything else: the `max_drain_hours` ceiling fired, or `all PRs settled` fired while a `blocked:ci` / rebase-blocked / still-pending / non-zero-ledger-bucket tail remains. This names the [do-work.md completion contract](../do-work.md)'s bounded-exit concession explicitly rather than leaving it implicit in the flat summary line alone.
+
+   ```bash
+   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+   export CLAUDE_PLUGIN_ROOT
+   "${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" record-session-end \
+     --session-id "<session-id>" \
+     --reason "<completed|bounded-exit|user-stop>" \
+     --detail "drain exited via <drain-exit-reason>; session_prs merged=<m> blocked:ci=<c> rebase-blocked=<r> pending=<p>; ledger dispatchable=<bucket10> unaccounted=<bucket11>" \
+     --allow-degraded-init --degraded-init-repo "<owner/repo>" 2>/dev/null || \
+     echo "[session-state] record-session-end failed — session file out of sync with working memory; continuing"
+   ```
+
+   **Non-fatal by design** — same posture as every other `session-state.sh` write-through call ([RATIONALE → Failure mode](../do-work-RATIONALE.md#failure-mode--write-through-breakage)): a failed write is logged and the session proceeds straight into step 1. Recording *why* the session ended must never itself block the session from ending — that would be the exact self-defeating failure mode this step exists to avoid. The written value is surfaced verbatim in the [End-of-session summary](#end-of-session-summary)'s new `Session end:` line, and — for the abnormal predecessor-died case this issue actually reports — in the next session's orphan sweep and its `reaped_session_end` / `reaped_in_flight_count` reap-audit fields (see [`session-state-file.md`](./session-state-file.md#schema)).
+
 1. Prune stale remote refs so merged-and-deleted branches surface as `[gone]`:
    ```bash
    git fetch --prune
@@ -393,6 +414,7 @@ Operator queue — needs you (<N_needs_you>):
      → <drain command>
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+Session end (#1252): <reason> — <detail>
 Config: schema validation failed at step 0.4 — rejected: <SHIPYARD_CONFIG_SCHEMA_FAILURE>; ran with built-in defaults (#367)
 Plugin root: <SHIPYARD_PLUGIN_ROOT_STALE> — run git pull --ff-only before trusting this session's spec-based conclusions (#907)
 Recovered from prior session: <salvaged_count> salvaged (PRs created/kept), <abandoned_count> abandoned
@@ -465,6 +487,7 @@ Lifetime via /do-work: <I> issues closed, <P> PRs opened (repo-wide totals)
 
 **Per-line rules** for the flat block:
 
+- `Session end (#1252):` line — **always prints, never omitted** (the one flat line this summary is required to carry through unconditionally, same standing as `⚠️ Unaccounted` above it in the bucket breakdown). `<reason>` and `<detail>` are read back verbatim from the `.session_end` object [step 0](#end-of-session-cleanup) just stamped — not recomputed here, so the summary can never disagree with what was durably recorded. If step 0's write failed (logged, non-fatal), render `<reason>` as `unknown` and `<detail>` as `record-session-end failed — see session transcript` rather than silently dropping the line; the point of this line is that a reader never has to wonder whether the session finished cleanly, and a missing line would reintroduce exactly that ambiguity.
 - `Config:` line ([#367](https://github.com/mattsears18/shipyard/issues/367)): omit entirely unless the session-local `SHIPYARD_CONFIG_SCHEMA_FAILURE` was set at [step 0.4](../do-work/setup/00-config-worktree.md#04-check-the-repo-level-opt-in-shipyardconfigjson) (i.e. the repo had a `shipyard.config.json` that failed schema validation, so the session ran on built-in defaults). When set, print the line with `<SHIPYARD_CONFIG_SCHEMA_FAILURE>` substituted by the captured rejected-field detail (the loader's per-field stderr lines, `; `-joined). Silence is the default — a clean config load (or a repo with no config at all, which gets the separate "not shipyard-initialized" warning at step 0.4) does NOT print this line. This is the end-of-session half of the non-silent-degrade fix: the warning fired once at step 0.4, and this line re-surfaces it at exit so a user who scrolled past the startup warning still sees that their per-repo policy was ignored.
 - `Plugin root:` line ([#907](https://github.com/mattsears18/shipyard/issues/907)): omit entirely unless the session-local `SHIPYARD_PLUGIN_ROOT_STALE` was set at [step 0.4](../do-work/setup/00-config-worktree.md#04-check-the-repo-level-opt-in-shipyardconfigjson) (i.e. `CLAUDE_PLUGIN_ROOT` resolved repo-local — the dogfooding case — AND the primary checkout was measurably behind `origin/<default-branch>` at that point). When set, print the line with `<SHIPYARD_PLUGIN_ROOT_STALE>` substituted by the captured `<N> commit(s) behind origin/<branch> (primary checkout at <sha>)` detail. Silence is the default — a fresh-enough primary checkout, or a consumer install where the check doesn't apply, does NOT print this line. This is a re-surfacing pattern identical to `Config:` above: the warning fired once (loudly, to stderr) at step 0.4, and this line puts it back in front of a user who scrolled past the startup output. Distinct from the always-set-but-not-printed `SHIPYARD_PLUGIN_ROOT_SHA` (recorded for post-hoc "which version of the spec ran?" answerability, per step 0.4's documentation — it doesn't get its own summary line since a fresh checkout has nothing to warn about).
 - `Drain phase`: `<reason>` is one of `all PRs settled`, `max_drain_hours ceiling (<X>h)`, or `second stop signal — drain skipped`. (The old `no forward progress for 5 polls` and `120-min ceiling` reasons were replaced by the progress-based exit + `max_drain_hours` ceiling in [#374](https://github.com/mattsears18/shipyard/issues/374) — `all PRs settled` now covers every healthy exit, including the formerly-"no forward progress" case, because per-PR head-movement quiescence IS the settle signal.) The merged / blocked:ci / rebase-blocked / still-pending counts partition `session_prs`.
@@ -554,6 +577,7 @@ After emitting the chat summary, persist the same content to a styled HTML repor
          <h1>/shipyard:do-work session — <owner/repo></h1>
          <div class="meta">
            <strong>Repo:</strong> <owner/repo> ·
+           <strong>Session end (#1252):</strong> <reason> — <detail> ·
            <strong>Started:</strong> <ISO8601 UTC> ·
            <strong>Ended:</strong> <ISO8601 UTC> ·
            <strong>Duration:</strong> <H>h<M>m ·
