@@ -721,6 +721,9 @@ run_reap() {
 audit_log="$reap_home/reap-audit.jsonl"
 
 # --- (31) reap --action=reaped writes the agent-reap shape ---
+# --bypass-return-check: this test is about the audit-line SHAPE, not the
+# issue #1237 return-check gate (covered separately below, tests 46-49) —
+# no session-state fixture exists for "test-session-1" here.
 reset_reap_layout
 run_reap \
   --action reaped \
@@ -730,6 +733,7 @@ run_reap \
   --actor-pid 12345 \
   --classification "self-ancestor" \
   --lock-pid 999999 \
+  --bypass-return-check "test fixture (#1237 gate covered separately)" \
   --skip-remove
 exit_code=$?
 assert_exit_code "$exit_code" "0" \
@@ -772,6 +776,7 @@ run_reap \
   --classification "dead" \
   --lock-pid null \
   --phase "setup-3b" \
+  --bypass-return-check "test fixture (#1237 gate covered separately)" \
   --skip-remove
 line=$(cat "$audit_log")
 shape_ok=1
@@ -964,6 +969,7 @@ run_reap \
   --classification=no-lock \
   --lock-pid=null \
   --phase=setup-3b \
+  --bypass-return-check="test fixture (#1237 gate covered separately)" \
   --skip-remove
 assert_exit_code "$?" "0" \
   "(44) --flag=value form accepted for all reap flags"
@@ -1062,6 +1068,121 @@ run_reap --action deferred \
   --lock-pid 1
 assert_exit_code "$?" "0" \
   "(45) deferred action with bogus path doesn't error (no remove invoked)"
+
+# ============================================================================
+# Issue #1237 — reconciled-return gate on `reap --action reaped`. A reap
+# targeting an `agent-*` worktree must fail closed unless this session's
+# persisted state already records that agent-id as returned
+# (.returned_agent_ids["<agent-id>"]), OR the caller passes an explicit
+# --bypass-return-check <reason>. Pins BOTH directions: refusal when there
+# is no proof, and success once proof exists (or is explicitly bypassed).
+# ============================================================================
+
+session_state_helper="${here}/../session-state.sh"
+
+# --- (46) no .returned_agent_ids record, no --bypass-return-check → refused ---
+reset_reap_layout
+run_reap \
+  --action reaped \
+  --worktree-path "$reap_repo/.git/worktrees/agent-unreturned" \
+  --worktree-name "agent-unreturned" \
+  --session-id "no-such-session-1237" \
+  --classification "dead" \
+  --lock-pid null \
+  --skip-remove
+reap_refused_rc=$?
+assert_exit_code "$reap_refused_rc" "1" \
+  "(46) reap --action reaped refuses an agent-* worktree with no recorded return"
+
+refused_line=$(cat "$audit_log" 2>/dev/null)
+case "$refused_line" in
+  *'"action":"reap-refused"'*) refused_shape_ok=1 ;;
+  *) refused_shape_ok=0 ;;
+esac
+assert_equals "$refused_shape_ok" "1" \
+  "(46a) the refusal writes a reap-refused audit-log line, not reaped"
+
+# --- (47) same target, --bypass-return-check supplied → succeeds ---
+reset_reap_layout
+run_reap \
+  --action reaped \
+  --worktree-path "$reap_repo/.git/worktrees/agent-unreturned2" \
+  --worktree-name "agent-unreturned2" \
+  --session-id "no-such-session-1237" \
+  --classification "dead" \
+  --lock-pid null \
+  --skip-remove \
+  --bypass-return-check "test: crash-recovery equivalent"
+assert_exit_code "$?" "0" \
+  "(47) --bypass-return-check overrides the refusal for a documented exception"
+
+bypass_line=$(cat "$audit_log" 2>/dev/null)
+case "$bypass_line" in
+  *'"action":"reaped"'*) bypass_shape_ok=1 ;;
+  *) bypass_shape_ok=0 ;;
+esac
+assert_equals "$bypass_shape_ok" "1" \
+  "(47a) the bypassed reap writes a normal reaped audit-log line"
+
+# --- (48) agent-id IS recorded as returned in session-state → succeeds with
+# no bypass flag at all — this is the normal, common-case path every
+# same-turn (A.1 shipped / step B) and later-turn (pre-dispatch) reap takes.
+returned_session="reap-gate-returned-session"
+tmp_session_home=$(mktemp -d)
+SHIPYARD_HOME="$tmp_session_home" bash "$session_state_helper" init \
+  --session-id "$returned_session" --repo "owner/repo" --pid 0 >/dev/null 2>&1
+SHIPYARD_HOME="$tmp_session_home" bash "$session_state_helper" update \
+  --session-id "$returned_session" \
+  --set '.returned_agent_ids["gated-ok"] = "2026-01-01T00:00:00Z"' >/dev/null 2>&1
+
+reset_reap_layout
+(
+  cd "$reap_repo" || exit 99
+  SHIPYARD_HOME="$tmp_session_home" bash "$helper" reap \
+    --action reaped \
+    --worktree-path "$reap_repo/.git/worktrees/agent-gated-ok" \
+    --worktree-name "agent-gated-ok" \
+    --session-id "$returned_session" \
+    --classification "dead" \
+    --lock-pid null \
+    --skip-remove
+)
+assert_exit_code "$?" "0" \
+  "(48) a recorded .returned_agent_ids entry satisfies the gate with no bypass flag"
+
+# A sibling agent-id NOT in the same session's .returned_agent_ids is still
+# refused — confirms the gate checks the SPECIFIC agent-id, not merely
+# "this session has a state file at all."
+(
+  cd "$reap_repo" || exit 99
+  SHIPYARD_HOME="$tmp_session_home" bash "$helper" reap \
+    --action reaped \
+    --worktree-path "$reap_repo/.git/worktrees/agent-gated-sibling" \
+    --worktree-name "agent-gated-sibling" \
+    --session-id "$returned_session" \
+    --classification "dead" \
+    --lock-pid null \
+    --skip-remove
+)
+assert_exit_code "$?" "1" \
+  "(48a) a DIFFERENT agent-id in the same (existing) session is still refused"
+rm -rf "$tmp_session_home"
+
+# --- (49) a non-agent-* worktree name (the orchestrator reaping its own
+# worktree) is out of scope for the gate entirely — no bypass needed, no
+# session-state lookup even attempted, because there is no "did an agent
+# return" question to ask about the orchestrator's own worktree.
+reset_reap_layout
+run_reap \
+  --action reaped \
+  --worktree-path "$reap_repo/.git/worktrees/orchestrator-some-session" \
+  --worktree-name "orchestrator-some-session" \
+  --session-id "no-such-session-1237" \
+  --classification "self-orchestrator" \
+  --lock-pid null \
+  --skip-remove
+assert_exit_code "$?" "0" \
+  "(49) a non-agent-* worktree name is exempt from the return-check gate"
 
 # ============================================================================
 # Issue #326 — `reap-orphan-branches` subcommand: reap stale worktree-agent-*

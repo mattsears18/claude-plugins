@@ -592,6 +592,17 @@ cmd_init() {
        degraded_recovery_at: $degraded_recovery_at,
        session_end: null,
        in_flight: {},
+       # returned_agent_ids (issue #1237): persisted counterpart to the
+       # session-local reconciled_agent_ids working-memory set. Written by
+       # steady-state.md A.1, once per dispatch, BEFORE any per-mode reap
+       # runs -- maps agent-id to an iso8601 timestamp. worktree-reap.sh
+       # reap --action reaped consults it as the mechanical proof that an
+       # agent own terminal return reached the orchestrator before its
+       # worktree is destroyed; a merged PR or a green rollup observed by
+       # some other channel is not that proof. See worktree-reap.sh reap
+       # docstring for the full gate plus the documented
+       # bypass-return-check exceptions.
+       returned_agent_ids: {},
        ready_issues: [],
        failed_prs: [],
        raw_backlog: [],

@@ -559,6 +559,23 @@ Once A.0.6 has run, proceed to A.1.
 
 **A `stalled` return is not classified here — and it is never `blocked` ([#813](https://github.com/mattsears18/shipyard/issues/813)).** A narrative, non-terminal return exhibiting *pending intent* (future tense / a numbered plan / "waiting for") is a distinct, non-terminal outcome named `stalled`, detected and handled at [step A.0.5's stalled-worker check](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1s-return-string-parsing) — which runs BEFORE this step, on every reconcile turn. That check either **resumes** the same worker in place (when the worktree holds recoverable work and the per-target retry cap of 2 hasn't been hit) or falls through to A.0.5's ordinary crash-recovery/reap path (when there's nothing resumable, or the cap is exhausted). By the time this step runs, a `stalled` return has therefore already been converted into either a fresh in-flight dispatch (this turn's A.0.5 handling ends there — A.1 never sees it) or one of this step's ordinary terminal branches (typically `shipped`, via A.0.5's crash-recovery auto-commit-and-push; occasionally a plain reap with nothing to classify here, when the worktree held no diff to recover). **`stalled` must never fall through to the `blocked #<N>` branch below.** `blocked` is reserved for a worker's own deliberate, terminal `blocked: <reason>` return — conflating a pending-intent narrative with `blocked` would mislabel near-complete, resumable work (`needs-human-review` or a soft label) as a dead end, exactly the mis-handling [#813](https://github.com/mattsears18/shipyard/issues/813) identified in the spec's literal reading before this paragraph existed.
 
+**Persist the return record before any per-mode handling below — the mechanical gate `worktree-reap.sh` enforces ([#1237](https://github.com/mattsears18/shipyard/issues/1237)).** A reap this step (or step B, or a later turn's pre-dispatch reap) issues below only succeeds when `.returned_agent_ids[<agent-id>]` is set in this session's state — proof THIS agent's own terminal return reached the reconcile, not merely that some other signal (a PR observed `MERGED`) looked like completion. A.0.5's crash-recovery reap and the end-of-session sweeps are the documented exceptions and pass `--bypass-return-check` instead, because by construction the agent they reap never reached this line. Write the record once here, for every mode, before any branch below runs:
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+SESSION_ID=$("${CLAUDE_PLUGIN_ROOT}/scripts/session-identity.sh" derive-session-id \
+  --repo-root "$REPO_ROOT" 2>/dev/null)
+[ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+agent_id="${.in_flight[<slot-id>].agent_id}"
+"${CLAUDE_PLUGIN_ROOT}/scripts/session-state.sh" update --session-id "${SESSION_ID:-unknown}" \
+  --set ".returned_agent_ids[\"${agent_id}\"] = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+  >/dev/null 2>&1 || true
+```
+
+Fire-and-forget, same posture as every other write-through in this file — a failed write just means a later reap fails closed (leaves the worktree for a subsequent sweep) rather than fails open. See [`worktree-reap.sh`](../../scripts/worktree-reap.sh)'s `reap` docstring and [RATIONALE → Enforcing the merged-PR-is-not-worker-done invariant](../do-work-RATIONALE.md#enforcing-the-merged-pr-is-not-worker-done-invariant-issue-1237) for the full call-site classification.
+
 For **issue work** (`shipped` / `blocked` / `errored`):
 
 - **shipped #<N> via PR #<M>** — checks may be `green`, `pending`, or `failing`. Record. **Append `<M>` to `session_prs`** (the set the [end-of-session drain](./drain.md#end-of-session-drain) watches). Don't act on `pending`/`failing` here — periodic triage (step D) will catch failures next time it runs.

@@ -94,6 +94,38 @@ add_worktree() {
   ) >/dev/null 2>&1
 }
 
+# seed_return_record <session-id> <agent-id...> — issue #1237's reconciled-
+# return gate refuses `worktree-reap.sh reap --action reaped` on an `agent-*`
+# worktree unless this session's persisted state records that agent-id as
+# having returned. All three scripts exercised below are "gated, satisfied
+# naturally" call sites per #1237's own call-site classification (see
+# do-work-RATIONALE.md): each targets a worktree whose originating worker
+# already returned and was reconciled — pre-dispatch-branch-reap.sh even
+# skips any agent-id still in `.in_flight` before it gets here. In a real
+# session steady-state.md's A.1 wrote the record before these ever run; the
+# fixture has to stand that write in, otherwise these suites would be
+# asserting against a reap the gate correctly refuses.
+#
+# Deliberately NOT solved by passing --bypass-return-check from these three
+# scripts: that would defeat the gate at exactly the call sites #1237 wants
+# gated. Only the genuine exceptions (crash-recovery, the cross-session and
+# end-of-session sweeps) carry a bypass.
+seed_return_record() {
+  local sid="$1"; shift
+  # Pin the session id these scripts derive (they read the repo-root stash
+  # when session-identity.sh has no orchestrator worktree to resolve).
+  printf '%s\n' "$sid" > "$repo/.shipyard-session-id"
+  SHIPYARD_HOME="$home" bash "${scripts_dir}/session-state.sh" init \
+    --session-id "$sid" --repo "o/r" >/dev/null 2>&1
+  local agent
+  for agent in "$@"; do
+    SHIPYARD_HOME="$home" bash "${scripts_dir}/session-state.sh" update \
+      --session-id "$sid" \
+      --set ".returned_agent_ids[\"${agent}\"] = \"2026-01-01T00:00:00Z\"" \
+      >/dev/null 2>&1
+  done
+}
+
 echo "branch-reap scripts test suite (issue #1289)"
 echo "=============================================="
 
@@ -145,6 +177,7 @@ assert_contains "$out" "reaped=false" "no matching worktree -> reaped=false"
 
 reset_repo
 add_worktree "do-work/issue-1" "agent-predispatch1"
+seed_return_record "test-session" "predispatch1"
 wt_path="$repo/.claude/worktrees/agent-predispatch1"
 (
   cd "$repo" || exit 1
@@ -184,6 +217,7 @@ assert_contains "$out" "reaped=false" "no matching do-work/issue-7 worktree -> r
 
 reset_repo
 add_worktree "do-work/issue-7" "agent-shipped7"
+seed_return_record "test-session" "shipped7"
 wt_path2="$repo/.claude/worktrees/agent-shipped7"
 (
   cd "$repo" || exit 1
@@ -219,6 +253,7 @@ assert_contains "$out" "primary_leak_restored=false" "no primary-checkout leak -
 
 reset_repo
 add_worktree "do-work/issue-3" "agent-drain3"
+seed_return_record "test-session" "drain3"
 wt_path3="$repo/.claude/worktrees/agent-drain3"
 (
   cd "$repo" || exit 1

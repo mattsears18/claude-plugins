@@ -386,6 +386,106 @@ assert_contains "$out" "dirty-worktree auto-commit: ok=true" "the dirty-worktree
 assert_branch_log_contains "$repo" "do-work/issue-46" "release bump 1.0.1 #575" \
   "auto-commit message HAS the release-bump clause when a05_bump_applied=true"
 
+# ==========================================================================
+echo
+echo "reconciled-return gate: crash-recovery still reaps with NO return record (#1237)"
+# ==========================================================================
+# Issue #1237 gates `worktree-reap.sh reap --action reaped` on an `agent-*`
+# worktree behind a persisted `.returned_agent_ids["<agent-id>"]` record —
+# proof the agent's own terminal return reached the orchestrator's reconcile.
+# A crashed agent NEVER writes that record (steady-state.md's A.1 write is
+# exactly the line it failed to reach), so crash-recovery-reap.sh passes
+# `--bypass-return-check` on its internal reap call.
+#
+# This is a REGRESSION GUARD for the composition of #1237 with #1291: #1291
+# extracted this block out of steady-state.md into this script, and #1237 was
+# authored against the pre-extraction inline block. A naive merge of the two
+# drops the bypass and silently breaks crash recovery — the reap starts
+# refusing for precisely the crashed-agent case the whole path exists to
+# handle. The negative control below is what makes this test non-vacuous: it
+# proves the gate is genuinely live against this same fixture, so the
+# positive assertion can only pass because the bypass is actually threaded.
+reset_repo
+add_worktree "some-other-branch" "agent-nogate1237"
+wt_path="$repo/.claude/worktrees/agent-nogate1237"
+
+# A REAL session-state file for this session that records the agent as
+# in-flight but has NO .returned_agent_ids entry for it — exactly the
+# on-disk state a crashed worker leaves behind.
+session_id_1237="crash-recovery-gate-1237"
+SHIPYARD_HOME="$home" bash "${scripts_dir}/session-state.sh" init \
+  --session-id "$session_id_1237" --repo "o/r" >/dev/null 2>&1
+
+# --- negative control: the gate IS live against this exact fixture ---
+# Call worktree-reap.sh directly, the way crash-recovery-reap.sh does but
+# WITHOUT the bypass. This must refuse (exit 1). If this ever starts
+# passing, the gate has regressed and the positive assertion below stops
+# proving anything.
+control_rc=0
+SHIPYARD_HOME="$home" bash "${scripts_dir}/worktree-reap.sh" reap \
+  --action reaped \
+  --worktree-path "$wt_path" \
+  --worktree-name "agent-nogate1237" \
+  --session-id "$session_id_1237" \
+  --classification dead \
+  --lock-pid null \
+  --skip-remove >/dev/null 2>&1 || control_rc=$?
+assert_exit "$control_rc" "1" \
+  "negative control: an ungated reap of the same agent-* target IS refused (gate is live)"
+if [[ -e "$wt_path" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+    "negative control: the refused reap removed nothing"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+    "negative control: the refused reap removed nothing"; fail=$((fail+1))
+fi
+
+# Truncate the shared audit log so the assertions below see ONLY the
+# crash-recovery run's own lines, not the negative control's refusal.
+audit_1237="$home/reap-audit.jsonl"
+: > "$audit_1237"
+
+# --- the real assertion: crash-recovery-reap.sh reaps anyway ---
+out="$(run_reap --repo o/r --slot-id s1237 --agent-id nogate1237 \
+  --return-text "" --harness-status failed)"
+last_line="$(printf '%s\n' "$out" | tail -1)"
+assert_contains "$last_line" "terminal=false" \
+  "a crashed (harness-status=failed) return is non-terminal"
+if [[ ! -e "$wt_path" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+    "crash-recovery reaps the worktree despite NO .returned_agent_ids record (#1237 bypass threaded)"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+    "crash-recovery reaps the worktree despite NO .returned_agent_ids record (#1237 bypass threaded)"
+  fail=$((fail+1))
+fi
+
+# The audit log must record a real `reaped`, never a `reap-refused`, for the
+# crash-recovery phase — a refusal here is the silent breakage this guards.
+audit_body_1237="$(cat "$audit_1237" 2>/dev/null)"
+assert_contains "$audit_body_1237" '"action":"reaped"' \
+  "the crash-recovery reap writes a reaped audit line"
+assert_not_contains "$audit_body_1237" '"action":"reap-refused"' \
+  "the crash-recovery reap never writes reap-refused"
+
+# Pin the exemption at its source: the bypass must appear on a real,
+# non-comment line of the script, so a future edit that drops the flag but
+# leaves the explanatory comment behind still fails here — with a pointed
+# message rather than only as a mystery reap failure elsewhere.
+bypass_code_lines="$(grep -v '^[[:space:]]*#' "$crash_reap" | grep -c -- '--bypass-return-check' || true)"
+assert_equals_1237_ok=0
+[[ "$bypass_code_lines" -ge 1 ]] && assert_equals_1237_ok=1
+if [[ "$assert_equals_1237_ok" -eq 1 ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+    "crash-recovery-reap.sh passes --bypass-return-check on its internal reap call (code, not comment)"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+    "crash-recovery-reap.sh passes --bypass-return-check on its internal reap call (code, not comment)"
+  fail=$((fail+1))
+fi
+
 echo
 printf '  %s passed, %s failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
