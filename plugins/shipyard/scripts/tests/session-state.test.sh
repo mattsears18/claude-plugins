@@ -702,7 +702,8 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-dated-haiku" --path ".tokens.totals.estimated_usd")
 assert_equals "$out" "1" "dated haiku suffix resolves to canonical pricing row"
 
-# Bare alias `opus` should resolve to the current Opus (claude-opus-4-8).
+# Bare alias `opus` should resolve to the current Opus (claude-opus-5, as of
+# #1342 — previously claude-opus-4-8, same $5/Mtok input rate either way).
 # Opus-tier input is $5/Mtok → 1M input = $5.00.
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-alias-opus" --repo "o/r" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
@@ -712,14 +713,17 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-alias-opus" --path ".tokens.totals.estimated_usd")
 assert_equals "$out" "5" "bare alias 'opus' resolves to canonical pricing row"
 
-# Bare alias `sonnet` should resolve to claude-sonnet-4-6.
+# Bare alias `sonnet` should resolve to claude-sonnet-5 (as of #1342 —
+# previously claude-sonnet-4-6). Sonnet-5's now-permanent standard input
+# rate is $2/Mtok (not the $3/Mtok claude-sonnet-4-6 still carries) → 1M
+# input = $2.00.
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-alias-sonnet" --repo "o/r" >/dev/null
 SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --session-id "tok-alias-sonnet" \
   --input 1000000 --output 0 \
   --model "sonnet" >/dev/null
 out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "tok-alias-sonnet" --path ".tokens.totals.estimated_usd")
-assert_equals "$out" "3" "bare alias 'sonnet' resolves to canonical pricing row"
+assert_equals "$out" "2" "bare alias 'sonnet' resolves to canonical pricing row"
 
 # Dated sonnet (future-proofing for when Anthropic rotates the suffix).
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "tok-dated-sonnet" --repo "o/r" >/dev/null
@@ -1554,9 +1558,10 @@ echo "== bump-tokens — degraded blended-rate pricing matches a known mix + tot
 # blended_rate = sum(mix[bucket] * price[bucket]) across
 # DEGRADED_BLEND_MIX_JQ and the billed model's PRICING_JQ row. The mix and
 # price table are re-typed here (not sourced from production) against
-# claude-sonnet-5 ($3.00/$15.00/$0.30/$3.75 per 1M) and a known total of
-# 1,000,000 tokens, so a regression in either table or the formula's wiring
-# would be caught rather than silently agreeing with itself.
+# claude-sonnet-5 ($2.00/$10.00/$0.20/$2.50 per 1M — corrected in #1342,
+# was $3.00/$15.00/$0.30/$3.75) and a known total of 1,000,000 tokens, so a
+# regression in either table or the formula's wiring would be caught rather
+# than silently agreeing with itself.
 
 tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "blend-known" --repo "o/r" >/dev/null
@@ -1568,11 +1573,11 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --degraded-total-only >/dev/null
 
 actual=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "blend-known" --path ".tokens.totals.estimated_usd")
-# blended_rate = 0.07*3.00 + 0.04*15.00 + 0.86*0.30 + 0.03*3.75 = 1.1805 per
-# 1M tokens; expected_usd = 1,000,000 * 1.1805 / 1,000,000 = 1.1805.
+# blended_rate = 0.07*2.00 + 0.04*10.00 + 0.86*0.20 + 0.03*2.50 = 0.787 per
+# 1M tokens; expected_usd = 1,000,000 * 0.787 / 1,000,000 = 0.787.
 expected=$(jq -n '
   ({"input":0.07,"output":0.04,"cache_read":0.86,"cache_creation":0.03}) as $mix
-  | ({"input":3.00,"output":15.00,"cache_read":0.30,"cache_creation":3.75}) as $p
+  | ({"input":2.00,"output":10.00,"cache_read":0.20,"cache_creation":2.50}) as $p
   | (1000000 * (($mix.input*$p.input)+($mix.output*$p.output)+($mix.cache_read*$p.cache_read)+($mix.cache_creation*$p.cache_creation))) / 1000000
 ')
 # Round both sides to 6 decimal places before comparing — the actual and
@@ -1583,7 +1588,7 @@ expected=$(jq -n '
 # a real formula mismatch, which would differ by far more than one ULP.
 actual_rounded=$(jq -n --argjson v "$actual" '($v * 1000000 | round) / 1000000')
 expected_rounded=$(jq -n --argjson v "$expected" '($v * 1000000 | round) / 1000000')
-assert_equals "$actual_rounded" "$expected_rounded" "degraded blended-rate bump: 1,000,000 tokens @ claude-sonnet-5 mix -> \$1.1805 blended rate (issue #1330)"
+assert_equals "$actual_rounded" "$expected_rounded" "degraded blended-rate bump: 1,000,000 tokens @ claude-sonnet-5 mix -> \$0.787 blended rate (issue #1330)"
 
 rm -rf "$tmphome"
 
@@ -1598,7 +1603,8 @@ echo "== bump-tokens — non-degraded (real breakdown) pricing is unaffected by 
 # input*p.input + output*p.output + cache_read*p.cache_read +
 # cache_creation*p.cache_creation, all over 1e6 — with no dependency on
 # DEGRADED_BLEND_MIX_JQ at all. Uses claude-sonnet-5
-# ($3.00/$15.00/$0.30/$3.75 per 1M).
+# ($2.00/$10.00/$0.20/$2.50 per 1M — corrected in #1342, was
+# $3.00/$15.00/$0.30/$3.75).
 
 tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "clean-unaffected" --repo "o/r" >/dev/null
@@ -1609,7 +1615,7 @@ SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
   --mode issue-work --model claude-sonnet-5 >/dev/null
 
 actual=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "clean-unaffected" --path ".tokens.totals.estimated_usd")
-expected=$(jq -n '(100000*3.00 + 20000*15.00 + 500000*0.30 + 10000*3.75) / 1000000')
+expected=$(jq -n '(100000*2.00 + 20000*10.00 + 500000*0.20 + 10000*2.50) / 1000000')
 actual_rounded=$(jq -n --argjson v "$actual" '($v * 1000000 | round) / 1000000')
 expected_rounded=$(jq -n --argjson v "$expected" '($v * 1000000 | round) / 1000000')
 assert_equals "$actual_rounded" "$expected_rounded" "non-degraded bump prices via the plain per-bucket formula, unaffected by DEGRADED_BLEND_MIX_JQ (issue #1330)"

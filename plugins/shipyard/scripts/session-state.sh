@@ -354,11 +354,12 @@ usage_error() {
 }
 
 # --------------------------------------------------------------------------
-# Pricing table — USD per 1M tokens, current as of 2026-07-13. Update
-# alongside Anthropic's pricing page whenever pricing changes OR a new model
-# ships. A model that is NOT listed here is treated as *unpriced*, not as
-# free: see the "Pricing table" section of the header comment and
-# `resolve_pricing_row` below (issue #728).
+# Pricing table — USD per 1M tokens, current as of 2026-08-13 (verified
+# against https://platform.claude.com/docs/en/about-claude/pricing — see
+# issue #1342). Update alongside Anthropic's pricing page whenever pricing
+# changes OR a new model ships. A model that is NOT listed here is treated
+# as *unpriced*, not as free: see the "Pricing table" section of the header
+# comment and `resolve_pricing_row` below (issue #728).
 #
 # Cache rows follow Anthropic's published multipliers off the input rate:
 # cache_read = 0.1x input, cache_creation (5-minute TTL) = 1.25x input.
@@ -368,13 +369,27 @@ usage_error() {
 # the stale rows over-reported every Opus dispatch by 3x, which is the same
 # "confidently wrong number" failure this issue exists to close, so they are
 # corrected here alongside the new `claude-opus-4-8` row.
+#
+# NOTE (#1342): `claude-opus-5` was missing entirely (booked every Opus-5
+# dispatch at a confident $0.00 until #728's loud-warning path caught it
+# live) — added at the same $5/$25 rate as every other current Opus-tier
+# model. While verifying that rate against the authoritative pricing page,
+# the existing `claude-sonnet-5` row was found to ALSO be wrong: it carried
+# $3/$15 (the rate Sonnet 5 was originally scheduled to rise to on
+# 2026-09-01), but Anthropic's pricing page now states that increase will
+# NOT occur — the $2/$10 introductory rate is the permanent standard price.
+# Corrected here; every Sonnet-5 dispatch billed under the old $3/$15 row
+# was over-reported by 1.5x. Historical `~/.shipyard/cost-history.jsonl`
+# records are NOT retroactively re-priced by this change (out of scope for
+# #1342 — flagged there as a separate decision for a maintainer to make).
 # --------------------------------------------------------------------------
 PRICING_JQ='{
   "claude-fable-5":    { "input": 10.00, "output": 50.00, "cache_read": 1.00, "cache_creation": 12.50 },
+  "claude-opus-5":     { "input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_creation":  6.25 },
   "claude-opus-4-8":   { "input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_creation":  6.25 },
   "claude-opus-4-7":   { "input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_creation":  6.25 },
   "claude-opus-4-6":   { "input":  5.00, "output": 25.00, "cache_read": 0.50, "cache_creation":  6.25 },
-  "claude-sonnet-5":   { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
+  "claude-sonnet-5":   { "input":  2.00, "output": 10.00, "cache_read": 0.20, "cache_creation":  2.50 },
   "claude-sonnet-4-6": { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
   "claude-sonnet-4-5": { "input":  3.00, "output": 15.00, "cache_read": 0.30, "cache_creation":  3.75 },
   "claude-haiku-4-5":  { "input":  1.00, "output":  5.00, "cache_read": 0.10, "cache_creation":  1.25 }
@@ -433,11 +448,53 @@ DEGRADED_BLEND_MIX_JQ='{
 # Bare-alias map. Some dispatch sites pass `opus` / `sonnet` / `haiku`
 # rather than a canonical id; each resolves to the *current* model of that
 # tier. Keep in lockstep with PRICING_JQ when a tier's current model rolls.
+#
+# NOTE (#1342): `opus` and `sonnet` previously pointed at `claude-opus-4-8`
+# and `claude-sonnet-4-6` respectively, even though `claude-opus-5` and
+# `claude-sonnet-5` are both now in PRICING_JQ above and are the actual
+# current-generation flagships of their tiers (shipyard's own
+# `models.issue_work` built-in default already treats `claude-sonnet-5` as
+# "the" current Sonnet — see shipyard-config.sh). That was a genuine drift,
+# not a deliberate pin: the comment above has always said "keep in lockstep
+# ... when a tier's current model rolls," and the tier rolled without this
+# map following. Repointed to the current generation; `haiku` is unchanged
+# because no newer Haiku has shipped.
 ALIASES_JQ='{
-  "opus":   "claude-opus-4-8",
-  "sonnet": "claude-sonnet-4-6",
+  "opus":   "claude-opus-5",
+  "sonnet": "claude-sonnet-5",
   "haiku":  "claude-haiku-4-5"
 }'
+
+# --------------------------------------------------------------------------
+# Session-inheritable model floor (issue #1342).
+#
+# `spike` (see agents/spike-worker.md's "Why no model pin") declares no
+# `models.spike` config default and no shim `model:` frontmatter — by
+# design, it inherits whatever model the CALLING SESSION itself is running
+# as (dispatch-rules.md's routing table: "default (session model / Opus)").
+# `resolve-dispatch-model.sh spike` correctly returns empty for exactly this
+# reason. That means neither of pricing-coverage.test.sh's other two
+# coverage scans — config `models.*` defaults, agent-shim `model:`
+# frontmatter — can ever see the model that actually bills a spike
+# dispatch: nothing in this repo names it.
+#
+# This list is the maintained floor that closes that blind spot: the
+# current flagship id for each model family a session could plausibly be
+# running as when it dispatches an un-pinned mode. Update it IN THE SAME PR
+# that adds a PRICING_JQ row for a new family flagship (a full-generation
+# bump, e.g. Opus 4.x -> Opus 5 — not a same-generation point release) —
+# deliberately kept adjacent to PRICING_JQ in this file so the two are hard
+# to update one without the other. This cannot guarantee coverage of a
+# model generation nobody has shipped yet (no static list can — see
+# pricing-coverage.test.sh's own header comment), but it turns "is the
+# CURRENTLY known session-inheritable floor priced" into an assertion CI
+# actually runs, instead of the single hardcoded `claude-opus-4-8` literal
+# this replaces, whose staleness is exactly what let #1342 happen.
+# --------------------------------------------------------------------------
+# shellcheck disable=SC2034  # read by pricing-coverage.test.sh via a source
+# grep, not referenced from within this script itself — see that test's
+# "session-inheritable" coverage section for the consumer.
+SESSION_INHERITABLE_MODELS_JQ='["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5"]'
 
 # resolve_pricing_row <model-id>
 #
