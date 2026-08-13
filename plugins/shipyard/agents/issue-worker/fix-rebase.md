@@ -193,11 +193,34 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"
       : > "$KNOWN_REWRITES"
 
+      # Capture each raw diff into a variable BEFORE parsing it (issue #1333)
+      # — a `git diff`-rewriting shell proxy some environments run (e.g. the
+      # `rtk` "Rust Token Killer" hook) can silently replace a bare or
+      # singly-piped `git diff` invocation's stdout with a non-standard,
+      # stat-like summary: no `---`/`+++` headers, no `@@` hunks, and
+      # critically no leading `diff --git a/<path> b/<path>` line, which
+      # every genuine `git diff` invocation emits first regardless of
+      # content shape. Fed that summary, the awk pattern below would
+      # silently find nothing to extract — which reads as "no known rewrite
+      # to record" and, downstream, makes step 5.8 flag this file as
+      # CORRUPTED for the sanctioned version bump it should have exempted.
+      # Assert the raw diff actually looks like `git diff` output before
+      # trusting a parse of it.
+      manifest_raw_diff=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_manifest")
+      case "$manifest_raw_diff" in
+        "" | "diff --git "*) : ;;
+        *)
+          git rebase --abort 2>/dev/null || true
+          echo "blocked rebase #<M>: git diff output for '$vc_manifest' does not look like real git-diff output (missing the leading 'diff --git' header) — a diff-rewriting shell proxy (e.g. rtk) may be active in this environment; bypass it (e.g. run 'rtk proxy git diff ...' directly) before retrying (see https://github.com/mattsears18/shipyard/issues/1333)"
+          exit 0
+          ;;
+      esac
+
       # The manifest's PR-added line contains its pre-allocated version string
       # ($pr_version, computed in item 1 above) — extract it from the
       # pre-rebase diff so the recorded text is exactly what ADDED_LINES will
       # compute, never a hand-reconstructed guess.
-      manifest_line=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_manifest" \
+      manifest_line=$(printf '%s\n' "$manifest_raw_diff" \
         | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' \
         | grep -F -- "$pr_version" || true)
       [ -n "$manifest_line" ] && printf '%s\t%s\n' "$vc_manifest" "$manifest_line" >> "$KNOWN_REWRITES"
@@ -206,14 +229,23 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       # line — gate 4 above already confirmed the only conflict is the
       # top-of-file insert, so this is unambiguous.
       if [ -n "$vc_changelog" ]; then
-        changelog_line=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_changelog" \
+        changelog_raw_diff=$(git diff "$base_sha" "origin/$HEAD_REF" -- "$vc_changelog")
+        case "$changelog_raw_diff" in
+          "" | "diff --git "*) : ;;
+          *)
+            git rebase --abort 2>/dev/null || true
+            echo "blocked rebase #<M>: git diff output for '$vc_changelog' does not look like real git-diff output (missing the leading 'diff --git' header) — a diff-rewriting shell proxy (e.g. rtk) may be active in this environment; bypass it (e.g. run 'rtk proxy git diff ...' directly) before retrying (see https://github.com/mattsears18/shipyard/issues/1333)"
+            exit 0
+            ;;
+        esac
+        changelog_line=$(printf '%s\n' "$changelog_raw_diff" \
           | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' \
           | grep -E '^### ' | head -1 || true)
         [ -n "$changelog_line" ] && printf '%s\t%s\n' "$vc_changelog" "$changelog_line" >> "$KNOWN_REWRITES"
       fi
       ```
 
-      **If either extraction comes back empty** (the `grep` found no matching added line — an unexpected shape for a resolution that just passed the manifest/CHANGELOG eligibility gates, items 1–4), leave that file's entry out of `$KNOWN_REWRITES` rather than guessing. Step 5.8 then checks that file's full added-line set unexempted, which is the safe direction: it can only make the guard *stricter* on a shape it doesn't recognize, never looser. A stricter-than-necessary bail here is recoverable (a human rebases by hand); a loosened exemption on the wrong lines is not.
+      **If either extraction comes back empty** (the `grep` found no matching added line — an unexpected shape for a resolution that just passed the manifest/CHANGELOG eligibility gates, items 1–4), leave that file's entry out of `$KNOWN_REWRITES` rather than guessing. Step 5.8 then checks that file's full added-line set unexempted, which is the safe direction: it can only make the guard *stricter* on a shape it doesn't recognize, never looser. A stricter-than-necessary bail here is recoverable (a human rebases by hand); a loosened exemption on the wrong lines is not. **This is deliberately distinct from the diff-shape check above** — an empty `manifest_line`/`changelog_line` after a *shape-verified* raw diff is a legitimate "no matching added line found" outcome handled by the safe fallback in this paragraph; a raw diff that doesn't even look like `git diff` output is a *parse-trustworthiness* failure caught earlier, before it can masquerade as that legitimate case.
 
    After resolving, fall through to step 5 (clean-tree check) and **step 5.5 (the [#436](https://github.com/mattsears18/shipyard/issues/436) conflict-marker assertion) — which is non-negotiable here**: the version-row + CHANGELOG hand-resolution is precisely the "take both, drop the markers" shape that can leave a stray `=======` / `>>>>>>>` line behind. Step 5.5's `git grep` for surviving markers is the safety net that turns a botched re-number into a clean `blocked rebase` instead of a poisoned force-push. Do not skip it.
 
