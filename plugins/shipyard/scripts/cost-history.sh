@@ -1019,11 +1019,24 @@ cmd_report() {
         # make the degraded-ness structurally visible in the JSON aggregate
         # itself, so a consumer of the json format is not required to
         # separately remember to check degraded_attribution_count before
-        # trusting estimated_usd. Mirrors the same two fields added to
-        # session-state.sh read-tokens --format json scope objects. A
-        # ledger record written by an older shipyard has no
-        # degraded_attribution_count field at all; the // 0 default
-        # already used above means it reads as not-degraded, so this is
+        # trusting estimated_usd. Named after the same two fields added to
+        # session-state.sh read-tokens --format json scope objects, but NOT
+        # bit-for-bit equivalent as of issue #1330: over there, the field is
+        # now a TRUE ceiling (total tokens times the single most expensive
+        # per-token rate in the PRICING_JQ table owned by that script),
+        # computed live from that session live scope. This ledger-level
+        # rollup instead sums *already-computed* `estimated_usd` figures
+        # out of historical session records — it has no access to
+        # PRICING_JQ at all (that table lives only in session-state.sh) and
+        # #1330 explicitly scoped out retroactively re-pricing existing
+        # ledger rows — so this field intentionally still mirrors the
+        # summed estimated_usd rather than an independently-computed
+        # ceiling. Achieving full parity here would mean either duplicating
+        # PRICING_JQ in this script or sourcing it from session-state.sh;
+        # left as a possible follow-up rather than done as a side effect of
+        # #1330. A ledger record written by an older shipyard release has
+        # no degraded_attribution_count field at all; the // 0 default
+        # already used above means it reads as not-degraded, so this stays
         # backward compatible by construction, no schema or write-path
         # change required.
         estimated_usd_degraded: (([$sessions[].degraded_attribution_count // 0] | add // 0) > 0),

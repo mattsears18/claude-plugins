@@ -380,6 +380,56 @@ PRICING_JQ='{
   "claude-haiku-4-5":  { "input":  1.00, "output":  5.00, "cache_read": 0.10, "cache_creation":  1.25 }
 }'
 
+# --------------------------------------------------------------------------
+# Degraded-attribution blended-rate mix (issue #1330) — ANALYTICALLY
+# DERIVED, NOT MEASURED.
+#
+# `--degraded-total-only` (see cmd_bump_tokens below) is fed a single
+# total_tokens figure with no input/output/cache-read/cache-creation split
+# — the harness-side gap from issue #279. Prior to #1330, that whole total
+# was priced entirely at the model's `input` rate. That is not a neutral
+# fallback: it systematically misprices in both directions relative to a
+# real agentic dispatch's actual token mix, whose composition is NOT
+# input-dominated. Every "round" of an agentic tool loop resends the
+# accumulated conversation so far as context — the overwhelming majority of
+# which was already seen (and cached) in a prior round — so it is billed at
+# the ~10x-cheaper `cache_read` rate, not the `input` rate. Only the
+# incremental new content each round (a fresh tool result, a new user
+# message) bills as `input` or `cache_creation`, and the model's own
+# generated tokens bill as `output` (priced ~5x higher than `input`). A
+# dispatch that runs many tool-call rounds — the common shape for
+# issue-work / fix-checks / investigate dispatches — therefore skews
+# heavily toward `cache_read`, not `input`.
+#
+# This mix is DERIVED FROM THAT STRUCTURAL REASONING, not measured against
+# this repo's own history: as of 2026-08-13 zero records in
+# ~/.shipyard/cost-history.jsonl carry a non-degraded `per_invocation`
+# breakdown (206/206 session records are 100% `--degraded-total-only`,
+# confirmed via `jq -s '[.[] | select((.tokens.output // 0) > 0)] |
+# length'` returning 0) — there is no historical non-degraded data to
+# derive an empirical mix from yet. Once the harness-side gap (#279) is
+# closed upstream and a meaningful sample of non-degraded per_invocation
+# entries accumulates, this mix should be RE-DERIVED empirically from
+# those records (grouped by mode/model if the mix varies meaningfully
+# across them) rather than left as an analytic estimate indefinitely.
+#
+# Fractions MUST sum to 1.0 — each represents the assumed share of a
+# degraded dispatch's total_tokens actually spent in that bucket, at that
+# bucket's per-token rate, when computing a blended per-token price. See
+# `cmd_bump_tokens`'s `--degraded-total-only` branch for how this is
+# applied, and `cmd_read_tokens` for `estimated_usd_upper_bound`'s
+# separate, mix-independent true-ceiling computation (pricing the whole
+# total at the single most expensive rate in PRICING_JQ) — a blended
+# estimate is still an estimate, not a bound, so the two fields answer
+# different questions.
+# --------------------------------------------------------------------------
+DEGRADED_BLEND_MIX_JQ='{
+  "input":          0.07,
+  "output":         0.04,
+  "cache_read":     0.86,
+  "cache_creation":  0.03
+}'
+
 # Bare-alias map. Some dispatch sites pass `opus` / `sonnet` / `haiku`
 # rather than a canonical id; each resolves to the *current* model of that
 # tier. Keep in lockstep with PRICING_JQ when a tier's current model rolls.
@@ -1115,6 +1165,7 @@ cmd_bump_tokens() {
     --argjson p "$price_row"
     --argjson unpriced "$unpriced"
     --argjson degraded "$degraded_total_only"
+    --argjson mix "$DEGRADED_BLEND_MIX_JQ"
   )
 
   local issue_branch=""
@@ -1180,13 +1231,34 @@ cmd_bump_tokens() {
   # reused in every accumulator below. `$p` (the pricing row) and `$unpriced`
   # are resolved shell-side by `resolve_pricing_row` so the warning and the
   # arithmetic can never disagree about whether the model was priced.
+  #
+  # Degraded branch (issue #1330): a `--degraded-total-only` bump has its
+  # entire total folded into `$input` (the strict-path fields are all 0 —
+  # enforced above), so pricing it at `$p.input` alone is exactly what the
+  # non-degraded formula below already reduces to for that shape. Instead,
+  # apply `$mix` (DEGRADED_BLEND_MIX_JQ) as a blended per-token rate: the
+  # assumed fraction of the total actually spent in each bucket, times that
+  # bucket's rate. This replaces the pre-#1330 behavior of pricing 100% of
+  # a degraded total at the (comparatively expensive, and structurally
+  # wrong-shaped for an agentic dispatch) input rate. The non-degraded
+  # branch is byte-for-byte the pre-existing formula — a real breakdown
+  # bump's price never depends on `$mix`.
   local jq_pipeline='
     (
+      if $degraded == 1 then
+        ($input * (
+             (($mix.input          // 0) * ($p.input // 0))
+           + (($mix.output         // 0) * ($p.output // 0))
+           + (($mix.cache_read     // 0) * ($p.cache_read // 0))
+           + (($mix.cache_creation // 0) * ($p.cache_creation // 0))
+         )) / 1000000
+      else
         ($input * ($p.input // 0)
          + $output * ($p.output // 0)
          + $cache_read * ($p.cache_read // 0)
          + $cache_creation * ($p.cache_creation // 0)
         ) / 1000000
+      end
       ) as $usd_delta
     | .tokens.unpriced_models //= []
     | (if $unpriced == 1
@@ -1320,13 +1392,32 @@ cmd_read_tokens() {
     # degraded, no upper-bound marker — so this stays backward compatible
     # without any change to the write path (bump-tokens) or a stored
     # schema.
-    jq --arg key "$key" "
+    #
+    # estimated_usd_upper_bound is a TRUE ceiling (issue #1330), not a
+    # mirror of estimated_usd. Before #1330, a degraded scope's
+    # estimated_usd was itself computed by pricing the whole total at the
+    # `input` rate, which — loosely — over-stated cost relative to the
+    # (cheaper) cache_read-dominated mix a real dispatch actually has, so
+    # mirroring it as "the upper bound" was a defensible approximation.
+    # Now that bump-tokens prices a degraded total with a blended mix
+    # (DEGRADED_BLEND_MIX_JQ, itself an assumption, not a measurement),
+    # estimated_usd is a best-effort estimate that could in principle land
+    # on either side of the true cost — it is no longer definitionally a
+    # ceiling. The true ceiling is computed independently of both the mix
+    # and whichever model billed this scope: the scope's total token count
+    # (every bucket summed, since a degraded bump could in principle have
+    # been priced at any bucket's rate) times the single most expensive
+    # per-token rate found anywhere in PRICING_JQ.
+    jq --arg key "$key" \
+       --argjson pricing "$(jq -c -n "$PRICING_JQ")" "
       ($scope_jq) as \$__scope
       | (((\$__scope.degraded_attribution_count // 0)) > 0) as \$__degraded
+      | ([\$pricing[] | .input, .output, .cache_read, .cache_creation] | max) as \$__max_rate_per_1m
+      | ((\$__scope.input // 0) + (\$__scope.output // 0) + (\$__scope.cache_read // 0) + (\$__scope.cache_creation // 0)) as \$__total_tokens
       | \$__scope + {
           unpriced_models: ($unpriced_jq),
           estimated_usd_degraded: \$__degraded,
-          estimated_usd_upper_bound: (if \$__degraded then (\$__scope.estimated_usd // 0) else null end)
+          estimated_usd_upper_bound: (if \$__degraded then ((\$__total_tokens * \$__max_rate_per_1m) / 1000000) else null end)
         }
       " "$target"
     return 0
@@ -1372,7 +1463,7 @@ cmd_read_tokens() {
     | (\$__cost_degraded_count > 0) as \$__cost_degraded
     | (\$scope.estimated_usd | (. * 100 | round) as \$cents | \"\$\" + ((\$cents / 100 | floor) | tostring) + \".\" + ((\$cents % 100) | if . < 10 then \"0\\(.)\" else \"\\(.)\" end)) as \$__usd_formatted
     | (if \$__cost_degraded then
-         \"~\" + \$__usd_formatted + \" (upper bound — token breakdown unavailable for \" + (\$__cost_degraded_count | tostring) + \"/\" + (\$count | tostring) + \" dispatches)\"
+         \"~\" + \$__usd_formatted + \" (blended-rate estimate — token breakdown unavailable for \" + (\$__cost_degraded_count | tostring) + \"/\" + (\$count | tostring) + \" dispatches)\"
        else
          \$__usd_formatted
        end) as \$__cost_display

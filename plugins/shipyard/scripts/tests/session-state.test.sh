@@ -1545,6 +1545,87 @@ assert_equals "$out" "2" "rejected --input 0 bump did not increment degraded_att
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== bump-tokens — degraded blended-rate pricing matches a known mix + total (issue #1330)"
+# --------------------------------------------------------------------------
+# Regression coverage for the blended-mix formula itself (structural
+# markers are covered separately below, and were already covered pre-#1330
+# for #1327). A --degraded-total-only bump's estimated_usd must equal
+# total_tokens * blended_rate / 1e6, where
+# blended_rate = sum(mix[bucket] * price[bucket]) across
+# DEGRADED_BLEND_MIX_JQ and the billed model's PRICING_JQ row. The mix and
+# price table are re-typed here (not sourced from production) against
+# claude-sonnet-5 ($3.00/$15.00/$0.30/$3.75 per 1M) and a known total of
+# 1,000,000 tokens, so a regression in either table or the formula's wiring
+# would be caught rather than silently agreeing with itself.
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "blend-known" --repo "o/r" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "blend-known" \
+  --input 1000000 \
+  --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+
+actual=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "blend-known" --path ".tokens.totals.estimated_usd")
+# blended_rate = 0.07*3.00 + 0.04*15.00 + 0.86*0.30 + 0.03*3.75 = 1.1805 per
+# 1M tokens; expected_usd = 1,000,000 * 1.1805 / 1,000,000 = 1.1805.
+expected=$(jq -n '
+  ({"input":0.07,"output":0.04,"cache_read":0.86,"cache_creation":0.03}) as $mix
+  | ({"input":3.00,"output":15.00,"cache_read":0.30,"cache_creation":3.75}) as $p
+  | (1000000 * (($mix.input*$p.input)+($mix.output*$p.output)+($mix.cache_read*$p.cache_read)+($mix.cache_creation*$p.cache_creation))) / 1000000
+')
+# Round both sides to 6 decimal places before comparing — the actual and
+# expected values are computed via algebraically-equivalent but
+# differently-ordered floating-point arithmetic (production's jq pipeline
+# vs. this test's independent re-derivation), which can differ by a
+# few ULPs even when correct. Rounding removes that noise without masking
+# a real formula mismatch, which would differ by far more than one ULP.
+actual_rounded=$(jq -n --argjson v "$actual" '($v * 1000000 | round) / 1000000')
+expected_rounded=$(jq -n --argjson v "$expected" '($v * 1000000 | round) / 1000000')
+assert_equals "$actual_rounded" "$expected_rounded" "degraded blended-rate bump: 1,000,000 tokens @ claude-sonnet-5 mix -> \$1.1805 blended rate (issue #1330)"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
+echo "== bump-tokens — non-degraded (real breakdown) pricing is unaffected by the blended-mix change (issue #1330)"
+# --------------------------------------------------------------------------
+# #1330 only touches the --degraded-total-only branch of the pricing
+# formula (see the `if $degraded == 1 then ... else ... end` split in
+# cmd_bump_tokens). This asserts the plain-breakdown path — real --output /
+# --cache-read / --cache-creation counts, no --degraded-total-only — still
+# prices exactly as the pre-#1330 formula:
+# input*p.input + output*p.output + cache_read*p.cache_read +
+# cache_creation*p.cache_creation, all over 1e6 — with no dependency on
+# DEGRADED_BLEND_MIX_JQ at all. Uses claude-sonnet-5
+# ($3.00/$15.00/$0.30/$3.75 per 1M).
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "clean-unaffected" --repo "o/r" >/dev/null
+
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "clean-unaffected" \
+  --input 100000 --output 20000 --cache-read 500000 --cache-creation 10000 \
+  --mode issue-work --model claude-sonnet-5 >/dev/null
+
+actual=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "clean-unaffected" --path ".tokens.totals.estimated_usd")
+expected=$(jq -n '(100000*3.00 + 20000*15.00 + 500000*0.30 + 10000*3.75) / 1000000')
+actual_rounded=$(jq -n --argjson v "$actual" '($v * 1000000 | round) / 1000000')
+expected_rounded=$(jq -n --argjson v "$expected" '($v * 1000000 | round) / 1000000')
+assert_equals "$actual_rounded" "$expected_rounded" "non-degraded bump prices via the plain per-bucket formula, unaffected by DEGRADED_BLEND_MIX_JQ (issue #1330)"
+# .tokens.degraded_attribution_count is only ever written by a degraded
+# bump (see cmd_bump_tokens's `if $degraded == 1` branch) — a session that
+# never took that branch leaves the field entirely absent, which `read
+# --path` reports as the literal string "null", not "0". The `// 0`
+# normalization lives in every downstream reader (read-tokens,
+# cost-history.sh); a bare path read here intentionally observes the raw,
+# unnormalized value.
+out=$(SHIPYARD_HOME="$tmphome" bash "$helper" read --session-id "clean-unaffected" --path ".tokens.degraded_attribution_count // 0")
+assert_equals "$out" "0" "non-degraded bump does not increment degraded_attribution_count"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== bump-tokens/read-tokens — per_issue bucket disambiguates real output:0 from degraded-folded output:0 (#1218)"
 # --------------------------------------------------------------------------
 # Two issues in the same session: #601 gets one real, non-degraded bump
@@ -1616,20 +1697,30 @@ assert_contains "$degraded_comment" "1 dispatch(es)" "degraded PR's advisory nam
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
-echo "== read-tokens — estimated_usd_degraded / estimated_usd_upper_bound structurally mark a degraded scope (#1327)"
+echo "== read-tokens — estimated_usd_degraded / estimated_usd_upper_bound structurally mark a degraded scope (#1327, #1330)"
 # --------------------------------------------------------------------------
 # Issue #1327: a fully- or partly-degraded scope's estimated_usd read as a
 # measured figure with nothing in the VALUE marking it an upper bound (the
 # #1218 UNRELIABLE advisory is prose alongside the figure, not a field a
 # JSON consumer is forced to notice). This adds two structural fields to
 # `read-tokens --format json`'s scope object — estimated_usd_degraded
-# (bool) and estimated_usd_upper_bound (mirrors estimated_usd when
-# degraded, else null) — and changes the `--format comment` cost row
-# itself to read "~$X.XX (upper bound — ...)" when degraded. Three scopes:
+# (bool) and estimated_usd_upper_bound — and changes the `--format comment`
+# cost row itself to carry a distinct marker when degraded. Three scopes:
 # PR 901 fully degraded (both its dispatches used --degraded-total-only),
 # PR 902 partly degraded (one normal + one degraded dispatch), PR 903
 # clean (no degraded dispatches at all — must render byte-identically to
 # pre-#1327 behavior).
+#
+# Issue #1330 changed what estimated_usd_upper_bound MEANS for a degraded
+# scope. Under #1327 it mirrored estimated_usd (which was itself computed
+# by pricing the whole degraded total at the `input` rate — a defensible
+# stand-in for "upper bound" at the time). #1330 replaced that pricing
+# with a blended-mix estimate (DEGRADED_BLEND_MIX_JQ) that is no longer
+# definitionally a ceiling, so estimated_usd_upper_bound is now computed
+# independently as a TRUE ceiling: the scope's total token count times the
+# single most expensive per-token rate anywhere in PRICING_JQ (currently
+# claude-fable-5's $50.00/1M output rate). The two fields are expected to
+# DIVERGE below — that divergence is the point of #1330, not a bug.
 
 tmphome=$(mktmphome)
 SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "struct-deg" --repo "o/r" >/dev/null
@@ -1670,7 +1761,19 @@ out=$(printf '%s' "$json_901" | jq -r '.estimated_usd_degraded')
 assert_equals "$out" "true" "PR 901 (fully degraded): estimated_usd_degraded == true"
 usd_901=$(printf '%s' "$json_901" | jq -r '.estimated_usd')
 upper_901=$(printf '%s' "$json_901" | jq -r '.estimated_usd_upper_bound')
-assert_equals "$upper_901" "$usd_901" "PR 901 (fully degraded): estimated_usd_upper_bound mirrors estimated_usd"
+# True-ceiling formula (issue #1330): scope's total token count (every
+# bucket summed) times the single most expensive per-token rate anywhere
+# in PRICING_JQ — independently re-derived here, not copy-pasted from
+# production, so the test would catch a formula regression on either side.
+expected_upper_901=$(jq -n --argjson total "$(printf '%s' "$json_901" | jq -r '(.input // 0) + (.output // 0) + (.cache_read // 0) + (.cache_creation // 0)')" '($total * 50.00) / 1000000')
+assert_equals "$upper_901" "$expected_upper_901" "PR 901 (fully degraded): estimated_usd_upper_bound == total_tokens * max pricing-table rate (true ceiling, issue #1330)"
+if [[ "$upper_901" == "$usd_901" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "PR 901 (fully degraded): estimated_usd_upper_bound no longer mirrors estimated_usd (issue #1330 — the blended estimate diverges from the true ceiling)"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "PR 901 (fully degraded): estimated_usd_upper_bound no longer mirrors estimated_usd (issue #1330 — the blended estimate diverges from the true ceiling)"
+  pass=$((pass+1))
+fi
 
 # --- JSON: partly degraded scope — still marked, same as fully degraded ---
 json_902=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 902 --format json)
@@ -1678,7 +1781,15 @@ out=$(printf '%s' "$json_902" | jq -r '.estimated_usd_degraded')
 assert_equals "$out" "true" "PR 902 (partly degraded): estimated_usd_degraded == true"
 usd_902=$(printf '%s' "$json_902" | jq -r '.estimated_usd')
 upper_902=$(printf '%s' "$json_902" | jq -r '.estimated_usd_upper_bound')
-assert_equals "$upper_902" "$usd_902" "PR 902 (partly degraded): estimated_usd_upper_bound mirrors estimated_usd"
+expected_upper_902=$(jq -n --argjson total "$(printf '%s' "$json_902" | jq -r '(.input // 0) + (.output // 0) + (.cache_read // 0) + (.cache_creation // 0)')" '($total * 50.00) / 1000000')
+assert_equals "$upper_902" "$expected_upper_902" "PR 902 (partly degraded): estimated_usd_upper_bound == total_tokens * max pricing-table rate (true ceiling, issue #1330)"
+if [[ "$upper_902" == "$usd_902" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "PR 902 (partly degraded): estimated_usd_upper_bound no longer mirrors estimated_usd (issue #1330)"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "PR 902 (partly degraded): estimated_usd_upper_bound no longer mirrors estimated_usd (issue #1330)"
+  pass=$((pass+1))
+fi
 
 # --- JSON: clean scope — no new caveat, upper_bound is null ---
 json_903=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 903 --format json)
@@ -1687,11 +1798,13 @@ assert_equals "$out" "false" "PR 903 (clean): estimated_usd_degraded == false"
 out=$(printf '%s' "$json_903" | jq -r '.estimated_usd_upper_bound')
 assert_equals "$out" "null" "PR 903 (clean): estimated_usd_upper_bound == null"
 
-# --- comment: fully degraded row reads as an explicit upper bound ---
+# --- comment: fully degraded row reads as an explicit blended-rate
+# estimate, not an upper bound (issue #1330 — the figure is no longer
+# definitionally a ceiling once bump-tokens applies the blended mix).
 comment_901=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 901 --format comment)
 cost_line_901=$(printf '%s' "$comment_901" | grep "Estimated cost")
 assert_contains "$cost_line_901" "~\$" "PR 901 (fully degraded) cost row is prefixed with ~\$, not a bare \$ figure"
-assert_contains "$cost_line_901" "upper bound" "PR 901 (fully degraded) cost row names itself an upper bound"
+assert_contains "$cost_line_901" "blended-rate estimate" "PR 901 (fully degraded) cost row names itself a blended-rate estimate (issue #1330)"
 assert_contains "$cost_line_901" "unavailable for 2/2 dispatches" "PR 901 (fully degraded) cost row names both dispatches as degraded"
 
 # --- comment: partly degraded row is marked too, with the correct N/M ---
