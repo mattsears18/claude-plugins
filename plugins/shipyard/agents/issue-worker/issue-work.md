@@ -246,11 +246,14 @@ See `shipyard:worker-preamble` § "Never disable a committed security or supply-
 
 Closes [#356](https://github.com/mattsears18/shipyard/issues/356) — the **phantom-merge** failure mode. A worker can reach the end of step 4 with `git status` clean (no working-tree edits, no staged changes) yet still proceed to step 5 and open a PR whose body claims substantial scope. The PR merges, the body's `Closes #N` keyword closes the linked issue, and the backlog claims work shipped — but nothing landed. See [RATIONALE → Phantom-merge repro](issue-work-RATIONALE.md#phantom-merge-repro-356) for the concrete repro that motivated this guard.
 
-**Before any `git add` / `git commit` / `git push` / `gh pr create` call**, verify the worktree has at least one changed file vs the base branch. The cheapest signal is `git diff --name-only` against the upstream branch (already fetched in step 3); when the count is 0, bail loudly rather than open an empty PR:
+**Before any `git add` / `git commit` / `git push` / `gh pr create` call**, verify the worktree has at least one changed file vs the base branch — either a committed diff, or (rarer) uncommitted working-tree changes. When both are empty, bail loudly rather than open an empty PR.
+
+**This check runs as a standalone, testable script, not an inline snippet ([#1340](https://github.com/mattsears18/shipyard/issues/1340)).** The inline form is deterministically **refused** by the worktree-isolation Bash guard in an isolated session (the same [#1336](https://github.com/mattsears18/shipyard/issues/1336) refusal class as fix-rebase.md §5.7), and its own remediation over-counts one half of this two-check guard while under-counting the other, in opposite directions, under a diff-rewriting shell proxy — no single correction covers both. See [RATIONALE → Why the phantom-merge guard is a script, not an inline snippet](issue-work-RATIONALE.md#why-the-phantom-merge-guard-is-a-script-not-an-inline-snippet-1340) for the measured evidence.
+
+[`assert-worktree-change-present.sh`](../../scripts/assert-worktree-change-present.sh) fixes both directions: a file redirect plus blank-line shape check plus ref-vs-itself self-check for the committed-diff comparison (the over-count defense), and a trailing-newline check on the porcelain result (the under-count defense). Same fail-loud posture as [`assert-rebase-diff-nonempty.sh`](../../scripts/assert-rebase-diff-nonempty.sh). Do not re-inline the check — call the script:
 
 ```bash
-# Re-derive WORKTREE_PATH per worker-preamble § "Worktree-reaped escape hatch"
-# (variables don't survive across Bash tool calls).
+# Re-derive WORKTREE_PATH (variables don't survive across Bash tool calls).
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 CURRENT_TOPLEVEL="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; then
@@ -258,26 +261,28 @@ if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; the
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
-
-# Phantom-merge guard — count changed files vs the base branch.
-# Compare against origin/<default-branch> (already fetched in step 3).
-DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-CHANGED_FILES=$(git diff --name-only "origin/$DEFAULT_BRANCH"...HEAD | wc -l | tr -d ' ')
-if [ "$CHANGED_FILES" = "0" ]; then
-  # Also check for uncommitted-but-unstaged work (rare — but the worker
-  # might have edited files without staging them). If both committed AND
-  # working-tree diffs are empty, the implementation truly produced nothing.
-  WORKING_TREE_DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
-  if [ "$WORKING_TREE_DIRTY" = "0" ]; then
-    echo "blocked #<N> at pre-pr-create: implementation produced no changes — manual triage required"
-    exit 0
-  fi
-fi
 ```
 
-**Why bail rather than retry.** An empty diff after step 4 means either the issue was already fixed, your implementation was wrong and got reverted, or the issue is misclassified — in all three cases surface it via `blocked:` rather than opening an empty PR (a refuse-class bail lands `needs-human-review` per [#521](https://github.com/mattsears18/shipyard/issues/521)). Opening an empty PR and letting the merge fire the `Closes #N` keyword corrupts the backlog signal and forces a re-open + investigation. See [RATIONALE → Why bail rather than retry](issue-work-RATIONALE.md#why-bail-rather-than-retry-on-an-empty-diff-356) for the full three-case breakdown.
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+```
 
-**Scope: this check applies to issue-work mode only.** Do not propagate the guard to `fix-checks-only` / `fix-rebase` / `fix-main-ci` / `fix-failing-prs-batch`. Those modes can legitimately produce 0-file diffs — a fix-checks-only retry where the original CI failure resolved itself between dispatch and the agent's first read, a fix-rebase that's already up-to-date with main, etc. The phantom-merge failure mode is specific to issue-work because only issue-work writes `Closes #N` into the PR body; the other modes never auto-close an issue.
+Then, as its own plain Bash call (`origin/<default-branch>` is already fetched in step 3):
+
+```bash
+DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-change-present.sh" "origin/$DEFAULT_BRANCH"
+```
+
+Read the exit status and stdout:
+
+- **exit 0, `OK: ...`** — a real change exists. Proceed.
+- **exit 1, `EMPTY_DIFF: ...`** — no committed diff and a clean working tree. Bail: `echo "blocked #<N> at pre-pr-create: implementation produced no changes — manual triage required"` then `exit 0`.
+- **exit 2, `INDETERMINATE: <reason>`** — could not establish a trustworthy result. **Treat exactly like exit 1 — never as a pass.** Bail: `echo "blocked #<N> at pre-pr-create: could not verify the implementation produced changes (<reason>) — manual triage required"` then `exit 0`.
+
+**Why bail rather than retry.** An empty diff after step 4 means the issue was already fixed, the implementation was wrong and got reverted, or the issue is misclassified — surface it via `blocked:` rather than opening an empty PR (`needs-human-review` per [#521](https://github.com/mattsears18/shipyard/issues/521)). See [RATIONALE → Why bail rather than retry](issue-work-RATIONALE.md#why-bail-rather-than-retry-on-an-empty-diff-356) for the full breakdown.
+
+**Scope: issue-work mode only.** Do not propagate to `fix-checks-only` / `fix-rebase` / `fix-main-ci` / `fix-failing-prs-batch` — those modes can legitimately produce 0-file diffs, and only issue-work writes `Closes #N` into the PR body.
 
 ### 4.6 Pre-push local unit-test gate ([#658](https://github.com/mattsears18/shipyard/issues/658))
 
