@@ -291,8 +291,11 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
 
 Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<deferred_live>`, and `<unreaped_worktrees>`; pipe them into the summary alongside `<reaped_stale>` and `<deferred_stale>` from step 3b. A non-zero `<deferred_live>` is a signal worth surfacing — it means an agent was still running when end-of-session cleanup fired (termination declared too early). The worktree survives so the next session's step 3b sweep can finish reaping once the PID is actually dead.
 
-6. **Reap the orchestrator's own worktree — last, after the summary prints.** The orchestrator worktree (`.claude/worktrees/orchestrator-<session-id>`) is still around because the orchestrator was running inside it. After the [End-of-session summary](#end-of-session-summary) prints — and only then; you can't remove the worktree you're still cwd'd into — jump back to the user's primary checkout (read-only at this point), then unlock + remove:
+6. **Reap the orchestrator's own worktree — last, after the summary prints.** The orchestrator worktree (`.claude/worktrees/orchestrator-<session-id>`) is still around because the orchestrator was running inside it. After the [End-of-session summary](#end-of-session-summary) prints — and only then; you can't remove the worktree you're still cwd'd into — jump back to the user's primary checkout (read-only at this point), then unlock + remove.
 
+   **The `git -C` in the block below is exempted from [`orchestrator-git-dash-c-scan.sh`](../../scripts/orchestrator-git-dash-c-scan.sh) by the marker immediately preceding it** — it targets THIS SESSION'S OWN worktree (the exact path the orchestrator has been cwd'd into all session), not a redirect to some OTHER worktree. That's the sanctioned shape `shipyard:worker-preamble`'s own mid-session cwd-anchoring pattern recommends (`git -C "$WORKTREE_PATH" ...` against your own worktree), not the refused one (issue [#1316](https://github.com/mattsears18/shipyard/issues/1316)'s refusal fires on a redirect to a DIFFERENT worktree than the caller's own). This is a deliberate, reviewed exemption (issue [#1323](https://github.com/mattsears18/shipyard/issues/1323)), not an oversight left for a future sweep to catch:
+
+   <!-- orchestrator-git-dash-c-scan: allow -->
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
