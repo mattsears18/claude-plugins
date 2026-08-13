@@ -138,6 +138,11 @@ warning: this repo's primary checkout is $SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) 
   (#1167) — 0.3/0.4 only.
 EOF
     fi
+    SCV=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-skill-cache-staleness.sh" "$STALENESS_DEFAULT_BRANCH")
+    if [ "${SCV#stale:}" != "$SCV" ]; then
+      SHIPYARD_SKILL_CACHE_STALE="${SCV#stale:}"
+      echo "warn: stale skill cache: $SHIPYARD_SKILL_CACHE_STALE" >&2
+    fi
   fi
 fi
 
@@ -226,7 +231,7 @@ esac
 
 `SHIPYARD_CONFIG_SCHEMA_FAILURE` is session-local working memory (like `SHIPYARD_UNCONFIGURED`) — not mirrored to the session-state file. It's set only on the schema-failure path; when unset, the end-of-session summary omits the `Config:` line entirely (silence is the right default for a clean config load). Treat the two as mutually-exclusive-ish in practice: `SHIPYARD_UNCONFIGURED=1` means no `shipyard.config.json` at all, while `SHIPYARD_CONFIG_SCHEMA_FAILURE` means one is present but invalid.
 
-**`SHIPYARD_PLUGIN_ROOT_SHA` and `SHIPYARD_PLUGIN_ROOT_STALE` ([#907](https://github.com/mattsears18/shipyard/issues/907)).** Session-local working memory variables (not mirrored to session-state file). `SHIPYARD_PLUGIN_ROOT_SHA` records the short commit sha the resolved `CLAUDE_PLUGIN_ROOT` sits at. `SHIPYARD_PLUGIN_ROOT_STALE` is set in the dogfooding case when the primary checkout is behind `origin/<default-branch>`. Issue [#1167](https://github.com/mattsears18/shipyard/issues/1167) found post-relocation worktrees landing stale despite `baseRef: fresh`, so step 0.5 now runs an explicit [post-relocation staleness assertion](#05-move-into-the-orchestrators-worktree).
+**`SHIPYARD_PLUGIN_ROOT_SHA` and `SHIPYARD_PLUGIN_ROOT_STALE` ([#907](https://github.com/mattsears18/shipyard/issues/907)).** Session-local working memory (not mirrored to session-state file). `SHIPYARD_PLUGIN_ROOT_SHA` records the short commit sha `CLAUDE_PLUGIN_ROOT` sits at. `SHIPYARD_PLUGIN_ROOT_STALE` is set in the dogfooding case when the primary checkout is behind `origin/<default-branch>`. Issue [#1167](https://github.com/mattsears18/shipyard/issues/1167) found post-relocation worktrees landing stale despite `baseRef: fresh`, so step 0.5 runs an explicit [post-relocation staleness assertion](#05-move-into-the-orchestrators-worktree). `SHIPYARD_SKILL_CACHE_STALE`: `detect-skill-cache-staleness.sh` (#1319)
 
 **`.shipyard-plugin-root-version` stash ([#1304](https://github.com/mattsears18/shipyard/issues/1304)).** Step 0.5 also writes the resolved `CLAUDE_PLUGIN_ROOT`'s own `.claude-plugin/plugin.json` `.version` to `.shipyard-plugin-root-version` in the orchestrator worktree — a start-of-session snapshot for [cleanup-summary.md's end-of-session drift check](../cleanup-summary.md#end-of-session-summary) to diff against a fresh re-resolution, surfacing a mid-session plugin update (the harness's own plugin manager can silently bump the installed version while a session is live) instead of leaving it invisible for the rest of the run.
 
