@@ -295,19 +295,30 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
 5.7. **Post-rebase empty-diff guard — bail if the conflict resolution dropped the PR's change (issue [#646](https://github.com/mattsears18/shipyard/issues/646)).** The conflict-marker assertion (step 5.5) catches *unresolved* markers and the monotonicity scan (step 5.6) catches deleted CHANGELOG headings — but neither catches a resolution that **silently discards the PR's entire substantive change**, collapsing the branch to an empty diff vs base. This is the silent-data-loss failure mode from issue #646: a `fix-rebase` worker resolved a same-line provenance conflict by taking main's side **wholesale** (a whole-file `--theirs`, discarding the PR's non-conflicting substantive hunk in the same file), the net diff vs base went empty, the force-push **auto-closed the PR** (GitHub auto-closes a PR whose head force-pushes to an empty-diff state), and the worker returned `rebased #<M>` (success) — so the shipped work was lost with no `blocked` signal. The #646 repro: PR #2165 (a PostHog Region-column pin) force-pushed to an empty diff, auto-closed, and its issue reverted to OPEN; the change had to be redone from scratch.
 
-   **Before the force-push, compare the PR's net contribution vs base before and after the rebase. If it was non-empty before and is empty after, the resolution dropped the change — bail instead of pushing.** `origin/$HEAD_REF` still points at the pre-rebase head (the force-push is step 6, not yet run), so it's the pre-rebase baseline; the local rebased `HEAD` is based directly on `origin/$DEFAULT_BRANCH`, so its two-dot diff vs that base **is** the PR's net contribution:
+   **Before the force-push, compare the PR's net contribution vs base before and after the rebase. If it was non-empty before and is empty after, the resolution dropped the change — bail instead of pushing.** `origin/$HEAD_REF` still points at the pre-rebase head (the force-push is step 6, not yet run), so it's the pre-rebase baseline; the local rebased `HEAD` is based directly on `origin/$DEFAULT_BRANCH`, so its two-dot diff vs that base **is** the PR's net contribution.
+
+   **The check runs as a standalone, testable script, not an inline snippet ([#1336](https://github.com/mattsears18/shipyard/issues/1336)).** The original inline form was two `$(git diff --name-only ... | wc -l | tr -d ' ')` command substitutions plus an inline `if`, all in one Bash call. Two independent, reproduced failures made that shape unsafe, and they compound:
+
+   1. **It doesn't run.** Git command substitutions combined with an inline `if` is exactly the shape the harness's worktree-isolation Bash guard deterministically **refuses** (*"too complex to verify that it stays inside the worktree; break it into plain, separate commands"*) — the [#802](https://github.com/mattsears18/shipyard/issues/802) refusal class. A `fix-rebase` worker is **always** worktree-isolated (see [`hooks/enforce-worktree-isolation.sh`](../../hooks/enforce-worktree-isolation.sh)'s guarded set), so the guard as prescribed could never execute.
+   2. **The refusal's own remediation is the vulnerable shape.** "Break it into plain, separate commands" yields a bare `git diff --name-only <refs> | wc -l` as the entirety of one Bash call — precisely what a diff-rewriting shell proxy (`rtk`, [#1333](https://github.com/mattsears18/shipyard/issues/1333)) rewrites. Measured: a genuinely-empty diff comes back as a single `\n` byte, so `wc -l` returns **1, not 0** — the `POST_FILES == 0` bail can then **never** fire, silently disabling this guard for exactly the case it exists to catch. (Against a non-empty diff the same shape returned 9 for a true count of 6.)
+
+   [`assert-rebase-diff-nonempty.sh`](../../scripts/assert-rebase-diff-nonempty.sh) fixes both: one plain `bash <script>` call is a shape the isolation guard accepts, and its internal `git diff` calls run in a separate process the proxy does not rewrite. It also refuses to emit a verdict it can't trust — it writes each `--name-only` result to a file (never a pipeline or a `$(...)` capture, which would strip the trailing-newline evidence), shape-checks it (real `--name-only` output never contains a blank line), and self-checks that a ref diffed against *itself* produces zero bytes in this environment. Same fail-loud posture as §5.8's [`verify-added-lines-survived.sh`](../../scripts/verify-added-lines-survived.sh) ([#1175](https://github.com/mattsears18/shipyard/issues/1175)). Do not re-inline the check — call the script:
 
    ```bash
-   # Pre-rebase net contribution (the original head's change vs the rebased-onto base).
-   PRE_FILES=$(git diff --name-only "origin/$DEFAULT_BRANCH...origin/$HEAD_REF" | wc -l | tr -d ' ')
-   # Post-rebase net contribution (the rebased head's change vs the same base).
-   POST_FILES=$(git diff --name-only "origin/$DEFAULT_BRANCH" HEAD | wc -l | tr -d ' ')
-   if [ "${PRE_FILES:-0}" -gt 0 ] && [ "${POST_FILES:-0}" = "0" ]; then
-     git rebase --abort 2>/dev/null || true
-     echo "blocked rebase #<M>: rebase produced an empty diff (conflict resolution dropped the PR's change) — needs manual rebase"
-     exit 0
-   fi
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
    ```
+
+   Then, as its own plain Bash call:
+
+   ```bash
+   bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-rebase-diff-nonempty.sh" "origin/$DEFAULT_BRANCH" "origin/$HEAD_REF"
+   ```
+
+   Read the exit status and stdout:
+
+   - **exit 0, `OK: pre=<n> post=<n> ...`** — the PR's net contribution survived. Proceed to §5.8.
+   - **exit 1, `EMPTY_DIFF: ...`** — the rebase collapsed the PR's change. `git rebase --abort 2>/dev/null || true`, then bail with the canonical string: `blocked rebase #<M>: rebase produced an empty diff (conflict resolution dropped the PR's change) — needs manual rebase`
+   - **exit 2, `INDETERMINATE: <reason>`** — the script could not establish a trustworthy result (unresolvable ref, a failed `git diff`, or output that isn't real `--name-only` output because a rewriting proxy is active). **Treat exactly like exit 1 — never as a pass.** Abort the rebase and bail with `blocked rebase #<M>: could not verify the post-rebase diff is non-empty (<reason>) — needs manual rebase`.
 
    **Never force-push a branch whose net change vs base vanished.** Bailing leaves `origin/$HEAD_REF` and the PR untouched (the PR stays DIRTY for a human to rebase by hand) — the safe outcome whether the emptiness came from a dropped change (the data loss to prevent) or from the change having already landed on main via a sibling PR (in which case a human closes the PR cleanly rather than letting a silent force-push auto-close it). The guard is gated on `PRE_FILES > 0` so a PR that was *already* empty before the rebase doesn't false-bail. This assertion runs for **both** the conflict-resolved path and the clean-rebase path — a clean rebase whose result is empty is just as much a silent auto-close hazard. This is the worker-side root fix for #646; never resolve a conflict in a way that can produce this state in the first place (see the hunk-level resolution rule in step 4).
 

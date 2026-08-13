@@ -82,6 +82,20 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local needle="$2"
+  local label="$3"
+  if grep -qF -- "$needle" "$file" 2>/dev/null; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
+    printf '    expected NOT to find in %s: %s\n' "$file" "$needle"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  fi
+}
+
 assert_section_ordering() {
   local file="$1"
   local before="$2"
@@ -134,10 +148,10 @@ if [[ -f "$fix_rebase_path" ]]; then
   # (2) The guard must compare pre- vs post-rebase net contribution. The
   # load-bearing mechanism is comparing the pre-rebase head (origin/\$HEAD_REF,
   # untouched until the §6 force-push) against the rebased HEAD, both vs base.
-  assert_contains "$fix_rebase_path" 'git diff --name-only "origin/$DEFAULT_BRANCH...origin/$HEAD_REF"' \
-    "fix-rebase.md computes the pre-rebase net contribution vs base"
-  assert_contains "$fix_rebase_path" 'git diff --name-only "origin/$DEFAULT_BRANCH" HEAD' \
-    "fix-rebase.md computes the post-rebase net contribution vs base"
+  # As of issue #1336 that comparison runs as a standalone script invocation
+  # rather than an inline snippet — see (6) below for why.
+  assert_contains "$fix_rebase_path" 'scripts/assert-rebase-diff-nonempty.sh" "origin/$DEFAULT_BRANCH" "origin/$HEAD_REF"' \
+    "fix-rebase.md invokes assert-rebase-diff-nonempty.sh with base + pre-rebase head"
   assert_contains "$fix_rebase_path" "Never force-push a branch whose net change vs base vanished" \
     "fix-rebase.md states the never-force-push-an-empty-diff rule"
 
@@ -164,6 +178,39 @@ if [[ -f "$fix_rebase_path" ]]; then
   # safe exception — the rule must not contradict §4.6's checkout --theirs.
   assert_contains "$fix_rebase_path" 'a `git checkout --theirs "$vc_manifest"` followed by a single `jq`-set of the version row is safe' \
     "fix-rebase.md carves out §4.6 coordinated-manifest as the safe whole-file-checkout exception"
+
+  # (6) Issue #1336 — the guard must NOT be prescribed as the original inline
+  # snippet. Two reproduced failures compound there: the git-command-
+  # substitutions-plus-inline-`if` shape is deterministically refused by the
+  # harness's worktree-isolation Bash guard (the #802 refusal class, and
+  # fix-rebase workers are always worktree-isolated), and the refusal's own
+  # remediation — "break it into plain, separate commands" — lands on a bare
+  # `git diff --name-only <refs> | wc -l` single-call shape that a
+  # diff-rewriting shell proxy (#1333) makes return 1 for a genuinely-empty
+  # diff. With POST_FILES stuck at 1 the `== 0` bail can never fire, silently
+  # disabling this guard for exactly the #646 case it exists to catch.
+  assert_not_contains "$fix_rebase_path" 'PRE_FILES=$(git diff --name-only' \
+    "fix-rebase.md no longer inlines the PRE_FILES wc -l pipeline (issue #1336)"
+  assert_not_contains "$fix_rebase_path" 'POST_FILES=$(git diff --name-only' \
+    "fix-rebase.md no longer inlines the POST_FILES wc -l pipeline (issue #1336)"
+  assert_contains "$fix_rebase_path" "https://github.com/mattsears18/shipyard/issues/1336" \
+    "fix-rebase.md links to issue #1336 for why the guard is a script, not an inline snippet"
+
+  # The exit-2 INDETERMINATE result must be handled as a bail, never a pass —
+  # the "an absence-assertion that observed nothing is not a pass" rule.
+  assert_contains "$fix_rebase_path" "Treat exactly like exit 1 — never as a pass" \
+    "fix-rebase.md treats the script's INDETERMINATE exit 2 as a bail, not a pass"
+fi
+
+# (7) The script the spec delegates to must actually exist and be executable.
+assert_file_exists "$repo_root/plugins/shipyard/scripts/assert-rebase-diff-nonempty.sh" \
+  "scripts/assert-rebase-diff-nonempty.sh exists (issue #1336)"
+if [[ -x "$repo_root/plugins/shipyard/scripts/assert-rebase-diff-nonempty.sh" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "scripts/assert-rebase-diff-nonempty.sh has the exec bit set"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "scripts/assert-rebase-diff-nonempty.sh has the exec bit set"
+  fail=$((fail+1))
 fi
 
 echo
