@@ -199,6 +199,18 @@
 # isolated-agent task that legitimately never renames its branch, not just
 # unrelated one-off worktree tasks as #1270 already flagged.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 62000 -> 63000 by
+# #1335 (2026-08-13): the Return-contract discipline bullet list gained a new
+# "exactly one terminal disposition line per return" rule — a worker return
+# carrying two mutually-exclusive terminal disposition lines (a fabricated
+# one, a narrated self-correction, then the honest one) is reconciled by
+# whichever prefix the orchestrator's parser matches first, since nothing in
+# the contract previously said a return must resolve to a single terminal
+# line. The file had only 18 bytes of headroom left after #1240's last
+# raise, so even the trimmed-once bullet (repro detail deliberately left out
+# — it already lives in fix-checks-only.md's own copy of the rule and in
+# do-work-RATIONALE.md) needed the bump.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -263,7 +275,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  62000 \
+  63000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
