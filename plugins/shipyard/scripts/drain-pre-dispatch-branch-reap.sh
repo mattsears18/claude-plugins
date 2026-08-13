@@ -39,6 +39,19 @@
 #     and every OTHER classification (no-lock/dead/self-ancestor) still
 #     reaps purely on classify-lock's own verdict, branch pattern aside.
 #
+# --bypass-return-check threaded internally (issues #1237/#1274). Same
+# reasoning as `pre-dispatch-branch-reap.sh`'s identical bypass: the
+# reconciled-return gate refuses `reap --action reaped` on an `agent-*`
+# worktree unless THIS --session-id's persisted state recorded the target
+# agent's own return, but a `do-work/issue-*` worktree reaching this reap
+# call may be inherited from a PRIOR session (the drain phase's PR set is
+# not restricted to this session's own dispatches any more than
+# dispatch-rules.md §2d's is), whose `.returned_agent_ids` record lives in
+# a different session-state file this session can never read. Bypassing is
+# safe: the `do-work/issue-*` branch match itself proves the originating
+# worker already returned its terminal string and its PR already exists on
+# the remote, so nothing is lost by reaping the local leftover lock.
+#
 # Subcommand
 # ----------
 #
@@ -242,6 +255,16 @@ case "$sub" in
       drain_classification="$classification"
       [ "$classification" = "peer-alive" ] && drain_classification="peer-alive-force-drain"
       [ "$classification" = "unknown" ] && drain_classification="unknown-force-drain"
+      # --bypass-return-check (issue #1237/#1274): same reasoning as
+      # pre-dispatch-branch-reap.sh's identical bypass (see that script's
+      # header) — this only reaches a `do-work/issue-*` worktree, which by
+      # this branch's own gate above means the originating issue-work
+      # worker already returned its terminal string; that worker's PR may
+      # be inherited from a prior session whose `.returned_agent_ids` this
+      # `--session-id` can never read. Bypassing cannot lose work: the
+      # worker's own deliverable (its PR) already exists on the remote by
+      # construction of this being a `do-work/issue-*` branch reaching this
+      # far.
       "${here}/worktree-reap.sh" reap \
         --action reaped \
         --worktree-path "$worktree_path" \
@@ -249,7 +272,9 @@ case "$sub" in
         --session-id "$session_id" \
         --classification "$drain_classification" \
         --lock-pid "$lock_pid" \
-        --phase "drain-pre-dispatch" 2>/dev/null || true
+        --phase "drain-pre-dispatch" \
+        --bypass-return-check "drain pre-dispatch head-branch reap (#1237/#1274) — do-work/issue-* branch means the originating worker already returned; may be inherited from a prior session whose .returned_agent_ids this session can't read" \
+        2>/dev/null || true
 
       # Drop the local branch ref so the fresh worker's `git switch <head>`
       # recreates it cleanly without the "already checked out" collision.

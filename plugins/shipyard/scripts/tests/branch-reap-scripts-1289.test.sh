@@ -97,19 +97,28 @@ add_worktree() {
 # seed_return_record <session-id> <agent-id...> — issue #1237's reconciled-
 # return gate refuses `worktree-reap.sh reap --action reaped` on an `agent-*`
 # worktree unless this session's persisted state records that agent-id as
-# having returned. All three scripts exercised below are "gated, satisfied
-# naturally" call sites per #1237's own call-site classification (see
-# do-work-RATIONALE.md): each targets a worktree whose originating worker
-# already returned and was reconciled — pre-dispatch-branch-reap.sh even
-# skips any agent-id still in `.in_flight` before it gets here. In a real
-# session steady-state.md's A.1 wrote the record before these ever run; the
-# fixture has to stand that write in, otherwise these suites would be
-# asserting against a reap the gate correctly refuses.
+# having returned, UNLESS the caller passes `--bypass-return-check`.
 #
-# Deliberately NOT solved by passing --bypass-return-check from these three
-# scripts: that would defeat the gate at exactly the call sites #1237 wants
-# gated. Only the genuine exceptions (crash-recovery, the cross-session and
-# end-of-session sweeps) carry a bypass.
+# shipped-immediate-branch-reap.sh is a genuine "gated, satisfied naturally"
+# call site (see do-work-RATIONALE.md): it only ever targets THIS turn's own
+# just-completed agent, and steady-state.md's A.1 wrote the return record
+# moments earlier in the SAME turn — the fixture below still has to stand
+# that write in for its own suite, otherwise that suite would be asserting
+# against a reap the gate correctly refuses.
+#
+# pre-dispatch-branch-reap.sh and drain-pre-dispatch-branch-reap.sh are NOT
+# in that category (corrected by issue #1274, which found the two scripts'
+# own #1289-era "gated, satisfied naturally" classification rested on a
+# false assumption — their target's originating worker is NOT guaranteed to
+# be from THIS session; `failed_prs` is an `--author @me` scan spanning
+# every session, and setup step 5.7's own "inherited DIRTY PR" seeding is
+# the spec's own precedent for that same cross-session-PR fact). Both
+# scripts now pass `--bypass-return-check` internally, so their own suites
+# below deliberately do NOT seed a return record — proving the reap
+# succeeds without one is the regression test for #1274's fix. Their
+# `seed_return_record` calls are kept ONLY for the parts of their suites
+# that assert unrelated behavior (branch-ref drop, primary-checkout
+# restore) where seeding is harmless but not load-bearing.
 seed_return_record() {
   local sid="$1"; shift
   # Pin the session id these scripts derive (they read the repo-root stash
@@ -198,6 +207,41 @@ else
   printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "local branch ref is dropped after reap"; pass=$((pass+1))
 fi
 
+# --- (#1274 regression) NO seeded return record — simulates a worktree
+# whose originating worker's PR was inherited from a PRIOR session, whose
+# .returned_agent_ids this --session-id can never read. Before the #1274
+# fix, the underlying reap was silently refused by the #1237 gate
+# ("reap-refused"/"no-recorded-return" in the audit log) while this script
+# still claimed reaped=true and left the worktree on disk — reproduced live
+# against a real worktree during the #1274 investigation. The fix threads
+# --bypass-return-check internally, so this must now actually reap. ---
+reset_repo
+add_worktree "do-work/issue-2" "agent-predispatch2"
+wt_path_inherited="$repo/.claude/worktrees/agent-predispatch2"
+(
+  cd "$repo" || exit 1
+  out="$(SHIPYARD_HOME="$home" bash "$pre_dispatch_reap" reap --head-ref do-work/issue-2 --session-id different-session-never-saw-this-agent 2>&1)"
+  echo "$out" > "$TMPDIR_ROOT/predispatch-inherited.out"
+)
+out="$(tail -1 "$TMPDIR_ROOT/predispatch-inherited.out")"
+assert_contains "$out" "reaped=true" "(#1274) an inherited worktree with NO seeded return record still reaches this script's reaped=true report"
+if [[ ! -e "$wt_path_inherited" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1274) inherited worktree with no return record is ACTUALLY gone from disk (not just self-reported)"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1274) inherited worktree with no return record is ACTUALLY gone from disk (not just self-reported)"; fail=$((fail+1))
+fi
+audit_log="$home/reap-audit.jsonl"
+if grep -q '"action":"reap-refused"' "$audit_log" 2>/dev/null; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1274) no reap-refused audit line for the inherited-worktree case"; fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1274) no reap-refused audit line for the inherited-worktree case"; pass=$((pass+1))
+fi
+if grep -q '"worktree":"agent-predispatch2".*"action":"reaped"' "$audit_log" 2>/dev/null; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1274) audit log records a real reaped action for the inherited worktree"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1274) audit log records a real reaped action for the inherited worktree"; fail=$((fail+1))
+fi
+
 # ==========================================================================
 echo
 echo "shipped-immediate-branch-reap.sh"
@@ -269,6 +313,31 @@ if [[ ! -e "$wt_path3" ]]; then
   printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "reaped worktree is gone from disk"; pass=$((pass+1))
 else
   printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "reaped worktree is gone from disk"; fail=$((fail+1))
+fi
+
+# --- (#1274 regression) same inherited-worktree case as
+# pre-dispatch-branch-reap.sh above — NO seeded return record, a different
+# --session-id than any that ever recorded this agent's return. ---
+reset_repo
+add_worktree "do-work/issue-4" "agent-drain4"
+wt_path4="$repo/.claude/worktrees/agent-drain4"
+(
+  cd "$repo" || exit 1
+  out="$(SHIPYARD_HOME="$home" GH="$(command -v true)" bash "$drain_reap" reap \
+    --head-ref do-work/issue-4 --repo o/r --session-id different-session-never-saw-this-agent 2>&1)"
+  echo "$out" > "$TMPDIR_ROOT/drain-inherited.out"
+)
+out="$(cat "$TMPDIR_ROOT/drain-inherited.out")"
+assert_contains "$out" "reap_outcome=reaped" "(#1274) an inherited do-work/issue-* worktree with NO seeded return record is still reaped"
+if [[ ! -e "$wt_path4" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1274) inherited worktree with no return record is ACTUALLY gone from disk"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1274) inherited worktree with no return record is ACTUALLY gone from disk"; fail=$((fail+1))
+fi
+if grep -q '"worktree":"agent-drain4".*"action":"reap-refused"' "$home/reap-audit.jsonl" 2>/dev/null; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1274) no reap-refused audit line for the inherited drain worktree"; fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1274) no reap-refused audit line for the inherited drain worktree"; pass=$((pass+1))
 fi
 
 echo
