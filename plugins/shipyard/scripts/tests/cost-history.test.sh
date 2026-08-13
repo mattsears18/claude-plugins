@@ -1306,6 +1306,100 @@ assert_contains "$issue_line" "[UNRELIABLE]" "by-issue report tags issue #701's 
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== report — estimated_usd_degraded / estimated_usd_upper_bound mark the JSON + CSV aggregate too (#1327)"
+# --------------------------------------------------------------------------
+# Issue #1327: markdown's [UNRELIABLE] tag (#1035, above) already marks the
+# aggregate Spend figure in the terminal/PR-comment surface, but the
+# --format json and --format csv surfaces still emitted a bare
+# estimated_usd with no structural marker at all. Three windows: a fully-
+# degraded window (one session, entirely --degraded-total-only dispatches),
+# a partly-degraded window (one clean session + one degraded session
+# flushed into the same window), and a clean window (no degraded dispatch
+# anywhere) — which must render exactly as it always has.
+
+# --- Fully-degraded window ---
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "fully-deg" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "fully-deg" --issue 11 \
+  --input 20000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "fully-deg" >/dev/null
+
+out_json=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format json)
+out=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd_degraded')
+assert_equals "$out" "true" "fully-degraded window: rollup.estimated_usd_degraded == true"
+rollup_usd=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd')
+rollup_upper=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd_upper_bound')
+assert_equals "$rollup_upper" "$rollup_usd" "fully-degraded window: rollup.estimated_usd_upper_bound mirrors rollup.estimated_usd"
+
+out_csv=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format csv)
+csv_header=$(printf '%s' "$out_csv" | head -1)
+assert_contains "$csv_header" "estimated_usd_degraded" "CSV header includes the estimated_usd_degraded column"
+csv_row=$(printf '%s' "$out_csv" | tail -1)
+assert_contains "$csv_row" ',"1"' "fully-degraded session's CSV row ends with estimated_usd_degraded=1"
+
+rm -rf "$tmphome"
+
+# --- Partly-degraded window: one clean session + one degraded session ---
+tmphome=$(mktmphome)
+seed_session "$tmphome" "mix-clean"
+SHIPYARD_HOME="$tmphome" bash "$session_helper" init \
+  --session-id "mix-deg" --repo "owner/repo" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$session_helper" bump-tokens \
+  --session-id "mix-deg" --issue 12 \
+  --input 15000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "mix-clean" >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "mix-deg" >/dev/null
+
+out_json=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format json)
+out=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd_degraded')
+assert_equals "$out" "true" "partly-degraded window (mixed sessions): rollup.estimated_usd_degraded == true"
+rollup_usd=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd')
+rollup_upper=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd_upper_bound')
+assert_equals "$rollup_upper" "$rollup_usd" "partly-degraded window: rollup.estimated_usd_upper_bound mirrors the full rollup.estimated_usd (whole aggregate, not just the degraded slice)"
+
+out_csv=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format csv)
+clean_row=$(printf '%s' "$out_csv" | grep "mix-clean")
+degraded_row=$(printf '%s' "$out_csv" | grep "mix-deg")
+assert_contains "$clean_row" ',"0"' "clean session's CSV row ends with estimated_usd_degraded=0 even in a mixed window"
+assert_contains "$degraded_row" ',"1"' "degraded session's CSV row ends with estimated_usd_degraded=1 in a mixed window"
+
+rm -rf "$tmphome"
+
+# --- Clean window — must render exactly as it did before #1327 ---
+tmphome=$(mktmphome)
+seed_session "$tmphome" "clean-only"
+SHIPYARD_HOME="$tmphome" bash "$helper" flush --session-id "clean-only" >/dev/null
+
+out_json=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format json)
+out=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd_degraded')
+assert_equals "$out" "false" "clean window: rollup.estimated_usd_degraded == false"
+out=$(printf '%s' "$out_json" | jq -r '.rollup.estimated_usd_upper_bound')
+assert_equals "$out" "null" "clean window: rollup.estimated_usd_upper_bound == null"
+
+out_csv=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all --format csv)
+csv_row=$(printf '%s' "$out_csv" | tail -1)
+assert_contains "$csv_row" ',"0"' "clean session's CSV row ends with estimated_usd_degraded=0"
+
+# No-regression check on markdown: a clean window still prints no
+# [UNRELIABLE] tag and no advisory block (already covered above at #1035,
+# reasserted here so the #1327 column addition doesn't accidentally leak
+# a marker into the unrelated markdown surface).
+out_md=$(SHIPYARD_HOME="$tmphome" bash "$helper" report --last all)
+if [[ "$out_md" == *"[UNRELIABLE]"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "clean window's markdown report still prints no [UNRELIABLE] tag"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "clean window's markdown report still prints no [UNRELIABLE] tag"
+  pass=$((pass+1))
+fi
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo
 echo "== Summary"
 echo "  $pass passed, $fail failed"

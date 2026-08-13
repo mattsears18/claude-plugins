@@ -1311,7 +1311,24 @@ cmd_read_tokens() {
   if [[ "$format" == "json" ]]; then
     # `unpriced_models` rides alongside the scope's token counts so a JSON
     # consumer can tell "this cost $0" from "we don't know what this cost".
-    jq --arg key "$key" "($scope_jq) + {unpriced_models: ($unpriced_jq)}" "$target"
+    # `estimated_usd_degraded` / `estimated_usd_upper_bound` (issue #1327)
+    # make the degraded-ness of this scope structurally visible in the
+    # emitted JSON itself, rather than requiring the reader to separately
+    # remember to check degraded_attribution_count before trusting
+    # estimated_usd. A scope object from an older shipyard session file
+    # with no degraded_attribution_count field reads `// 0` — not
+    # degraded, no upper-bound marker — so this stays backward compatible
+    # without any change to the write path (bump-tokens) or a stored
+    # schema.
+    jq --arg key "$key" "
+      ($scope_jq) as \$__scope
+      | (((\$__scope.degraded_attribution_count // 0)) > 0) as \$__degraded
+      | \$__scope + {
+          unpriced_models: ($unpriced_jq),
+          estimated_usd_degraded: \$__degraded,
+          estimated_usd_upper_bound: (if \$__degraded then (\$__scope.estimated_usd // 0) else null end)
+        }
+      " "$target"
     return 0
   fi
 
@@ -1351,6 +1368,14 @@ cmd_read_tokens() {
     | (\$invocations | map(.model) | unique | map(select(. != null)) | join(\", \")) as \$models
     | (\$invocations | length) as \$count
     | (\$scope.input + \$scope.output + \$scope.cache_read + \$scope.cache_creation) as \$total_tokens
+    | (\$scope.degraded_attribution_count // 0) as \$__cost_degraded_count
+    | (\$__cost_degraded_count > 0) as \$__cost_degraded
+    | (\$scope.estimated_usd | (. * 100 | round) as \$cents | \"\$\" + ((\$cents / 100 | floor) | tostring) + \".\" + ((\$cents % 100) | if . < 10 then \"0\\(.)\" else \"\\(.)\" end)) as \$__usd_formatted
+    | (if \$__cost_degraded then
+         \"~\" + \$__usd_formatted + \" (upper bound — token breakdown unavailable for \" + (\$__cost_degraded_count | tostring) + \"/\" + (\$count | tostring) + \" dispatches)\"
+       else
+         \$__usd_formatted
+       end) as \$__cost_display
     | \"<!-- do-work-cost-tracking -->\n\" +
       \"### Shipyard cost — \" + \$scope_label + \"\n\n\" +
       \"| Metric | Value |\n\" +
@@ -1360,7 +1385,7 @@ cmd_read_tokens() {
       \"| Cache read | \" + (\$scope.cache_read | tostring) + \" |\n\" +
       \"| Cache creation | \" + (\$scope.cache_creation | tostring) + \" |\n\" +
       \"| **Total tokens** | **\" + (\$total_tokens | tostring) + \"** |\n\" +
-      \"| Estimated cost (USD) | \" + (\$scope.estimated_usd | (. * 100 | round) as \$cents | \"\$\" + ((\$cents / 100 | floor) | tostring) + \".\" + ((\$cents % 100) | if . < 10 then \"0\\(.)\" else \"\\(.)\" end)) + \" |\n\" +
+      \"| Estimated cost (USD) | \" + \$__cost_display + \" |\n\" +
       \"| Worker invocations | \" + (\$count | tostring) + \" |\n\" +
       (if \$modes != \"\" then \"| Modes | \" + \$modes + \" |\n\" else \"\" end) +
       (if \$models != \"\" then \"| Models | \" + \$models + \" |\n\" else \"\" end) +
