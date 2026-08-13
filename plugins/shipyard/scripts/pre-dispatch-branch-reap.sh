@@ -40,6 +40,26 @@
 # conservative" and deferred peer-alive unconditionally with no override —
 # the exact failure #2598 repro hit).
 #
+# --bypass-return-check threaded internally (issues #1237/#1274). The
+# reconciled-return gate (`worktree-reap.sh` reap --action reaped on an
+# `agent-*` worktree) refuses unless THIS --session-id's persisted state
+# recorded the target agent's own return. This call site's target can be
+# INHERITED from a prior session — `failed_prs` comes from an `--author @me`
+# scan (setup/04-backlog-divert.md step 5), not from this session's own
+# `session_prs`, and step 5.7's "inherited DIRTY PR" seeding is the spec's
+# own precedent for the same cross-session-PR fact. An inherited PR's
+# originating agent's `.returned_agent_ids` entry lives in a DIFFERENT
+# session-state file this session can never read, so the gate would refuse
+# forever with no way to satisfy it. Reproduced live (issue #1274): the
+# gate wrote a "reap-refused"/"no-recorded-return" audit line while this
+# script still reported reaped=true and the worktree stayed on disk —
+# looking, from the caller's side, exactly like the "reap silently doesn't
+# succeed" symptom #1274 investigates. Bypassing is safe: this call site's
+# own precondition (a PR already exists in `failed_prs`) proves the
+# worker's deliverable already landed on the remote, so nothing is lost by
+# reaping the local leftover lock regardless of which session dispatched
+# it.
+#
 # Subcommand
 # ----------
 #
@@ -191,6 +211,24 @@ case "$sub" in
       # traceable in ~/.shipyard/reap-audit.jsonl.
       local_classification="$classification"
       [ "$classification" = "peer-alive" ] && local_classification="peer-alive-force"
+      # --bypass-return-check (issue #1237/#1274): this call site's own
+      # precondition (dispatch-rules.md §2d only fires against a PR already
+      # present in `failed_prs`) proves a PR already exists on GitHub for
+      # this worktree's branch — the originating worker's deliverable is
+      # already safely on the remote. The `failed_prs` scan is an
+      # `--author @me` query (setup/04-backlog-divert.md step 5), NOT scoped
+      # to this session's own `session_prs` — step 5.7's own "inherited"
+      # DIRTY-PR seeding is the spec's own acknowledgment that a PR (and
+      # therefore the local worktree that opened it) can be inherited from a
+      # PRIOR session. That prior session's `.returned_agent_ids` record
+      # lives in a DIFFERENT session-state file this `--session-id` can
+      # never read, so the reconciled-return gate would refuse forever on an
+      # inherited PR's worktree with no way to satisfy it — reproduced live
+      # (issue #1274): the gate wrote "reap-refused"/"no-recorded-return"
+      # while this script still reported reaped=true and the worktree
+      # stayed on disk. Bypassing here cannot lose the worker's own work
+      # (it's already on the remote as the PR this call site requires to
+      # exist); it only frees the local leftover lock.
       "${here}/worktree-reap.sh" reap \
         --action reaped \
         --worktree-path "$worktree_path" \
@@ -198,7 +236,9 @@ case "$sub" in
         --session-id "$session_id" \
         --classification "$local_classification" \
         --lock-pid "$lock_pid" \
-        --phase "$phase" 2>/dev/null || true
+        --phase "$phase" \
+        --bypass-return-check "pre-dispatch head-branch reap (#1237/#1274) — target's PR already exists on GitHub (dispatch-rules.md §2d precondition); may be inherited from a prior session whose .returned_agent_ids this session can't read" \
+        2>/dev/null || true
 
       # Drop the local branch ref so the fresh worker's `git switch <head>`
       # recreates it cleanly without the "already checked out" collision.
