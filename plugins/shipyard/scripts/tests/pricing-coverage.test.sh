@@ -15,6 +15,15 @@
 #      a real pricing row. A new model can't ship into a $0 hole without
 #      turning this suite red first.
 #
+#   1b. SESSION-INHERITABLE COVERAGE (#1342) — an un-pinned mode (`spike`,
+#       currently the only one) declares neither a `models.*` default nor
+#       shim frontmatter, so (1) above can't see the model it actually
+#       dispatches on: whatever model the calling session itself is running
+#       as. `SESSION_INHERITABLE_MODELS_JQ` in session-state.sh is the
+#       maintained floor this asserts against — see that constant's own
+#       header comment for why a static list is the right shape here and
+#       what it can't guarantee.
+#
 #   2. LOUDNESS — an unknown model is reported, not silently zeroed: it warns
 #      on stderr, lands in `.tokens.unpriced_models`, and stamps
 #      `unpriced: true` on its per_invocation entry. $0.00 is a legitimate
@@ -173,27 +182,56 @@ else
 fi
 
 # --------------------------------------------------------------------------
-echo "== coverage — the current default session model is priced"
+echo "== coverage — every session-inheritable model (the floor for un-pinned modes) is priced"
 # --------------------------------------------------------------------------
-# The session model is inherited from the harness, not declared in config, so
-# it has no other guard. This is the exact id whose absence caused #728.
+# Issue #1342. The session model is inherited from the harness, not
+# declared in config, so the two scans above (config `models.*` defaults,
+# agent-shim `model:` frontmatter) can't see it — that's the exact gap that
+# let a live #728 warning fire for an unpriced `claude-opus-5` dispatch
+# under `mode: spike` (spike-worker.md's "Why no model pin": no
+# `models.spike` default, no shim frontmatter, by design).
+#
+# Prior to #1342 this section asserted a single hardcoded id
+# ("claude-opus-4-8") was priced — the exact assumption that went stale
+# once Opus 5 shipped and let the gap reach a live session undetected.
+# `SESSION_INHERITABLE_MODELS_JQ` in session-state.sh (kept adjacent to
+# PRICING_JQ there, on purpose) is the maintained, multi-entry floor that
+# replaces it: the current flagship id per model family a session could
+# plausibly be running as. This still can't catch a model generation
+# nobody has shipped yet — no static list can — but it does turn "is the
+# CURRENTLY known floor priced" into something CI actually checks, across
+# every family, not one id chosen at #728-fix time and left to rot.
 
-if is_priced "claude-opus-4-8"; then
-  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "default session model 'claude-opus-4-8' is priced"
-  pass=$((pass+1))
-else
-  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "default session model 'claude-opus-4-8' is NOT priced (this is #728)"
-  fail=$((fail+1))
-fi
+session_inheritable_models=$(grep '^SESSION_INHERITABLE_MODELS_JQ=' "$helper" | grep -oE '"claude-[a-zA-Z0-9.-]+"' | tr -d '"')
 
-# A dated suffix on the current model must resolve too — the API hands back
-# dated ids, so exact-match-only would reopen the $0 hole from a new angle.
-if is_priced "claude-opus-4-8-20260115"; then
-  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "dated 'claude-opus-4-8-20260115' resolves via prefix match"
-  pass=$((pass+1))
-else
-  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "dated 'claude-opus-4-8-20260115' failed to resolve"
+if [[ -z "$session_inheritable_models" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "could not read SESSION_INHERITABLE_MODELS_JQ from scripts/session-state.sh"
   fail=$((fail+1))
+else
+  while IFS= read -r model; do
+    [[ -z "$model" ]] && continue
+    if is_priced "$model"; then
+      printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "session-inheritable model '${model}' is priced"
+      pass=$((pass+1))
+    else
+      printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "session-inheritable model '${model}' is NOT in the pricing table"
+      printf '    an un-pinned mode (e.g. spike) dispatched on this model would be booked at 0.00 USD\n'
+      printf '    fix: add a row for it to PRICING_JQ in scripts/session-state.sh\n'
+      fail=$((fail+1))
+    fi
+  done <<< "$session_inheritable_models"
+
+  # A dated suffix on a session-inheritable model must resolve too — the API
+  # hands back dated ids, so exact-match-only would reopen the $0 hole from
+  # a new angle (regression guard for #226, applied to this floor too).
+  first_model=$(printf '%s\n' "$session_inheritable_models" | head -1)
+  if is_priced "${first_model}-20260115"; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "dated '${first_model}-20260115' resolves via prefix match"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "dated '${first_model}-20260115' failed to resolve"
+    fail=$((fail+1))
+  fi
 fi
 
 # --------------------------------------------------------------------------
