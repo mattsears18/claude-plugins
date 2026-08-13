@@ -62,6 +62,10 @@ Bail with `blocked` if any of:
 
 **When present**, read [`issue-work-scope-boundary-recheck.md`](./issue-work-scope-boundary-recheck.md): diff it against step 0's `comments` — it can go stale; the live issue wins on a contradiction.
 
+### 0.6 Branch — run step 3 now, before self-assign or reading the issue ([#1334](https://github.com/mattsears18/shipyard/issues/1334))
+
+**Jump to [step 3 "Sync + branch"](#3-sync--branch) and execute it in full right now — not step 1, not step 2.** The branch name (`do-work/issue-<N>`) is already known from the dispatch prompt, so nothing about self-assignment or the issue body is needed to run it. #1258 put a *check* at the start of step 4; #1334's repro showed a worker can still commit onto the harness placeholder branch (`worktree-agent-<id>`) without ever reaching that check. Running the actual checkout here, immediately after the worktree-cwd fail-fast, removes the drift window rather than merely detecting it after the fact: there is no longer a phase between "confirmed workable" and "on the correct branch" for codebase research — and therefore accidental edits — to happen in. Once step 3 reports success, come back here and continue to step 1; do not re-run step 3 when its numbered position comes around later.
+
 ### 1. Self-assign (gated on `backlog.self_assign`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248))
 
 ```bash
@@ -109,7 +113,7 @@ If acceptance criteria are missing AND the title is too vague to infer reasonabl
 
 ### 3. Sync + branch
 
-**Do this before your first `Edit`/`Write` call of this dispatch, not just before you push ([#1258](https://github.com/mattsears18/shipyard/issues/1258)).** Same load-bearing standing as [step 0](#0-pre-flight-confirm-the-issue-is-still-workable)'s cwd fail-fast — step 0 alone doesn't cover this: it confirms the right *worktree*, not that you've moved off the harness's *placeholder branch* inside it. #1258's repro: a worker had this whole spec in context and still drifted from step 2 straight into implementation on the placeholder branch (`worktree-agent-<id>`), never running the checkout below. [Step 4](#4-implement) re-verifies this as its first action, right before the first `Edit`/`Write` — that's the actual enforcement; this paragraph is advance notice.
+**You should already be here — [step 0.6](#06-branch--run-step-3-now-before-self-assign-or-reading-the-issue-1334) sends you to this step immediately after step 0.5, before self-assign or reading the issue, so this runs before your first `Edit`/`Write` call by construction rather than by remembering to do it ([#1258](https://github.com/mattsears18/shipyard/issues/1258), [#1334](https://github.com/mattsears18/shipyard/issues/1334)).** If you somehow reached this heading by another path without having run it yet (e.g. resuming a partially-completed dispatch), run it now, before any `Edit`/`Write` call. [Step 4](#4-implement) re-verifies as a backstop right before the first `Edit`/`Write`, in case this step was skipped anyway.
 
 You're already in your isolated worktree (worktree discipline rule applies — see `shipyard:worker-preamble`). Reset its checkout to a fresh branch off the repo's default — `git checkout -B` rewrites whatever placeholder branch the harness set up:
 
@@ -155,7 +159,7 @@ Branch name comes from the orchestrator's dispatch prompt and must be exactly `d
 
 ### 4. Implement
 
-**First action of this step, before any `Edit`/`Write` call — verify you actually left the placeholder branch ([#1258](https://github.com/mattsears18/shipyard/issues/1258)).** Placed here, not just at step 3, because this is the drift point #1258 documents — checkout instructions several paragraphs back are exactly what attention slides past mid-flow. Reuse the `CLAUDE_PLUGIN_ROOT` value already resolved at `shipyard:worker-preamble`'s step-0 ([#965](https://github.com/mattsears18/shipyard/issues/965)) — the `:-` fallback below is a no-op when it's already set:
+**First action of this step, before any `Edit`/`Write` call — verify you actually left the placeholder branch ([#1258](https://github.com/mattsears18/shipyard/issues/1258)).** [Step 0.6](#06-branch--run-step-3-now-before-self-assign-or-reading-the-issue-1334) already made this the normal case by running step 3 before step 1 ([#1334](https://github.com/mattsears18/shipyard/issues/1334)); this checkpoint is the backstop for the rare path where it didn't (e.g. a resumed dispatch). Reuse the `CLAUDE_PLUGIN_ROOT` value already resolved at `shipyard:worker-preamble`'s step-0 ([#965](https://github.com/mattsears18/shipyard/issues/965)) — the `:-` fallback below is a no-op when it's already set:
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
@@ -760,7 +764,7 @@ When blocked → return:
 ## Don't
 
 - Don't open a duplicate PR. Pre-flight check (step 0) exists for this reason.
-- **Don't call `Edit`/`Write` before verifying you're off the harness placeholder branch ([#1258](https://github.com/mattsears18/shipyard/issues/1258)).** Run [step 4](#4-implement)'s `assert-branch-switched.sh` check first and treat a `mismatch` verdict as a hard stop, not a note-to-self.
+- **Don't call `Edit`/`Write` before verifying you're off the harness placeholder branch ([#1258](https://github.com/mattsears18/shipyard/issues/1258), [#1334](https://github.com/mattsears18/shipyard/issues/1334)).** Run [step 0.6](#06-branch--run-step-3-now-before-self-assign-or-reading-the-issue-1334) right after step 0.5 — before step 1 or step 2 — rather than leaving the checkout for later; [step 4](#4-implement)'s `assert-branch-switched.sh` check is the backstop, not the primary defense, and a `mismatch` verdict there is still a hard stop, not a note-to-self.
 - **Don't skip §0.5 on scope-boundary framing ([#1179](https://github.com/mattsears18/shipyard/issues/1179))** — it can go stale; the live issue wins.
 - **Don't touch another worktree when `git checkout -B do-work/issue-<N>` fails on a name collision.** You cannot tell a dead scaffold from a live sibling worker's worktree without `cd`-ing into it, which worktree discipline forbids — no `git worktree remove`, no `git branch -D` on the other worktree's branch. Use the local-name/remote-name split in [§3](#3-sync--branch) instead (issue [#736](https://github.com/mattsears18/shipyard/issues/736)).
 - Don't merge manually unless auto-merge is unavailable AND all checks are green AND the user has explicitly authorized it for this run. Otherwise leave the PR ready and report.

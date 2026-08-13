@@ -76,6 +76,28 @@ else
   fi
   rm -f "/tmp/assert-branch-switched-test-stderr.$$"
 
+  # --- (1a) a COMMIT landed on the placeholder branch (issue #1334's repro:
+  # a worker drifted straight into implementation and committed before ever
+  # running the checkout) -> still mismatch, not silently swallowed by the
+  # presence of a commit. The predicate only looks at the current branch
+  # name, never at whether history has diverged, so this must report
+  # identically to (1) above.
+  (
+    cd "$worktree" || exit 1
+    git config user.email test@example.com
+    git config user.name 'Test User'
+    echo "drifted edit" > drifted.txt
+    git add drifted.txt
+    git commit -q -m "wip: drifted onto placeholder branch"
+  ) >/dev/null 2>&1
+  out="$(bash "$script" "$worktree" "do-work/issue-1258" 2>/dev/null)"
+  code=$?
+  if [[ "$out" == "mismatch" && "$code" -eq 1 ]]; then
+    ok "commit landed on placeholder branch (#1334 repro): stdout='mismatch', exit=1"
+  else
+    bad "commit-on-placeholder: got stdout='$out' exit=$code (expected 'mismatch'/1)"
+  fi
+
   # --- (2) switch onto the branch this dispatch actually requires -> match ---
   (cd "$worktree" && git checkout -q -B do-work/issue-1258 >/dev/null 2>&1)
   out="$(bash "$script" "$worktree" "do-work/issue-1258" 2>/dev/null)"
