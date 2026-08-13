@@ -79,6 +79,51 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1"
+  local needle="$2"
+  local label="$3"
+  if grep -qF -- "$needle" "$file" 2>/dev/null; then
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
+    printf '    expected NOT to find in %s: %s\n' "$file" "$needle"
+    fail=$((fail+1))
+  else
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  fi
+}
+
+# Same shape as worktree-reap.test.sh's assert_equals/assert_exit_code —
+# used by the issue #1316 inspect-unpushed runtime tests below, which check
+# literal stdout/exit-code values rather than file content.
+assert_equals() {
+  local actual="$1"
+  local expected="$2"
+  local label="$3"
+  if [[ "$actual" == "$expected" ]]; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$label"
+    printf '    expected: %s\n' "$expected"
+    printf '    actual:   %s\n' "$actual"
+    fail=$((fail+1))
+  fi
+}
+
+assert_exit_code() {
+  local actual="$1"
+  local expected="$2"
+  local label="$3"
+  if [[ "$actual" == "$expected" ]]; then
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$label"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  %s (expected exit %s, got %s)\n' "$RED" "$RESET" "$label" "$expected" "$actual"
+    fail=$((fail+1))
+  fi
+}
+
 assert_section_ordering() {
   local file="$1"
   local before="$2"
@@ -325,6 +370,190 @@ fi
 # Cleanup
 rm -rf "$tmp_shipyard_home"
 unset SHIPYARD_HOME
+
+echo ""
+echo "Test: A.0.5's pre-reap inspection is reachable from a worktree-isolated"
+echo "orchestrator session — issue #1316 regression guard"
+echo ""
+
+# Background — issue #1316: A.0.5's mandated inspection ("Never reap before
+# inspecting") used to be written as an inline `git -C "$worktree_path" ...`
+# in TWO places in steady-state.md — the "mechanical check that grounds the
+# judgment call" and the stalled-worker resume path's step 2. Both are
+# refused verbatim by the orchestrator's own worktree-isolation guard once
+# the orchestrator has isolated itself per setup step 0.5 (EnterWorktree):
+# a worktree-isolated session's harness guard unconditionally refuses any
+# `git -C <other-worktree>` issued directly from its own Bash tool call,
+# read-only or not. The fix moves the inspection inside a helper script
+# (`worktree-reap.sh inspect-unpushed`) — `git -C` INSIDE a script's own
+# bash process is unaffected by the guard, the same pattern `reap-stale`
+# and `crash-recovery-reap.sh` already rely on.
+#
+# 1) The two literal inline `git -C "$worktree_path" ...` invocations that
+#    used to live in these two spots are GONE from steady-state.md. This is
+#    a narrow, exact-string check — it must not false-positive against the
+#    "Recovery semantics, in order" section further down, which documents
+#    (in prose, using `<worktree_path>` angle-bracket placeholders, not real
+#    `"$worktree_path"` shell-variable syntax) what ALREADY runs inside the
+#    extracted crash-recovery-reap.sh script — that site was never affected
+#    by the guard and is intentionally left alone.
+# shellcheck disable=SC2016  # literal needle — must NOT expand $(...) / $worktree_path
+assert_not_contains "$steady_state_path" \
+  'ahead_count=$(git -C "$worktree_path" rev-list --count' \
+  "A.0.5 mechanical check no longer inlines a direct git -C rev-list (#1316)"
+# shellcheck disable=SC2016  # literal needle — must NOT expand $(...) / $worktree_path
+assert_not_contains "$steady_state_path" \
+  'dirty=$(git -C "$worktree_path" status --porcelain' \
+  "A.0.5 mechanical check no longer inlines a direct git -C status (#1316)"
+# shellcheck disable=SC2016  # literal needle — must NOT expand $worktree_path / $DEFAULT_BRANCH
+assert_not_contains "$steady_state_path" \
+  'git -C "$worktree_path" fetch origin "$DEFAULT_BRANCH" 2>/dev/null || true' \
+  "A.0.5 resume-path step 2 no longer inlines a direct git -C fetch (#1316)"
+# shellcheck disable=SC2016  # literal needle — must NOT expand $worktree_path / $DEFAULT_BRANCH
+assert_not_contains "$steady_state_path" \
+  'git -C "$worktree_path" log --oneline "origin/$DEFAULT_BRANCH..HEAD"' \
+  "A.0.5 resume-path step 2 no longer inlines a direct git -C log (#1316)"
+
+# 2) Both spots now call the inspect-unpushed subcommand instead, and the
+#    resume path passes --fetch (it used to run its own explicit fetch
+#    first).
+# shellcheck disable=SC1003  # literal needle ending in a line-continuation backslash, not a shell escape
+assert_contains "$steady_state_path" \
+  'scripts/worktree-reap.sh" inspect-unpushed \' \
+  "A.0.5 invokes worktree-reap.sh inspect-unpushed (#1316)"
+# shellcheck disable=SC2016  # literal needle — must NOT expand $worktree_path / $DEFAULT_BRANCH
+assert_contains "$steady_state_path" \
+  '--worktree-path "$worktree_path" --default-branch "$DEFAULT_BRANCH" --fetch' \
+  "A.0.5 resume-path step 2 calls inspect-unpushed --fetch (#1316)"
+
+# 3) The Recovery semantics section's documentation of crash-recovery-
+#    reap.sh's OWN internals — a genuinely different, already-extracted call
+#    site the #1316 fix must not touch — is still intact.
+assert_contains "$steady_state_path" \
+  'git -C <worktree_path> rev-list --count origin/<default>..HEAD' \
+  "Recovery semantics section (crash-recovery-reap.sh internals) is untouched by the #1316 fix"
+
+echo ""
+echo "Test: worktree-reap.sh inspect-unpushed subcommand (issue #1316)"
+echo ""
+
+# Runtime fixture: a real git repo with a local "origin" remote and a
+# worktree registered on its own branch, mirroring the fast-reap fixture
+# convention in worktree-reap.test.sh / crash-recovery-reap-1291.test.sh.
+inspect_repo="$(mktemp -d)"
+inspect_wt="$inspect_repo/.claude/worktrees/wt-inspect"
+
+reset_inspect_repo() {
+  rm -rf "$inspect_repo"
+  mkdir -p "$inspect_repo"
+  (
+    cd "$inspect_repo" || exit 1
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+    git remote add origin "$inspect_repo"
+    # A real remote-tracking ref, established once at fixture-reset time —
+    # never advanced by an actual push, so any commit made in the worktree
+    # afterward naturally simulates "unpushed" without needing a real push.
+    git update-ref refs/remotes/origin/main main
+    git branch wt-inspect >/dev/null 2>&1
+    git worktree add -q "$inspect_wt" wt-inspect
+  ) >/dev/null 2>&1
+}
+
+reset_inspect_repo
+
+# --- (121) usage: missing --worktree-path exits 64 ---
+out=$(bash "$worktree_reap_path" inspect-unpushed --default-branch main 2>&1); rc=$?
+if [[ $rc -eq 64 ]]; then
+  printf '  %sPASS%s  (121) inspect-unpushed without --worktree-path exits 64\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (121) inspect-unpushed without --worktree-path: expected exit 64, got %d\n' "$RED" "$RESET" "$rc"
+  fail=$((fail+1))
+fi
+
+# --- (122) usage: missing --default-branch exits 64 ---
+out=$(bash "$worktree_reap_path" inspect-unpushed --worktree-path "$inspect_wt" 2>&1); rc=$?
+if [[ $rc -eq 64 ]]; then
+  printf '  %sPASS%s  (122) inspect-unpushed without --default-branch exits 64\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (122) inspect-unpushed without --default-branch: expected exit 64, got %d\n' "$RED" "$RESET" "$rc"
+  fail=$((fail+1))
+fi
+
+# --- (123) a non-worktree path exits 65 ---
+out=$(bash "$worktree_reap_path" inspect-unpushed --worktree-path "/nonexistent-1316-$$" --default-branch main 2>&1); rc=$?
+if [[ $rc -eq 65 ]]; then
+  printf '  %sPASS%s  (123) inspect-unpushed on a non-git path exits 65\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (123) inspect-unpushed on a non-git path: expected exit 65, got %d\n' "$RED" "$RESET" "$rc"
+  fail=$((fail+1))
+fi
+
+# --- (124) a clean worktree (no commits ahead, nothing dirty) → verdict=clean ---
+out=$(bash "$worktree_reap_path" inspect-unpushed --worktree-path "$inspect_wt" --default-branch main)
+rc=$?
+if [[ $rc -eq 0 ]]; then
+  printf '  %sPASS%s  (124) inspect-unpushed on a clean worktree exits 0\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (124) inspect-unpushed on a clean worktree: expected exit 0, got %d\n' "$RED" "$RESET" "$rc"
+  fail=$((fail+1))
+fi
+case "$out" in
+  "ahead_count=0 dirty_count=0 verdict=clean"*) clean_ok=1 ;;
+  *) clean_ok=0 ;;
+esac
+assert_equals "$clean_ok" "1" \
+  "(124a) clean worktree reports ahead_count=0 dirty_count=0 verdict=clean"
+
+# --- (125) an uncommitted, dirty worktree → verdict=resume-worthy, dirty_count>0 ---
+echo "scratch" > "$inspect_wt/scratch-file.txt"
+out=$(bash "$worktree_reap_path" inspect-unpushed --worktree-path "$inspect_wt" --default-branch main)
+case "$out" in
+  "ahead_count=0 dirty_count=1 verdict=resume-worthy"*) dirty_ok=1 ;;
+  *) dirty_ok=0 ;;
+esac
+assert_equals "$dirty_ok" "1" \
+  "(125) dirty worktree reports ahead_count=0 dirty_count=1 verdict=resume-worthy"
+case "$out" in
+  *"--- dirty (git status --porcelain) ---"*"scratch-file.txt"*) dirty_listing_ok=1 ;;
+  *) dirty_listing_ok=0 ;;
+esac
+assert_equals "$dirty_listing_ok" "1" \
+  "(125a) dirty worktree's stdout includes the literal porcelain listing"
+rm -f "$inspect_wt/scratch-file.txt"
+
+# --- (126) a committed-but-unpushed commit → verdict=resume-worthy, ahead_count>0 ---
+(
+  cd "$inspect_wt" || exit 1
+  git commit -q --allow-empty -m "unpushed work"
+) >/dev/null 2>&1
+out=$(bash "$worktree_reap_path" inspect-unpushed --worktree-path "$inspect_wt" --default-branch main)
+case "$out" in
+  "ahead_count=1 dirty_count=0 verdict=resume-worthy"*) ahead_ok=1 ;;
+  *) ahead_ok=0 ;;
+esac
+assert_equals "$ahead_ok" "1" \
+  "(126) worktree with one unpushed commit reports ahead_count=1 dirty_count=0 verdict=resume-worthy"
+case "$out" in
+  *"--- commits (git log --oneline origin/main..HEAD) ---"*"unpushed work"*) commit_listing_ok=1 ;;
+  *) commit_listing_ok=0 ;;
+esac
+assert_equals "$commit_listing_ok" "1" \
+  "(126a) unpushed-commit worktree's stdout includes the literal commit subject line"
+
+# --- (127) --fetch does not error against a real (non-bare) origin remote ---
+out=$(bash "$worktree_reap_path" inspect-unpushed --worktree-path "$inspect_wt" --default-branch main --fetch 2>&1)
+rc=$?
+assert_exit_code "$rc" "0" \
+  "(127) inspect-unpushed --fetch exits 0 against a real origin remote"
+
+rm -rf "$inspect_repo"
 
 echo ""
 echo "Results: $pass passed, $fail failed"
