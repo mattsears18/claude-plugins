@@ -108,7 +108,13 @@ cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
 # them into the same concatenation so the many pre-existing
 # `assert_contains "$steady_state_path" …` assertions below keep finding
 # their logic regardless of which file/script it now lives in.
-extracted_reap_scripts_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh $repo_root/plugins/shipyard/scripts/concurrent-session-guard.sh $repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh $repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh $repo_root/plugins/shipyard/scripts/stale-failure-check.sh $repo_root/plugins/shipyard/scripts/next-available-version.sh"
+# primary-leak-guard.sh (issue #1323) is the newest addition to this list:
+# A.0.6's primary-checkout branch-leak guard — including the #452
+# cwd-independent PRIMARY_CHECKOUT derivation and its agent-* fallback
+# strip — moved from an inline steady-state.md block to this script, for
+# the same "orchestrator's own Bash tool call can't `git -C` another
+# worktree directly" reason #1289's scripts were extracted.
+extracted_reap_scripts_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh $repo_root/plugins/shipyard/scripts/concurrent-session-guard.sh $repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh $repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh $repo_root/plugins/shipyard/scripts/stale-failure-check.sh $repo_root/plugins/shipyard/scripts/next-available-version.sh $repo_root/plugins/shipyard/scripts/primary-leak-guard.sh"
 steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
 # shellcheck disable=SC2086  # intentional word-splitting: space-separated path list
 cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
