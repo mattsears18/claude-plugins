@@ -137,9 +137,13 @@ echo
 # actually contains a `gh` executable filtered out, so standard utilities
 # (bash, coreutils, etc.) stay reachable but `gh` specifically never
 # resolves, regardless of which directory this host happens to install it
-# in.
+# in. Critically, capture the absolute path to bash BEFORE filtering PATH
+# (on CI, bash and gh are co-located in /usr/bin, so filtering by gh name
+# would drop bash too). Invoke bash via its absolute path with the narrowed
+# PATH only in the child's environment.
 # ---------------------------------------------------------------------------
 echo "(C) gh CLI not on PATH"
+bash_path="$(command -v bash)"
 emptybin="$(mktemp -d)"
 no_gh_path="$emptybin"
 IFS=':' read -r -a path_dirs <<< "$PATH"
@@ -147,7 +151,7 @@ for d in "${path_dirs[@]}"; do
   [[ -n "$d" && -x "$d/gh" ]] && continue
   no_gh_path="$no_gh_path:$d"
 done
-out="$(PATH="$no_gh_path" bash "$script" --pr 5 --repo owner/repo 2>&1)"
+out="$(PATH="$no_gh_path" "$bash_path" "$script" --pr 5 --repo owner/repo 2>&1)"
 code=$?
 rm -rf "$emptybin"
 assert_equals "gh missing: exit code" "4" "$code"
