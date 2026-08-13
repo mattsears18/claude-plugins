@@ -140,8 +140,12 @@ if [[ -f "$issue_work_path" ]]; then
     "issue-work.md adds a §4.5 Pre-PR-create diff sanity check (issue #356)"
   assert_contains "$issue_work_path" "phantom-merge" \
     "issue-work.md names the phantom-merge failure mode by name"
-  assert_contains "$issue_work_path" "git diff --name-only" \
-    "issue-work.md uses git diff --name-only to count changed files"
+  # As of issue #1340, the pre-create diff count no longer runs as an
+  # inline `git diff --name-only` snippet — it's delegated to
+  # assert-worktree-change-present.sh (script-invocation regression
+  # coverage lives in phantom-merge-guard-script-invocation.test.sh).
+  assert_contains "$issue_work_path" "scripts/assert-worktree-change-present.sh" \
+    "issue-work.md delegates the changed-files count to assert-worktree-change-present.sh (issue #1340)"
   assert_contains "$issue_work_path" "implementation produced no changes" \
     "issue-work.md documents the canonical bail string substring"
   assert_contains "$issue_work_path" "blocked #<N> at pre-pr-create:" \

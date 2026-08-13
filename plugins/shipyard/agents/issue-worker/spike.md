@@ -222,7 +222,9 @@ A pure-research spike with nothing safely committable yet is a completely valid 
 
 ### 7.5 Pre-PR-create diff sanity check (spike variant)
 
-`issue-work` § 4.5's phantom-merge guard applies here with one adjustment: for spike mode, **the design doc counts as the required non-empty diff** — a spike that produces only the design doc (no application code) is a complete, valid PR, not a phantom merge. What must NOT happen is a PR with **neither** a design doc **nor** any code change:
+`issue-work` § 4.5's phantom-merge guard applies here with one adjustment: for spike mode, **the design doc counts as the required non-empty diff** — a spike that produces only the design doc (no application code) is a complete, valid PR, not a phantom merge. What must NOT happen is a PR with **neither** a design doc **nor** any code change.
+
+**This check runs as the same standalone script `issue-work` § 4.5 uses, not an inline snippet ([#1340](https://github.com/mattsears18/shipyard/issues/1340)) — see that section for the full two-directions-of-corruption rationale** (the block is refused outright by the worktree-isolation Bash guard, and its own "break it into plain commands" remediation over-counts the committed-diff check while under-counting the working-tree check, in opposite directions, under a diff-rewriting shell proxy). [`assert-worktree-change-present.sh`](../../scripts/assert-worktree-change-present.sh) is mode-agnostic — it only asks "does a real change exist," so the spike-specific "design doc counts" adjustment lives entirely in how this bail message is worded, not in the script:
 
 ```bash
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
@@ -232,17 +234,24 @@ if [ ! -d "$WORKTREE_PATH" ] || [ "$CURRENT_TOPLEVEL" != "$WORKTREE_PATH" ]; the
   echo "reaped: my worktree was reaped while I was running — re-dispatch required (last push: ${LAST_PUSH:-none})"
   exit 0
 fi
-
-DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-CHANGED_FILES=$(git diff --name-only "origin/$DEFAULT_BRANCH"...HEAD | wc -l | tr -d ' ')
-if [ "$CHANGED_FILES" = "0" ]; then
-  WORKING_TREE_DIRTY=$(git status --porcelain | wc -l | tr -d ' ')
-  if [ "$WORKING_TREE_DIRTY" = "0" ]; then
-    echo "blocked #<N> at pre-pr-create: spike produced no design doc and no code changes — manual triage required"
-    exit 0
-  fi
-fi
 ```
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+```
+
+Then, as its own plain Bash call:
+
+```bash
+DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
+bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-change-present.sh" "origin/$DEFAULT_BRANCH"
+```
+
+Read the exit status and stdout:
+
+- **exit 0, `OK: ...`** — a real change exists (the design doc, code, or both). Proceed.
+- **exit 1, `EMPTY_DIFF: ...`** — bail: `echo "blocked #<N> at pre-pr-create: spike produced no design doc and no code changes — manual triage required"` then `exit 0`.
+- **exit 2, `INDETERMINATE: <reason>`** — **treat exactly like exit 1, never as a pass.** Bail: `echo "blocked #<N> at pre-pr-create: could not verify the spike produced changes (<reason>) — manual triage required"` then `exit 0`.
 
 If this trips, something went wrong upstream — the design doc from [step 5](#5-write-the-design-doc-committed-in-repo) should always exist by this point on every conclusion path. Bail rather than open an empty PR (same reasoning as [#356](https://github.com/mattsears18/shipyard/issues/356)).
 
