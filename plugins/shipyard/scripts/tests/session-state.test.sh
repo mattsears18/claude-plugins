@@ -1616,6 +1616,114 @@ assert_contains "$degraded_comment" "1 dispatch(es)" "degraded PR's advisory nam
 rm -rf "$tmphome"
 
 # --------------------------------------------------------------------------
+echo "== read-tokens — estimated_usd_degraded / estimated_usd_upper_bound structurally mark a degraded scope (#1327)"
+# --------------------------------------------------------------------------
+# Issue #1327: a fully- or partly-degraded scope's estimated_usd read as a
+# measured figure with nothing in the VALUE marking it an upper bound (the
+# #1218 UNRELIABLE advisory is prose alongside the figure, not a field a
+# JSON consumer is forced to notice). This adds two structural fields to
+# `read-tokens --format json`'s scope object — estimated_usd_degraded
+# (bool) and estimated_usd_upper_bound (mirrors estimated_usd when
+# degraded, else null) — and changes the `--format comment` cost row
+# itself to read "~$X.XX (upper bound — ...)" when degraded. Three scopes:
+# PR 901 fully degraded (both its dispatches used --degraded-total-only),
+# PR 902 partly degraded (one normal + one degraded dispatch), PR 903
+# clean (no degraded dispatches at all — must render byte-identically to
+# pre-#1327 behavior).
+
+tmphome=$(mktmphome)
+SHIPYARD_HOME="$tmphome" bash "$helper" init --session-id "struct-deg" --repo "o/r" >/dev/null
+
+# PR 901 — fully degraded: two dispatches, both --degraded-total-only.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "struct-deg" --issue 901 --pr 901 \
+  --input 10000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "struct-deg" --issue 901 --pr 901 \
+  --input 5000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+
+# PR 902 — partly degraded: one normal, one degraded dispatch.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "struct-deg" --issue 902 --pr 902 \
+  --input 1000 --output 500 --cache-read 200 --cache-creation 100 \
+  --mode issue-work --model claude-sonnet-5 >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "struct-deg" --issue 902 --pr 902 \
+  --input 8000 --mode issue-work --model claude-sonnet-5 \
+  --degraded-total-only >/dev/null
+
+# PR 903 — clean: two normal dispatches, no degraded bump at all.
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "struct-deg" --issue 903 --pr 903 \
+  --input 1000 --output 500 --cache-read 200 --cache-creation 100 \
+  --mode issue-work --model claude-sonnet-5 >/dev/null
+SHIPYARD_HOME="$tmphome" bash "$helper" bump-tokens \
+  --session-id "struct-deg" --issue 903 --pr 903 \
+  --input 2000 --output 300 --cache-read 100 --cache-creation 50 \
+  --mode issue-work --model claude-sonnet-5 >/dev/null
+
+# --- JSON: fully degraded scope ---
+json_901=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 901 --format json)
+out=$(printf '%s' "$json_901" | jq -r '.estimated_usd_degraded')
+assert_equals "$out" "true" "PR 901 (fully degraded): estimated_usd_degraded == true"
+usd_901=$(printf '%s' "$json_901" | jq -r '.estimated_usd')
+upper_901=$(printf '%s' "$json_901" | jq -r '.estimated_usd_upper_bound')
+assert_equals "$upper_901" "$usd_901" "PR 901 (fully degraded): estimated_usd_upper_bound mirrors estimated_usd"
+
+# --- JSON: partly degraded scope — still marked, same as fully degraded ---
+json_902=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 902 --format json)
+out=$(printf '%s' "$json_902" | jq -r '.estimated_usd_degraded')
+assert_equals "$out" "true" "PR 902 (partly degraded): estimated_usd_degraded == true"
+usd_902=$(printf '%s' "$json_902" | jq -r '.estimated_usd')
+upper_902=$(printf '%s' "$json_902" | jq -r '.estimated_usd_upper_bound')
+assert_equals "$upper_902" "$usd_902" "PR 902 (partly degraded): estimated_usd_upper_bound mirrors estimated_usd"
+
+# --- JSON: clean scope — no new caveat, upper_bound is null ---
+json_903=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 903 --format json)
+out=$(printf '%s' "$json_903" | jq -r '.estimated_usd_degraded')
+assert_equals "$out" "false" "PR 903 (clean): estimated_usd_degraded == false"
+out=$(printf '%s' "$json_903" | jq -r '.estimated_usd_upper_bound')
+assert_equals "$out" "null" "PR 903 (clean): estimated_usd_upper_bound == null"
+
+# --- comment: fully degraded row reads as an explicit upper bound ---
+comment_901=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 901 --format comment)
+cost_line_901=$(printf '%s' "$comment_901" | grep "Estimated cost")
+assert_contains "$cost_line_901" "~\$" "PR 901 (fully degraded) cost row is prefixed with ~\$, not a bare \$ figure"
+assert_contains "$cost_line_901" "upper bound" "PR 901 (fully degraded) cost row names itself an upper bound"
+assert_contains "$cost_line_901" "unavailable for 2/2 dispatches" "PR 901 (fully degraded) cost row names both dispatches as degraded"
+
+# --- comment: partly degraded row is marked too, with the correct N/M ---
+comment_902=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 902 --format comment)
+cost_line_902=$(printf '%s' "$comment_902" | grep "Estimated cost")
+assert_contains "$cost_line_902" "~\$" "PR 902 (partly degraded) cost row is prefixed with ~\$"
+assert_contains "$cost_line_902" "unavailable for 1/2 dispatches" "PR 902 (partly degraded) cost row names 1 of 2 dispatches as degraded"
+
+# --- comment: clean row renders EXACTLY as it did before #1327 — no tilde,
+# no "upper bound" text, plain $X.XX. This is the explicit no-regression
+# check the issue's phase-1 slice calls for.
+comment_903=$(SHIPYARD_HOME="$tmphome" bash "$helper" read-tokens --session-id "struct-deg" --pr 903 --format comment)
+cost_line_903=$(printf '%s' "$comment_903" | grep "Estimated cost")
+if [[ "$cost_line_903" == *"~"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "PR 903 (clean) cost row does NOT contain a ~ prefix"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "PR 903 (clean) cost row does NOT contain a ~ prefix"
+  pass=$((pass+1))
+fi
+if [[ "$cost_line_903" == *"upper bound"* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "PR 903 (clean) cost row does NOT mention 'upper bound'"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "PR 903 (clean) cost row does NOT mention 'upper bound'"
+  pass=$((pass+1))
+fi
+assert_contains "$cost_line_903" "| Estimated cost (USD) | \$" "PR 903 (clean) cost row keeps the plain \$X.XX shape unchanged"
+
+rm -rf "$tmphome"
+
+# --------------------------------------------------------------------------
 echo "== bump-tokens — --degraded-total-only composes with --allow-degraded-init"
 # --------------------------------------------------------------------------
 # The two degraded flags address different failure modes (#253 file-

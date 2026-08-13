@@ -964,7 +964,7 @@ cmd_report() {
   if [[ ! -f "$session_ledger" ]] || [[ ! -s "$session_ledger" ]]; then
     case "$format" in
       markdown) printf 'No shipyard sessions recorded yet. Run /shipyard:do-work to start tracking.\n' ;;
-      csv)      printf 'session_id,repo,started_at,ended_at,duration_seconds,total_tokens,estimated_usd\n' ;;
+      csv)      printf 'session_id,repo,started_at,ended_at,duration_seconds,total_tokens,estimated_usd,estimated_usd_degraded\n' ;;
       json)     printf '{"sessions": [], "totals": {"sessions": 0, "issues_worked": 0, "prs_created": 0, "estimated_usd": 0}}\n' ;;
     esac
     return 0
@@ -1015,6 +1015,24 @@ cmd_report() {
         # output tokens it may have included) in unpredictable proportion.
         degraded_attribution_count: ([$sessions[].degraded_attribution_count // 0] | add // 0),
         degraded_sessions: ([$sessions[] | select((.degraded_attribution_count // 0) > 0)] | length),
+        # estimated_usd_degraded / estimated_usd_upper_bound (issue #1327)
+        # make the degraded-ness structurally visible in the JSON aggregate
+        # itself, so a consumer of the json format is not required to
+        # separately remember to check degraded_attribution_count before
+        # trusting estimated_usd. Mirrors the same two fields added to
+        # session-state.sh read-tokens --format json scope objects. A
+        # ledger record written by an older shipyard has no
+        # degraded_attribution_count field at all; the // 0 default
+        # already used above means it reads as not-degraded, so this is
+        # backward compatible by construction, no schema or write-path
+        # change required.
+        estimated_usd_degraded: (([$sessions[].degraded_attribution_count // 0] | add // 0) > 0),
+        estimated_usd_upper_bound: (
+          if (([$sessions[].degraded_attribution_count // 0] | add // 0) > 0)
+          then ([$sessions[].estimated_usd // 0] | add // 0)
+          else null
+          end
+        ),
         by_model: (
           [ $sessions[].by_model // {} | to_entries[]? ]
           | group_by(.key)
@@ -1170,9 +1188,15 @@ cmd_report() {
         }'
       ;;
     csv)
-      # Sessions CSV with the seven core columns. Useful for piping
-      # into a spreadsheet for ad-hoc analysis.
-      printf 'session_id,repo,started_at,ended_at,duration_seconds,total_tokens,estimated_usd\n'
+      # Sessions CSV with the eight core columns. Useful for piping into a
+      # spreadsheet for ad-hoc analysis. `estimated_usd_degraded` (issue
+      # #1327) is 1 when this session's estimated_usd includes at least one
+      # --degraded-total-only dispatch — a spreadsheet consumer can filter
+      # or flag on this column rather than trusting every estimated_usd
+      # value as measured. A ledger row written before degraded_attribution_
+      # count existed has no such field; `// 0` reads it as not-degraded,
+      # so this column is backward compatible by construction.
+      printf 'session_id,repo,started_at,ended_at,duration_seconds,total_tokens,estimated_usd,estimated_usd_degraded\n'
       printf '%s' "$sessions" | jq -r '
         .[]
         | [
@@ -1183,7 +1207,8 @@ cmd_report() {
             (.duration_seconds // 0 | tostring),
             ((.tokens.input // 0) + (.tokens.output // 0)
               + (.tokens.cache_read // 0) + (.tokens.cache_creation // 0) | tostring),
-            (.estimated_usd // 0 | tostring)
+            (.estimated_usd // 0 | tostring),
+            (if (.degraded_attribution_count // 0) > 0 then "1" else "0" end)
           ]
         | @csv
       '
