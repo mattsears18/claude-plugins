@@ -109,3 +109,23 @@ An intentional bad example inside a ` ```bash ` fence can be exempted with a `<!
 | Required-modifier expansions (`${VAR:-default}`, `${#arr[@]}`, `${VAR%.md}`) | ~126 across 29 files | No unbraced spelling exists. The block must be decomposed (hoist the default onto its own plain line) or extracted to a script. |
 
 A block carrying that shape stays refused post-relocation even though it now scans clean under **both** scanners — neither says anything about it, so read a clean scan as "no decorative braces and no argument-position substitutions," never as "this block will run."
+
+## A third, distinct trigger: redirect target outside the worktree ([#1325](https://github.com/mattsears18/shipyard/issues/1325))
+
+The two shapes above (braced `${VAR}` expansion, argument-position `$(cmd)` substitution) are exhaustively swept and CI-enforced. Neither explains a refusal on a **plain, single-statement, non-git command** whose only worktree-crossing element is a shell **redirect target** — `>`, `>>`, or `2>` — pointing outside the isolated session's own worktree.
+
+Confirmed repro (session `do-work-20260813T000232Z-83617`, `mattsears18/lightwork`, plugin 4.31.7): a worktree-isolated session ran
+
+```bash
+gh issue list --repo <owner/repo> --state open --limit 400 --json number,title,labels,assignees,author,createdAt,updatedAt > /Users/mattsears/.claude/jobs/7a9612cd/tmp/backlog.json
+```
+
+and was refused with:
+
+> This session is isolated in the worktree `<path>`, but this command is too complex to verify that it stays inside the worktree; break it into plain, separate commands. Refusing to run it — **a worktree-isolated session's git operations must target its own worktree.**
+
+`gh issue list` performs no git operation at all — the refusal message's "git operations" framing is wrong for this shape. This is the inverse of the generic-message caveat noted above ("the refusal message ... mentions redirects it did not observe — do not read the message as diagnostic"): there, the message over-mentions redirects that aren't the cause; here, the message under-mentions the redirect that *is* the cause and blames git instead. Don't chase a stray `-C` or a hidden `git` invocation when this shape fires — the trigger is the redirect target, not the command. Two more single-plain-command shapes were refused the same way in the same session: `gh run view <id> --repo <owner/repo> --log-failed 2>/dev/null | grep ...` (a pipe, already covered by `dont.md`'s compound-block rule, but the message it received made the same git misattribution) and a `for n in ...; do gh issue view $n --repo <owner/repo> ...; done` loop (the `dont.md` loop shape, noted here only because it co-occurred in the same repro — not a fourth trigger).
+
+**This is a single confirmed repro, not a swept and CI-enforced trigger matrix like the two shapes above.** There is no `redirect-target-scan.sh` sibling to `brace-expansion-scan.sh` / `command-substitution-scan.sh`, and none is proposed by this fix — a scanner would need to reliably distinguish "this redirect target is worktree-local" from "it isn't," which requires resolving the target path against the worktree root at scan time, a materially different (and unvalidated) check from the two existing scanners' pure-syntax matching. **The guard's actual verification logic and its refusal-message wording are both Claude Code harness code, not present in this repository** — no PR against this repo can narrow the guard or correct the message text (see the two options weighed in issue #1325, both ruled out of scope for the same reason). The only lever available from here is documentation: know the shape, and don't waste diagnostic time chasing git when the real cause is the redirect.
+
+**Remedy — keep the redirect target inside the worktree.** See [`setup/00-config-worktree.md` step 0.5](./setup/00-config-worktree.md#05-move-into-the-orchestrators-worktree) for the worked-through alternative: a worktree-local `.shipyard-*` scratch file, or the `Write` tool in place of a shell redirect.

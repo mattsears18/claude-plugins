@@ -1,6 +1,6 @@
 # /shipyard:do-work — Setup phase · config + worktree
 
-**Setup sub-phase (cluster 1 of 5, part 1 of 2 — [#994](https://github.com/mattsears18/shipyard/issues/994)).** Owns the Lightweight C=1 index, the run-once Setup preamble, and steps 0.3 → 0.7 (intro): `CLAUDE_PLUGIN_ROOT` re-export, repo-level opt-in check, orchestrator-worktree relocation, per-worktree session-id storage, and the start of the fire-once parallelization contract. The rest of step 0.7 (the canonical batch + background cleanup group), the `blocker_state` cache, and the `gh-cached.sh` / `gh-batch.sh` wrappers continue in **[`00b-parallelization-cache.md`](./00b-parallelization-cache.md)** — this file was split into two once it grew past the per-`Read` token cap on its own ([#994](https://github.com/mattsears18/shipyard/issues/994); the original single-file split from [#611](https://github.com/mattsears18/shipyard/issues/611) was sized against the 256KB byte limit, not the 25k-token `Read` cap that actually binds). Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Next: [`00b-parallelization-cache.md`](./00b-parallelization-cache.md) (same cluster, part 2) → [`01-repo-recovery.md`](./01-repo-recovery.md).
+**Setup sub-phase (cluster 1, part 1/2 — [#994](https://github.com/mattsears18/shipyard/issues/994)).** Steps 0.3 → 0.7 (intro): config + worktree relocation + session-state init + parallelization contract intro. Continues in [`00b-parallelization-cache.md`](./00b-parallelization-cache.md). Router: [`setup.md`](../setup.md).
 
 ## Lightweight C=1 path — what's skipped and what stays
 
@@ -366,6 +366,8 @@ echo "resolved CLAUDE_PLUGIN_ROOT version=$SHIPYARD_PLUGIN_ROOT_VERSION (post-re
 "$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
 ```
+
+[`00g-redirect-target-refusal.md`](./00g-redirect-target-refusal.md) — redirect-target validation.
 
 **Post-relocation staleness assertion ([#1167](https://github.com/mattsears18/shipyard/issues/1167)).** The orchestrator worktree's `baseRef: fresh` setting should branch from `origin/<default-branch>`'s tip, but a session against a repo carrying a `WorktreeCreate` hook found the resulting worktree far behind, with no warning — the orchestrator triaged against stale state. Assert the base explicitly instead of trusting tool semantics silently:
 
