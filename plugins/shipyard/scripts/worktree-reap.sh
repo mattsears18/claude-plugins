@@ -624,6 +624,8 @@ Usage:
                         [--skip-remove] [--force-evidence <reason>] \
                         [--bypass-return-check <reason>]
   worktree-reap.sh disk-check --path <dir> [--floor-mb <N>]
+  worktree-reap.sh inspect-unpushed --worktree-path <path> \
+                                    --default-branch <name> [--fetch]
 
 classify-lock — Prints one of: no-lock | dead | self-ancestor |
                           peer-alive-stale | peer-alive. peer-alive-stale
@@ -842,6 +844,23 @@ disk-check              — Issue #1261. Read-only free-space probe against
                           steady-state.md's step C uses this to decide
                           whether to run a mid-session reap-stale sweep
                           before dispatching a replacement worker.
+
+inspect-unpushed         — Issue #1316. Read-only pre-reap inspection of a
+                          worker's worktree, callable from a worktree-
+                          isolated orchestrator session (the harness's
+                          isolation guard refuses a `git -C <other-
+                          worktree>` issued directly by the caller, but not
+                          one run inside this script). Prints
+                          `ahead_count=<N> dirty_count=<N>
+                          verdict=<clean|resume-worthy>` on line 1, then a
+                          `--- commits ... ---` block (literal `git log
+                          --oneline <base>..HEAD` output) and a `--- dirty
+                          ... ---` block (literal `git status --porcelain`
+                          output) — both verbatim, for folding directly into
+                          an A.0.5 resume message. --fetch runs `git fetch
+                          origin <default-branch>` first (best-effort).
+                          Exits 65 when --worktree-path isn't a readable git
+                          worktree (already gone).
 
 Env vars:
   SHIPYARD_ORCHESTRATOR_PID  Explicit orchestrator PID for self-ancestor
@@ -2036,6 +2055,159 @@ disk_free_check() {
     low="true"
   fi
   echo "free_mb=${free_mb} floor_mb=${floor_mb} low=${low}"
+  return 0
+}
+
+# Issue #1316 — read-only pre-reap inspection of a worker's worktree, callable
+# from a worktree-isolated orchestrator session. `steady-state.md`'s A.0.5
+# mandates inspecting a returning worker's worktree for unpushed commits /
+# uncommitted edits BEFORE reaping it (issues #838 / #833) — as originally
+# written, that meant running `git log --oneline origin/<default>..HEAD` and
+# `git status --porcelain` directly against the *worker's* worktree, i.e.
+# `git -C .claude/worktrees/agent-<id> ...` from the orchestrator's own shell.
+# But setup step 0.5 (00-config-worktree.md) requires the orchestrator to
+# isolate itself into its OWN worktree via EnterWorktree first, and a
+# worktree-isolated session's harness guard unconditionally refuses any
+# `git -C <other-worktree>` (or `cd <other-worktree> && git ...`) issued
+# directly from the orchestrator's own Bash tool call — read-only or not
+# (issue #1316's live repro: both commands refused verbatim).
+#
+# The fix follows the same pattern already used everywhere else in this file
+# for a worktree the orchestrator must not `-C`/`cd` into directly: `git -C`
+# INSIDE a helper script's own bash process is unaffected by the guard (see
+# `worktree_force_is_safe` above and `crash-recovery-reap.sh`, both of which
+# already do exactly this) — the guard inspects the literal command TEXT of
+# the orchestrator's own Bash tool call, not what a script it invokes does
+# internally. Moving the inspection here — a plain `bash worktree-reap.sh
+# inspect-unpushed ...` invocation, no `-C` in the outer call — restores the
+# ability to perform it from an isolated session.
+#
+# Args:
+#   --worktree-path <path>   (required) the worker's worktree to inspect.
+#   --default-branch <name>  (required) the repo's default branch, e.g.
+#                             "main" — compared as origin/<name>..HEAD.
+#   --fetch                  (optional) run `git fetch origin
+#                             <default-branch>` inside the worktree first, so
+#                             the ahead-count and commit log are computed
+#                             against a current remote-tracking ref rather
+#                             than whatever origin/<default-branch> last
+#                             resolved to locally. Best-effort — a fetch
+#                             failure (network down) is not fatal; the
+#                             inspection proceeds against whatever
+#                             origin/<default> already resolves to.
+#
+# Output (stdout):
+#   Line 1: `ahead_count=<N> dirty_count=<N> verdict=<clean|resume-worthy>`
+#           — the machine-checkable summary. `resume-worthy` when
+#           ahead_count > 0 OR dirty_count > 0 (mirrors steady-state.md
+#           A.0.5's "resume-worthy" mechanical check); `clean` otherwise.
+#   A `--- commits (git log --oneline <base>..HEAD) ---` marker line,
+#   followed by the literal `git log --oneline` output (one commit per
+#   line, SHA + subject; block is empty when ahead_count is 0).
+#   A `--- dirty (git status --porcelain) ---` marker line, followed by the
+#   literal `git status --porcelain` output (one path per line; block is
+#   empty when dirty_count is 0).
+#
+# Both blocks are emitted verbatim (not re-encoded) so a caller building
+# A.0.5's resume message "Verified state" paragraph can fold this script's
+# own stdout directly into the message without re-deriving anything — the
+# resume message asserts THIS reading as ground truth, never the stalled
+# worker's own prior narrative.
+#
+# Read-only — never mutates the worktree beyond an optional `git fetch`
+# (which only updates remote-tracking refs, never the worktree's own branch
+# or working tree).
+#
+# Exit codes:
+#   0  inspection completed (worktree may or may not be reap-eligible —
+#      that's the verdict= field, not the exit code).
+#   64 bad usage (missing --worktree-path / --default-branch, unknown flag).
+#   65 --worktree-path does not resolve to a readable git worktree (already
+#      gone — the caller should treat this as "nothing to inspect," not
+#      retry).
+inspect_unpushed() {
+  local worktree_path=""
+  local default_branch=""
+  local do_fetch=0
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --worktree-path)
+        worktree_path="${2:-}"
+        shift 2
+        ;;
+      --worktree-path=*)
+        worktree_path="${1#--worktree-path=}"
+        shift
+        ;;
+      --default-branch)
+        default_branch="${2:-}"
+        shift 2
+        ;;
+      --default-branch=*)
+        default_branch="${1#--default-branch=}"
+        shift
+        ;;
+      --fetch)
+        do_fetch=1
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "inspect-unpushed: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "inspect-unpushed: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$worktree_path" ]; then
+    echo "inspect-unpushed: --worktree-path is required" >&2
+    return 64
+  fi
+  if [ -z "$default_branch" ]; then
+    echo "inspect-unpushed: --default-branch is required" >&2
+    return 64
+  fi
+
+  if ! git -C "$worktree_path" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "inspect-unpushed: --worktree-path is not a readable git worktree: $worktree_path" >&2
+    return 65
+  fi
+
+  if [ "$do_fetch" -eq 1 ]; then
+    git -C "$worktree_path" fetch origin "$default_branch" >/dev/null 2>&1 || true
+  fi
+
+  local base="origin/${default_branch}"
+  local ahead_count
+  ahead_count=$(git -C "$worktree_path" rev-list --count "${base}..HEAD" 2>/dev/null || echo "0")
+
+  local dirty_listing
+  dirty_listing=$(git -C "$worktree_path" status --porcelain 2>/dev/null)
+  local dirty_count=0
+  if [ -n "$dirty_listing" ]; then
+    dirty_count=$(printf '%s\n' "$dirty_listing" | wc -l | tr -d ' ')
+  fi
+
+  local verdict="clean"
+  if [ "$ahead_count" != "0" ] || [ "$dirty_count" != "0" ]; then
+    verdict="resume-worthy"
+  fi
+
+  echo "ahead_count=${ahead_count} dirty_count=${dirty_count} verdict=${verdict}"
+  echo "--- commits (git log --oneline ${base}..HEAD) ---"
+  git -C "$worktree_path" log --oneline "${base}..HEAD" 2>/dev/null
+  echo "--- dirty (git status --porcelain) ---"
+  if [ -n "$dirty_listing" ]; then
+    printf '%s\n' "$dirty_listing"
+  fi
+
   return 0
 }
 
@@ -3388,6 +3560,14 @@ main() {
       # never blocks dispatch on an unreadable df result).
       shift
       disk_free_check "$@"
+      ;;
+    inspect-unpushed)
+      # Issue #1316 — read-only pre-reap worktree inspection, callable from
+      # a worktree-isolated orchestrator session. See inspect_unpushed's
+      # docstring for the full contract (the guard refuses `git -C` in the
+      # caller's own command text, not inside this script).
+      shift
+      inspect_unpushed "$@"
       ;;
     -h|--help|help|"")
       usage

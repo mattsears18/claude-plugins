@@ -58,6 +58,12 @@ fi
 
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 crash_recovery_reap_path="$repo_root/plugins/shipyard/scripts/crash-recovery-reap.sh"
+# Issue #1316 — the surviving prose's own inline rev-list comparison moved
+# out of steady-state.md and into worktree-reap.sh's inspect-unpushed
+# subcommand (the mechanical check can no longer inline a direct `git -C`
+# against another worktree from the orchestrator's own, worktree-isolated
+# Bash calls). See assertion 5 below.
+worktree_reap_path="$repo_root/plugins/shipyard/scripts/worktree-reap.sh"
 
 pass=0
 fail=0
@@ -141,17 +147,28 @@ assert_contains "$steady_state_path" \
   "A.0.5 contains Pre-reap recovery check section"
 
 # 5) The rev-list signal is documented — this is the load-bearing "does the
-#    worker have committed-but-unpushed work?" check. Present in BOTH the
-#    surviving prose (the mechanical resume-worthy check) and the script.
+#    worker have committed-but-unpushed work?" check. Present in the
+#    "Recovery semantics" prose (still describing crash-recovery-reap.sh's
+#    own internals — an already-extracted, #1291 call site untouched by
+#    #1316), in the script itself, AND — as of #1316 — in worktree-
+#    reap.sh's inspect-unpushed subcommand, which is what the surviving
+#    prose's OWN mechanical resume-worthy check now delegates to instead of
+#    inlining a direct `git -C <other-worktree>` (refused by the
+#    orchestrator's worktree-isolation guard once it has isolated itself
+#    per setup step 0.5).
 assert_contains "$steady_state_path" \
   "rev-list --count" \
   "A.0.5 prose documents rev-list --count to detect committed work"
-assert_contains "$steady_state_path" \
-  "origin/\$DEFAULT_BRANCH..HEAD" \
-  "A.0.5 prose compares origin/<default>..HEAD"
 assert_contains "$crash_recovery_reap_path" \
   "rev-list --count" \
   "crash-recovery-reap.sh uses rev-list --count to detect committed work"
+assert_file_exists "$worktree_reap_path" "worktree-reap.sh exists (#1316)"
+assert_contains "$worktree_reap_path" \
+  "rev-list --count" \
+  "worktree-reap.sh's inspect-unpushed uses rev-list --count (#1316)"
+assert_contains "$steady_state_path" \
+  "inspect-unpushed" \
+  "A.0.5's mechanical check delegates the origin/<default>..HEAD comparison to inspect-unpushed (#1316)"
 
 # 6) The scope guard is documented — recovery only applies to issue-work
 #    dispatches (slot kind == "issue"), not synthetic diverts or fix-* modes.
