@@ -147,6 +147,22 @@ for matcher in "Bash" "Edit|Write|MultiEdit|NotebookEdit"; do
   fi
 done
 
+# -----------------------------------------------------------------------------
+echo "== enforce-fresh-spec-read.sh is registered under the Read matcher (#1320)"
+# -----------------------------------------------------------------------------
+# Same ghost-coverage risk as every other hook here: the script can be green
+# in isolation while a dropped/typo'd hooks.json entry leaves it never
+# actually invoked.
+
+read_commands=$(jq -r '
+  [ .hooks.PreToolUse[]? | select(.matcher == "Read") | .hooks[].command ] | .[]
+' "$hooks_json")
+if printf '%s\n' "$read_commands" | grep -q '/enforce-fresh-spec-read\.sh"'; then
+  ok "enforce-fresh-spec-read.sh registered under matcher: Read"
+else
+  no "enforce-fresh-spec-read.sh NOT registered under matcher: Read"
+fi
+
 # The Bash matcher already carried refuse-escape-symlink-commit.sh — assert
 # it's still there alongside the new hook (hooks compose; the fix must
 # append, not replace).

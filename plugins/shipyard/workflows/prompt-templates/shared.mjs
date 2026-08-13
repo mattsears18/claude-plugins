@@ -54,7 +54,7 @@
 // `shipyard:worker-preamble` documents for its own step-0 / mid-session
 // sections (issue #802).
 // ===========================================================================
-export function worktreeAnchorCheckLines(worktreePath, pluginRoot) {
+export function worktreeAnchorCheckLines(worktreePath, pluginRoot, pluginRootStale, skillCacheStale) {
   // Worktree-local-preferred plugin-root resolution (issue #969). `pluginRoot`
   // (when supplied) is the orchestrator's PRIMARY-CHECKOUT-resolved value —
   // fine for `${CLAUDE_PLUGIN_ROOT}/scripts/*.sh` invocation, but on the
@@ -129,7 +129,47 @@ export function worktreeAnchorCheckLines(worktreePath, pluginRoot) {
     `monotonicity scan, the verify_gate model resolution, §6.a's ungated-admin-direct-`,
     `merge detector) can substitute the literal value directly instead of re-running a`,
     `resolution block.`,
+    ...stalenessAddendumLines(pluginRootStale, skillCacheStale),
   ]
+}
+
+// ===========================================================================
+// Staleness addendum (issue #1320, wiring #1319's Agent-tool-shape-only
+// warnings into this Workflow-substrate helper). `dispatch-rules.md`'s
+// "Staleness addendum" section documents these same two sentences as
+// additive text on the Agent-tool shape's prose Context paragraph — this
+// renders the identical warnings here so a Workflow-substrate-dispatched
+// worker gets the same signal. `pluginRootStale` / `skillCacheStale` are the
+// orchestrator's already-formatted `SHIPYARD_PLUGIN_ROOT_STALE` /
+// `SHIPYARD_SKILL_CACHE_STALE` session-local strings (step 0.4 of
+// `00-config-worktree.md`) — pass through verbatim, don't re-derive. Either,
+// both, or neither may be set; an unset value renders nothing (matches the
+// Agent-tool shape's "append either, both, or neither depending on which
+// fired" behavior).
+// ===========================================================================
+function stalenessAddendumLines(pluginRootStale, skillCacheStale) {
+  const lines = []
+  if (pluginRootStale) {
+    lines.push(
+      ``,
+      `**Staleness warning (#1319):** this session's primary checkout was ${pluginRootStale} at` +
+        ` startup. Read every \`plugins/shipyard/**\` spec file via a path rooted at YOUR OWN` +
+        ` worktree (\`git rev-parse --show-toplevel\`), never via an absolute path into the primary` +
+        ` checkout — an absolute-path \`Read\` call bypasses the resolution above entirely and is the` +
+        ` concrete failure mode this warning exists to prevent.`,
+    )
+  }
+  if (skillCacheStale) {
+    lines.push(
+      ``,
+      `**Skill-cache warning (#1319):** the \`shipyard:worker-preamble\` skill text you load by NAME` +
+        ` resolves from an installed cache that is stale: ${skillCacheStale} — the skill loads` +
+        ` independently of the worktree-preferred CLAUDE_PLUGIN_ROOT resolution above and can be stale` +
+        ` even when that resolution lands correctly. If skill text conflicts with a spec file you read` +
+        ` from your own fresh worktree, the worktree file wins.`,
+    )
+  }
+  return lines
 }
 
 // ===========================================================================
@@ -164,5 +204,5 @@ export function worktreeAnchorLines(unit, mode) {
         `past this line.`,
     ]
   }
-  return worktreeAnchorCheckLines(unit.worktreePath, unit.pluginRoot)
+  return worktreeAnchorCheckLines(unit.worktreePath, unit.pluginRoot, unit.pluginRootStale, unit.skillCacheStale)
 }
