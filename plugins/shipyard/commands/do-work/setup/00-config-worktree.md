@@ -367,6 +367,20 @@ echo "resolved CLAUDE_PLUGIN_ROOT version=$SHIPYARD_PLUGIN_ROOT_VERSION (post-re
   --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
 ```
 
+**A shell redirect target outside the worktree is refused too — and the message misattributes it to git ([#1325](https://github.com/mattsears18/shipyard/issues/1325)).** This is a **third, distinct** post-relocation refusal trigger — alongside the two documented in [`bash-refusal-triggers.md`](../bash-refusal-triggers.md) (a braced `${VAR}` expansion; argument-position `$(cmd)` substitution) and [`dont.md`](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277)'s compound-block rule (loops, pipes, `if`/`case` wrappers spanning multiple `gh`/`git` calls). A **plain, single-statement, non-git command** — no braces, no substitution, no loop — is still refused post-relocation when its only shell redirect (`>`, `>>`, `2>`) targets a path outside this worktree, e.g. a scratch dir under `$CLAUDE_JOB_DIR/tmp/` or `/tmp/`:
+
+```bash
+gh issue list --repo <owner/repo> --state open --limit 400 --json number,title,labels,assignees,author,createdAt,updatedAt > /tmp/backlog.json
+```
+
+The refusal message names "git operations" — wrong here, since `gh issue list` performs no git operation at all — so don't go hunting for a stray `git`/`-C` when this fires; the trigger is the redirect target, not the command. See `bash-refusal-triggers.md`'s ["A third, distinct trigger" section](../bash-refusal-triggers.md#a-third-distinct-trigger-redirect-target-outside-the-worktree-1325) for the full repro. This shape has no CI-enforced sweep the way the other two do — the guard's verification logic and its refusal-message wording are both Claude Code harness code, not present in this repository, so no PR here can narrow the guard or fix the wording; the only available mitigation is this documentation.
+
+**Remedy — keep the redirect target inside the orchestrator worktree**, in order of preference:
+1. Redirect to a worktree-local scratch file using the existing `.shipyard-*` untracked-scratch convention already in use for exactly this purpose (`.shipyard-fetched-issues.json`, `.shipyard-classified.ndjson` in [`04-backlog-divert.md`](./04-backlog-divert.md), and this same step's own `.shipyard-plugin-root` / `.shipyard-plugin-root-version` stashes above) — these are git-ignored, cost nothing to leave behind, and are reaped with the rest of the worktree at end-of-session: `gh issue list --repo <owner/repo> ... > .shipyard-fetched-issues.json`.
+2. When the data is already in the assistant's context (e.g. read back from a separate plain `Bash` call's stdout), persist it with the `Write` tool instead of a shell redirect — `Write` is not a shell command and isn't subject to this guard at all.
+
+Never redirect to `$CLAUDE_JOB_DIR/tmp/...` or a bare `/tmp/...` path post-relocation.
+
 **Post-relocation staleness assertion ([#1167](https://github.com/mattsears18/shipyard/issues/1167)).** The orchestrator worktree's `baseRef: fresh` setting should branch from `origin/<default-branch>`'s tip, but a session against a repo carrying a `WorktreeCreate` hook found the resulting worktree far behind, with no warning — the orchestrator triaged against stale state. Assert the base explicitly instead of trusting tool semantics silently:
 
 ```bash
