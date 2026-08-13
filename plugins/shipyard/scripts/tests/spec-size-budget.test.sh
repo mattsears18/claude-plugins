@@ -178,6 +178,27 @@
 # already resolved" note doesn't satisfy that scanner), which is most of
 # this raise's headroom.
 #
+# # issue-work.md's ceiling was raised 126000 -> 128000 by #1334 (2026-08-13):
+# #1258's fix put the branch-checkout *check* at the start of step 4, but a
+# worker can still slip past a check it never reaches on its own — #1334's
+# repro is exactly that (a worker committed onto the harness placeholder
+# branch, self-corrected, but nothing structural stopped it). The fix is a
+# new step 0.6 that runs step 3's checkout immediately after step 0.5,
+# before self-assign or reading the issue, closing the drift window rather
+# than only detecting it afterward — plus reframing paragraphs at step 3,
+# step 4, and the Don't-list bullet to point at the new earlier checkpoint
+# instead of describing step 4's check as "the actual enforcement." A
+# PreToolUse hook (mirroring enforce-worktree-isolation.sh) was considered
+# and rejected again here, for the same reason #1270 rejected it plus a
+# wider one: the Edit/Write/Bash PreToolUse payload carries no signal
+# distinguishing a `/do-work` worker's isolated worktree from any other
+# `Agent`-tool `isolation: "worktree"` dispatch (a pattern this repo's own
+# CLAUDE.md recommends broadly for delegated work, not just do-work) — both
+# land on an identical `worktree-agent-<id>` branch, so a hook blocking
+# Edit/Write while on that branch would false-positive-block every generic
+# isolated-agent task that legitimately never renames its branch, not just
+# unrelated one-off worktree tasks as #1270 already flagged.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -237,7 +258,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  126000 \
+  128000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \
