@@ -74,10 +74,13 @@
 #   1 — corruption detected: stdout is `CORRUPTED:<space-separated files>`
 #       (a file suffixed `(missing)` was deleted entirely from the working
 #       tree despite <head-ref> having kept/added it).
-#   2 — could not establish a result — bad usage, an unresolvable ref, a
-#       missing required tool, or the self-check failed. Treat exactly like
-#       exit 1 (bail, do not push) — never treat a 2 as a clean pass. stderr
-#       carries an `INDETERMINATE: <reason>` line.
+#   2 — could not establish a result — bad usage, an unresolvable ref, the
+#       self-check failed, or a `git diff` invocation's output didn't look
+#       like real git-diff output (e.g. a diff-rewriting shell proxy such as
+#       `rtk` silently replaced it with a non-standard summary — issue
+#       #1333), or a missing required tool. Treat exactly like exit 1 (bail,
+#       do not push) — never treat a 2 as a clean pass. stderr carries an
+#       `INDETERMINATE: <reason>` line.
 
 set -u
 export LC_ALL=C
@@ -172,10 +175,36 @@ while IFS= read -r f; do
     continue
   fi
 
+  # Capture the raw diff BEFORE parsing it, so the shape can be verified
+  # independently of the awk extraction below.
+  RAW_DIFF=$(git diff "$MERGE_BASE" "$HEAD_REF" -- "$f") \
+    || die_indeterminate "git diff $MERGE_BASE $HEAD_REF -- $f failed"
+
+  # Fail LOUD, not open, if this doesn't look like real `git diff` output
+  # (issue #1333). A `git diff`-rewriting shell proxy some environments run
+  # (e.g. the `rtk` "Rust Token Killer" hook) can silently replace a bare or
+  # singly-piped `git diff` invocation's stdout with a non-standard,
+  # stat-like summary — no `---`/`+++` headers, no `@@` hunks, and critically
+  # no leading `diff --git a/<path> b/<path>` line, which every genuine `git
+  # diff` invocation emits first regardless of content shape (a text hunk, a
+  # binary-file notice, a mode-only change, or a rename). The awk parse below
+  # only recognizes lines starting with a bare `+` — fed a rewritten summary
+  # instead, it would silently compute an empty ADDED_LINES set, which reads
+  # as "this file added nothing" and inverts this guard's entire purpose
+  # (proving added lines survived a rebase). Detect the mismatch instead of
+  # trusting a silently-empty parse: a non-empty diff MUST start with the
+  # `diff --git` header.
+  case "$RAW_DIFF" in
+    "" | "diff --git "*) : ;;
+    *)
+      die_indeterminate "git diff output for '$f' does not look like real git-diff output (missing the leading 'diff --git' header) — a diff-rewriting shell proxy (e.g. rtk) may be active in this environment; bypass it (e.g. run 'rtk proxy git diff ...' directly, or invoke this comparison from inside a script rather than a bare/piped shell command) before retrying (see https://github.com/mattsears18/shipyard/issues/1333)"
+      ;;
+  esac
+
   # Lines the PR's own commit(s) added, verbatim — strip the diff '+'
   # marker, drop the '+++' file-header line, and skip blank/whitespace-only
   # lines (noise). awk, not grep/sed, for the extraction — see file header.
-  ADDED_LINES=$(git diff "$MERGE_BASE" "$HEAD_REF" -- "$f" | awk '
+  ADDED_LINES=$(printf '%s\n' "$RAW_DIFF" | awk '
     /^\+\+\+/ { next }
     /^\+/ {
       line = substr($0, 2)

@@ -28,7 +28,10 @@
 # case, the indeterminate-ref case, the self-check-catches-a-broken-toolchain
 # case, and — the regression this issue exists to close — a direct
 # reproduction of a shadowed `grep` in the calling shell, proving the script
-# still detects real corruption despite it.
+# still detects real corruption despite it. It also covers the issue #1333
+# regression: a `git diff`-rewriting shell proxy (e.g. `rtk`) silently
+# replacing real diff output with a non-standard stat-like summary must make
+# this script fail LOUD, never silently pass as if nothing was added.
 #
 # Uses synthetic git fixture repos (per worker-preamble § "Pin the default
 # branch in git-using test fixtures" — `git init -b main` pins the default
@@ -286,6 +289,75 @@ if [[ $status -eq 2 && "$out" == INDETERMINATE:* ]]; then
   ok "missing known-rewrites file: exit 2, INDETERMINATE verdict (fails loud, not a silent no-op)"
 else
   bad "missing known-rewrites file: expected exit 2 + INDETERMINATE:..., got exit $status: $out"
+fi
+
+# ── (12)-(13): issue #1333 — a `git diff`-rewriting shell proxy (the `rtk`
+# "Rust Token Killer" hook some worker environments run) can silently
+# replace a bare/singly-piped `git diff` invocation's stdout with a
+# non-standard, stat-like summary: no `---`/`+++` headers, no `@@` hunks, and
+# critically no leading `diff --git a/<path> b/<path>` line. Fed that
+# summary, the script's awk parse would previously compute an empty
+# ADDED_LINES set for every file — which reads as "nothing was added" and
+# silently, permanently disables the guard for every touched file, exactly
+# inverting its purpose. These tests shadow `git` itself (mirroring the
+# grep-shadowing technique in (7)-(8) above) so the reproduction doesn't
+# depend on `rtk` actually being installed in CI, and confirm the fix: the
+# script now fails LOUD (exit 2, INDETERMINATE) instead of silently passing
+# on the corrupted input. ───────────────────────────────────────────────────
+
+fake_bin_rtk="$work/fake-bin-rtk"
+mkdir -p "$fake_bin_rtk"
+real_git="$(command -v git)"
+cat > "$fake_bin_rtk/git" <<EOS
+#!/usr/bin/env bash
+# Simulate the rtk proxy hook: a \`git diff <ref1> <ref2> -- <path>\` call
+# (i.e. NOT --name-only) returns a non-unified-diff, stat-like summary
+# instead of real diff output — no 'diff --git' header, no +++ header, no
+# @@ hunk. Every other invocation (rev-parse, cat-file, name-only diff, …)
+# passes straight through to the real git binary untouched.
+if [ "\$1" = "diff" ] && [ "\$2" != "--name-only" ]; then
+  cat <<'RTKOUT'
+ f.txt | 1 +
+ 1 file changed, 1 insertion(+)
+
+Changes:
+
+ f.txt
+  @@ -1,1 +1,2 @@
+  +some-line
+RTKOUT
+  exit 0
+fi
+exec "$real_git" "\$@"
+EOS
+chmod +x "$fake_bin_rtk/git"
+
+# ── (12) Proxy-corrupted diff against an otherwise-CLEAN rebase: must still
+# fail loud (exit 2), never a false-clean exit 0 — the corrupted-looking
+# input can't be trusted to mean "nothing added" just because it parses to
+# empty. ─────────────────────────────────────────────────────────────────
+out="$(cd "$repo" && git checkout -q rebased-clean && PATH="$fake_bin_rtk:$PATH" bash "$script" "$base_sha" "$feature_sha" 2>&1)"
+status=$?
+if [[ $status -eq 2 && "$out" == INDETERMINATE:* && "$out" == *"diff --git"* ]]; then
+  ok "rtk-proxy-style corruption (clean tree): exit 2, INDETERMINATE — fails loud instead of a false-clean pass"
+else
+  bad "rtk-proxy-style corruption (clean tree): expected exit 2 + INDETERMINATE mentioning 'diff --git', got exit $status: $out"
+fi
+
+# ── (13) Same proxy corruption against a genuinely CORRUPTED rebase (the
+# #983 silent-splice shape from test (2)) — must still fail loud (exit 2,
+# not exit 1's CORRUPTED verdict, since the corrupted *input* can no longer
+# be trusted to compute a verdict at all) rather than silently reporting
+# clean because the awk parse of the rewritten summary found nothing to
+# flag. This is the direct regression case: before the fix, this exact
+# scenario returned exit 0 "OK" — a real content-loss rebase passing as
+# clean purely because the diff-rewriting proxy emptied the parse. ────────
+out="$(cd "$repo" && git checkout -q rebased-corrupted && PATH="$fake_bin_rtk:$PATH" bash "$script" "$base_sha" "$feature_sha" 2>&1)"
+status=$?
+if [[ $status -eq 2 && "$out" == INDETERMINATE:* ]]; then
+  ok "rtk-proxy-style corruption (actually-corrupted tree): exit 2, INDETERMINATE — never a silent false-clean pass over real content loss"
+else
+  bad "rtk-proxy-style corruption (actually-corrupted tree): expected exit 2 + INDETERMINATE:..., got exit $status: $out"
 fi
 
 echo
