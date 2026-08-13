@@ -127,10 +127,27 @@ echo
 
 # ---------------------------------------------------------------------------
 # (C) gh CLI missing from PATH -> error terminal state, not a crash.
+#
+# A hardcoded "/usr/bin:/bin" here is not portable: some environments (e.g.
+# GitHub Actions' hosted Ubuntu runner image) ship `gh` pre-installed at
+# /usr/bin/gh, so a PATH of "/usr/bin:/bin" would still resolve `gh` and the
+# script would never hit its "not found" branch at all — a false FAIL that
+# has nothing to do with the script's actual (correct) `command -v gh`
+# check. Build the test PATH from the REAL $PATH with every directory that
+# actually contains a `gh` executable filtered out, so standard utilities
+# (bash, coreutils, etc.) stay reachable but `gh` specifically never
+# resolves, regardless of which directory this host happens to install it
+# in.
 # ---------------------------------------------------------------------------
 echo "(C) gh CLI not on PATH"
 emptybin="$(mktemp -d)"
-out="$(PATH="$emptybin:/usr/bin:/bin" bash "$script" --pr 5 --repo owner/repo 2>&1)"
+no_gh_path="$emptybin"
+IFS=':' read -r -a path_dirs <<< "$PATH"
+for d in "${path_dirs[@]}"; do
+  [[ -n "$d" && -x "$d/gh" ]] && continue
+  no_gh_path="$no_gh_path:$d"
+done
+out="$(PATH="$no_gh_path" bash "$script" --pr 5 --repo owner/repo 2>&1)"
 code=$?
 rm -rf "$emptybin"
 assert_equals "gh missing: exit code" "4" "$code"
