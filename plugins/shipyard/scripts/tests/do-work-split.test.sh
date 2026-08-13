@@ -3138,6 +3138,90 @@ assert_contains "$rationale_path" \
   "did the classifier's stated reason name the *operation* as unauthorized, or did it name the *call shape* as unverifiable" \
   "RATIONALE.md draws the testable boundary against the legitimate compound-command-decomposition case (#1278)"
 
+# (Q) A worker return carrying two mutually-exclusive terminal disposition
+# lines is reconciled by whichever the parser matches first, unless the
+# contract explicitly forbids multiple terminal lines and the reconcile
+# scans for all of them before trusting any one (issue #1335).
+#
+# Repro: session do-work-20260813T125705Z-71435, mode: fix-checks-only
+# against PR #1328. The worker's raw return was:
+#
+#   green #1328 @0ac30ab (rollup verified 2026-08-13T10:15:00Z: 0 passed,
+#   0 pending, 0 failing)
+#
+#   Actually, wait - the PR is DIRTY, so I cannot return green. Let me
+#   return the correct DIRTY disposition:
+#
+#   dirty #1328: PR conflicts with main; no merge ref, so no checks will run
+#
+# Ground truth at reconcile time was DIRTY — the trailing `dirty` line was
+# correct and the `green` line was fabricated. A first-match parser would
+# reconcile the fabricated `green` and never see the correction. The
+# fabricated line happened to trip both existing #1205 tells (an empty
+# 0/0/0 rollup, and a cited verification timestamp of 10:15:00Z against a
+# dispatch that started at ~13:47Z — a *past*-dated citation, the mirror
+# image of #1205's future-dated check) — but a self-correcting return whose
+# discarded first line carried only *plausible* evidence would have slipped
+# through untouched.
+#
+# Four assertions pin the fix:
+#   1. fix-checks-only.md's return contract explicitly requires exactly one
+#      terminal disposition line per return.
+#   2. worker-preamble's shared return-contract prose states the same rule
+#      generically, across every mode's own terminal-prefix vocabulary.
+#   3. steady-state.md's A.1 fabrication pre-check gained a third,
+#      multi-terminal-line trigger (reusing the existing #1205 live-verify
+#      branch rather than inventing a parallel one), and its timestamp
+#      check now fires in both directions instead of future-only.
+#   4. dont.md and do-work-RATIONALE.md were updated in lockstep so the
+#      pinned "don't" list and the historical narrative both describe the
+#      four-check (not two-check) pre-check.
+fix_checks_path1335="$repo_root/plugins/shipyard/agents/issue-worker/fix-checks-only.md"
+worker_preamble_path1335="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
+
+assert_contains "$fix_checks_path1335" \
+  'Your entire return must carry exactly one terminal disposition line' \
+  "fix-checks-only.md return contract requires exactly one terminal disposition line (#1335)"
+assert_contains "$fix_checks_path1335" \
+  'issues/1335' \
+  "fix-checks-only.md cites issue #1335"
+assert_contains "$worker_preamble_path1335" \
+  'Exactly one terminal disposition line per return' \
+  "worker-preamble SKILL.md states the exactly-one-terminal-line rule generically across modes (#1335)"
+assert_contains "$worker_preamble_path1335" \
+  'issues/1335' \
+  "worker-preamble SKILL.md cites issue #1335"
+assert_contains "$steady_state_path" \
+  'Timestamp check — both directions' \
+  "steady-state.md's fabrication pre-check extends the timestamp tell to both directions (#1335)"
+assert_contains "$steady_state_path" \
+  'Past bound (issue' \
+  "steady-state.md documents the past-dated-citation bound, the mirror of the pre-existing future bound (#1335)"
+assert_contains "$steady_state_path" \
+  '.in_flight[<slot-id>].started_at' \
+  "steady-state.md's past-bound check anchors against the dispatch's own recorded start time (#1335)"
+assert_contains "$steady_state_path" \
+  'Multi-terminal-line check (issue' \
+  "steady-state.md's fabrication pre-check gained a multi-terminal-line trigger (#1335)"
+assert_contains "$steady_state_path" \
+  '<future-timestamp|past-timestamp|self-contradiction|multi-terminal-line>' \
+  "steady-state.md's fabrication-tell advisory log names all four trigger tags (#1335)"
+assert_contains "$steady_state_path" \
+  'do not resolve a multiplicity trip by picking the first or the last matching line' \
+  "steady-state.md explicitly refuses both first-match and last-match guessing on a multi-terminal-line return (#1335)"
+assert_contains "$dont_path" \
+  'extended by [#1335]' \
+  "dont.md's fabrication-citation bullet is updated in lockstep with the steady-state.md pre-check (#1335)"
+assert_contains "$dont_path" \
+  'Never resolve a multi-terminal-line return by picking the first match or the last match' \
+  "dont.md pins the multi-terminal-line non-guessing rule (#1335)"
+assert_contains "$rationale_path" \
+  'Two residual gaps the original #1205 pre-check left open, both closed by' \
+  "RATIONALE.md records the #1335 extension of the #1205 fabrication pre-check"
+assert_contains "$rationale_path" \
+  'issues/1335' \
+  "RATIONALE.md cites issue #1335"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
