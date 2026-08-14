@@ -72,91 +72,31 @@ gh label create discussion --repo <owner/repo> --description "A maintainer is en
 
 #### 3b. Reap stale agent worktrees from dead Claude Code sessions
 
-> **MOVED pre-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)) — no longer part of the post-relocation background group; this section is now the canonical implementation.** This sweep's `git -C <other-worktree>`-shaped operations against `agent-*` worktrees other than the orchestrator's own are refused outright once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` has isolated the session. It now runs synchronously at [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), before relocation — which is also where the `.in_flight` guard below gets a session-state file to read from (session-state init moved to the same step, ahead of this sweep, for exactly that reason). **Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble** (the `.shipyard-plugin-root` stash below is a step-0.5-and-later artifact and doesn't exist yet at this point in the session).
+> **Runs through a single-call, plain-command helper — reachable at ANY point in setup, not ordering-dependent on `EnterWorktree` ([#1355](https://github.com/mattsears18/shipyard/issues/1355)).** This sweep's `git -C <other-worktree>`-shaped operations against `agent-*` worktrees other than the orchestrator's own used to be refused outright once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` had isolated the session, because the warn-threshold banner, the orchestrator-PID detection, and the in-flight-guard preamble were all separate statements in the orchestrator's own multi-statement Bash block — exactly the compound shape [dont.md](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) documents as refused post-relocation. [#1355](https://github.com/mattsears18/shipyard/issues/1355) moved that entire preamble, plus the `reap-stale` call itself, into [`worktree-reap.sh sweep-stale-agents`](../../../scripts/worktree-reap.sh) — a single subcommand invocation. So this sweep is now reachable at any point in setup — pre- or post-relocation — **provided the caller resolves its `--repo-root` value in a SEPARATE `Bash` call from the sweep invocation itself** (see the executable form below; a `git rev-parse --show-toplevel`-derived variable consumed as a `--repo-root`-shaped flag value in the SAME block as its own derivation is separately refusal-risky — bash-refusal-triggers.md's trigger-6-adjacent finding). It still runs at [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), before relocation, for now (advisory continuity, not a load-bearing ordering constraint) — which is also where the in-flight guard below gets a session-state file to read from (session-state init moved to the same step, ahead of this sweep, for exactly that reason). **Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble** (the `.shipyard-plugin-root` stash is a step-0.5-and-later artifact and doesn't exist yet at this point in the session).
 
 The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing `claude agent <id> (pid <N>)`. The lock survives the harness process exiting. Reap every agent worktree whose lock-holding PID is dead; skip ones owned by live PIDs (could be another active Claude Code instance) — **unless the lock is stale enough that a live PID is more likely a recycled one than a genuine peer** (issue [#755](https://github.com/mattsears18/shipyard/issues/755); see [`worktree-reap.sh`'s `classify-lock` docstring](../../../scripts/worktree-reap.sh) for the full rationale). `classify-lock` applies this staleness corroboration itself — no separate check is needed here.
 
-**Bulk classify + bounded/checkpointed removal, not a per-worktree loop (issue #836).** An earlier version of this sweep looped `classify-lock` once PER worktree (one full script re-invocation, each forking its own `ps`/`stat` subprocesses) and removed every reap-eligible one unbounded. On a repo with a large accumulated backlog (the #836 repro: 60 worktrees, ~1.6GB each, ~90GB total) that loop blew its time budget before classifying a single candidate. `worktree-reap.sh reap-stale` is the single executable source of truth for both the bulk classify (one `ps` call / one self-ancestor walk / one batched `stat` for the whole batch, instead of O(n) subprocess forks) and the bounded, checkpointed removal (reaps at most `worktree_reap.max_per_session` per session, oldest-first; the on-disk backlog left behind IS the checkpoint, so a session that can't clear it all still makes forward progress and the next session's sweep continues from there). See `scripts/worktree-reap.sh`'s `classify_all` / `reap_stale` docstrings for the full algorithm.
+**Bulk classify + bounded/checkpointed removal, not a per-worktree loop (issue #836).** An earlier version of this sweep looped `classify-lock` once PER worktree (one full script re-invocation, each forking its own `ps`/`stat` subprocesses) and removed every reap-eligible one unbounded. On a repo with a large accumulated backlog (the #836 repro: 60 worktrees, ~1.6GB each, ~90GB total) that loop blew its time budget before classifying a single candidate. `worktree-reap.sh reap-stale` (called internally by `sweep-stale-agents`) is the single executable source of truth for both the bulk classify (one `ps` call / one self-ancestor walk / one batched `stat` for the whole batch, instead of O(n) subprocess forks) and the bounded, checkpointed removal (reaps at most `worktree_reap.max_per_session` per session, oldest-first; the on-disk backlog left behind IS the checkpoint, so a session that can't clear it all still makes forward progress and the next session's sweep continues from there). See `scripts/worktree-reap.sh`'s `classify_all` / `reap_stale` docstrings for the full algorithm.
+
+Resolve the repo root first, as its own `Bash` call:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-cd "$SY_TOPLEVEL"   # be robust to subdir invocation
-
-# Threshold warning (issue #836 fix 4) — surface a large agent-* backlog
-# in the session banner even though the per-session cap means it won't
-# all clear in one pass. Two cheap reads gate the (potentially slower)
-# size probe: only pay for `du` when the count actually crosses the
-# threshold.
-wt_count=$(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | wc -l | tr -d ' ')
-warn_threshold=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.warn_threshold 2>/dev/null || echo "20")
-if [ "${wt_count:-0}" -gt 0 ] && [ "${wt_count:-0}" -ge "${warn_threshold:-20}" ] 2>/dev/null; then
-  # `find` (not a bare `.claude/worktrees/agent-*` glob) feeds `du -sk` so
-  # the zsh nomatch hazard the #335 comment above already documents for
-  # the `agent-*` find loop can't fire here either. Single `du` invocation
-  # over every path at once (not one call per worktree) — `du` walks the
-  # same file set either way, so batching is a pure subprocess-count win,
-  # same rationale as classify-all's batched `ps`/`stat`.
-  reclaimable_kb=$(find .claude/worktrees -maxdepth 1 -type d -name 'agent-*' -print0 2>/dev/null \
-    | xargs -0 du -sk 2>/dev/null | awk '{sum+=$1} END{print sum+0}')
-  reclaimable_human=$(( (reclaimable_kb + 1023) / 1024 ))
-  cat <<EOF
-⚠️  worktree backlog: $wt_count agent-* worktrees on disk (~$reclaimable_human MB reclaimable),
-   at or above the $warn_threshold-worktree warn threshold (worktree_reap.warn_threshold).
-   This session's step-3b sweep reaps at most worktree_reap.max_per_session
-   of them (oldest-first) — the rest are left for subsequent sessions to
-   continue draining. See issue #836 if the backlog isn't shrinking session
-   over session.
-EOF
-fi
-
-# Detect the orchestrator's PID once and export it so classify-all's
-# self-ancestor short-circuit fires reliably (issue #263) — the harness
-# writes the orchestrator's PID into every dispatched agent's lock, and
-# without this declaration the ancestor walk can fail to find it whenever
-# an intermediate harness layer returns empty PPID.
-export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
-
-# In-flight guard (issue #832) — snapshot the set of agent-ids this
-# session currently has dispatched, BEFORE reap-stale ever consults
-# classification. In-flight membership is authoritative liveness; the
-# lock file's classification is only a fallback for worktrees THIS
-# session doesn't own (cross-session stragglers, which is what this
-# sweep exists to clean up). Branch name is NEVER a liveness signal —
-# see `commands/do-work/dont.md`'s "Don't reap a live-PID worktree"
-# bullet for why a name-based filter has a race window that would
-# delete an in-flight agent. At the pre-relocation execution point
-# (step 0.45), this session has typically dispatched nothing yet — but
-# the read is cheap and correct either way, and keeps this block
-# identical to the form used if a later session ever needs to re-run it.
-in_flight_agent_ids=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read \
-  --session-id "<session-id>" --path .in_flight 2>/dev/null \
-  | jq -r '.[]?.agent_id // empty' 2>/dev/null)
-exclude_flags=()
-while IFS= read -r aid; do
-  [ -z "$aid" ] && continue
-  exclude_flags+=(--exclude-agent-id "$aid")
-done <<< "$in_flight_agent_ids"
-
-max_per_session=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get worktree_reap.max_per_session 2>/dev/null || echo "10")
-
-reap_output=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-stale \
-  --repo-root "$SY_TOPLEVEL" \
-  --session-id "<session-id>" \
-  --max-per-session "${max_per_session:-10}" \
-  "${exclude_flags[@]}" 2>/dev/null)
-
-# The summary line is always the LAST line of reap-stale's output —
-# surface it verbatim so the reaped-vs-deferred-vs-remaining backlog is
-# visible rather than silent (issue #836 fix 2's "emit a one-line count").
-summary_line=$(printf '%s\n' "$reap_output" | tail -1)
-echo "[setup-3b] $summary_line"
-
-git worktree prune 2>/dev/null || true
+git rev-parse --show-toplevel
 ```
 
-`reap-stale`'s summary line (`summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>`) is what surfaces in the end-of-session summary. A non-zero `unreaped` means a reap was refused (auto-mode permission classifier, a dirty worktree carrying unpushed commits, or a filesystem error); the summary pairs the count with the `/clean_gone` remediation rather than degrading silently ([#712](https://github.com/mattsears18/shipyard/issues/712)).
+Then, substituting the literal path that call returned in place of `<repo-root>` below, as a second, separate `Bash` call. The compound preamble is this block's own first line — self-sufficient, not dependent on an immediately-preceding preamble-only block (issue #1355's fix-attempt-3 correction: the prior three-block form put the `git rev-parse` block between the preamble and the invocation, breaking the preamble-adjacency the regression test requires):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" sweep-stale-agents \
+  --repo-root <repo-root> --session-id "<session-id>"
+```
+
+Print whatever this prints, prefixed `[setup-3b] `. The warn-threshold banner (issue #836 fix 4 — surfaces a large `agent-*` backlog even though the per-session cap means it won't all clear in one pass), the orchestrator-PID detection (issue #263 — so `classify-all`'s self-ancestor short-circuit fires reliably), the config reads (`worktree_reap.max_per_session` / `worktree_reap.warn_threshold`, both best-effort with the same literal fallbacks the pre-#1355 inline block used), and `git worktree prune` all now live inside `sweep_stale_agents()` in [`worktree-reap.sh`](../../../scripts/worktree-reap.sh), unchanged in *what* they do — only *where* their statements live moved, from several lines in the caller's own Bash block into the invoked script.
+
+**The in-flight guard (issue #832) is no longer computed by the caller — `reap-stale` already derives it automatically from the SAME `--session-id` (issue #1147), so re-deriving `--exclude-agent-id` flags here was pure duplication, not defense in depth ([#1355](https://github.com/mattsears18/shipyard/issues/1355)).** Branch name is still NEVER a liveness signal — see `commands/do-work/dont.md`'s "Don't reap a live-PID worktree" bullet — that invariant is unaffected; it's enforced inside `reap_stale()` itself (reads `.in_flight[]?.agent_id` off `$SHIPYARD_HOME/sessions/<session-id>.json`), not by a caller-side precomputation that this sweep dropped.
+
+`sweep-stale-agents` prints `reap-stale`'s own `summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>` line as its last line — surface it verbatim, same shape the pre-#1355 inline form always produced. A non-zero `unreaped` means a reap was refused (auto-mode permission classifier, a dirty worktree carrying unpushed commits, or a filesystem error); the summary pairs the count with the `/clean_gone` remediation rather than degrading silently ([#712](https://github.com/mattsears18/shipyard/issues/712)).
 
 #### 3c. Orphan worktree triage
 
