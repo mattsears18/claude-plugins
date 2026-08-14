@@ -13,14 +13,19 @@
 # (`mattsears18/shipyard`, which happens to carry every legacy label object
 # from its own history). The repro that motivated this script:
 # `mattsears18/lightwork` declares no `labels` block, so its effective
-# config names `blocked:agent` (key `blocked`) and `blocked:agent-hard`
-# (key `blocked_hard`) — neither of which exists as a label object in that
+# config named `blocked:agent` (key `blocked`) and `blocked:agent-hard`
+# (key `blocked_hard`) — neither of which existed as a label object in that
 # repo. Nothing anywhere detected the mismatch: not setup, not dispatch, not
 # drain. A mislabeled/missing-label issue is invisible to BOTH `/do-work`
 # (which never applies a label it can't find, or applies a bare, undescribed
 # auto-created one) and `/my-turn` (which filters by label name to build its
 # walked queue) — so an issue routed through a phantom label is unreachable
-# by either loop.
+# by either loop. Issue #1360 retired the `blocked` / `blocked_hard` keys
+# from the config defaults and schema entirely (both were vestigial —
+# nothing has applied or read either label since #521's refuse/
+# dependency-wait split), which closes this specific false-positive for
+# good; the cross-reference itself stays general-purpose for whatever
+# `labels` keys remain live or get added later.
 #
 # This script is the single executable source of truth for the
 # cross-reference. It never blocks — a missing label is a loud advisory, not
@@ -39,7 +44,7 @@
 # hold both JSON blobs, e.g. a caller composing with gh-cached.sh):
 #
 #   bash verify-config-labels.sh --decide <config-labels-json> <existing-labels-json>
-#     <config-labels-json>   compact JSON object, e.g. {"blocked":"blocked:agent",...}
+#     <config-labels-json>   compact JSON object, e.g. {"ci_blocked":"blocked:ci",...}
 #                             — the merged config's `.labels` block
 #                             (`shipyard-config.sh get labels`).
 #     <existing-labels-json> compact JSON array of label name strings, e.g.
