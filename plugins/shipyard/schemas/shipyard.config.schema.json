@@ -490,6 +490,25 @@
         "_comment": { "type": "string" }
       }
     },
+    "operator_denial_registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Cross-session operator-denial ledger (issue #1363). `operator_denials` is a session-local orchestrator-state struct recording every operator-phase action (gh pr close/gh pr merge/a browser mutation) the Claude Code auto-mode permission classifier refused outright; it's surfaced in the end-of-session summary but discarded with the session-state file at cleanup. When `enabled: true`, cleanup-summary.md's step 7.6 appends one line per denial (via scripts/operator-denial-registry.sh `record`) to `~/.shipyard/operator-denials.jsonl` BEFORE the session-state file is retired, so a denial class survives past the session that recorded it and a repeated denial on the same (repo, kind, target) is distinguishable from a one-off via `report`. Defaults preserve pre-#1363 behavior (disabled — nothing persisted beyond the session; the in-session `Operator denied (#746)` summary block is unaffected either way). Off by default because the recorded target can be a specific admin-console URL or field name — more identifying than, say, flake-registry's CI test names — so persistence is an explicit opt-in rather than the flake-registry precedent's own default.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, cleanup-summary.md's step 7.6 persists this session's `operator_denials` entries to `~/.shipyard/operator-denials.jsonl` before the session-state file is removed. When false (default), no persistence — denials are still recorded and surfaced within the session's own `Operator denied (#746)` summary block, exactly as before #1363; they just don't outlive the session."
+        },
+        "prune_window_days": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 180,
+          "description": "Rolling retention window (in days) for `~/.shipyard/operator-denials.jsonl` itself. Kept longer than flake_registry's 90-day default because this ledger's value is in a slow-forming, cross-session pattern rather than a fast-moving CI signal. 0 disables pruning (keep everything). Has no effect while `operator_denial_registry.enabled` is false — nothing is ever recorded to prune."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "audits": {
       "type": "object",
       "additionalProperties": false,

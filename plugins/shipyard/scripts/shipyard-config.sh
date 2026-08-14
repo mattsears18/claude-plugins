@@ -212,6 +212,10 @@ DEFAULTS_JQ='{
     "actions": ["file-tracking-issue", "stop-auto-rerunning", "apply-blocked-ci"],
     "prune_window_days": 90
   },
+  "operator_denial_registry": {
+    "enabled": false,
+    "prune_window_days": 180
+  },
   "scope": {
     "diagnosis_reuse_hours": 72,
     "self_modification_paths": [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude/hooks/"],
