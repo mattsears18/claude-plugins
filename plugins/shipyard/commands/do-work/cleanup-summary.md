@@ -378,6 +378,8 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
+   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
+   export SHIPYARD_REPO_ROOT
    OPERATOR_DENIAL_REGISTRY_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get operator_denial_registry.enabled 2>/dev/null || echo "false")
    ```
 
