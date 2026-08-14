@@ -137,8 +137,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$REPO" ] && [ -n "$PR" ] && [ -n "$HEAD_REF" ] && [ -n "$DEFAULT_BRANCH" ] \
-  || { usage >&2; script_error "--repo, --pr, --head-ref, and --default-branch are required"; }
+if [ -z "$REPO" ] || [ -z "$PR" ] || [ -z "$HEAD_REF" ] || [ -z "$DEFAULT_BRANCH" ]; then
+  usage >&2
+  script_error "--repo, --pr, --head-ref, and --default-branch are required"
+fi
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || script_error "not inside a git working tree"
 
