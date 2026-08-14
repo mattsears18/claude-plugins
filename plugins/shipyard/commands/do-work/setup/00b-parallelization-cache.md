@@ -41,9 +41,7 @@ export CLAUDE_PLUGIN_ROOT
 # max_per_session, auto_merge_method) would otherwise silently drop
 # .shipyard/config.local.json. Exported here so the background subshell
 # below inherits it.
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 (
   # 1.6 — Orphan session-file sweep (cost-ledger recovery). Cleanup-only — recovery

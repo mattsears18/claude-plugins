@@ -38,9 +38,7 @@ export CLAUDE_PLUGIN_ROOT
 # (issue #1059/#1064) — resolve-dispatch-model.sh shells out to
 # shipyard-config.sh, and a bare call here would silently read the
 # orchestrator worktree's config instead of the primary checkout's.
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 
 # <mode> is the dispatch's mode, hyphenated or underscored — both are accepted.
@@ -101,9 +99,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
    triage_auto_close=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.auto_close 2>/dev/null || echo "confident-only")
    ```
@@ -126,9 +122,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
    verify_stale=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.verify_check_failing_on_head_before_dispatch 2>/dev/null || echo "false")
@@ -152,9 +146,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
    require_settle=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get \
      ci.require_in_progress_check_to_settle 2>/dev/null || echo "false")
@@ -294,9 +286,7 @@ When filling a slot, walk this decision tree:
      CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
      export CLAUDE_PLUGIN_ROOT
      # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-     SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-     SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-     [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+     SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
      export SHIPYARD_REPO_ROOT
      SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
      if [ "$SELF_ASSIGN" = "true" ]; then
@@ -340,9 +330,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
    vc_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.enabled 2>/dev/null || echo "false")
    vc_manifest=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.manifest_path 2>/dev/null || echo "")
@@ -356,13 +344,14 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    default_branch=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
    version_result=$("$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" compute \
      --repo <owner/repo> --manifest "$vc_manifest" --version-jq "$vc_version_jq" \
      --default-branch "$default_branch" --issue <N> \
      --session-prs "<session_prs, space or comma separated>" \
-     --cursor-file "$SY_TOPLEVEL/.shipyard-version-cursor")
+     --cursor-file .shipyard-version-cursor)
    ```
+
+   **No `SY_TOPLEVEL` hop for `--cursor-file`** ([#1352](https://github.com/mattsears18/shipyard/issues/1352)) — post-relocation the orchestrator's cwd already **is** its worktree root, so the bare relative literal `.shipyard-version-cursor` resolves identically to `"$(git rev-parse --show-toplevel)"/.shipyard-version-cursor` without the extra hop. See [`bash-refusal-triggers.md`'s "A fifth trigger"](./bash-refusal-triggers.md#a-fifth-distinct-trigger-command-substitution-assignment-chains-1352) for why the hop was refused as written.
 
    Parse `version_result`'s three `key=value` lines: `max_inflight_version=<semver-or-empty>`, `bump_level=<major|minor|patch>`, `next_available_version=<semver-or-empty>`. `next_available_version` empty means no floor could be established at all (manifest read failed AND no in-flight bump AND no cursor) — omit the coordination paragraph and let the worker bump from `origin/<default-branch>` on its own, exactly as the pre-extraction fallback did.
 
@@ -387,9 +376,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
    decompose_max_subissues=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get decompose.max_subissues 2>/dev/null || echo "8")
    ```
@@ -426,9 +413,7 @@ When filling a slot, walk this decision tree:
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-   SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-   SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-   [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+   SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
    export SHIPYARD_REPO_ROOT
    verify_gate=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get verify_gate.enabled 2>/dev/null || echo "false")
    ```

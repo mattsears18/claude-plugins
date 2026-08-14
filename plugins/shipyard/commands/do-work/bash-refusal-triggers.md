@@ -15,8 +15,10 @@ Two syntactic shapes are refused. **Neither is "the command is long" or "the com
 | `${VAR}` — braced parameter expansion, **anywhere** in the command | **REFUSED** |
 | `$(cmd)` — command substitution in **argument** position | **REFUSED** |
 | `$VAR` — unbraced parameter expansion, anywhere | allowed |
-| `VAR=$(cmd)` — command substitution on the **right-hand side of an assignment** | allowed |
-| literal paths, several statements, `export`s, `if`/`case`, `[ cond ] && action` | allowed |
+| `VAR=$(cmd)` — command substitution, **unquoted**, on the right-hand side of an assignment | allowed |
+| `VAR="$(cmd)"` — the same, but the substitution is **double-quoted** | **REFUSED** (any inner command — see [the fifth trigger](#a-fifth-distinct-trigger-command-substitution-assignment-chains-1352)) |
+| literal paths, several statements, `export`s, `if`/`case`, `[ cond ] && action` — **each in isolation** | allowed |
+| a `VAR=$(cmd)` statement co-occurring with a *separate* `[ cond ] && assignment` statement in the same block | **REFUSED**, regardless of variable identity — see [the fifth trigger](#a-fifth-distinct-trigger-command-substitution-assignment-chains-1352) |
 
 The refusal message is generic and mentions redirects it did not observe — **do not read the message as diagnostic**. It says "too complex" for a two-token command whose only sin is a pair of braces.
 
@@ -147,3 +149,61 @@ This is a different message shape from #1325's ("git operations must target its 
 **Same "documentation is the only lever" posture as #1325 — this is not fixable from this repo.** The guard's classifier and its refusal-message wording are both Claude Code harness code, not present in this repository. The issue's two suggested fixes — soften the message to admit it's inferring from cwd rather than an identified write target, or treat any write target that resolves outside the repository as categorically out of scope — both target the harness guard directly and are out of scope for a PR here, for the same reason #1325's two options were.
 
 **Remedy — don't rely on a heredoc/redirect to `$CLAUDE_JOB_DIR` (or any out-of-repo path) succeeding, even if the identical shape just worked.** Use the `Write` tool for the file — whether the target is `$CLAUDE_JOB_DIR`, `$TMPDIR`, or any other out-of-repo scratch location — then a separate plain `Bash` call for the `gh` read-back. This is the same two-tool-call shape [`setup/00-config-worktree.md` step 0.5](./setup/00-config-worktree.md#05-move-into-the-orchestrators-worktree) and `shipyard:worker-preamble`'s [`body-file-convention.md`](../../skills/worker-preamble/body-file-convention.md) already prescribe for worktree-local scratch files — it generalizes cleanly to an out-of-repo target too, since `Write` is not a shell command and isn't subject to this guard at all. Treat it as the default for any `--body-file`-style payload, not a fallback to reach for only after a refusal — the non-determinism above means a heredoc-to-out-of-repo-path command that worked last time is not evidence it will work next time.
+
+## A fifth, distinct trigger: command-substitution assignment chains ([#1352](https://github.com/mattsears18/shipyard/issues/1352))
+
+Issue #1352 filed a plausible-looking hypothesis: `VAR=$(git rev-parse ...)` on an assignment RHS is refused, specifically because of the `git` invocation inside it — and the six (later found to be many more) templated `SY_TOPLEVEL="$(git rev-parse --show-toplevel)"` preambles in `dispatch-rules.md` were failing for that reason. **The controlled experiment below refutes the `git`-specific hypothesis outright** — but it reproduces the underlying refusal via two different, genuinely git-independent shapes, and those are the real triggers. Run in a worker session isolated in `.claude/worktrees/agent-<id>`, against this repo, immediately after the assignment-RHS matrix in "The controlled experiment" above; every command below is its own separate `Bash` call.
+
+**The `git`-specific hypothesis, tested directly and refuted:**
+
+| # | Command | Result |
+|---|---|---|
+| M | `SY_TOPLEVEL=$(git rev-parse --show-toplevel)` (single statement, unquoted, no follow-up) | allowed |
+| N | `SY_TOPLEVEL3=$(git rev-parse --show-toplevel)` (re-run, no output at all) | allowed |
+
+An isolated, unquoted `VAR=$(git rev-parse ...)` assignment — exactly the shape the matrix's own `VAR=$(cmd)` row already documents as allowed — is fine on its own. Whatever refused the issue's own repro block, it isn't "a `git` invocation inside a command substitution on an assignment RHS," full stop.
+
+**Trigger 5a — quoting the substitution, independent of the inner command:**
+
+| # | Command | Result |
+|---|---|---|
+| O | `SY_TOPLEVEL="$(git rev-parse --show-toplevel)"` (quoted, single statement) | **REFUSED** |
+| P | `TESTVAR="$(cat .shipyard-plugin-root)"` (quoted `cat`, no git at all) | **REFUSED** |
+| Q | `TESTVAR2="$(pwd)"` (quoted `pwd`, a builtin, no external binary at all) | **REFUSED** |
+
+O vs the matrix's existing `VAR=$(cmd)` row (unquoted, allowed) isolates quoting as the variable; P and Q hold the shape fixed and swap the inner command (`cat`, `pwd`) to confirm it's not git-specific — both are refused identically. **The matrix's existing `VAR=$(cmd)` "allowed" row is correct only for the unquoted spelling.** `VAR="$(cmd)"` (command substitution wrapped in double quotes on a plain assignment RHS) is a distinct, refused shape, for any inner command — add it as its own row rather than assuming quoting is decorative here the way it's decorative elsewhere in shell.
+
+**Trigger 5b — a `$(cmd)`-assignment followed by a `[ cond ] && assignment` statement in the same block, independent of git, quoting, or variable identity:**
+
+The existing matrix separately documents `VAR=$(cmd)` (unquoted) and `[ cond ] && action` as each independently allowed. Neither row predicts what happens when both appear in the *same* block:
+
+| # | Command (multi-statement, one Bash call) | Result |
+|---|---|---|
+| R | `SY_TOPLEVEL=$(git rev-parse --show-toplevel)` / `SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)` / `[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"` (the literal templated 3-line preamble, unquoted) | **REFUSED** |
+| S | Same 3 lines minus the first (`git rev-parse`) line — `SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null)` / `[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="fallback-literal"` | **REFUSED** |
+| T | `SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null)` alone, no follow-up | allowed |
+| U | `SHIPYARD_REPO_ROOT=""` / `[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="/tmp/somewhere"` (no `$(cmd)` anywhere in the block) | allowed |
+| V | `FOO=$(cat .shipyard-primary-root 2>/dev/null)` / `BAR=""` / `[ -z "$BAR" ] && BAR="fallback-literal"` (two *different*, textually-unrelated variables) | **REFUSED** |
+
+R vs S isolates that `git` isn't required — dropping the `git rev-parse` line and keeping only `cat` still refuses. T vs U shows each half is independently fine in isolation (matching the existing matrix). V is the decisive pair: `FOO` and `BAR` share no textual relationship at all — `BAR`'s conditional doesn't even reference `$FOO` — and it's still refused. **The trigger is the mere co-occurrence, anywhere in the same block, of a `VAR=$(cmd)` statement and a separate `[ cond ] && assignment` statement** — not data flow between them, not git, not quoting.
+
+**The working fix — fold the fallback into the same command substitution with `||`, eliminating the second statement entirely:**
+
+```bash
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
+```
+
+This is a single `VAR=$(cmd)` statement — no second `[ cond ] &&` line exists for 5b to fire on, and the substitution itself is unquoted so 5a doesn't fire either. Confirmed allowed, standalone and combined with the rest of the `CLAUDE_PLUGIN_ROOT` preamble, and correctly falls back to `pwd` when the stash file is absent (`cat` exits nonzero on a missing file; `2>/dev/null` only silences stderr, it doesn't change the exit status the `||` branches on).
+
+**What this means for the "worktree-relative-literal form" fix.** #1352's suggested fix 2 — drop the `$(git rev-parse --show-toplevel)` hop entirely and read `.shipyard-primary-root` / `.shipyard-version-cursor` as bare relative paths, since post-relocation cwd already **is** the worktree root — turns out to be the right remedy for a different reason than originally proposed: it isn't primarily that a git invocation is unsafe, it's that dropping the hop also collapses the 3-line pin-and-fallback block down to one `||`-combined statement, which sidesteps trigger 5b as a side effect. A fix that only unquoted the `git rev-parse` line (addressing 5a alone) would still leave 5b refusing the block.
+
+**A related, out-of-scope-for-#1352 finding — `cd` to a git-rev-parse-derived path is refused on its own, regardless of quoting:**
+
+```bash
+SY_TOPLEVEL_TEST2=$(git rev-parse --show-toplevel)
+cd "$SY_TOPLEVEL_TEST2"
+```
+
+is refused even fully unquoted, two statements, no `[ cond ] &&` anywhere. This is a **sixth**, distinct shape from all five above (`cd` targeting a git-rev-parse-derived variable specifically) — it does not affect the `SHIPYARD_REPO_ROOT`-pin call sites #1352 fixed (none of them `cd`), but it does affect the separate `SY_TOPLEVEL="$(git rev-parse --show-toplevel)"` → `cd "$SY_TOPLEVEL"` preamble used elsewhere in the spec tree (e.g. `cleanup-summary.md`'s worktree sweep, `setup/00c-worktree-recovery.md`) for "be robust to subdir invocation" — those sites were deliberately left unmodified by #1352 (different purpose, different fix needed — a `cd`-target guard can't be routed around with an `||` the way an assignment can) and are tracked as a follow-up rather than folded into this fix.
+
+**Regression coverage.** Trigger 5a/5b have no dedicated scanner (same posture as the redirect-target and cwd-inference triggers above — both are semantic/compound shapes, not pure-syntax ones a fence-walking grep can reliably classify). [`scripts/tests/shipyard-repo-root-preamble.test.sh`](../../scripts/tests/shipyard-repo-root-preamble.test.sh) is the regression guard for the specific fix: it already treats a bare relative `.shipyard-primary-root` (no variable prefix at all) as unconditionally valid, so the `||`-combined single-statement form above passes it without any test change.

@@ -89,9 +89,7 @@ export CLAUDE_PLUGIN_ROOT
 # `git rev-parse --show-toplevel` (issue #1059/#1064) — the latter resolves
 # to the orchestrator worktree post-relocation, not the primary checkout
 # shipyard-config.sh needs to read repo-level config from.
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 ME_LOGIN=$(gh api user --jq '.login')
 
@@ -345,9 +343,7 @@ export CLAUDE_PLUGIN_ROOT
 # shipyard-config.sh call in this step (including this very FLAKE_ENABLED
 # read) must read repo-level config from the primary, not the orchestrator
 # worktree.
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 FLAKE_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.enabled 2>/dev/null || echo false)
 ```
@@ -363,9 +359,7 @@ Re-derive both pins (variables don't survive across separate Bash calls), read `
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 PRUNE_WINDOW_DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get flake_registry.prune_window_days 2>/dev/null || echo 90)
 case "$PRUNE_WINDOW_DAYS" in ''|*[!0-9]*) PRUNE_WINDOW_DAYS=90 ;; esac

@@ -560,9 +560,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-  SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-  SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+  SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
   export SHIPYARD_REPO_ROOT
   EXPECTED_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
   case "$EXPECTED_METHOD" in squash|merge|rebase) ;; *) EXPECTED_METHOD=squash ;; esac
@@ -610,9 +608,7 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
   export CLAUDE_PLUGIN_ROOT
   # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-  SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-  SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+  SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
   export SHIPYARD_REPO_ROOT
   # cost_tracking.comment_on_pr opt-out (#855) — checked first, cheaply,
   # before any session-id derivation or gh call. Defaults to true (fail
@@ -1090,9 +1086,7 @@ FETCH_TS=$(date -u +%H:%M:%S)
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin (issue #1059/#1064).
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-[ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 # blocked_agent.soft_retry_minutes — default 30 — from shipyard-config.sh.
 soft_retry_minutes=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" \
@@ -1145,9 +1139,7 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
   # shipyard-config.sh reads below — each Bash-tool call is a fresh,
   # hermetic subshell, so nothing set in an earlier call (including step
   # 0.56's original stash-and-export) survives into this one.
-  SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-  SHIPYARD_REPO_ROOT=$(cat "$SY_TOPLEVEL/.shipyard-primary-root" 2>/dev/null)
-  [ -z "$SHIPYARD_REPO_ROOT" ] && SHIPYARD_REPO_ROOT="$SY_TOPLEVEL"
+  SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
   export SHIPYARD_REPO_ROOT
   multiplier=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_multiplier 2>/dev/null)
   min_in_flight=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get ci.backpressure_min_in_flight 2>/dev/null)
