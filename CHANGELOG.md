@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.33.11 — 2026-08-14
+
+P1: closes #1345. Follow-on to #1224/#1228, which stated the `git stash` prohibition and its WIP-commit substitute in `shipyard:worker-preamble` for dispatched *workers*. That left the orchestrator's own prohibition sidebar silent on the same hazard, even though the orchestrator runs the identical class of git operations while recovering a dirty worktree — and this repo's own spec (`00f-session-id-storage.md`) already has the orchestrator writing `.shipyard-*` "stash files," a naming collision that makes `git stash` read as a natural next reach rather than a forbidden one.
+
+- `plugins/shipyard/commands/do-work/dont.md` — new bullet in the "Worktree + filesystem discipline" section: the orchestrator must never run `git stash` (`push`/`pop`/`apply`/`drop`/`clear`) from its own worktree, with the shared-`refs/stash` mechanism spelled out inline (every entry lives in the common `.git` dir every worktree in the repo — including every dispatched worker's `agent-*` worktree and the human's primary checkout — shares; a bare `pop` always takes `stash@{0}` regardless of who pushed it), an explicit disambiguation from the unrelated `.shipyard-*` stash-*file* convention, and the same `git commit -m "wip: <why>"` substitute the worker-side rule uses. Links to `shipyard:worker-preamble`'s `git-stash-prohibition.md` fragment rather than duplicating its full mechanism writeup.
+
 ### 4.33.10 — 2026-08-14
 
 P2 (arguably P3): closes #1347. Two separate workers in one `/shipyard:do-work` session against `mattsears18/lightwork` both hit the same friction: their end-of-dispatch `.shipyard-scratch/` cleanup call was denied by the permission classifier, and each spent a turn explaining why the harmless leftover directory was fine. Both correctly judged the denial cosmetic (the directory self-ignores via a `.shipyard-scratch/.gitignore` containing `*`, so it never reaches a diff, a commit, or `git status`), but the recurrence — two of six workers in a single session — made the per-dispatch explanation pure overhead, and the worktree it lives in is typically reaped shortly after the dispatch ends anyway, so the cleanup was redundant in the common case. Took the issue's cheapest suggested fix (option 1): stop instructing the removal at all rather than try to make the denial less frequent.
