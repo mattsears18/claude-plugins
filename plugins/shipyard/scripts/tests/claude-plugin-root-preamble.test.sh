@@ -296,7 +296,18 @@ fi
 #       or (b) only.
 #
 # Walking is done by an awk one-liner that emits one line per bash block:
-# "<block_start_line>|<has_ref 0/1>|<is_preamble_only 0/1>|<first_non_blank_line>|<second_non_blank_line>"
+# "<block_start_line>|<has_ref 0/1>|<is_preamble_only 0/1>|<contains_preamble 0/1>|<first_non_blank_line>|<second_non_blank_line>"
+#
+# `contains_preamble` (issue #1378) is new: it's 1 when ANY line in the
+# block — not just the first — matches the canonical preamble exactly once
+# leading whitespace is stripped. It is what lets scan_file_for_offenses
+# below name the NEAREST earlier preamble-bearing block for an offending
+# block's diagnostic, rather than only reporting that a valid preamble is
+# absent at the point of failure. (`is_preamble_only` still requires the
+# preamble to be the block's ENTIRE content — the narrower predicate the
+# two-block idiom in (b) actually needs — so the two fields answer different
+# questions: "is a preamble anywhere in this block" vs. "is this block
+# nothing BUT a preamble".)
 walk_blocks() {
   local file="$1"
   awk -v expected="$EXPECTED_PREAMBLE" '
@@ -310,6 +321,7 @@ walk_blocks() {
       second_line = ""
       first_line_num = 0
       has_ref = 0
+      contains_preamble = 0
       nonblank_count = 0
       next
     }
@@ -320,7 +332,7 @@ walk_blocks() {
         stripped = first_line
         sub(/^[ \t]+/, "", stripped)
         is_preamble_only = (nonblank_count == 1 && stripped == expected) ? 1 : 0
-        printf "%d|%d|%d|%s|%s\n", block_start, has_ref, is_preamble_only, first_line, second_line
+        printf "%d|%d|%d|%d|%s|%s\n", block_start, has_ref, is_preamble_only, contains_preamble, first_line, second_line
       }
       in_block = 0
       next
@@ -336,6 +348,11 @@ walk_blocks() {
       if (/\$CLAUDE_PLUGIN_ROOT([^A-Za-z0-9_]|$)/) {
         has_ref = 1
       }
+      line_stripped = $0
+      sub(/^[ \t]+/, "", line_stripped)
+      if (line_stripped == expected) {
+        contains_preamble = 1
+      }
       if (/[^ \t]/) {
         nonblank_count++
         if (first_line == "") {
@@ -349,18 +366,70 @@ walk_blocks() {
   ' "$file"
 }
 
-offending_blocks=0
-total_ref_blocks=0
-for f in "${FILES[@]}"; do
-  [[ -f "$f" ]] || continue
-  case "$f" in
-    "$ORCH_PHASE_DIR"/*) is_orch_phase=1 ;;
-    *)                   is_orch_phase=0 ;;
-  esac
-  prev_is_preamble_only=0
-  while IFS='|' read -r fence_line has_ref is_preamble_only first_line second_line; do
+# build_offending_message (issue #1378) — renders the full multi-line
+# diagnostic for one offending block. Pulled out of the scan loop so the
+# exact same text-building logic backs both the real repo scan below AND
+# the fixture-driven message-content tests in (3d) — a diagnostic that's
+# only ever exercised by the real scan can drift or regress silently the
+# next time someone "cleans up" the loop it lives in.
+#
+# $1 file  $2 fence_line  $3 is_orch_phase  $4 block_idx
+# $5 last_preamble_idx (-1 if none found yet)  $6 last_preamble_line
+# $7 first_line (of the offending block)  $8 trail (space-separated line
+#    numbers of blocks since the last preamble-bearing block, oldest first)
+build_offending_message() {
+  local file="$1" fence_line="$2" is_orch_phase="$3" block_idx="$4"
+  local last_preamble_idx="$5" last_preamble_line="$6" first_line="$7" trail="$8"
+  local -a lines=()
+  if (( last_preamble_idx >= 0 )); then
+    if (( block_idx - last_preamble_idx == 1 )); then
+      # The nearest preamble is in the IMMEDIATELY preceding block, but that
+      # block mixes in other content — so the two-block idiom's "preamble-only"
+      # requirement rejects it despite the adjacency being right.
+      lines+=("$file: bash block at line $fence_line uses \$CLAUDE_PLUGIN_ROOT — the immediately preceding block (line $last_preamble_line) already contains the preamble, but REJECTED: that block is not preamble-only (other content is mixed in with it), so the two-block idiom does not recognize it")
+      lines+=("         fix: make the block at line $last_preamble_line contain ONLY the preamble line, or move the preamble to be this block's own first line")
+    else
+      local intervening=$(( block_idx - last_preamble_idx - 1 ))
+      local trail_str="${trail// /, }"
+      lines+=("$file: bash block at line $fence_line uses \$CLAUDE_PLUGIN_ROOT — nearest preamble found at line $last_preamble_line (compound form), REJECTED: not *immediately* preceding; $intervening intervening bash block(s) (line(s) $trail_str) separate it from line $fence_line")
+      lines+=("         fix: move the preamble at line $last_preamble_line into this block as its own first line(s), or remove/merge whatever sits between them")
+    fi
+    if (( is_orch_phase )); then
+      lines+=("         note: this file is orchestrator-phase — the post-relocation stash-read two-liner is also a valid alternative form here; see bash-refusal-triggers.md § The convention for which applies to this step")
+    fi
+  else
+    lines+=("$file: bash block at line $fence_line uses \$CLAUDE_PLUGIN_ROOT but no preamble was found anywhere earlier in this file")
+    lines+=("         expected either: $EXPECTED_PREAMBLE")
+    if (( is_orch_phase )); then
+      lines+=("                     or: $EXPECTED_STASH_LINE1 / $EXPECTED_STASH_LINE2   (orchestrator-phase files only — see bash-refusal-triggers.md § The convention)")
+    fi
+    lines+=("         got:             $first_line")
+  fi
+  printf '%s\n' "${lines[@]}"
+}
+
+# scan_file_for_offenses (issue #1378) — walks FILE's blocks in order,
+# tracking the nearest preceding preamble-bearing block (by block index, not
+# just line number, so "immediately preceding" and "N intervening blocks"
+# are both exact) and appending one rendered diagnostic per offending block
+# to the global OFFENSE_MSGS array. REF_BLOCK_COUNT is also populated as a
+# side effect so the caller can fold it into total_ref_blocks without a
+# second pass. Both globals are reset on entry, so this is safe to call
+# repeatedly against different files (the real scan loop, or a fixture).
+OFFENSE_MSGS=()
+REF_BLOCK_COUNT=0
+scan_file_for_offenses() {
+  local file="$1" is_orch_phase="$2"
+  OFFENSE_MSGS=()
+  REF_BLOCK_COUNT=0
+  local block_idx=0 last_preamble_line=0 last_preamble_idx=-1
+  local -a trail=()
+  local prev_is_preamble_only=0
+  local fence_line has_ref is_preamble_only contains_preamble first_line second_line
+  while IFS='|' read -r fence_line has_ref is_preamble_only contains_preamble first_line second_line; do
+    block_idx=$((block_idx + 1))
     if (( has_ref )); then
-      total_ref_blocks=$((total_ref_blocks + 1))
+      REF_BLOCK_COUNT=$((REF_BLOCK_COUNT + 1))
       stripped_first="$first_line"
       # strip leading whitespace for comparison (preamble may be indented
       # to match the fence indent, e.g. inside a numbered list item).
@@ -374,17 +443,39 @@ for f in "${FILES[@]}"; do
       elif (( is_orch_phase )) && [[ "$stripped_first" == "$EXPECTED_STASH_LINE1" && "$stripped_second" == "$EXPECTED_STASH_LINE2" ]]; then
         : # (c) post-relocation stash-read two-liner, orchestrator-phase only — pass
       else
-        offending_blocks=$((offending_blocks + 1))
-        assert_fail "$f: bash block at line $fence_line uses \${CLAUDE_PLUGIN_ROOT} but is not preceded by a valid preamble (own first line, an immediately preceding preamble-only block, or — orchestrator-phase files only — the stash-read two-liner)"
-        printf '         expected either: %s\n' "$EXPECTED_PREAMBLE"
-        if (( is_orch_phase )); then
-          printf '                     or: %s / %s\n' "$EXPECTED_STASH_LINE1" "$EXPECTED_STASH_LINE2"
-        fi
-        printf '         got:             %s\n' "$first_line"
+        local msg
+        msg=$(build_offending_message "$file" "$fence_line" "$is_orch_phase" "$block_idx" "$last_preamble_idx" "$last_preamble_line" "$first_line" "${trail[*]:-}")
+        OFFENSE_MSGS+=("$msg")
       fi
     fi
+    if (( contains_preamble )); then
+      last_preamble_line=$fence_line
+      last_preamble_idx=$block_idx
+      trail=()
+    else
+      trail+=("$fence_line")
+    fi
     prev_is_preamble_only=$is_preamble_only
-  done < <(walk_blocks "$f")
+  done < <(walk_blocks "$file")
+}
+
+offending_blocks=0
+total_ref_blocks=0
+for f in "${FILES[@]}"; do
+  [[ -f "$f" ]] || continue
+  case "$f" in
+    "$ORCH_PHASE_DIR"/*) is_orch_phase=1 ;;
+    *)                   is_orch_phase=0 ;;
+  esac
+  scan_file_for_offenses "$f" "$is_orch_phase"
+  total_ref_blocks=$((total_ref_blocks + REF_BLOCK_COUNT))
+  if (( ${#OFFENSE_MSGS[@]} > 0 )); then
+    for msg in "${OFFENSE_MSGS[@]}"; do
+      offending_blocks=$((offending_blocks + 1))
+      assert_fail "$(printf '%s' "$msg" | head -n 1)"
+      printf '%s\n' "$msg" | tail -n +2
+    done
+  fi
 done
 
 if (( offending_blocks == 0 )); then
@@ -442,6 +533,135 @@ else
   while IFS= read -r hit; do
     printf '         %s\n' "${hit#"$repo_root/"}"
   done <<< "$braced_hits"
+fi
+
+# (3d) Message-content fixture tests (issue #1378). Checks (1)-(3c) above
+# only assert PRESENCE/ABSENCE of a valid preamble — none of them assert
+# what the FAILURE MESSAGE actually says. That's exactly the gap #1378
+# reports: three workers in one session read a message that correctly said
+# "not preceded by a valid preamble" and each independently "fixed" it by
+# adding a second, non-adjacent preamble block, because the message never
+# said a preamble already existed 11 lines up — only that one wasn't found
+# immediately before. These three fixtures pin the diagnostic's CONTENT so
+# that regression can't recur silently the way the original gap did.
+#
+# Each fixture is a synthetic .md file built from $EXPECTED_PREAMBLE itself
+# (never a hand-typed copy) so a future change to the canonical preamble
+# text can't silently desync the fixture from what the scanner actually
+# looks for.
+fixture_dir=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-1378)
+if [[ -n "$fixture_dir" && -d "$fixture_dir" ]]; then
+
+  # Fixture A: the preamble exists earlier in the file, but is separated
+  # from the offending block by one intervening (unrelated) bash block and
+  # surrounding prose — the exact shape of all three #1378 repros.
+  fixture_a="$fixture_dir/non-adjacent.md"
+  {
+    echo "# Fixture A"
+    echo
+    echo "Some setup prose."
+    echo
+    echo '```bash'
+    printf '%s\n' "$EXPECTED_PREAMBLE"
+    echo '```'
+    echo
+    echo "Unrelated prose describing an intervening step."
+    echo
+    echo '```bash'
+    echo "git rev-parse --show-toplevel"
+    echo '```'
+    echo
+    echo "More prose before the actual consumer."
+    echo
+    echo '```bash'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators'
+    echo '```'
+  } > "$fixture_a"
+  preamble_line_a=$(grep -n '^```bash$' "$fixture_a" | sed -n '1p' | cut -d: -f1)
+  offending_line_a=$(grep -n '^```bash$' "$fixture_a" | sed -n '3p' | cut -d: -f1)
+
+  scan_file_for_offenses "$fixture_a" 0
+  if (( ${#OFFENSE_MSGS[@]} == 1 )); then
+    msg_a="${OFFENSE_MSGS[0]}"
+    if [[ "$msg_a" == *"nearest preamble found at line $preamble_line_a"* \
+       && "$msg_a" == *"not *immediately* preceding"* \
+       && "$msg_a" == *"1 intervening bash block(s)"* \
+       && "$msg_a" == *"line $offending_line_a"* ]]; then
+      assert_pass "fixture: non-adjacent preamble — diagnostic names the nearest preamble (line $preamble_line_a), the adjacency rejection reason, and the intervening-block count (issue #1378)"
+    else
+      assert_fail "fixture: non-adjacent preamble — diagnostic content did not match expectations (issue #1378)"
+      printf '         got: %s\n' "$msg_a"
+    fi
+  else
+    assert_fail "fixture: non-adjacent preamble — expected exactly 1 offending block, got ${#OFFENSE_MSGS[@]} (issue #1378)"
+  fi
+
+  # Fixture B: no preamble exists anywhere earlier in the file — the
+  # diagnostic must say so explicitly rather than pointing at a nearby block
+  # that doesn't exist.
+  fixture_b="$fixture_dir/no-preamble.md"
+  {
+    echo "# Fixture B"
+    echo
+    echo '```bash'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators'
+    echo '```'
+  } > "$fixture_b"
+  offending_line_b=$(grep -n '^```bash$' "$fixture_b" | sed -n '1p' | cut -d: -f1)
+
+  scan_file_for_offenses "$fixture_b" 0
+  if (( ${#OFFENSE_MSGS[@]} == 1 )); then
+    msg_b="${OFFENSE_MSGS[0]}"
+    if [[ "$msg_b" == *"no preamble was found anywhere earlier in this file"* \
+       && "$msg_b" == *"line $offending_line_b"* ]]; then
+      assert_pass "fixture: no preamble anywhere in the file — diagnostic says so explicitly (issue #1378)"
+    else
+      assert_fail "fixture: no preamble anywhere in the file — diagnostic content did not match expectations (issue #1378)"
+      printf '         got: %s\n' "$msg_b"
+    fi
+  else
+    assert_fail "fixture: no preamble anywhere in the file — expected exactly 1 offending block, got ${#OFFENSE_MSGS[@]} (issue #1378)"
+  fi
+
+  # Fixture C: the preamble is in the IMMEDIATELY preceding block, but that
+  # block mixes in other content — so the two-block idiom's "preamble-only"
+  # requirement rejects it despite the adjacency being right. This must
+  # produce a DIFFERENT diagnosis than fixture A's non-adjacent case.
+  fixture_c="$fixture_dir/adjacent-not-preamble-only.md"
+  {
+    echo "# Fixture C"
+    echo
+    echo '```bash'
+    printf '%s\n' "$EXPECTED_PREAMBLE"
+    echo 'echo "also doing something else in the same block"'
+    echo '```'
+    echo
+    echo '```bash'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators'
+    echo '```'
+  } > "$fixture_c"
+  preamble_line_c=$(grep -n '^```bash$' "$fixture_c" | sed -n '1p' | cut -d: -f1)
+
+  scan_file_for_offenses "$fixture_c" 0
+  if (( ${#OFFENSE_MSGS[@]} == 1 )); then
+    msg_c="${OFFENSE_MSGS[0]}"
+    if [[ "$msg_c" == *"the immediately preceding block (line $preamble_line_c)"* \
+       && "$msg_c" == *"not preamble-only"* ]]; then
+      assert_pass "fixture: adjacent-but-mixed preamble — diagnostic distinguishes this from the non-adjacent case (issue #1378)"
+    else
+      assert_fail "fixture: adjacent-but-mixed preamble — diagnostic content did not match expectations (issue #1378)"
+      printf '         got: %s\n' "$msg_c"
+    fi
+  else
+    assert_fail "fixture: adjacent-but-mixed preamble — expected exactly 1 offending block, got ${#OFFENSE_MSGS[@]} (issue #1378)"
+  fi
+
+  rm -rf "$fixture_dir"
+else
+  assert_fail "could not create sandbox for message-content fixture tests (issue #1378)"
 fi
 
 # (4) Sanity check — the preamble itself must actually work. Run it in a

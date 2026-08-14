@@ -313,25 +313,147 @@ walk_blocks() {
   ' "$file"
 }
 
+# scan_repo_root_file (issue #1378) — walks FILE's blocks in order via
+# walk_blocks, tracking the nearest EARLIER block (anywhere in the file)
+# that carries the .shipyard-primary-root marker, and appends one rendered
+# diagnostic per offending call-block to the global OFFENSE_MSGS array.
+# CALL_BLOCK_COUNT is populated as a side effect. Both globals reset on
+# entry, so this is safe to call repeatedly against different files (the
+# real scan loop below, or a fixture in (2b)).
+#
+# Unlike the sibling claude-plugin-root-preamble.test.sh, there is no
+# adjacency or two-block-idiom concept here at all — this suite's own rule
+# (see the header comment) is that EVERY call-bearing block must
+# independently re-derive the pin, because each Bash-tool call is its own
+# hermetic subshell. So a nearby re-derivation in a DIFFERENT block never
+# satisfies the check, no matter how close it is — but a worker who doesn't
+# know that (and has seen the sibling test's two-block idiom) can plausibly
+# assume it does, exactly the confusion #1378 reports for the sibling file.
+# Naming the nearest re-derivation AND spelling out why it doesn't count is
+# the fix here, mirroring #1378's "nearest preamble found" treatment.
+OFFENSE_MSGS=()
+CALL_BLOCK_COUNT=0
+scan_repo_root_file() {
+  local file="$1"
+  OFFENSE_MSGS=()
+  CALL_BLOCK_COUNT=0
+  local last_pin_line=0
+  local fence_line has_call has_pin bad_var
+  while IFS='|' read -r fence_line has_call has_pin bad_var; do
+    if (( has_call )); then
+      CALL_BLOCK_COUNT=$((CALL_BLOCK_COUNT + 1))
+      if [[ -n "$bad_var" ]]; then
+        OFFENSE_MSGS+=("${file#"$repo_root"/}: bash block at line $fence_line reads \"\$${bad_var}/.shipyard-primary-root\" but \$${bad_var} is never assigned earlier in the same block — every Bash-tool call is its own hermetic subshell (#354), so this always reads empty and silently falls through (issue #1276)")
+      elif (( has_pin )); then
+        : # pass
+      else
+        local msg
+        if (( last_pin_line > 0 )); then
+          msg="${file#"$repo_root"/}: bash block at line $fence_line calls shipyard-config.sh/resolve-dispatch-model.sh but does not itself re-derive SHIPYARD_REPO_ROOT from the .shipyard-primary-root stash
+         nearest re-derivation in this file: line $last_pin_line — REJECTED: it is a DIFFERENT bash block; every Bash-tool call is its own hermetic subshell (#354), so this block must re-derive the pin itself (no two-block idiom exception here, unlike the sibling \$CLAUDE_PLUGIN_ROOT preamble test) (issue #1059/#1064)"
+        else
+          msg="${file#"$repo_root"/}: bash block at line $fence_line calls shipyard-config.sh/resolve-dispatch-model.sh but never re-derives SHIPYARD_REPO_ROOT from the .shipyard-primary-root stash — no re-derivation found anywhere earlier in this file either (issue #1059/#1064)"
+        fi
+        OFFENSE_MSGS+=("$msg")
+      fi
+    fi
+    if (( has_pin )); then
+      last_pin_line=$fence_line
+    fi
+  done < <(walk_blocks "$file")
+}
+
 offending_blocks=0
 total_call_blocks=0
 for f in "${FILES[@]}"; do
   [[ -f "$f" ]] || continue
-  while IFS='|' read -r fence_line has_call has_pin bad_var; do
-    if (( has_call )); then
-      total_call_blocks=$((total_call_blocks + 1))
-      if [[ -n "$bad_var" ]]; then
-        offending_blocks=$((offending_blocks + 1))
-        assert_fail "${f#"$repo_root"/}: bash block at line $fence_line reads \"\$${bad_var}/.shipyard-primary-root\" but \$${bad_var} is never assigned earlier in the same block — every Bash-tool call is its own hermetic subshell (#354), so this always reads empty and silently falls through (issue #1276)"
-      elif (( has_pin )); then
-        : # pass
-      else
-        offending_blocks=$((offending_blocks + 1))
-        assert_fail "${f#"$repo_root"/}: bash block at line $fence_line calls shipyard-config.sh/resolve-dispatch-model.sh but never re-derives SHIPYARD_REPO_ROOT from the .shipyard-primary-root stash (issue #1059/#1064)"
-      fi
-    fi
-  done < <(walk_blocks "$f")
+  scan_repo_root_file "$f"
+  total_call_blocks=$((total_call_blocks + CALL_BLOCK_COUNT))
+  if (( ${#OFFENSE_MSGS[@]} > 0 )); then
+    for msg in "${OFFENSE_MSGS[@]}"; do
+      offending_blocks=$((offending_blocks + 1))
+      assert_fail "$(printf '%s' "$msg" | head -n 1)"
+      printf '%s\n' "$msg" | tail -n +2
+    done
+  fi
 done
+
+# (2a) Message-content fixture tests (issue #1378, mirroring the sibling
+# claude-plugin-root-preamble.test.sh's (3d)). Fixture X proves the
+# nearest-re-derivation-elsewhere case names the other block and states
+# explicitly why it doesn't count; fixture Y proves the true-absence case
+# doesn't falsely point at a nonexistent nearby block.
+fixture_dir=$(mktemp -d 2>/dev/null || mktemp -d -t shipyard-1378-repo-root)
+if [[ -n "$fixture_dir" && -d "$fixture_dir" ]]; then
+
+  # Fixture X: a SEPARATE block re-derives the pin, but the call-bearing
+  # block does not do so itself — must be reported as a different-block
+  # rejection, not a bare "missing" message.
+  fixture_x="$fixture_dir/different-block.md"
+  {
+    echo "# Fixture X"
+    echo
+    echo '```bash'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo 'SHIPYARD_REPO_ROOT=$(cat ".shipyard-primary-root" 2>/dev/null)'
+    echo 'export SHIPYARD_REPO_ROOT'
+    echo '```'
+    echo
+    echo "Some prose in between."
+    echo
+    echo '```bash'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get foo.bar'
+    echo '```'
+  } > "$fixture_x"
+  pin_line_x=$(grep -n '^```bash$' "$fixture_x" | sed -n '1p' | cut -d: -f1)
+  call_line_x=$(grep -n '^```bash$' "$fixture_x" | sed -n '2p' | cut -d: -f1)
+
+  scan_repo_root_file "$fixture_x"
+  if (( ${#OFFENSE_MSGS[@]} == 1 )); then
+    msg_x="${OFFENSE_MSGS[0]}"
+    if [[ "$msg_x" == *"nearest re-derivation in this file: line $pin_line_x"* \
+       && "$msg_x" == *"REJECTED: it is a DIFFERENT bash block"* \
+       && "$msg_x" == *"line $call_line_x"* ]]; then
+      assert_pass "fixture: pin re-derived in a different block — diagnostic names the nearest re-derivation (line $pin_line_x) and states why it doesn't count (issue #1378)"
+    else
+      assert_fail "fixture: pin re-derived in a different block — diagnostic content did not match expectations (issue #1378)"
+      printf '         got: %s\n' "$msg_x"
+    fi
+  else
+    assert_fail "fixture: pin re-derived in a different block — expected exactly 1 offending block, got ${#OFFENSE_MSGS[@]} (issue #1378)"
+  fi
+
+  # Fixture Y: no re-derivation exists anywhere in the file.
+  fixture_y="$fixture_dir/no-pin-anywhere.md"
+  {
+    echo "# Fixture Y"
+    echo
+    echo '```bash'
+    # shellcheck disable=SC2016  # literal fixture text — must NOT expand
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get foo.bar'
+    echo '```'
+  } > "$fixture_y"
+  call_line_y=$(grep -n '^```bash$' "$fixture_y" | sed -n '1p' | cut -d: -f1)
+
+  scan_repo_root_file "$fixture_y"
+  if (( ${#OFFENSE_MSGS[@]} == 1 )); then
+    msg_y="${OFFENSE_MSGS[0]}"
+    if [[ "$msg_y" == *"no re-derivation found anywhere earlier in this file either"* \
+       && "$msg_y" == *"line $call_line_y"* ]]; then
+      assert_pass "fixture: no re-derivation anywhere in the file — diagnostic says so explicitly (issue #1378)"
+    else
+      assert_fail "fixture: no re-derivation anywhere in the file — diagnostic content did not match expectations (issue #1378)"
+      printf '         got: %s\n' "$msg_y"
+    fi
+  else
+    assert_fail "fixture: no re-derivation anywhere in the file — expected exactly 1 offending block, got ${#OFFENSE_MSGS[@]} (issue #1378)"
+  fi
+
+  rm -rf "$fixture_dir"
+else
+  assert_fail "could not create sandbox for message-content fixture tests (issue #1378)"
+fi
 
 if (( offending_blocks == 0 )); then
   assert_pass "all $total_call_blocks bash blocks calling shipyard-config.sh/resolve-dispatch-model.sh across ${#FILES[@]} scanned files re-derive the SHIPYARD_REPO_ROOT pin"
