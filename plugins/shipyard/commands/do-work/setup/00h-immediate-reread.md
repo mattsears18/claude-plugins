@@ -33,7 +33,8 @@ if [ -n "$SHIPYARD_PLUGIN_ROOT_STALE" ]; then
     if [ -n "$SY_NEW_STEPS" ]; then
       echo "advisory: $SY_REREAD_REL gained pre-relocation step heading(s) this session's stale copy didn't have (#1351):" >&2
       printf '%s\n' "$SY_NEW_STEPS" | sed 's/^\+/  - /' >&2
-      SHIPYARD_PRERELOC_STEP_CAUGHT="${SHIPYARD_PRERELOC_STEP_CAUGHT:+$SHIPYARD_PRERELOC_STEP_CAUGHT; }$(printf '%s' "$SY_NEW_STEPS" | sed 's/^\+### //' | tr '\n' ',' | sed 's/,$//')"
+      SY_STEPS_LIST=$(printf '%s' "$SY_NEW_STEPS" | sed 's/^\+### //' | tr '\n' ',' | sed 's/,$//')
+      SHIPYARD_PRERELOC_STEP_CAUGHT="${SHIPYARD_PRERELOC_STEP_CAUGHT:+$SHIPYARD_PRERELOC_STEP_CAUGHT; }$SY_STEPS_LIST"
     fi
   done
 fi
