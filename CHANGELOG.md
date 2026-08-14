@@ -4,6 +4,19 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.35.6 — 2026-08-14
+
+P2: closes #1383. One session (`do-work-20260814T040027Z-97458`, 8 `fix-checks-only` dispatches) found Haiku-tiered dispatches producing 2 false `green` returns and 1 unverifiable-but-accurate one, while Sonnet-tiered dispatches in the same session produced none — re-examining the [#784](https://github.com/mattsears18/shipyard/issues/784) Haiku pin for `models.fix_checks_only`. Existing machinery (the #1205/#1335 fabrication pre-check, the #1211 SHA-match spot-check) caught all three; the gap was cost (wasted dispatches), not a shipped defect, and n=1 session is thin evidence for a standing tier change. Ships two of the four candidate directions plus a targeted, session-scoped version of a third, deliberately stopping short of a full re-tier:
+
+- `plugins/shipyard/agents/issue-worker/fix-checks-only.md` — new step 5.5, a mandatory push-verification checkpoint between commit/push and the CI re-watch: `git fetch` + `git log --oneline origin/<head>..HEAD` must print nothing before any disposition may be returned. Structural rather than prose — the same session's dispatch prompts already told the worker in bold to push-then-reread and it still fabricated a claim citing an unpushed commit's SHA, so another sentence of emphasis wasn't going to hold. A matching Don't-list bullet was added for discoverability.
+- `plugins/shipyard/commands/do-work/steady-state.md` — the trust-but-verify spot-check now bumps a new `fix_checks_green_counters` map (confirmed vs. downgraded, keyed by dispatch model tier) on every `green`/`noop` classification, and adds the target PR to a new `fix_checks_false_green_prs` set on any downgrade.
+- `plugins/shipyard/commands/do-work/dispatch-rules.md` — a new fix-checks-only escalation override: a PR already in `fix_checks_false_green_prs` this session has its next `fix-checks-only` dispatch forced to `sonnet`, regardless of the configured default — a per-dispatch escalation on the PR that already proved it needed it, not a config-wide re-tier.
+- `plugins/shipyard/commands/do-work/orchestrator-state-reference.md` — documents both new session-local structures (struct count 15 → 17).
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — new `Fix-checks green verification (#1383):` end-of-session line, per-model confirmed/downgraded counts plus the escalated-PR count; omitted when no `fix-checks-only` `green`/`noop` return occurred.
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new section recording the decision and why a full re-tier (matching the #854 `fix-rebase` precedent) is deferred until the newly-added measurement shows the rate holds up across sessions rather than one.
+
+A full re-tier of `models.fix_checks_only` to `sonnet` remains the most likely correct end state if the measured false-green rate holds up — that's exactly what this release's new telemetry is for — but is not made here on one session's data.
+
 ### 4.35.5 — 2026-08-14
 
 P2: closes #1377. On a `version_coordination`-enabled repo whose release convention bumps a shared manifest row on every merge (this repo's own "ALWAYS cut a release when a PR merges" rule), allocating the manifest version at *dispatch* time rather than *land* time makes a DIRTY collision a structural certainty, not a race: a PR is necessarily open (holding a version) while its predecessor is still merging, so at `--concurrency 1` a sibling merge DIRTYs essentially every other open PR's version row. `fix-rebase.md` §4.6 already resolves this deterministically, but paying for a full worker dispatch (fresh isolated worktree, agent turn, model call) to run a two-line renumber is expensive — one measured session spent 8 of 25 dispatches (~32%, ~1.11M input tokens) on exactly this, with zero `blocked rebase` outcomes across all 8.
