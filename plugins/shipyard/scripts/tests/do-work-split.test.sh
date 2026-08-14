@@ -1086,31 +1086,48 @@ assert_contains "$setup_path" \
 # glob — under zsh's default `nomatch` option, an unmatched glob raises
 # a fatal error and aborts the entire bg subshell, taking out the
 # remaining sub-steps (3c orphan-branch triage in particular). The fix
-# replaces the bare glob with a `find` substitution that exits 0 on no
+# replaced the bare glob with a `find` substitution that exits 0 on no
 # matches, so the loop body simply doesn't iterate and execution
 # proceeds to 3c.
 #
-# The same hardening lands in two surfaces (the canonical bg group and
-# the standalone "3b. Reap stale agent worktrees" documentation block)
-# so a reader of either copy sees the same pattern.
-assert_contains "$setup_path" \
-  'issues/335' \
-  "setup.md cites issue #335 as the source of the bg-cleanup-group zsh-nomatch fix"
-# The bare-glob form must be gone from any `for wt_dir in ...` line.
-# We assert the literal `for wt_dir in .git/worktrees/agent-*; do` form
-# is absent — the regression guard against re-introducing the zsh hazard.
+# RE-POINTED, not deleted (issue #1355). setup.md's 3b/1.6.5 sweeps used
+# to carry the find-based loop (and the #335 citation) inline, in TWO
+# copies — the bg-cleanup-group loop and the standalone "3b. Reap stale
+# agent worktrees" documentation block. #1355 replaced BOTH inline copies
+# with single-call invocations of `worktree-reap.sh`'s `sweep-stale-agents`
+# / `reap-orphan-orchestrators` subcommands (see 01c-label-recovery-refine.md
+# / 01d-orphan-orchestrator-worktree-reap.md), so the loop text — and the
+# #335 citation that explained it — legitimately no longer appears in
+# setup_path. The zsh-nomatch-safety PROPERTY moved with the loop into
+# `worktree-reap.sh`'s internals; asserting for it in setup_path after the
+# move would be asserting for dead text, not for the property. The checks
+# below assert it in its new home instead: the `find`-based idiom (not a
+# bare glob) still backs every agent-* enumeration inside worktree-reap.sh,
+# the #335 citation is still attached to it there, and setup_path itself
+# never regresses back to inlining the bare-glob hazard.
+worktree_reap_sh_path="$repo_root/plugins/shipyard/scripts/worktree-reap.sh"
+assert_contains "$worktree_reap_sh_path" \
+  '#335' \
+  "worktree-reap.sh still cites issue #335 next to its find-based (not bare-glob) agent-* enumeration"
+# The bare-glob form must never reappear in setup.md's own text — the
+# regression guard against re-introducing the zsh hazard inline, even
+# though the loop itself now lives one layer down in worktree-reap.sh.
 assert_not_contains "$setup_path" \
   'for wt_dir in .git/worktrees/agent-*' \
   "setup.md no longer uses the bare agent-* glob in any for-loop (zsh nomatch hazard, #335)"
-# The hardened replacement must be present in at least one place — the
-# bg cleanup group's 3b loop AND the standalone canonical implementation
-# both got the same find-based rewrite, so the substring should appear
-# twice. Use `assert_count_at_least_across` (single file, min 2).
+# The hardened find-based idiom (never a bare glob) must still back every
+# agent-* worktree enumeration inside worktree-reap.sh itself — at least
+# the sweep-stale-agents path (issue #1529-area) and the warn-threshold /
+# reclaimable-size probes (#836) all count toward this floor. See
+# worktree-reap.test.sh's (90)/(127) "no agent-* worktrees -> exit 0,
+# empty output" cases for the FUNCTIONAL half of this same property —
+# this assertion is the textual half (the idiom itself never regresses to
+# a bare glob).
 assert_count_at_least_across \
-  "find .git/worktrees -maxdepth 1 -type d -name 'agent-*'" \
+  "-maxdepth 1 -type d -name 'agent-*'" \
   2 \
-  "setup.md's hardened find-based loop appears in both the bg group and the standalone block (#335)" \
-  "$setup_path"
+  "worktree-reap.sh's hardened find-based agent-* enumeration appears at least twice (#335)" \
+  "$worktree_reap_sh_path"
 
 # (22) Auto-merge outcome categorization handles silent direct-merge case
 #      (issue #340).

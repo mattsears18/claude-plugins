@@ -78,19 +78,16 @@ The harness writes a lock file at `.git/worktrees/agent-<id>/locked` containing 
 
 **Bulk classify + bounded/checkpointed removal, not a per-worktree loop (issue #836).** An earlier version of this sweep looped `classify-lock` once PER worktree (one full script re-invocation, each forking its own `ps`/`stat` subprocesses) and removed every reap-eligible one unbounded. On a repo with a large accumulated backlog (the #836 repro: 60 worktrees, ~1.6GB each, ~90GB total) that loop blew its time budget before classifying a single candidate. `worktree-reap.sh reap-stale` (called internally by `sweep-stale-agents`) is the single executable source of truth for both the bulk classify (one `ps` call / one self-ancestor walk / one batched `stat` for the whole batch, instead of O(n) subprocess forks) and the bounded, checkpointed removal (reaps at most `worktree_reap.max_per_session` per session, oldest-first; the on-disk backlog left behind IS the checkpoint, so a session that can't clear it all still makes forward progress and the next session's sweep continues from there). See `scripts/worktree-reap.sh`'s `classify_all` / `reap_stale` docstrings for the full algorithm.
 
-```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-```
-
-Then, as a SEPARATE `Bash` call:
+Resolve the repo root first, as its own `Bash` call:
 
 ```bash
 git rev-parse --show-toplevel
 ```
 
-Then, substituting the literal path that call returned in place of `<repo-root>` below, as a third, separate `Bash` call:
+Then, substituting the literal path that call returned in place of `<repo-root>` below, as a second, separate `Bash` call. The compound preamble is this block's own first line — self-sufficient, not dependent on an immediately-preceding preamble-only block (issue #1355's fix-attempt-3 correction: the prior three-block form put the `git rev-parse` block between the preamble and the invocation, breaking the preamble-adjacency the regression test requires):
 
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" sweep-stale-agents \
   --repo-root <repo-root> --session-id "<session-id>"
 ```

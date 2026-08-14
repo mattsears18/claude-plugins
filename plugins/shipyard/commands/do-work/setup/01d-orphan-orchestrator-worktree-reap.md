@@ -17,21 +17,16 @@ The discovery uses [`session-identity.sh find-orphan-orchestrators`](../../../sc
 
 **The id tested for liveness is the candidate's OCCUPANT, not its directory name ([#1232](https://github.com/mattsears18/shipyard/issues/1232)).** A directory named `orchestrator-<id>` only records who *created* the worktree — [step 0.5's](00-config-worktree.md#05-move-into-the-orchestrators-worktree) `EnterWorktree` call refuses to create a second isolated worktree for an already-isolated session, so a second `/do-work` run in one already-isolated Claude session reuses the existing worktree directory under a freshly-derived session id ([step 0.55](00f-session-id-storage.md)), and from that moment the directory's name and its live occupant are permanently out of sync for the rest of that session's life. Reading the name alone — the pre-#1232 behavior — misclassified a **live** session's own cwd as reap-eligible and this step's `git worktree remove --force` (with its `rm -rf` fallback) destroyed it mid-run, including anything uncommitted. `find-orphan-orchestrators` now reads `<candidate>/.shipyard-session-id` — the same stash `derive-session-id` above already trusts exclusively (#365/#513) — and tests *that* id for both the current-session exclusion and the liveness check; it falls back to the name-embedded id only when the stash is missing/unreadable AND the candidate directory is otherwise completely empty (nothing to lose either way). Any other candidate with an unreadable stash is skipped outright — never emitted — mirroring the fail-closed `unknown` verdict [#1206](https://github.com/mattsears18/shipyard/issues/1206) gave `classify-lock`: a missed reap only costs disk, a wrong reap costs a running session's uncommitted work.
 
-**Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble** (the `.shipyard-plugin-root` stash below is a step-0.5-and-later artifact and doesn't exist yet at this point in the session):
-
-```bash
-export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
-```
-
 **Run the repo-root resolution and the sweep itself as two SEPARATE plain `Bash` calls, not one combined block** — a `git rev-parse --show-toplevel`-derived variable consumed as a `--repo-root`-shaped flag's value in the same block is refusal-risky (bash-refusal-triggers.md's trigger-6-adjacent finding, [#1355](https://github.com/mattsears18/shipyard/issues/1355)); substitute the LITERAL path the first call's stdout returns into the second call rather than trusting a live shell variable to carry over (shell state doesn't persist across separate `Bash` tool calls anyway — same discipline `shipyard:worker-preamble` § "Mid-session cwd anchoring" already prescribes):
 
 ```bash
 git rev-parse --show-toplevel
 ```
 
-Then, substituting the literal path that call returned in place of `<repo-root>` below:
+Then, substituting the literal path that call returned in place of `<repo-root>` below, as a second, separate `Bash` call. **Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble** (the `.shipyard-plugin-root` stash is a step-0.5-and-later artifact and doesn't exist yet at this point in the session) — embedded as this block's own first line, so the block is self-sufficient rather than depending on an immediately-preceding preamble-only block (issue #1355's fix-attempt-3 correction: the prior form put the `git rev-parse` block between the preamble and the invocation, breaking the preamble-adjacency the regression test requires):
 
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators \
   --repo-root <repo-root> --session-id "<session-id>" --phase "setup-1.6.5"
 ```

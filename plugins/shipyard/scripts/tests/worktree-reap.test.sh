@@ -2198,6 +2198,14 @@ run_classify_all() {
 }
 
 # --- (90) no agent-* worktrees at all -> empty output, exit 0 ---
+# This is the functional half of issue #335's zsh-nomatch-safety property:
+# classify-all's own agent-* enumeration is `find`-based (never a bare
+# `for wt_dir in .git/worktrees/agent-*` glob), so an empty match set is a
+# clean no-op instead of a fatal `nomatch` abort under zsh. #335 originally
+# guarded this inline in setup.md's step 3b loop; #1355 moved the loop
+# itself into this script (do-work-split.test.sh's check (21) now asserts
+# the textual half — the find-idiom + #335 citation — against this file
+# instead of against setup.md's now-deleted inline copy).
 reset_ca_layout
 result=$(run_classify_all)
 exit_code=$?
@@ -3160,10 +3168,16 @@ run_ssa() {
 }
 
 # --- (127) no agent-* worktrees at all -> reap-stale's own empty summary ---
+# sweep-stale-agents IS setup step 3b post-#1355 — this is the direct
+# functional successor of the property issue #335 originally guarded
+# inline in setup.md's own `for wt_dir in .git/worktrees/agent-*` loop.
+# The find-based enumeration inside reap-stale (not a bare glob) is why an
+# empty match set lands here as a clean zero-summary instead of a fatal
+# zsh `nomatch` abort.
 reset_ssa_layout
 result=$(run_ssa)
 assert_equals "$result" "summary: reaped=0 deferred=0 unreaped=0 remaining=0" \
-  "(127) no agent-* worktrees -> reap-stale's empty summary line, unchanged shape"
+  "(127) no agent-* worktrees -> reap-stale's empty summary line, unchanged shape (#335)"
 
 # --- (128) a dead-lock agent worktree is reaped through the wrapper ---
 reset_ssa_layout
