@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.33.17 — 2026-08-14
+
+P2: closes #1358. A fully-gated backlog (every open issue parked on a decision, a clock, or a console action) and a genuinely empty one (nothing open at all) both drained the dispatch pool identically and both rendered through the completion ledger's single "complete" terminal message — opposite health signals printed the same way, so an operator reading the summary had no way to tell "repo caught up" from "repo waiting on something" without manually re-deriving it from the bucket breakdown.
+
+- `plugins/shipyard/commands/do-work/setup/04f-completion-ledger.md` — the ledger's terminal-message rendering now names three honest shapes instead of two: `0 dispatchable of 0 open — empty, see ledger`, `0 dispatchable of <total> open — fully-gated, see ledger (<breakdown>)`, and the pre-existing `<N> dispatchable of <total> open — stopped on <bound>, see ledger`. `fully-gated` always carries the open count and a gate breakdown alongside it — never rendered as a bare "complete."
+- `plugins/shipyard/commands/do-work/drain.md` — the termination assertion documents the `empty`/`fully-gated` distinction explicitly and defers to the ledger's rendering as the single source of truth; the pre-drain audit banner's `completion ledger` line now carries a `terminal state: <empty|fully-gated>` token.
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — step 0's `record-session-end` call folds a `terminal-state=<empty|fully-gated|n/a>` token into `--detail`, so the `Session end` line a human actually reads carries the distinction rather than a bare `completed` reason that reads as unqualified success either way.
+
 ### 4.33.15 — 2026-08-14
 
 P1: closes #1356. `/shipyard:do-work`'s only dated deferral primitive, the `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker, carried two incompatible meanings with identical syntax — a genuine time gate (the date is the constraint) and an event gate wearing a placeholder date (nothing forecastable, only "we don't know when"). For the event-gate case, once the placeholder date elapsed the step-4 dispatch filter silently re-admitted the issue, a fresh scope pass re-diagnosed the same unchanged upstream fact, and re-deferred with a freshly invented date — a churn loop that burns tokens every session while reporting a stable-looking backlog. Reproduced live against `mattsears18/lightwork`: 2 of 7 `do-work-blocked-until`-carrying issues were genuinely event-gated (one said so in its own body), and the existing `do-work-recheck` probe evaluator (#1198) couldn't help because its automated authorship path (#1201) was scoped to `external-dependency` defers only and its only read-side consumer was the operator sweep, not the ordinary dispatch-eligibility filter.
