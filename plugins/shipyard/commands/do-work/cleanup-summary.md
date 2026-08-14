@@ -381,9 +381,11 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
    OPERATOR_DENIAL_REGISTRY_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get operator_denial_registry.enabled 2>/dev/null || echo "false")
    ```
 
-   When `false` (the default), this step is a complete no-op — nothing is read, nothing is written, and the in-session `Operator denied (#746)` block below is entirely unaffected either way (it always reads from session-local working memory, never from the registry). When `true`, append one `record` call per entry in the session-local `operator_denials` list:
+   When `false` (the default), this step is a complete no-op — nothing is read, nothing is written, and the in-session `Operator denied (#746)` block below is entirely unaffected either way (it always reads from session-local working memory, never from the registry). When `true`, append one `record` call per entry in the session-local `operator_denials` list (re-derived on its own first line — variables don't survive across `Bash` tool calls):
 
    ```bash
+   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+   export CLAUDE_PLUGIN_ROOT
    "$CLAUDE_PLUGIN_ROOT/scripts/operator-denial-registry.sh" record \
      --repo "<owner/repo>" \
      --kind "<entry.kind>" \

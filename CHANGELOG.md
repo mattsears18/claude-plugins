@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.33.21 — 2026-08-14
+
+P2: closes #1363. `operator_denials` — the record of every operator-phase action the Claude Code auto-mode permission classifier refused outright — is session-local working memory, discarded along with the session-state file at end-of-session cleanup. A denial is not transient session noise: it's a durable statement about what this harness will and will not let an agent do on a given surface, and the next session that hits the same denial had no way to know it had happened before, short of a hand-written issue comment.
+
+- `plugins/shipyard/scripts/operator-denial-registry.sh` — new standalone script, modeled on `flake-registry.sh` (#378): an append-only `~/.shipyard/operator-denials.jsonl` ledger with `record` / `report` / `read` / `prune` / `reset` subcommands. `report` aggregates by `(repo, kind, target)` so a denial class seen once is distinguishable from one seen across multiple sessions (`events` / `distinct_sessions`).
+- `plugins/shipyard/scripts/tests/operator-denial-registry.test.sh` — 23 new regression tests covering the record/report/prune/reset subcommands, enum validation, and repeat-vs-one-off aggregation.
+- `plugins/shipyard/scripts/shipyard-config.sh`, `plugins/shipyard/schemas/shipyard.config.schema.json` — new `operator_denial_registry` config block (`enabled` default `false`, `prune_window_days` default 180). Off by default: a recorded `target` can be a specific admin-console URL or field name, more identifying than flake-registry's CI test names, so persistence is an explicit opt-in.
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — new step 7.6 persists this session's `operator_denials` entries to the durable registry BEFORE the session-state file is removed in step 8 (mirrors step 7's cost-ledger flush ordering); the `Operator denied (#746)` per-line rule gains a repeated-denial-class annotation (`[seen Nx across sessions, first: <date>]`) when the registry is enabled.
+- `plugins/shipyard/commands/do-work/orchestrator-state-reference.md` — the `operator_denials` entry documents the new opt-in retention path.
+- `CLAUDE.md` — new ledger-table row and privacy-posture paragraph for `~/.shipyard/operator-denials.jsonl`, matching the existing cost-history/flake-registry documentation.
+
 ### 4.33.20 — 2026-08-14
 
 P2: closes #1362. The operator layer's default perception tools (`screenshot`, `read_page`) assume a page eventually reaches `document_idle`. Enterprise consoles routinely never do — they hold long-poll connections open indefinitely — so those tools timed out repeatedly against pages that were actually fully rendered and interactive, and nothing was counting the attempts against a documented budget.
