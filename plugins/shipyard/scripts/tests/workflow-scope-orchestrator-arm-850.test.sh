@@ -101,6 +101,14 @@ RATIONALE="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
 # scripts/crash-recovery-reap.sh with issue #1291's extraction — the
 # call-site assertions below target the script now, not the .md.
 CRASH_RECOVERY_REAP="$repo_root/plugins/shipyard/scripts/crash-recovery-reap.sh"
+# setup/01c §3c's ENTIRE state machine — including the workflow-scope
+# detection this suite pins — moved out of 01c-label-recovery-refine.md and
+# into worktree-reap.sh's `triage_orphan_branches` function with issue #1365
+# (same move #739's collision-fallback guards in do-work-split.test.sh
+# already re-pointed at). 01c now documents the two `[setup-3c] PR #<N> ...`
+# log lines as spec only; the executable form — and the property this suite
+# checks — lives in worktree-reap.sh now.
+WORKTREE_REAP="$repo_root/plugins/shipyard/scripts/worktree-reap.sh"
 
 # ---------------------------------------------------------------------------
 # (A) + (B) Each of the four call sites: captures stderr, matches the shared
@@ -135,17 +143,19 @@ else
   assert_fail "scripts/crash-recovery-reap.sh exists (missing at $CRASH_RECOVERY_REAP)"
 fi
 
-if [[ -f "$SETUP_WORKTREE" ]]; then
-  assert_contains "$SETUP_WORKTREE" 'without .workflow. scope' \
-    "setup/01c-label-recovery-refine.md §3c matches the shared GraphQL 'without \`workflow\` scope' signature"
+if [[ -f "$WORKTREE_REAP" ]]; then
+  assert_contains "$WORKTREE_REAP" 'without .workflow. scope' \
+    "worktree-reap.sh triage_orphan_branches (§3c) matches the shared GraphQL 'without \`workflow\` scope' signature (moved from 01c §3c by #1365)"
   # shellcheck disable=SC2016
-  assert_contains "$SETUP_WORKTREE" '[setup-3c] PR #$pr_num auto-merge arm blocked' \
-    "setup/01c-label-recovery-refine.md §3c logs a distinctly-tagged line on match"
+  assert_contains "$WORKTREE_REAP" '[setup-3c] PR #$pr_num auto-merge arm blocked' \
+    "worktree-reap.sh triage_orphan_branches (§3c) logs a distinctly-tagged line on match (moved from 01c §3c by #1365)"
   # shellcheck disable=SC2016
-  assert_contains "$SETUP_WORKTREE" 'merge_arm_err=$(gh pr merge "$pr_num"' \
-    "setup/01c-label-recovery-refine.md §3c captures the merge-arm call's stderr into a variable"
+  # $GH (not a literal `gh`) — every gh invocation in the extracted script
+  # goes through the testable wrapper (see the script's own header).
+  assert_contains "$WORKTREE_REAP" 'merge_arm_err=$("$GH" pr merge "$pr_num"' \
+    "worktree-reap.sh triage_orphan_branches (§3c) captures the merge-arm call's stderr into a variable (moved from 01c §3c by #1365)"
 else
-  assert_fail "setup/01c-label-recovery-refine.md exists (missing at $SETUP_WORKTREE)"
+  assert_fail "scripts/worktree-reap.sh exists (missing at $WORKTREE_REAP)"
 fi
 
 if [[ -f "$DRAIN" ]]; then
