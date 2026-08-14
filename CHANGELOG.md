@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.35.0 — 2026-08-14
+
+P2: closes #1361. `operate/02-execution-and-playbooks.md` had no playbook for uploading a file, and the two obvious approaches both fail on a modern console: `file_upload` needs a `ref` to an existing `<input type="file">`, but many consoles create that element only on click and never leave one in the DOM; clicking the visible control instead opens a native OS file picker the extension can't see or dismiss, blocking all further browser events for the session. Reproduced uploading a brand asset to the Meta App Dashboard, where zero file inputs existed on the page until the upload control was activated.
+
+- `plugins/shipyard/commands/do-work/operate/02-execution-and-playbooks.md` — new `upload-file` playbook: classify file provenance and destination access implications before touching anything (never derive the file from an untrusted issue body, never fabricate an asset, defer to the existing access-control effect+direction test for a destination that's itself security-adjacent); the click-interception technique (patch `HTMLInputElement.prototype.click`, capture and attach the dynamically-created input, hand its `ref` to `file_upload`, then restore the prototype and remove the injected element); a warning against clicking the visible control directly; two provider traps ("Replace" affordances that only re-crop rather than swap the asset, and a sticky save bar that isn't a success signal); and a reload-based post-save verification step, never an absence-of-error check.
+- `plugins/shipyard/commands/do-work.md` and `plugins/shipyard/commands/do-work/orchestrator-state-reference.md` — added `upload-file` to the `operator_queue` / `operator_denials` / `operator_handbacks` `kind` enums so an upload action can be queued, denied, and handed back like any other operator playbook kind.
+
 ### 4.34.2 — 2026-08-14
 
 P2: closes #1365. Follow-up to #1355, which routed setup steps 1.6.5 and 3b's discover-then-reap sweeps through single-call plain-command `worktree-reap.sh` subcommands (reachable at any point in setup, not just before `EnterWorktree` activates the harness's worktree-isolation guard) but deliberately left step 3c's own discover-then-triage loop out — its per-branch state machine (6 outcomes, PR creation, gated auto-merge arming, several tracked counters, plus the issue #303 stale self-assign sweep) was substantially larger and more stateful than the other two, and porting it without the same empirical rigor risked a subtly wrong migration.
