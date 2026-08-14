@@ -133,9 +133,9 @@ warning: this repo's primary checkout is $SHIPYARD_PLUGIN_ROOT_BEHIND commit(s) 
 
   CLAUDE_PLUGIN_ROOT resolved repo-local to commit $SHIPYARD_PLUGIN_ROOT_SHA.
   Every spec file read this session is that stale copy, now INVALIDATED
-  (#907; step 0.6 re-reads it, #1191). Run 'git pull --ff-only'. Step 0.5
-  re-resolves CLAUDE_PLUGIN_ROOT and runs its own staleness assertion
-  (#1167) — 0.3/0.4 only.
+  (#907; step 0.42 re-reads it immediately, pre-relocation — #1351/#1191).
+  Run 'git pull --ff-only'. Step 0.5 re-resolves CLAUDE_PLUGIN_ROOT and
+  runs its own staleness assertion (#1167) — 0.3/0.4 only.
 EOF
     fi
     SCV=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-skill-cache-staleness.sh" "$STALENESS_DEFAULT_BRANCH")
@@ -251,6 +251,10 @@ case "${1:-}" in
   --no-config|--force) : ;;  # already handled above
 esac
 ```
+
+### 0.42 Immediate fresh re-read on staleness ([#1351](https://github.com/mattsears18/shipyard/issues/1351))
+
+**No-op unless `$SHIPYARD_PLUGIN_ROOT_STALE` was set above — run this now, before step 0.45, not deferred to step 0.6.** Load [`00h-immediate-reread.md`](./00h-immediate-reread.md) now — owns the full step ([#1351](https://github.com/mattsears18/shipyard/issues/1351)).
 
 ### 0.45 Pre-relocation: session-state init + the worktree-cross-referencing sweeps ([#1202](https://github.com/mattsears18/shipyard/issues/1202))
 
@@ -434,7 +438,7 @@ fi
 
 ### 0.6 Re-read stale spec files (#1191)
 
-No-op unless step 0.4 warned of staleness — then these spec files are invalidated. See [`00d-reread.md`](./00d-reread.md).
+No-op unless step 0.4 warned of staleness — then these spec files are invalidated. See [`00d-reread.md`](./00d-reread.md) — now a post-relocation backstop, since [step 0.42](#042-immediate-fresh-re-read-on-staleness-1351) does the load-bearing re-read pre-relocation ([#1351](https://github.com/mattsears18/shipyard/issues/1351)).
 
 ### 0.7 Setup parallelization contract (fire-once-batch)
 
