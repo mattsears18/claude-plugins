@@ -138,14 +138,14 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 
 Print whatever this prints, prefixed `[setup-3c] `, EXCEPT the two literal `[setup-3c] PR #<N> ...` lines documented below — those already carry the tag themselves; don't double-prefix them.
 
-**Output contract.** The subcommand emits, in order: zero or more `failed-pr: <M>` lines (one per PR #333-flagged red PR the worktree loop found already open — fold each `<M>` onto the same `failed_prs` list step 5's failing-PR scan populates), zero or more `stale-assign: <N>` lines (one per issue the row-5 self-assign sweep cleared), then a trailing `summary: salvaged=<S> abandoned=<A> stale_assigns=<SA>` line — read `salvaged_count`/`abandoned_count`/`stale_assigns_count` straight off it. Interleaved with those, whenever the ungated-merge detector or the merge-arm call resolves one of the two documented outcomes for a freshly-created PR, the subcommand ALSO prints one of these two literal lines — UNCHANGED byte-for-byte from the pre-#1365 inline form, since [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) and this file's own cross-references key off this exact shape:
+**Output contract.** The subcommand emits, in order: zero or more `failed-pr: <M>` lines (one per PR #333-flagged red PR the worktree loop found already open — fold each `<M>` onto the same `failed_prs` list step 5's failing-PR scan populates), zero or more `stale-assign: <N>` lines (one per issue the row-5 self-assign sweep cleared), then a trailing `summary: salvaged=<S> abandoned=<A> stale_assigns=<SA>` line — read `salvaged_count`/`abandoned_count`/`stale_assigns_count` straight off it. Interleaved with those, whenever the ungated-merge detector or the merge-arm call resolves one of the two documented outcomes for a freshly-created PR, the subcommand ALSO prints one of these two literal lines — UNCHANGED byte-for-byte from the pre-#1365 inline form, since [`workflow_scope_blocked_prs`](../../do-work.md#orchestrator-state) and this file's own cross-references key off this exact shape:
 
 ```
 [setup-3c] PR #<N> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed
 [setup-3c] PR #<N> left unarmed (ungated repo) — deferred to drain's merge lander (#720)
 ```
 
-When the surfaced output contains the first of those two lines, append `<N>` to [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) — exactly as [steady-state.md step A.1's `shipped` handler](../steady-state.md#a1-parse-the-return-string) already does from a worker's return string (issue #812 / #850).
+When the surfaced output contains the first of those two lines, append `<N>` to [`workflow_scope_blocked_prs`](../../do-work.md#orchestrator-state) — exactly as [steady-state.md step A.1's `shipped` handler](../steady-state.md#a1-parse-the-return-string) already does from a worker's return string (issue #812 / #850).
 
 **3d.1. Auto-clear stale `blocked:ci` labels.** The label is sticky on purpose, but a new commit on the PR's head branch means the premise ("no movement since shipyard gave up") is no longer true. Auto-clear those PRs so they flow back into step 5's failing-PR snapshot for another 3 attempts. This sweep is the *only* place `blocked:ci` is removed by the orchestrator (step A applies; 3d.1 removes; no other step touches it).
 
