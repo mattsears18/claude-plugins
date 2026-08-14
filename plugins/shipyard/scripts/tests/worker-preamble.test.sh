@@ -1014,9 +1014,9 @@ assert_contains "$body_file_convention_path" \
 assert_contains "$body_file_convention_path" \
   "rejected by that hook" \
   "body-file-convention.md documents that the per-worktree git-dir is ALSO rejected by Write's edit-scope hook (issue #979)"
-assert_contains "$body_file_convention_path" \
-  "rm -rf" \
-  "body-file-convention.md prescribes explicit cleanup rather than relying on git-dir invisibility (issue #979)"
+# Issue #1347 superseded the original #979 "prescribes explicit cleanup"
+# expectation — see the #1347 regression guard below, which asserts the
+# opposite (no mode runs `rm -rf` anymore).
 
 # Issue #1058 — .shipyard-scratch/ promoted from a --body-file-payload-only
 # convention to the single sanctioned general-purpose worker scratch dir
@@ -1049,10 +1049,29 @@ assert_contains "$body_file_convention_path" \
   "body-file-convention.md prescribes seeding .shipyard-scratch/.gitignore as the first artifact (issue #1058)"
 assert_contains "$body_file_convention_path" \
   "best-effort" \
-  "body-file-convention.md downgrades the rm -rf cleanup to explicitly best-effort/non-blocking (issue #1058)"
+  "body-file-convention.md's historical note names the #1058 best-effort/non-blocking downgrade it superseded (issue #1058)"
+
+# Issue #1347 — the #1058 best-effort `rm -rf` downgrade above still had
+# every mode ATTEMPT the removal, and that attempt was itself getting denied
+# by the permission classifier on a majority of real dispatches (two workers
+# in one `mattsears18/lightwork` session both hit it), costing each denied
+# worker a wasted turn explaining why the harmless leftover was fine. The
+# fix: stop attempting the removal entirely rather than make it succeed more
+# often — the self-ignoring `.gitignore` seed from #1058 already guarantees
+# a clean `git status` on its own, so the `rm -rf` was pure redundancy.
+# Regression guard below: (a) body-file-convention.md documents "no cleanup"
+# as authoritative and states a leftover scratch dir is never a `blocked:`
+# reason, and (b) no per-mode spec or shared fragment still instructs
+# `rm -rf "$WORKTREE_PATH/.shipyard-scratch"` as a literal command to run.
 assert_contains "$body_file_convention_path" \
-  "never a reason to return" \
-  "body-file-convention.md states a failed/skipped cleanup is never a blocked: reason (issue #1058)"
+  "Cleanup — none needed" \
+  "body-file-convention.md's Cleanup section documents that no removal is attempted (issue #1347)"
+assert_contains "$body_file_convention_path" \
+  "Do not run \`rm -rf" \
+  "body-file-convention.md explicitly instructs against running rm -rf (issue #1347)"
+assert_contains "$body_file_convention_path" \
+  "as a reason to return \`blocked:\`" \
+  "body-file-convention.md states a leftover scratch dir is never a blocked: reason (issue #1347)"
 
 compound_command_refusal_1058_path="$wp_dir/compound-command-refusal.md"
 assert_contains "$compound_command_refusal_1058_path" \
@@ -1090,8 +1109,15 @@ for mode_file in issue-work fix-main-ci fix-failing-prs-batch investigate spike;
     # Literal grep needle — the scratch path is matched verbatim, not expanded.
     assert_contains "$mode_path" '$WORKTREE_PATH/.shipyard-scratch' \
       "${mode_file}.md uses the worktree-root dotdir scratch location"
-    assert_contains "$mode_path" "rm -rf \"\$WORKTREE_PATH/.shipyard-scratch\"" \
-      "${mode_file}.md cleans up the scratch dir after use"
+    # Issue #1347 — a literal `rm -rf "$WORKTREE_PATH/.shipyard-scratch"`
+    # cleanup call was itself getting denied by the permission classifier on
+    # a majority of dispatches; the fix was to stop instructing it at all
+    # rather than make the denial less frequent. Regression guard: no mode
+    # file reintroduces the literal removal command.
+    # shellcheck disable=SC2016
+    # Literal grep needle — asserting the dropped cleanup call is ABSENT.
+    assert_count_at_most "$mode_path" "rm -rf \"\$WORKTREE_PATH/.shipyard-scratch\"" 0 \
+      "${mode_file}.md no longer instructs an rm -rf cleanup of the scratch dir (issue #1347)"
     # Regression guard: the corrected design abandoned the per-worktree
     # git-dir location (Write's enforce-edit-scope.sh hook rejects it) — a
     # mode file that reintroduced it would be silently unrunnable again.
@@ -1118,8 +1144,10 @@ assert_contains "$reaped_path" "--body-file" \
 # Literal grep needle — the scratch path is matched verbatim, not expanded.
 assert_contains "$reaped_path" '$WORKTREE_PATH/.shipyard-scratch' \
   "reaped-escape-hatch.md's incremental-posting example uses the worktree-root dotdir scratch location"
-assert_contains "$reaped_path" "rm -rf \"\$WORKTREE_PATH/.shipyard-scratch\"" \
-  "reaped-escape-hatch.md's incremental-posting example cleans up the scratch dir after use"
+# shellcheck disable=SC2016
+# Literal grep needle — asserting the dropped cleanup call is ABSENT (#1347).
+assert_count_at_most "$reaped_path" "rm -rf \"\$WORKTREE_PATH/.shipyard-scratch\"" 0 \
+  "reaped-escape-hatch.md's incremental-posting example no longer instructs an rm -rf cleanup (issue #1347)"
 
 # Issue #1004 — the same heredoc-in-command-substitution shape #979 fixed
 # across the mode-shim worker files also existed in three standalone,

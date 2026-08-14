@@ -87,9 +87,8 @@ The single highest-leverage action is: identify the root cause and ship the smal
      --label shipyard \
      --title "fix(ci): restore green main — <one-line root cause>" \
      --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
-   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
    ```
-   No `Closes #N` line — this is a synthetic divert, not tied to an issue. The `--label shipyard` is required by the worker-preamble skill.
+   No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)). No `Closes #N` line — this is a synthetic divert, not tied to an issue. The `--label shipyard` is required by the worker-preamble skill.
 
 7. **Enable auto-merge, snapshot, return.** Follow the auto-merge + snapshot + return pattern from the worker-preamble skill — **including its step 0.34 gate-narrowing check ([#1139](https://github.com/mattsears18/shipyard/issues/1139)), which is not optional here.** This mode is the sharpest case for that check, the same way it's the sharpest case for 7.a below: you are dispatched precisely when something is unfixably red, which is exactly the situation that tempts a suppress-rather-than-fix remedy (a self-authored allowlist, a raised severity threshold, `continue-on-error: true`, a deleted gate step, a narrowed trigger filter) instead of an actual fix. The remedy can be entirely justified — build it — but it must not auto-merge itself; step 0.34 routes it to `needs-human-review` instead.
 

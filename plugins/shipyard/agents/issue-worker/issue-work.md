@@ -341,8 +341,9 @@ gh pr create --repo <owner/repo> \
   --label shipyard \
   --title "<conventional commit title>" \
   --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
 ```
+
+No cleanup follows — see `worker-preamble` § "Scratch directory" (#1347).
 
 The body **must** include `Closes #<N>` (case-insensitive, on its own line) so the issue auto-closes on merge. The `--label shipyard` is required by the worker-preamble skill — see that skill for the rationale. The explicit `--head` removes any ambiguity about which branch the PR is built from — load-bearing when `$LOCAL_BRANCH` (this worktree's checkout) diverges from `$REMOTE_BRANCH` (the pushed, canonical branch) per §3's collision fallback.
 
@@ -594,7 +595,7 @@ Then:
 
 ```bash
 gh pr comment <pr-num> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/external-trust-comment.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
+# No cleanup follows — see worker-preamble § "Scratch directory" (#1347).
 ```
 
 Do NOT call `gh pr merge --auto` in this branch — that's the exact gate this step exists to enforce. The PR sits with `needs-human-review` until a maintainer reviews and merges manually (or closes it).

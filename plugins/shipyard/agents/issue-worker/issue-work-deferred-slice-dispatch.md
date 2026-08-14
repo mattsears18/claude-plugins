@@ -50,8 +50,9 @@ You are here because this PR ships only the completable slice; issue `#<N>` itse
 
    ```bash
    gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/deferred-slice-comment.md"
-   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
    ```
+
+   No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
 **Do NOT apply any gate label to `#<N>` or to `#<FOLLOWUP>`.** Both stay unlabeled beyond the `shipyard` session stamp — that's the entire distinguishing property of this shape versus §6.5. If you find yourself reaching for `agent-console`/`needs-human-review` here, condition (3) above didn't actually hold and you're in the wrong fragment — go back to [§6.5](./issue-work-split-dispatch.md).
 

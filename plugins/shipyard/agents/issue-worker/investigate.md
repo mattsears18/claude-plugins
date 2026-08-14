@@ -105,8 +105,9 @@ Then:
 
 ```bash
 gh issue edit <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/issue-rewrite.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
+
+No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
 The rewrite happens regardless of disposition — even an auto-closed noise issue gets its reasoning recorded (in the closing comment, step 4) so the close is auditable.
 
@@ -177,8 +178,9 @@ Then:
 
 ```bash
 gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/needs-human-review-comment.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
+
+No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
 `needs-human-review` is the single binary-backlog human-queue label (see CLAUDE.md → Label conventions for its full semantics) — `/do-work` is blocked, a human must act, no auto-clear. The investigate-vs-review nuance ("decide before any PR" vs "sign off on what exists") lives in the issue comment above, not in a separate label. Removing `needs-triage` and adding `needs-human-review` is what moves the issue out of the permanent-untriaged state into the workable-by-human state.
 

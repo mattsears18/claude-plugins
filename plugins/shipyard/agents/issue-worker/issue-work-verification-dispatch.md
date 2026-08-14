@@ -40,8 +40,9 @@ On-demand fragment of [`issue-work.md`](./issue-work.md). Loaded only when that 
    WORKTREE_PATH="$(git rev-parse --show-toplevel)"
    mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
    gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/verification-status-comment.md"
-   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
    ```
+
+   No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
 5. **Disposition:**
    - **`verification_residual` is present (the common case)** — apply `agent-console` (a plain device/browser recheck) or `needs-human-review` (a genuine human judgment call — e.g. a subjective design review) per whichever fits the residual's shape, and leave `#<N>` **OPEN**. Apply the label **ensure-then-label-then-verify**, the same idiom §6.5 uses:

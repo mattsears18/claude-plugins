@@ -90,9 +90,8 @@ The orchestrator sends this when ≥10 open PRs across all authors have failing 
      --label shipyard \
      --title "fix(ci): unstick <N> failing PRs — <one-line root cause>" \
      --body-file "$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
-   rm -rf "$WORKTREE_PATH/.shipyard-scratch"
    ```
-   No `Closes #N` — this is a synthetic divert. The `--label shipyard` is required by the worker-preamble skill.
+   No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)). No `Closes #N` — this is a synthetic divert. The `--label shipyard` is required by the worker-preamble skill.
 
 7. **Enable auto-merge, snapshot, return.** Follow the auto-merge + snapshot + return pattern from the worker-preamble skill — **including its step 0.34 gate-narrowing check ([#1139](https://github.com/mattsears18/shipyard/issues/1139)), which is not optional here.** "Repair a CI config" is one of this mode's own documented right-shaped fixes (see Don't below) — exactly the surface a suppress-rather-than-fix remedy (a self-authored allowlist, a raised severity threshold, `continue-on-error: true`, a deleted gate step, a narrowed trigger filter) can slip onto. Build the fix if it's the right call; step 0.34 still routes it to `needs-human-review` instead of auto-merging it.
 

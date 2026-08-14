@@ -31,8 +31,9 @@ Then:
 
 ```bash
 gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/split-disposition-comment.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
+
+No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
 Choose the residual label from the dispatch prompt's `operator_residual_security_sensitive` framing (mirrored from `operate/02-execution-and-playbooks.md`'s [Claude-safe-vs-hand-back table](../../commands/do-work/operate/02-execution-and-playbooks.md#claude-safe-to-auto-drive-vs-hand-back-securityaccess-control) when you need to re-derive it): `agent-console` for a plain browser/console action, `needs-human-review` when the residual is itself a security/access-control mutation (per [#848](https://github.com/mattsears18/shipyard/issues/848)'s relabel rule — see this repo's `CLAUDE.md` § `agent-console`). Apply it **ensure-then-label-then-verify**, the same idiom scope-preflight's own label application uses — never a bare `--add-label` that silently depends on label-creation having landed:
 
