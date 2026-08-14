@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.35.4 — 2026-08-14
+
+P3: closes #1381. Spike outcome — **do nothing further** beyond #1380's in-process DIRTY resolver. #1381 asked whether any of #1377's three deferred structural directions (land-time bump, placeholder + merge-time resolve, `changelog.d/` fragments) is worth building on top of direction 4. All three are rejected, on evidence rather than taste: directions 1 and 2 both require an automation to push a commit to `main`, which this repo's ruleset (`bypass_actors: []`, plus a `pull_request` rule and five required checks) forbids for every actor — and the two workarounds are a bypass actor (recreating the ungated-write-path shape #438 / #465 / #598 / #602 / #645 / #716 exist to prevent) or a resolver-opens-a-second-PR mechanism this repo already built and deleted in #691. Direction 2 fails independently on measurement: a scratch-repo git experiment shows two branches prepending a *byte-identical* `### UNRELEASED` heading with differing prose still conflict, in a strictly worse shape than today's, which fails `resolve-manifest-only-dirty.sh`'s `changelog-conflict-outside-top-insert` gate and would send every collision back to a full `fix-rebase` dispatch — reinstating the ~1.11M-token cost #1380 eliminated. Direction 3 clears #691's backfill concern but leaves the manifest `.version` row untouched and either hits the same protected-`main` wall or breaks the three consumers that read `CHANGELOG.md` directly. Decision-only — no behavior change, no follow-on sub-issues. Files touched:
+
+- `docs/design/issue-1381-version-coordination-followups.md` — new design doc carrying the full analysis: what direction 4 actually does at both call sites and what residual it leaves (one CI re-run per collision, paid in runner minutes not tokens), the live ruleset query, the three-experiment conflict measurement, and the per-direction verdict table.
+- `plugins/shipyard/commands/do-work-RATIONALE.md` — new "Why no structural follow-up to #1380's in-process DIRTY resolver" section recording the decision and its three load-bearing reasons next to the machinery it applies to.
+- `plugins/shipyard/.claude-plugin/plugin.json` — version bump to 4.35.4.
+
 ### 4.35.2 — 2026-08-14
 
 P2: closes #1378. `claude-plugin-root-preamble.test.sh`'s failure message told you a block *lacked* a valid `$CLAUDE_PLUGIN_ROOT` preamble, but not that the preamble it needed might already be a few lines up, merely non-adjacent. Three workers in one session ([`do-work-20260814T040027Z-97458`](https://github.com/mattsears18/shipyard)) read the message, "fixed" it by adding a second, non-adjacent preamble block, and shipped a still-failing PR — two of them consecutively on the same file; a fourth worker hit the sibling `shipyard-repo-root-preamble.test.sh` for a related reason.
