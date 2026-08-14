@@ -74,16 +74,16 @@ Measured with a scratch git repo (two branches off a common base, each prependin
 
 So the placeholder buys a clean auto-merge on the manifest `.version` row (experiment 3) and buys **nothing** on the CHANGELOG (experiment 1).
 
-Worse, it changes the CHANGELOG conflict into a **strictly harder shape**. Because the heading line is now shared, git merges it and pushes the conflict *inside* the entry body:
+Worse, it changes the CHANGELOG conflict into a **strictly harder shape**. Because the heading line is now shared, git merges it and pushes the conflict *inside* the entry body. The measured result, reproduced verbatim below except that each conflict-marker line is indented two spaces so this file stays clean under the repo's own `conflict markers` required check:
 
 ```
 ### UNRELEASED — 2026-08-14
 
-<<<<<<< HEAD
+  <<<<<<< HEAD
 Branch A did a thing.
-=======
+  =======
 Branch B did a different thing.
->>>>>>> 76402e7 (b)
+  >>>>>>> 76402e7 (b)
 
 ### 1.0.0 — 2026-08-01
 ```
