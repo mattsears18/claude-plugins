@@ -78,6 +78,17 @@ order_of() {
   printf '%s\n' "$ndjson" | jq -r '.number'
 }
 
+# field_of <ndjson> <number> <field> -- extract an arbitrary field for a
+# given issue number out of classify's NDJSON stdout (empty string when the
+# field is absent). Used for `evidence_pointer` -- issue #1364 -- which
+# verdict_of's verdict:reason concatenation never surfaces.
+field_of() {
+  local ndjson="$1" number="$2" field="$3"
+  printf '%s\n' "$ndjson" | jq -r --argjson n "$number" --arg f "$field" '
+    select(.number == $n) | .[$f] // ""
+  '
+}
+
 classify() {
   bash "$helper" classify --me "test-me" --trusted-authors "alice,bob" --today "2026-08-11" "$@"
 }
@@ -211,7 +222,35 @@ assert_equals "$(verdict_of "$out" 501)" "gate:blocked:ci" "(20) blocked:ci gate
 assert_equals "$(verdict_of "$out" 502)" "gate:wontfix" "(21) wontfix gates"
 assert_equals "$(verdict_of "$out" 503)" "gate:discussion" "(22) discussion gates"
 assert_equals "$(verdict_of "$out" 504)" "gate:needs-human-review" "(23) needs-human-review gates"
-assert_equals "$(verdict_of "$out" 505)" "gate:tracking" "(24) tracking gates"
+assert_equals "$(verdict_of "$out" 505)" "gate:tracking-unjustified" "(24) tracking with no content-sourced signal in the body gates as tracking-unjustified, not a plain silent tracking drop (#1364)"
+assert_equals "$(field_of "$out" 505 "evidence_pointer")" "" "(24a) tracking-unjustified carries no evidence_pointer -- there is nothing to cite"
+
+# --- #1364: tracking is a PROVISIONAL gate -- it requires a content-sourced --
+# justification, unlike the other four (settled, intentional) gate labels
+# above. Absence of a recognized human-owned signal in the body must not
+# silently drop the issue under the plain "tracking" reason -- it surfaces
+# as "tracking-unjustified" instead (asserted above). Presence of any of the
+# three recognized signals (a "Decision required" heading, an "Options"
+# heading, or a "Blocked by #N" reference) keeps the plain "tracking" reason
+# AND records the matched signal as evidence_pointer, mirroring the
+# deferred_issues evidence_pointer convention -- a content-sourced citation
+# string, not a bare label-presence assertion.
+
+fixture_tracking_justified='[
+  {"number":701,"title":"t","body":"## Decision required\nsome text below the heading","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":702,"title":"t","body":"## Options\n1. do A\n2. do B","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":703,"title":"t","body":"Ship after triage. Blocked by #88 pending release.","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":704,"title":"t","body":"Just tracking this for visibility, nothing more.","labels":["tracking"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+out=$(printf '%s' "$fixture_tracking_justified" | classify)
+assert_equals "$(verdict_of "$out" 701)" "gate:tracking" "(24b) tracking + Decision-required heading gates as plain tracking (justified)"
+assert_contains "$(field_of "$out" 701 "evidence_pointer")" "Decision-required heading" "(24b) evidence_pointer cites the Decision-required heading"
+assert_equals "$(verdict_of "$out" 702)" "gate:tracking" "(24c) tracking + Options heading gates as plain tracking (justified)"
+assert_contains "$(field_of "$out" 702 "evidence_pointer")" "Options heading" "(24c) evidence_pointer cites the Options heading"
+assert_equals "$(verdict_of "$out" 703)" "gate:tracking" "(24d) tracking + a Blocked by #N reference gates as plain tracking (justified)"
+assert_contains "$(field_of "$out" 703 "evidence_pointer")" "Blocked by #88" "(24d) evidence_pointer cites the matched Blocked-by reference"
+assert_equals "$(verdict_of "$out" 704)" "gate:tracking-unjustified" "(24e) tracking + a body with no recognized signal gates as tracking-unjustified even though non-empty"
+assert_equals "$(field_of "$out" 704 "evidence_pointer")" "" "(24e) evidence_pointer stays absent on the unjustified case"
 
 # --- untrusted author ---------------------------------------------------------
 

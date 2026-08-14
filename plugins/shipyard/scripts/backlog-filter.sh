@@ -53,6 +53,14 @@
 #       {"number":N,"verdict":"route","reason":"operator"}
 #       {"number":N,"verdict":"drop","reason":"<reason>"}
 #       {"number":N,"verdict":"gate","reason":"<label>"}
+#       {"number":N,"verdict":"gate","reason":"tracking","evidence_pointer":"<content-sourced citation>"}
+#       {"number":N,"verdict":"gate","reason":"tracking-unjustified"}
+#     The last two shapes are `tracking`'s special case (issue #1364) — see
+#     "Provisional gate: tracking requires a content-sourced justification"
+#     below. Every OTHER gate label (`blocked:ci`, `wontfix`, `discussion`,
+#     `needs-human-review`) always emits the plain
+#     `{"verdict":"gate","reason":"<label>"}` shape; only `tracking` ever
+#     carries `evidence_pointer` or the `tracking-unjustified` reason.
 #     Output ORDER: every "eligible" line first, in rank order. The default
 #     (milestone ranking OFF — either --milestones-enabled or
 #     --milestones-prioritize-dispatch is false, matching a repo that never
@@ -299,7 +307,45 @@ def lower: ascii_downcase;
 # literal enumeration from setup.md step 4. needs-triage and agent-console
 # are deliberately absent: both are ROUTES, handled by their own clauses
 # below, never by this drop-on-label clause.
+#
+# `tracking` is the one PROVISIONAL member of this list (defensive gate,
+# #1081, pending migration to needs-human-review by 01c sub-sweep e) — see
+# backlog-ownership.md bucket 5.5 Notes for the full history. The other
+# four (`blocked:ci`, `wontfix`, `discussion`, `needs-human-review`) are
+# settled, intentional gates with a stated owner in backlog-ownership.md;
+# label presence alone is sufficient justification for those. `tracking`
+# alone gets the extra has_tracking_justification() check below (#1364) —
+# a provisional/defensive rule may not drop an issue on label presence
+# alone with no content-sourced signal that the label reflects the issue
+# real state.
 def gate_labels: ["blocked:ci", "wontfix", "discussion", "needs-human-review", "tracking"];
+
+# has_tracking_justification($issue) -- issue #1364. The bare `tracking`
+# gate above is explicitly documented as provisional (a defensive gate
+# against the label object never being migrated, #1081) rather than a
+# settled, intentional routing decision -- so unlike the other four gate
+# labels, it must not fire silently on label presence alone. This is the
+# CHEAP version from the issue own suggested fix: require the body to
+# contain at least one recognized human-owned signal. Absence of every
+# signal means the label is doing all the work, which is the case worth
+# surfacing rather than silently dropping. Returns a short citation string
+# (becomes the emitted `evidence_pointer`) on a match, or null on no match
+# -- mirrors the deferred_issues evidence_pointer convention (a single
+# concrete, content-sourced citation string), not that subsystem full
+# object shape (defer_reason_class/provenance/deferred_at do not apply to
+# a pure mechanical classifier with no LLM judgment involved).
+def has_tracking_justification($issue):
+  ($issue.body // "") as $b
+  | if ($b | test("(?im)^#{1,6}\\s*decision required\\b")) then
+      "Decision-required heading in body"
+    elif ($b | test("(?im)^#{1,6}\\s*options?\\b")) then
+      "Options heading in body"
+    else
+      ([$b | scan("(?i)blocked by #([0-9]+)")] | first) as $bcap
+      | if ($bcap == null) then null
+        else ("Blocked by #" + $bcap[0] + " reference in body")
+        end
+    end;
 
 def priority_rank($issue):
   if ($issue.labels | index("P0") != null) then 0
@@ -420,7 +466,16 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
   | if is_untrusted($issue; $trusted) then
       {number: $issue.number, verdict: "drop", reason: "untrusted-author"}
     elif ($gate_hit != null) then
-      {number: $issue.number, verdict: "gate", reason: $gate_hit}
+      (if ($gate_hit == "tracking") then
+         (has_tracking_justification($issue)) as $justification
+         | (if ($justification != null) then
+              {number: $issue.number, verdict: "gate", reason: "tracking", evidence_pointer: $justification}
+            else
+              {number: $issue.number, verdict: "gate", reason: "tracking-unjustified"}
+            end)
+       else
+         {number: $issue.number, verdict: "gate", reason: $gate_hit}
+       end)
     elif is_agent_console($issue) then
       {number: $issue.number, verdict: "route", reason: "operator"}
     elif is_investigate_signal($issue; $re) then
@@ -495,7 +550,10 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
       )))
   )
 | .[]
-| (if has("reason") then {number, verdict, reason} else {number, verdict} end)
+| (if has("evidence_pointer") then {number, verdict, reason, evidence_pointer}
+   elif has("reason") then {number, verdict, reason}
+   else {number, verdict}
+   end)
 '
 
 cmd_classify() {
