@@ -132,6 +132,29 @@
 #       -> prints `unchanged` / `changed` / `unknown` — the pure comparison,
 #          given an already-fetched actual value.
 #
+#   Bulk mode (issue #1356 — generalizing the marker beyond a single
+#   external-dependency-class caller so ANY defer class carrying a
+#   `do-work-recheck` marker can be evaluated by a single, batched pass over
+#   a whole backlog fetch, rather than one `gh issue view` + one subprocess
+#   per issue at each call site):
+#     bash eval-recheck-probe.sh --bulk <owner/repo>
+#       (NDJSON `{"number":N,"body":"<body>"}` on stdin, one line per issue —
+#       exactly the `number`/`body` fields already present in the wide-fetch
+#       payload `backlog-filter.sh classify` reads, so a caller that already
+#       holds that payload needs no extra `gh` round-trip to build this
+#       input.)
+#       -> prints NDJSON `{"number":N,"verdict":"<verdict>"}` on stdout, but
+#          ONLY for lines whose verdict is NOT `absent` — an issue with no
+#          `do-work-recheck` marker at all produces no output line, so the
+#          caller's downstream `{number: verdict}` map naturally has no
+#          entry for it (silence, not a wasted "absent" line, for what is
+#          overwhelmingly the common case across a whole backlog). Each
+#          line's body is evaluated with EXACTLY the same logic as the
+#          single-issue mode above — this is a thin iteration wrapper, not a
+#          second implementation. A malformed input line (bad JSON, missing
+#          `number`) is skipped with a diagnostic on stderr; it never aborts
+#          the batch. Always exits 0.
+#
 # Fail-safe posture (mirrors detect-ungated-admin-direct-merge.sh's stated
 # posture): any signal this script cannot obtain or validate resolves toward
 # `unknown`, i.e. toward the SLOWER but SAFE path (wait for the calendar
@@ -247,6 +270,51 @@ run_gh_api() {
   fi
 }
 
+# evaluate_body <body> <owner_repo> -- prints exactly one of `absent` /
+# `unchanged` / `changed` / `unknown` on stdout (diagnostics on stderr), the
+# same single-issue logic the CLI entry point below used to run inline.
+# Extracted so --bulk can call it once per NDJSON line without duplicating
+# the marker-extraction / validation / probe-execution / decide sequence.
+evaluate_body() {
+  local body="$1" owner_repo="$2"
+  local marker parsed verb arg1 arg2 expected actual
+
+  marker="$(extract_marker "$body")"
+  if [ -z "$marker" ]; then
+    printf 'absent\n'
+    return 0
+  fi
+
+  if ! parsed="$(validate_and_extract "$marker" "$owner_repo")"; then
+    echo "eval-recheck-probe: marker present but failed allowlist validation (\"${marker}\") — treating as unknown" >&2
+    printf 'unknown\n'
+    return 0
+  fi
+
+  IFS='|' read -r verb arg1 arg2 expected <<<"$parsed"
+
+  case "$verb" in
+    npm-view) actual="$(run_npm_view "$arg1" "$arg2")" ;;
+    gh-api)   actual="$(run_gh_api "$arg1" "$arg2")" ;;
+    *)        actual="" ;;
+  esac
+  # Defensive trim: take the first line only and strip all whitespace, in
+  # case the probe's output format drifts (extra whitespace, a trailing
+  # newline, or — for npm view on an unexpected field shape — multi-line
+  # array/object rendering). A field that doesn't reduce to a clean scalar
+  # simply won't match `<expected>` and reports `changed` rather than
+  # crashing; see the npm-view grammar note above about scalar-only fields.
+  actual="$(printf '%s' "$actual" | head -1 | tr -d '[:space:]')"
+
+  if [ -z "$actual" ]; then
+    echo "eval-recheck-probe: probe (${verb} ${arg1} ${arg2}) produced no output — error, timeout, or empty field; treating as unknown" >&2
+    printf 'unknown\n'
+    return 0
+  fi
+
+  decide "$actual" "$expected"
+}
+
 # ---------------------------------------------------------------------------
 main() {
   if [ "${1:-}" = "--decide" ]; then
@@ -276,51 +344,44 @@ main() {
     fi
   fi
 
+  if [ "${1:-}" = "--bulk" ]; then
+    if [ "$#" -ne 2 ]; then
+      echo "usage: $0 --bulk <owner/repo>   (NDJSON {number,body} on stdin)" >&2
+      exit 1
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "eval-recheck-probe: --bulk requires jq, which is not installed" >&2
+      exit 1
+    fi
+    local owner_repo="$2"
+    local line num body verdict
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -z "$line" ] && continue
+      if ! num="$(printf '%s' "$line" | jq -r '.number // empty' 2>/dev/null)" || [ -z "$num" ]; then
+        echo "eval-recheck-probe: --bulk skipping malformed input line (no .number): ${line}" >&2
+        continue
+      fi
+      body="$(printf '%s' "$line" | jq -r '.body // ""' 2>/dev/null)"
+      verdict="$(evaluate_body "$body" "$owner_repo")"
+      if [ "$verdict" != "absent" ]; then
+        jq -nc --argjson n "$num" --arg v "$verdict" '{number: $n, verdict: $v}'
+      fi
+    done
+    exit 0
+  fi
+
   local owner_repo="${1:-}"
   if [ -z "$owner_repo" ]; then
     echo "usage: $0 <owner/repo>   (reads the issue body on stdin)" >&2
     echo "       $0 --validate <owner/repo> <marker-rest...>" >&2
     echo "       $0 --decide <actual> <expected>" >&2
+    echo "       $0 --bulk <owner/repo>   (NDJSON {number,body} on stdin)" >&2
     exit 1
   fi
 
-  local body marker parsed verb arg1 arg2 expected actual
+  local body
   body="$(cat)"
-
-  marker="$(extract_marker "$body")"
-  if [ -z "$marker" ]; then
-    printf 'absent\n'
-    exit 0
-  fi
-
-  if ! parsed="$(validate_and_extract "$marker" "$owner_repo")"; then
-    echo "eval-recheck-probe: marker present but failed allowlist validation (\"${marker}\") — treating as unknown" >&2
-    printf 'unknown\n'
-    exit 0
-  fi
-
-  IFS='|' read -r verb arg1 arg2 expected <<<"$parsed"
-
-  case "$verb" in
-    npm-view) actual="$(run_npm_view "$arg1" "$arg2")" ;;
-    gh-api)   actual="$(run_gh_api "$arg1" "$arg2")" ;;
-    *)        actual="" ;;
-  esac
-  # Defensive trim: take the first line only and strip all whitespace, in
-  # case the probe's output format drifts (extra whitespace, a trailing
-  # newline, or — for npm view on an unexpected field shape — multi-line
-  # array/object rendering). A field that doesn't reduce to a clean scalar
-  # simply won't match `<expected>` and reports `changed` rather than
-  # crashing; see the npm-view grammar note above about scalar-only fields.
-  actual="$(printf '%s' "$actual" | head -1 | tr -d '[:space:]')"
-
-  if [ -z "$actual" ]; then
-    echo "eval-recheck-probe: probe (${verb} ${arg1} ${arg2}) produced no output — error, timeout, or empty field; treating as unknown" >&2
-    printf 'unknown\n'
-    exit 0
-  fi
-
-  decide "$actual" "$expected"
+  evaluate_body "$body" "$owner_repo"
 }
 
 main "$@"
