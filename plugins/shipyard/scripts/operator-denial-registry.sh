@@ -66,7 +66,7 @@
 #          [--at <iso8601>] [--dry-run]
 #     Append one denial event. `--kind` matches operator_denials' enum
 #     (merge-pr|close-pr|paste-secret|toggle-setting|reply-comment|
-#     console-action). `--outcome` matches operator_denials' enum
+#     console-action|upload-file). `--outcome` matches operator_denials' enum
 #     (reframed|shipped-after-reframe|handed-back). --dry-run emits the line
 #     to stdout instead of appending.
 #
@@ -159,7 +159,7 @@ cutoff_iso() {
     || date -u -v-"${days}"d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null
 }
 
-VALID_KINDS="merge-pr close-pr paste-secret toggle-setting reply-comment console-action"
+VALID_KINDS="merge-pr close-pr paste-secret toggle-setting reply-comment console-action upload-file"
 VALID_OUTCOMES="reframed shipped-after-reframe handed-back"
 
 is_valid_kind() {
