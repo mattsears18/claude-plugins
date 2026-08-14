@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.35.1 — 2026-08-14
+
+P2: closes #1360. `labels.blocked` (`blocked:agent`) and `labels.blocked_hard` (`blocked:agent-hard`) were still config defaults and schema properties even though the machinery that applied them was removed in #521 — nothing has read or written either key since the refuse/dependency-wait split. A consumer repo without shipyard's own legacy label history (e.g. `mattsears18/lightwork`) inherited both as built-in defaults and had step 1.75's new `verify-config-labels.sh` preflight (#1359) flag them as missing on every session, purely because shipyard itself never stopped naming labels it no longer uses.
+
+- `plugins/shipyard/scripts/shipyard-config.sh` — removed the `blocked` / `blocked_hard` keys from `DEFAULTS_JQ`'s `labels` block. `blocked_soft` (still live, applied on subjective bails) and `ci_blocked` (still live, applied on the fix-checks cap) are unchanged.
+- `plugins/shipyard/schemas/shipyard.config.schema.json` — removed the matching `blocked` / `blocked_hard` properties from the `labels` object (`additionalProperties: false`, so a config declaring either key now fails validation loudly rather than silently).
+- `shipyard.config.json` (this repo's own committed config) — dropped the same two keys, so shipyard's own repo no longer declares labels it doesn't use either, closing the acceptance criterion that a fresh consumer repo inherits nothing shipyard itself doesn't rely on. The legacy `blocked:agent` / `blocked:agent-hard` GitHub label *objects* are unaffected — they stay registered for `setup/01c-label-recovery-refine.md`'s sub-sweep b / f migrations, which key off the hardcoded label name, not the config.
+- `plugins/shipyard/scripts/tests/shipyard-init-config.test.sh` — re-pointed the two assertions that expected `labels.blocked` / `labels.blocked_hard` to be present to instead assert their absence.
+- `plugins/shipyard/scripts/verify-config-labels.sh` and `plugins/shipyard/commands/do-work/setup/01-repo-recovery.md` (step 1.75) — updated the docstring/prose example and the labels-block key enumeration to match; noted that this PR is what closes the specific false-positive the #1359 preflight was about to start surfacing on every consumer session.
+
+Decision recorded per #1360's acceptance criteria: the evidence (sub-sweep a deleted in #521, zero all-time usage of either label in this repo, no live `get labels.blocked*` call anywhere in the codebase) points to retired, not merely undocumented — so both keys are removed rather than backfilling docs for dead config. `setup/01c-label-recovery-refine.md`'s existing "RETIRED" comment block already documented this correctly; it needed no change.
+
 ### 4.35.0 — 2026-08-14
 
 P2: closes #1361. `operate/02-execution-and-playbooks.md` had no playbook for uploading a file, and the two obvious approaches both fail on a modern console: `file_upload` needs a `ref` to an existing `<input type="file">`, but many consoles create that element only on click and never leave one in the DOM; clicking the visible control instead opens a native OS file picker the extension can't see or dismiss, blocking all further browser events for the session. Reproduced uploading a brand asset to the Meta App Dashboard, where zero file inputs existed on the page until the upload control was activated.

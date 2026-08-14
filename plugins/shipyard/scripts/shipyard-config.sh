@@ -132,8 +132,6 @@ DEFAULTS_JQ='{
   },
   "labels": {
     "session_stamp": "shipyard",
-    "blocked": "blocked:agent",
-    "blocked_hard": "blocked:agent-hard",
     "blocked_soft": "blocked:agent-soft",
     "ci_blocked": "blocked:ci",
     "needs_human_review": "needs-human-review",

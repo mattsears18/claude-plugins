@@ -271,12 +271,18 @@ assert_jq "$repo_config" '.auto_merge.policy' "trusted-only"     "repo config: a
 assert_jq "$repo_config" '.trust.authors | contains(["mattsears18"])' "true" "repo config: trust.authors includes mattsears18"
 # The labels block must match the canonical blocked:* namespace.
 # Per #300 the single blocked:agent label split into blocked:agent-hard /
-# blocked:agent-soft (with the bare blocked:agent kept as a legacy alias
-# for migration); the labels block carries all three.
+# blocked:agent-soft. #521 eliminated the routing that applied
+# blocked:agent-hard (refuses now route to needs-human-review;
+# dependency-waits go unlabeled) and #1360 retired the now-vestigial
+# `blocked` / `blocked_hard` config keys and schema properties that named
+# them — nothing has read or written either key since #521's routing
+# change, and their presence as inherited defaults on a consumer repo
+# without shipyard's own legacy label history produced a false-positive
+# from verify-config-labels.sh (#1359). Only blocked_soft remains live.
 assert_jq "$repo_config" '.labels.session_stamp' "shipyard"            "repo config: labels.session_stamp"
-assert_jq "$repo_config" '.labels.blocked'       "blocked:agent"       "repo config: labels.blocked is blocked:agent (legacy alias kept for migration)"
-assert_jq "$repo_config" '.labels.blocked_hard'  "blocked:agent-hard"  "repo config: labels.blocked_hard is blocked:agent-hard (#300)"
 assert_jq "$repo_config" '.labels.blocked_soft'  "blocked:agent-soft"  "repo config: labels.blocked_soft is blocked:agent-soft (#300)"
+assert_jq "$repo_config" '.labels | has("blocked")' "false" "repo config: labels.blocked retired (#1360)"
+assert_jq "$repo_config" '.labels | has("blocked_hard")' "false" "repo config: labels.blocked_hard retired (#1360)"
 assert_jq "$repo_config" '.labels.ci_blocked'    "blocked:ci"          "repo config: labels.ci_blocked is blocked:ci"
 assert_jq "$repo_config" '.blocked_agent.soft_retry_minutes' "30"      "repo config: blocked_agent.soft_retry_minutes default 30 (#300)"
 

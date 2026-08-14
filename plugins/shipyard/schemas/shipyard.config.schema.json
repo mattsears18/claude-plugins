@@ -86,8 +86,6 @@
       "additionalProperties": false,
       "properties": {
         "session_stamp": { "type": "string" },
-        "blocked": { "type": "string" },
-        "blocked_hard": { "type": "string" },
         "blocked_soft": { "type": "string" },
         "ci_blocked": { "type": "string" },
         "needs_human_review": { "type": "string" },
