@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.34.0 — 2026-08-14
+
+P2: closes #1357. The end-of-session summary reported what the session did but never what the backlog *is* — an operator staring at a non-zero open-issue count after a zero-dispatch session had to manually re-fetch, body-scan for `do-work-blocked-until` markers, and hand-tally to answer "why do we still have N open issues?", reconstructing something the session's own classify pass already knew.
+
+- `plugins/shipyard/commands/do-work/cleanup-summary.md` — new "Backlog census line" subsection: a one-line `Backlog: <total> open — <W> workable · <non-zero buckets...>` printed first in the End-of-session summary, in all three bucket-table render modes, always (even under `--fast`, even when the session dispatched nothing). `0 workable` renders explicitly rather than being omitted. Bucket names are lifted verbatim from `backlog-ownership.md`'s Bucket column rather than restated independently. Time-gated carries the earliest upcoming `do-work-blocked-until` clear date, computed from the same fresh-fetch body text already in hand (no new `gh` call) via a documented jq extraction. Reuses the identical fresh-fetch + `backlog-filter.sh classify` pass the existing bucket-breakdown table already runs — one fetch, two renderings.
+
 ### 4.33.21 — 2026-08-14
 
 P2: closes #1363. `operator_denials` — the record of every operator-phase action the Claude Code auto-mode permission classifier refused outright — is session-local working memory, discarded along with the session-state file at end-of-session cleanup. A denial is not transient session noise: it's a durable statement about what this harness will and will not let an agent do on a given surface, and the next session that hits the same denial had no way to know it had happened before, short of a hand-written issue comment.
