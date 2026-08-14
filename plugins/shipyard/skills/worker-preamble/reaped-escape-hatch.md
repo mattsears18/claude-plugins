@@ -55,8 +55,9 @@ Then, after reaching a diagnostic conclusion but BEFORE `git commit` / `git push
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
 gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/progress-comment.md"
-rm -rf "$WORKTREE_PATH/.shipyard-scratch"
 ```
+
+No cleanup follows — the self-ignoring `.gitignore` seed (`worker-preamble § "Scratch directory"`) already keeps the directory out of `git status`/diffs/commits, and an `rm -rf` teardown call was itself getting denied by the permission classifier on most dispatches ([#1347](https://github.com/mattsears18/shipyard/issues/1347)). Leave the directory in place.
 
 **When to post a progress comment.** Post one if BOTH are true:
 1. You have produced a concrete finding that isn't yet in the remote (uncommitted work, diagnostic conclusion, scope decision).

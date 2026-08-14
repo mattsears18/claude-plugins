@@ -44,8 +44,9 @@ Read the verifier's single-line verdict and branch:
 
   ```bash
   gh pr comment <M> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/verify-gate-comment.md"
-  rm -rf "$WORKTREE_PATH/.shipyard-scratch"
   ```
+
+  No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
   Then return the step-8 blocked string: `blocked #<N> at verify: <the not-verified reason>`. The orchestrator's step-A reconcile classifies a `blocked … at verify:` return into `needs-human-review` per [#521](https://github.com/mattsears18/shipyard/issues/521), so no new reconcile branch is needed.
 

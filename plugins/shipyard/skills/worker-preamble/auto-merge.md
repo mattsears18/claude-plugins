@@ -26,8 +26,9 @@ After `gh pr create` returns:
 
    ```bash
    gh pr comment <pr-num> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/policy-override-comment.md"
-   rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
    ```
+
+   No cleanup follows (`worker-preamble § "Scratch directory"` — [#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
    Do NOT call `gh pr merge --auto` (nor the step-0.5 manual green-checks merge below) on this PR. Skip the rest of this fragment — steps 0.5 through 2 all exist to arm or categorize a merge you are deliberately not performing — and return per your mode's `auto-merge: unarmed — policy-override: <control>` line (see [issue-work.md step 8](../../agents/issue-worker/issue-work.md#8-return) for the exact form; the structured shape is `auto_merge: "unarmed-policy-override"` plus a `policy_override` string naming the control, per [`schemas/worker-return.schema.json`](../../schemas/worker-return.schema.json)).
 
@@ -60,8 +61,9 @@ After `gh pr create` returns:
 
      ```bash
      gh pr comment <pr-num> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-scratch/gate-narrowing-comment.md"
-     rm -rf "$WORKTREE_PATH/.shipyard-scratch"  # best-effort
      ```
+
+     No cleanup follows (`worker-preamble § "Scratch directory"` — [#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
      Do NOT call `gh pr merge --auto` (nor the step-0.5 manual green-checks merge below) on this PR. Skip the rest of this fragment — steps 0.5 through 2 all exist to arm or categorize a merge you are deliberately not performing — and return per your mode's `auto-merge: unarmed — gate-narrowing: <detail>` line (the structured shape is `auto_merge: "unarmed-gate-narrowing"` plus a `gate_narrowing` string naming the signal, per [`schemas/worker-return.schema.json`](../../schemas/worker-return.schema.json)).
 
