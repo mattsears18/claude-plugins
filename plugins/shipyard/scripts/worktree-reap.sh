@@ -616,6 +616,9 @@ Usage:
                                       --session-id <id> \
                                       [--max-per-session <K>] \
                                       [--warn-threshold <K>]
+  worktree-reap.sh triage-orphan-branches --repo-root <path> \
+                                          --repo <owner/repo> \
+                                          --default-branch <name>
   worktree-reap.sh reap-session-worktrees --repo-root <path> \
                                           --session-id <id> \
                                           [--agent-id <id> ...] [--dry-run]
@@ -3715,6 +3718,282 @@ WARNEOF
   reap_stale "${reap_stale_args[@]}"
 }
 
+# Issue #1365 (follow-up to #1355) — single-call replacement for setup-3c's
+# own discover-then-triage loop (the issue #303 stale-self-assign sweep
+# included), so it's reachable at any point in setup instead of only
+# pre-relocation. Follows the #1355 precedent set by reap_orphan_orchestrators
+# / sweep_stale_agents above: the entire per-branch state machine lives here
+# so the caller's own Bash tool-call text is a single subcommand invocation
+# with no loop shape for the harness's worktree-isolation guard to refuse.
+#
+# State machine per `do-work/issue-<N>` branch discovered via `git worktree
+# list --porcelain` (mirrors setup-3c's table in
+# commands/do-work/setup/01c-label-recovery-refine.md — that table is the
+# spec; this function is the single executable implementation of it, same
+# division of labor the #716 detect-ungated-admin-direct-merge.sh precedent
+# established for a condition previously restated in prose):
+#   - No commits beyond base (`rev-list --count` is 0), with or without
+#     uncommitted edits -> remove the worktree, delete the branch, clear the
+#     @me self-assign. abandoned_count++.
+#   - Commits ahead, not yet pushed -> push, then create a PR if none exists
+#     yet for the canonical branch name, then arm auto-merge (gated behind
+#     detect-ungated-admin-direct-merge.sh, #720).
+#   - Commits ahead, pushed, no PR open -> create the PR, arm auto-merge.
+#   (The two rows above collapse into one code path below — push-if-needed
+#   then create-if-needed — exactly like the pre-port inline block did.)
+#   - Commits ahead, pushed, PR open -> check the latest-per-check-name
+#     status rollup (#333 — a naive walk would false-positive on stale
+#     superseded FAILUREs); a PR whose rollup carries a FAILURE-shaped
+#     conclusion is reported as a `failed-pr:` line for the caller to fold
+#     into its own `failed_prs` list.
+#   - Branch shows `[gone]` upstream -> no-op (end-of-session cleanup's job;
+#     not reachable through this worktree-keyed discovery loop, kept in the
+#     table for completeness only).
+# All five outcomes above bump `salvaged_count` except the first
+# (abandoned_count) and the `[gone]` no-op (neither).
+#
+# Issue #739 — the branch name is resolved to its issue number PERMISSIVELY
+# (`do-work/issue-<N>-<suffix>` still resolves to `<N>`) so a collision-
+# fallback local branch name still finds the CANONICAL `do-work/issue-<N>`
+# remote/PR it actually pushed to and opened against — every remote/PR
+# lookup below keys off `canonical_branch`, never off the raw discovered
+# branch name.
+#
+# Row 5 (issue #303) — after the worktree loop, sweep stale @me self-assigns
+# with no worktree, no PR, and no branch left on origin (a prior session's
+# on-disk worktree was already cleaned up, so rows 1-4 above never saw it).
+# Gated on `backlog.self_assign` (#1248) — when self-assign is off (the
+# default), /do-work never writes an @me assignment in the first place, so
+# this row's own `gh issue list` query would always come back empty; skip
+# the query and the loop entirely rather than pay a permanently-empty API
+# call every session.
+#
+# Test seams (mirrors draft-pr-recovery.sh's own #1069 precedent):
+#   GH                              override the `gh` binary (default: gh)
+#   WORKTREE_REAP_VERDICT_OVERRIDE  force detect-ungated-admin-direct-
+#                                   merge.sh's verdict without mocking that
+#                                   sub-script's own (un-overridable) `gh`
+#                                   calls
+#
+# Output contract — zero or more per-item lines, then a trailing summary
+# line the caller folds into its own counters (all default 0; feed the
+# end-of-session summary per
+# commands/do-work/setup/01c-label-recovery-refine.md):
+#   failed-pr: <M>        one per PR #333-flagged red PR — fold into failed_prs
+#   stale-assign: <N>     one per issue whose @me assignment was cleared
+#   summary: salvaged=<S> abandoned=<A> stale_assigns=<SA>
+# The two `[setup-3c] PR #<N> ...` lines below are UNCHANGED literal text
+# (issue #1365 — must survive the port byte-for-byte: the
+# `workflow_scope_blocked_prs` orchestrator-state side channel and the
+# do-work.md orchestrator-state doc both key off this exact shape):
+#   [setup-3c] PR #<N> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed
+#   [setup-3c] PR #<N> left unarmed (ungated repo) — deferred to drain's merge lander (#720)
+triage_orphan_branches() {
+  local repo_root=""
+  local repo=""
+  local default_branch=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --repo)
+        repo="${2:-}"
+        shift 2
+        ;;
+      --repo=*)
+        repo="${1#--repo=}"
+        shift
+        ;;
+      --default-branch)
+        default_branch="${2:-}"
+        shift 2
+        ;;
+      --default-branch=*)
+        default_branch="${1#--default-branch=}"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "triage-orphan-branches: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "triage-orphan-branches: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "triage-orphan-branches: --repo-root is required" >&2
+    return 64
+  fi
+  if [ -z "$repo" ]; then
+    echo "triage-orphan-branches: --repo is required" >&2
+    return 64
+  fi
+  if [ -z "$default_branch" ]; then
+    echo "triage-orphan-branches: --default-branch is required" >&2
+    return 64
+  fi
+
+  if ! cd "$repo_root" 2>/dev/null; then
+    echo "triage-orphan-branches: cannot cd to --repo-root: $repo_root" >&2
+    return 64
+  fi
+
+  local this_dir
+  this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local config_script="$this_dir/shipyard-config.sh"
+  local detector_script="$this_dir/detect-ungated-admin-direct-merge.sh"
+  local GH="${GH:-gh}"
+
+  local salvaged_count=0
+  local abandoned_count=0
+  local stale_assigns_count=0
+  local -a failed_pr_lines=()
+  local -a stale_assign_lines=()
+
+  local branch path n canonical_branch ahead pushed open_pr
+  while IFS= read -r branch; do
+    [ -z "$branch" ] && continue
+    path=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
+    [ -z "$path" ] && continue
+
+    n=$(echo "$branch" | sed -E 's|^do-work/issue-([0-9]+).*|\1|')
+    canonical_branch="do-work/issue-$n"
+    ahead=$(git -C "$path" rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)
+
+    if [ "$ahead" -eq 0 ] 2>/dev/null; then
+      # Issue #712 — non-force FIRST, force only behind evidence. `git
+      # worktree remove` (no --force) refuses on a dirty tree, which is the
+      # exact safety property a force-only escalation needs preceding
+      # evidence for. The `ahead -eq 0` test above IS that evidence: this
+      # worktree carries no commits beyond the base branch, so nothing
+      # being force-removed exists only here.
+      git worktree remove "$path" >/dev/null 2>&1 \
+        || git worktree remove --force "$path" >/dev/null 2>&1
+      git branch -D "$branch" >/dev/null 2>&1
+      "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+      abandoned_count=$((abandoned_count + 1))
+      continue
+    fi
+
+    pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)
+    if [ -z "$pushed" ]; then
+      git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch" >/dev/null 2>&1 || true
+    fi
+
+    open_pr=$("$GH" pr list --repo "$repo" --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
+    if [ -z "$open_pr" ]; then
+      (cd "$path" && "$GH" pr create --repo "$repo" --head "$canonical_branch" --fill --label shipyard 2>/dev/null) || true
+      local pr_num
+      pr_num=$("$GH" pr list --repo "$repo" --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
+      # #720: gate the arm behind the ungated-merge detector. This PR is a
+      # PRIOR session's orphaned branch, opened with --fill — nothing in
+      # this session ever reviewed its diff. On an ungated repo --auto is
+      # not a queue; it direct-merges that unreviewed work immediately.
+      # Fail-safe: an unreadable verdict resolves to `ungated` (defer),
+      # never to an immediate merge.
+      if [ -n "$pr_num" ]; then
+        local verdict
+        if [ -n "${WORKTREE_REAP_VERDICT_OVERRIDE:-}" ]; then
+          verdict="$WORKTREE_REAP_VERDICT_OVERRIDE"
+        else
+          verdict=$(bash "$detector_script" "$repo" 2>/dev/null || echo ungated)
+        fi
+        local auto_merge_method
+        auto_merge_method=$("$config_script" get auto_merge.method 2>/dev/null)
+        case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
+        if [ "$verdict" = "gated" ]; then
+          # Capture stderr instead of discarding it (#850) — the same
+          # missing-`workflow`-OAuth-scope block a worker's own arm can hit
+          # can hit this orphan-recovery arm too.
+          local merge_arm_err
+          merge_arm_err=$("$GH" pr merge "$pr_num" --repo "$repo" --auto --"$auto_merge_method" --delete-branch 2>&1 1>/dev/null) || true
+          if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
+            echo "[setup-3c] PR #$pr_num auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
+          fi
+        else
+          # Leave OPEN + unarmed. The PR carries --label shipyard (above),
+          # which is exactly the label drain's deferred-merge lander keys
+          # on — so it gets merged on the first poll its checks are green,
+          # with no session_prs plumbing needed. Do NOT block on
+          # `gh pr checks --watch` here — this would stall session start,
+          # once per orphan.
+          echo "[setup-3c] PR #$pr_num left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
+        fi
+      fi
+    else
+      # Commits ahead, pushed, PR already open — check its latest-per-name
+      # status rollup (#333) and surface a FAILURE-shaped PR for the
+      # caller's own failed_prs list. A clean/pending rollup is left alone;
+      # normal auto-merge handles it.
+      local rollup_count
+      rollup_count=$("$GH" pr view "$open_pr" --repo "$repo" --json statusCheckRollup \
+        --jq '[.statusCheckRollup | group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last) | .[] | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))] | length' 2>/dev/null)
+      if [ -n "$rollup_count" ] && [ "$rollup_count" -gt 0 ] 2>/dev/null; then
+        failed_pr_lines+=("$open_pr")
+      fi
+    fi
+    salvaged_count=$((salvaged_count + 1))
+  done < <(git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||')
+
+  # Row 5 — stale @me self-assigns with no worktree, no PR, no branch on
+  # origin (issue #303). Catches the state the worktree loop above CAN'T
+  # see: a prior session that left the @me assignment on an issue after its
+  # on-disk worktree was already cleaned up. Action is conservative: clear
+  # the assignment only, leave the `shipyard` label as provenance, and let
+  # the normal step-4 backlog fetch pick the issue back up on the next
+  # dispatch.
+  local backlog_self_assign
+  backlog_self_assign=$("$config_script" get backlog.self_assign 2>/dev/null || echo "false")
+  if [ "$backlog_self_assign" = "true" ]; then
+    local unlinked n2 remote_head
+    unlinked=$("$GH" issue list --repo "$repo" --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null)
+    for n2 in $unlinked; do
+      # If a worktree for this issue exists, the loop above already handled
+      # it — skip. Same permissive issue-number extraction as #739 above so
+      # a collision-fallback local branch name is still recognized as
+      # "already handled."
+      if git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\/issue-/{print $2}' \
+        | sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\1|' | grep -qx "$n2"; then
+        continue
+      fi
+      # If a do-work branch for this issue still exists on origin, leave it
+      # alone — it may belong to an open PR the `-linked:pr` filter missed.
+      remote_head=$(git ls-remote --heads origin "do-work/issue-$n2" 2>/dev/null)
+      if [ -n "$remote_head" ]; then
+        continue
+      fi
+      "$GH" issue edit "$n2" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+      stale_assign_lines+=("$n2")
+      stale_assigns_count=$((stale_assigns_count + 1))
+    done
+  fi
+
+  local x
+  for x in "${failed_pr_lines[@]+"${failed_pr_lines[@]}"}"; do
+    printf 'failed-pr: %s\n' "$x"
+  done
+  for x in "${stale_assign_lines[@]+"${stale_assign_lines[@]}"}"; do
+    printf 'stale-assign: %s\n' "$x"
+  done
+
+  printf 'summary: salvaged=%s abandoned=%s stale_assigns=%s\n' \
+    "$salvaged_count" "$abandoned_count" "$stale_assigns_count"
+  return 0
+}
+
 # Issue #712 — post-sweep verification: which worktrees are STILL on disk?
 #
 # The reap sweeps are fire-and-forget (`2>/dev/null || true`) and run inside a
@@ -3865,6 +4144,15 @@ main() {
       # only pre-relocation. See sweep_stale_agents for the full algorithm.
       shift
       sweep_stale_agents "$@"
+      ;;
+    triage-orphan-branches)
+      # Issue #1365 (follow-up to #1355) — single-call replacement for
+      # setup-3c's own discover-then-triage loop (per-branch state machine
+      # plus the issue #303 stale self-assign sweep), so it's reachable at
+      # any point in setup instead of only pre-relocation. See
+      # triage_orphan_branches for the full algorithm.
+      shift
+      triage_orphan_branches "$@"
       ;;
     reap-session-worktrees)
       # Issue #509 — targeted reap of THIS session's agent worktrees by

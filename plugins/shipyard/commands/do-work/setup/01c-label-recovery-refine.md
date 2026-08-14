@@ -102,15 +102,9 @@ Print whatever this prints, prefixed `[setup-3b] `. The warn-threshold banner (i
 
 Scan for `do-work/*` branches whose worktrees survived step 3b (legitimate orphans from THIS session, not dead-process leftovers).
 
-> **MOVED pre-relocation ([#1202](https://github.com/mattsears18/shipyard/issues/1202)) — no longer part of the post-relocation background group; this section is now the canonical implementation.** Both the discovery query and the handling (`git -C <path>` reads, `git worktree remove`, `git branch -D`, `git -C <path> push` — every one of them against a worktree other than the orchestrator's own) are refused once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` has isolated the session. It now runs synchronously at [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), before relocation, right after [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions). Neither gates dispatch decisions; the discovery query is cheap and the expensive push/PR-create branch only fires when orphans exist. **Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble**, same as [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) above.
+> **Runs through a single-call, plain-command helper — reachable at ANY point in setup, not ordering-dependent on `EnterWorktree` ([#1365](https://github.com/mattsears18/shipyard/issues/1365), follow-up to [#1355](https://github.com/mattsears18/shipyard/issues/1355)).** This sweep's `git -C <path>` reads, `git worktree remove`, `git branch -D`, `git -C <path> push`, and `gh pr create`/`gh pr merge` calls — every one of them against a worktree other than the orchestrator's own — used to be refused outright once [step 0.5](00-config-worktree.md#05-move-into-the-orchestrators-worktree)'s `EnterWorktree` had isolated the session, because the discover-then-triage loop was several separate statements in the orchestrator's own multi-statement Bash block — exactly the compound shape [dont.md](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) documents as refused post-relocation. [#1365](https://github.com/mattsears18/shipyard/issues/1365) moved the entire per-branch state machine (plus the issue #303 stale self-assign sweep) into [`worktree-reap.sh triage-orphan-branches`](../../../scripts/worktree-reap.sh) — a single subcommand invocation, following the exact precedent [#1355](https://github.com/mattsears18/shipyard/issues/1355) set for [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) and [1.6.5](01-repo-recovery.md#165-reap-orphan-orchestrator-worktrees). So this sweep is now reachable at any point in setup — pre- or post-relocation — **provided the caller resolves its `--repo-root` value in a SEPARATE `Bash` call from the sweep invocation itself** (a `git rev-parse --show-toplevel`-derived variable consumed as a `--repo-root`-shaped flag value in the SAME block as its own derivation is separately refusal-risky — bash-refusal-triggers.md's trigger-6-adjacent finding). It still runs at [step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202), right after [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions), for now (advisory continuity, not a load-bearing ordering constraint) — see [00e's updated note](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202). **Resolve `CLAUDE_PLUGIN_ROOT` via step 0.3's pre-relocation compound preamble**, same as [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) above.
 
-```bash
-git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||'
-```
-
-For each `do-work/issue-<N>` branch found, resolve its worktree path with `git worktree list | grep "\[do-work/issue-<N>\]" | awk '{print $1}'` (`<path>` below), then inspect its state and act according to the table. Track `salvaged_count` (worktrees that produced or kept an open PR), `abandoned_count` (worktrees removed), and `stale_assigns_count` (issues whose `@me` self-assign was cleared by the fifth row's no-worktree-no-PR-no-branch sweep) — all three default to 0 and feed into the end-of-session summary.
-
-All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh pr create`) so they operate on the orphan worktree, not the orchestrator's main checkout.
+The table below is the spec — `triage_orphan_branches`'s docstring in [`worktree-reap.sh`](../../../scripts/worktree-reap.sh) is the single executable implementation of it (same division of labor the [#716](https://github.com/mattsears18/shipyard/issues/716) `detect-ungated-admin-direct-merge.sh` precedent established for a condition previously restated in prose in two places and drifting between them). Track `salvaged_count` (worktrees that produced or kept an open PR), `abandoned_count` (worktrees removed), and `stale_assigns_count` (issues whose `@me` self-assign was cleared by the fifth row's no-worktree-no-PR-no-branch sweep) — all three default to 0, are read straight off the subcommand's own trailing `summary: salvaged=<S> abandoned=<A> stale_assigns=<SA>` line, and feed into the end-of-session summary.
 
 | Worktree state | How to detect | Action |
 |---|---|---|
@@ -124,146 +118,34 @@ All git/gh commands below run with `-C <path>` (or `(cd <path> && ...)` for `gh 
 
 The fifth row closes a gap where prior sessions could leave the `@me` self-assign on an issue after their on-disk worktree was cleaned up — the first four rows only see issues whose worktree is still present, so this state otherwise survives unbounded across sessions. See [RATIONALE → Step 3c stale self-assign gap](../../do-work-RATIONALE.md#step-3c--the-stale-self-assign-gap-303) for the fuller failure mode (issue #303).
 
-**This entire row is gated on `backlog.self_assign` ([#1248](https://github.com/mattsears18/shipyard/issues/1248)).** The row exists solely to undo a self-assignment `/do-work` itself wrote — when `backlog.self_assign` is `false` (the default), the orchestrator never calls `--add-assignee @me` in the first place, so there is nothing this sweep could ever find: the `gh issue list --assignee @me` query would always come back empty (net effect: a wasted API call every session, forever). Skip the entire query + loop below when `backlog.self_assign` resolves `false`; run it unchanged when `true`.
+**This entire row is gated on `backlog.self_assign` ([#1248](https://github.com/mattsears18/shipyard/issues/1248)).** The row exists solely to undo a self-assignment `/do-work` itself wrote — when `backlog.self_assign` is `false` (the default), the orchestrator never calls `--add-assignee @me` in the first place, so there is nothing this sweep could ever find: the `gh issue list --assignee @me` query would always come back empty (net effect: a wasted API call every session, forever). `triage_orphan_branches` itself skips the entire query + loop when `backlog.self_assign` resolves `false`; runs it unchanged when `true`.
 
 The row's action is intentionally conservative: clear the assignment only, leave the `shipyard` label (provenance — it tells the next session this issue went through `/do-work` before), let the normal step-4 backlog fetch pick the issue back up, and let the orchestrator's normal dispatch path arrange a fresh worktree. Don't touch the issue body, don't post a comment, don't close — the issue may genuinely still be workable and the prior session's `blocked` may have been transient.
 
-**Executable form** (the table above is the at-a-glance summary; this is what actually runs):
+Resolve the repo root first, as its own `Bash` call:
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
-cd "$SY_TOPLEVEL"   # be robust to subdir invocation
-stale_assigns_count=0
-declare -a stale_assigns_numbers
-git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||' | while read -r branch; do
-  path=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
-  [ -z "$path" ] && continue
-  # Issue #739 — extract the issue number permissively so a collision-
-  # fallback LOCAL branch name (`do-work/issue-<N>-<timestamp>`, produced
-  # by issue-work.md §3 when a prior worktree still held the canonical
-  # name — see #736/#738) still resolves to `<N>`, not the garbage
-  # compound string `<N>-<timestamp>`. `canonical_branch` is what the
-  # collision-fallback worker actually pushed to and opened its PR
-  # against (its own local checkout may be named differently), so every
-  # remote/PR lookup below must key off it, never off `$branch` verbatim.
-  n=$(echo "$branch" | sed -E 's|^do-work/issue-([0-9]+).*|\1|')
-  canonical_branch="do-work/issue-$n"
-  ahead=$(git -C "$path" rev-list --count "origin/<default-branch>..HEAD" 2>/dev/null || echo 0)
-  if [ "$ahead" -eq 0 ]; then
-    # Issue #712 — non-force FIRST, force only behind evidence. `git worktree
-    # remove` (no --force) refuses on a dirty tree, which is the exact safety
-    # property Claude Code's auto-mode permission classifier is protecting
-    # when it denies a bare `--force` as [Irreversible Local Destruction]. The
-    # `ahead -eq 0` test immediately above IS the preceding, explicit check
-    # that makes the escalation safe here: this worktree carries no commits
-    # beyond the base branch, so nothing being force-removed exists only here.
-    git worktree remove "$path" 2>/dev/null \
-      || git worktree remove --force "$path" 2>/dev/null
-    git branch -D "$branch" 2>/dev/null
-    gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
-  else
-    # Resolve against the CANONICAL remote branch name, not `$branch`
-    # verbatim — a collision-fallback worker's local branch carries a
-    # disambiguating suffix, but it pushes and opens its PR against
-    # `do-work/issue-<N>` (see issue-work.md §3/§5). Checking `$branch`
-    # here would never find that push, causing this sweep to push a
-    # second, spurious remote branch and then open a duplicate PR.
-    pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)
-    if [ -z "$pushed" ]; then
-      git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch" 2>/dev/null || true
-    fi
-    open_pr=$(gh pr list --repo <owner/repo> --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
-    if [ -z "$open_pr" ]; then
-      (cd "$path" && gh pr create --repo <owner/repo> --head "$canonical_branch" --fill --label shipyard 2>/dev/null) || true
-      pr_num=$(gh pr list --repo <owner/repo> --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
-      # #720: gate the arm behind the ungated-merge detector. This PR is a
-      # PRIOR session's orphaned branch, opened with `--fill` — nothing in this
-      # session ever reviewed its diff. On an ungated repo `--auto` is not a
-      # queue; it direct-merges that unreviewed work immediately, and the
-      # `2>/dev/null || true` makes it silent. Fail-safe: an unreadable verdict
-      # resolves to `ungated` (defer), never to an immediate merge.
-      if [ -n "$pr_num" ]; then
-        verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" \
-          <owner/repo> 2>/dev/null || echo ungated)
-        # Resolve the merge method from config — never hardcode --merge (#989).
-        auto_merge_method=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
-        case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
-        if [ "$verdict" = "gated" ]; then
-          # Capture stderr instead of discarding it (#850) — the same
-          # missing-`workflow`-OAuth-scope block a worker's own arm can hit
-          # (worker-preamble auto-merge.md step 1.1, #812) can hit this
-          # setup-3c orphan-recovery arm too; `2>/dev/null || true` was
-          # previously swallowing it with zero visibility.
-          merge_arm_err=$(gh pr merge "$pr_num" --repo <owner/repo> --auto --$auto_merge_method --delete-branch 2>&1 1>/dev/null) || true
-          if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
-            echo "[setup-3c] PR #$pr_num auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
-          fi
-        else
-          # Leave OPEN + unarmed. The PR carries `--label shipyard` (above),
-          # which is exactly the label drain's deferred-merge lander keys on —
-          # so it gets merged on the first poll its checks are green, with no
-          # `session_prs` plumbing needed. Do NOT block on `gh pr checks
-          # --watch` here — this would stall session start, once per orphan.
-          echo "[setup-3c] PR #$pr_num left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
-        fi
-      fi
-    fi
-  fi
-done
-# The "[setup-3c] PR #<N> auto-merge arm blocked" line above runs inside
-# this piped `while read` loop (a subshell), so it cannot persist a value
-# back into the enclosing shell's own variables. That's fine —
-# workflow_scope_blocked_prs is orchestrator state (see do-work.md's
-# "Orchestrator state" section), not a literal shell variable spanning tool
-# calls: when this block's captured stdout is surfaced, append <N> to
-# workflow_scope_blocked_prs for every such line, exactly as
-# steady-state.md step A.1's shipped-handler already does from a worker's
-# return string (issue #812 / #850).
-
-# Row 5 — Stale @me self-assigns with no worktree, no PR, no branch
-# (issue #303). Catches the state the worktree loop above CAN'T see: a
-# prior session that left the @me assignment on an issue after its
-# on-disk worktree was already cleaned up. Without this sweep the
-# assignment survives indefinitely across sessions. Action is
-# conservative: clear the assignment only, leave the `shipyard` label as
-# provenance, and let the normal step-4 backlog fetch pick the issue up
-# on the next dispatch.
-#
-# Gated on backlog.self_assign (issue #1248) — when self-assign is off
-# (the default), /do-work never writes an @me assignment, so this sweep
-# has nothing to find; skip the query entirely rather than pay a
-# permanently-empty `gh issue list` every session.
-BACKLOG_SELF_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.self_assign 2>/dev/null || echo "false")
-if [ "$BACKLOG_SELF_ASSIGN" = "true" ]; then
-  UNLINKED_ASSIGNED=$(gh issue list --repo <owner/repo> --state open --assignee @me --label shipyard --search '-linked:pr' --json number --jq '.[].number' 2>/dev/null)
-  for n in $UNLINKED_ASSIGNED; do
-    # If a worktree for this issue exists, the loop above already handled it;
-    # skip. Extract issue numbers from every do-work worktree branch the same
-    # permissive way as the loop above (#739) so a collision-fallback local
-    # branch name (`do-work/issue-$n-<timestamp>`) is still recognized as
-    # "already handled" instead of falling through to the assignee-clear
-    # below on an issue whose worktree is alive, just suffixed.
-    if git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\/issue-/{print $2}' \
-      | sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\1|' | grep -qx "$n"; then
-      continue
-    fi
-    # If a do-work branch for this issue still exists on origin, leave it
-    # alone — it may belong to an open PR the `-linked:pr` filter missed
-    # (e.g., draft PR linked via a different reference shape). Conservative
-    # gate: only clear assignment when NOTHING in the dispatch artifacts
-    # exists for this issue anymore.
-    remote_head=$(git ls-remote --heads origin "do-work/issue-$n" 2>/dev/null)
-    if [ -n "$remote_head" ]; then
-      continue
-    fi
-    gh issue edit "$n" --repo <owner/repo> --remove-assignee @me 2>/dev/null || true
-    stale_assigns_count=$((stale_assigns_count + 1))
-    stale_assigns_numbers+=("$n")
-  done
-fi
+git rev-parse --show-toplevel
 ```
+
+Then, substituting the literal path that call returned in place of `<repo-root>` below, as a second, separate `Bash` call. The compound preamble is this block's own first line — self-sufficient, not dependent on an immediately-preceding preamble-only block (same adjacency requirement [#1355](https://github.com/mattsears18/shipyard/issues/1355)'s fix-attempt-3 correction established for [3b](#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions) above):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" triage-orphan-branches \
+  --repo-root <repo-root> --repo <owner/repo> --default-branch <default-branch>
+```
+
+Print whatever this prints, prefixed `[setup-3c] `, EXCEPT the two literal `[setup-3c] PR #<N> ...` lines documented below — those already carry the tag themselves; don't double-prefix them.
+
+**Output contract.** The subcommand emits, in order: zero or more `failed-pr: <M>` lines (one per PR #333-flagged red PR the worktree loop found already open — fold each `<M>` onto the same `failed_prs` list step 5's failing-PR scan populates), zero or more `stale-assign: <N>` lines (one per issue the row-5 self-assign sweep cleared), then a trailing `summary: salvaged=<S> abandoned=<A> stale_assigns=<SA>` line — read `salvaged_count`/`abandoned_count`/`stale_assigns_count` straight off it. Interleaved with those, whenever the ungated-merge detector or the merge-arm call resolves one of the two documented outcomes for a freshly-created PR, the subcommand ALSO prints one of these two literal lines — UNCHANGED byte-for-byte from the pre-#1365 inline form, since [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) and this file's own cross-references key off this exact shape:
+
+```
+[setup-3c] PR #<N> auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed
+[setup-3c] PR #<N> left unarmed (ungated repo) — deferred to drain's merge lander (#720)
+```
+
+When the surfaced output contains the first of those two lines, append `<N>` to [`workflow_scope_blocked_prs`](../do-work.md#orchestrator-state) — exactly as [steady-state.md step A.1's `shipped` handler](../steady-state.md#a1-parse-the-return-string) already does from a worker's return string (issue #812 / #850).
 
 **3d.1. Auto-clear stale `blocked:ci` labels.** The label is sticky on purpose, but a new commit on the PR's head branch means the premise ("no movement since shipyard gave up") is no longer true. Auto-clear those PRs so they flow back into step 5's failing-PR snapshot for another 3 attempts. This sweep is the *only* place `blocked:ci` is removed by the orchestrator (step A applies; 3d.1 removes; no other step touches it).
 

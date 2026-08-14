@@ -3202,6 +3202,307 @@ bash "$helper" sweep-stale-agents --repo-root "$ssa_repo" >/dev/null 2>&1
 assert_exit_code "$?" "64" \
   "(129a) sweep-stale-agents missing --session-id -> exit 64"
 
+# ============================================================================
+# Issue #1365 (follow-up to #1355) — `triage-orphan-branches` subcommand:
+# single-call replacement for setup-3c's own discover-then-triage loop (the
+# issue #303 stale self-assign sweep included), so it's reachable at any
+# point in setup, not just pre-relocation.
+#
+# Coverage goals:
+#   - No do-work/* worktrees at all -> summary: salvaged=0 abandoned=0
+#     stale_assigns=0.
+#   - No commits beyond base -> worktree removed, branch deleted, @me
+#     assignment cleared -> abandoned=1.
+#   - Commits ahead, unpushed, no PR yet, gated repo -> pushed, PR created,
+#     auto-merge armed (gh pr merge --auto called) -> salvaged=1.
+#   - Same, but ungated repo -> PR created, auto-merge NOT armed, the
+#     literal `[setup-3c] PR #<N> left unarmed (ungated repo) ...` line
+#     survives byte-for-byte (issue #1365's explicit ask).
+#   - Same, but the merge-arm call fails on the missing-workflow-scope
+#     signature -> the literal `[setup-3c] PR #<N> auto-merge arm blocked
+#     ...` line survives byte-for-byte.
+#   - Commits ahead, already pushed, PR already open, red rollup ->
+#     `failed-pr: <N>` line, salvaged=1, no duplicate PR create.
+#   - Commits ahead, already pushed, PR already open, clean rollup -> no
+#     failed-pr line, salvaged=1.
+#   - Row 5 (backlog.self_assign=true): a stale @me-assigned issue with no
+#     worktree/PR/branch -> `stale-assign: <N>` line, gh issue edit called.
+#   - Row 5 gated off (backlog.self_assign=false, the default) -> the `gh
+#     issue list --assignee @me` query is never made at all.
+#   - Bad usage (missing --repo-root / --repo / --default-branch) -> exit 64.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches tests (issue #1365)"
+echo
+
+tob_repo="$tmpdir/tob-repo"
+tob_origin="$tmpdir/tob-origin.git"
+tob_gh="$tmpdir/tob-gh"
+tob_gh_log="$tmpdir/tob-gh.log"
+tob_state="$tmpdir/tob-state"
+
+reset_tob_layout() {
+  # NOTE: $tob_gh (the mock gh binary) is intentionally NOT removed here —
+  # it's written once, below, after this function is defined. Its content
+  # only depends on $TOB_STATE / $TOB_GH_LOG, both supplied fresh per call
+  # by run_tob, so it doesn't need re-writing per test.
+  rm -rf "$tob_repo" "$tob_origin" "$tob_gh_log" "$tob_state"
+  mkdir -p "$tob_state"
+  git init -q --bare "$tob_origin" >/dev/null 2>&1
+  mkdir -p "$tob_repo"
+  (
+    cd "$tob_repo" || exit 1
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git remote add origin "$tob_origin"
+    git commit -q --allow-empty -m "init"
+    git push -q -u origin main
+  ) >/dev/null 2>&1
+  : > "$tob_gh_log"
+}
+
+# tob_add_worktree <issue-n> — worktree with NO commits beyond base
+# (ahead == 0 case).
+tob_add_worktree() {
+  local n="$1"
+  git -C "$tob_repo" worktree add -q \
+    ".claude/worktrees/agent-$n" -b "do-work/issue-$n" >/dev/null 2>&1
+}
+
+# tob_add_worktree_ahead <issue-n> [--push] — worktree with one commit
+# beyond base, optionally pushed to origin.
+tob_add_worktree_ahead() {
+  local n="$1"
+  local push="${2:-}"
+  local path="$tob_repo/.claude/worktrees/agent-$n"
+  tob_add_worktree "$n"
+  git -C "$path" commit -q --allow-empty -m "wip $n" >/dev/null 2>&1
+  if [ "$push" = "--push" ]; then
+    git -C "$path" push -q -u origin "do-work/issue-$n" >/dev/null 2>&1
+  fi
+}
+
+# Mock `gh` — dispatches on `$1 $2`, reads/writes per-scenario fixtures out
+# of $tob_state so each test controls exactly what a given call returns,
+# mirroring draft-pr-recovery.test.sh's own make_gh precedent (issue #1069).
+cat > "$tob_gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "GH-CALL: $*" >> "$TOB_GH_LOG"
+case "$1 $2" in
+  "issue edit")
+    exit 0
+    ;;
+  "pr list")
+    # --head <branch> is somewhere in "$@"; look up its assigned PR number.
+    branch=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "--head" ] && branch="$a"
+      prev="$a"
+    done
+    cat "$TOB_STATE/pr-for-${branch//\//_}" 2>/dev/null
+    ;;
+  "pr create")
+    branch=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = "--head" ] && branch="$a"
+      prev="$a"
+    done
+    n=$(cat "$TOB_STATE/next-pr-number" 2>/dev/null || echo 900)
+    printf '%s' "$n" > "$TOB_STATE/pr-for-${branch//\//_}"
+    exit 0
+    ;;
+  "pr merge")
+    n="$3"
+    if [ -f "$TOB_STATE/merge-stderr-$n" ]; then
+      cat "$TOB_STATE/merge-stderr-$n" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  "pr view")
+    n="$3"
+    cat "$TOB_STATE/rollup-$n" 2>/dev/null || printf '0'
+    ;;
+  "issue list")
+    cat "$TOB_STATE/self-assign-list" 2>/dev/null
+    ;;
+  *) : ;;
+esac
+MOCKEOF
+chmod +x "$tob_gh"
+
+run_tob() {
+  TOB_GH_LOG="$tob_gh_log" TOB_STATE="$tob_state" \
+    GH="$tob_gh" WORKTREE_REAP_VERDICT_OVERRIDE="${TOB_VERDICT:-gated}" \
+    bash "$helper" triage-orphan-branches \
+    --repo-root "$tob_repo" --repo "o/r" --default-branch "main" 2>/dev/null
+}
+
+# --- (130) no do-work/* worktrees at all -> zeroed summary ---
+reset_tob_layout
+result=$(run_tob)
+assert_equals "$result" "summary: salvaged=0 abandoned=0 stale_assigns=0" \
+  "(130) no do-work/* worktrees -> zeroed summary line"
+
+# --- (131) no commits beyond base -> removed + branch deleted + assignee cleared ---
+reset_tob_layout
+tob_add_worktree 501
+result=$(run_tob)
+assert_equals "$result" "summary: salvaged=0 abandoned=1 stale_assigns=0" \
+  "(131) no-commits-beyond-base worktree -> abandoned=1"
+if [ -d "$tob_repo/.claude/worktrees/agent-501" ]; then
+  printf '  %sFAIL%s  (131a) abandoned worktree directory still exists\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (131a) abandoned worktree directory removed\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+case "$(cat "$tob_gh_log")" in
+  *"GH-CALL: issue edit 501 --repo o/r --remove-assignee @me"*) assignee_cleared=1 ;;
+  *) assignee_cleared=0 ;;
+esac
+assert_equals "$assignee_cleared" "1" \
+  "(131b) abandoned worktree's issue @me assignment was cleared"
+
+# --- (132) commits ahead, unpushed, no PR yet, gated repo -> pushed + PR created + auto-merge armed ---
+reset_tob_layout
+tob_add_worktree_ahead 502
+printf '600' > "$tob_state/next-pr-number"
+result=$(TOB_VERDICT=gated run_tob)
+assert_equals "$result" "summary: salvaged=1 abandoned=0 stale_assigns=0" \
+  "(132) unpushed commits-ahead worktree, no PR yet -> salvaged=1"
+case "$(cat "$tob_gh_log")" in
+  *"GH-CALL: pr create --repo o/r --head do-work/issue-502 --fill --label shipyard"*) pr_created=1 ;;
+  *) pr_created=0 ;;
+esac
+assert_equals "$pr_created" "1" \
+  "(132a) PR was created via gh pr create --fill --label shipyard"
+case "$(cat "$tob_gh_log")" in
+  *"GH-CALL: pr merge 600 --repo o/r --auto --squash --delete-branch"*) merge_armed=1 ;;
+  *) merge_armed=0 ;;
+esac
+assert_equals "$merge_armed" "1" \
+  "(132b) gated repo -> auto-merge armed via gh pr merge --auto"
+pushed_ref=$(git -C "$tob_origin" show-ref --verify --quiet refs/heads/do-work/issue-502 && echo yes || echo no)
+assert_equals "$pushed_ref" "yes" \
+  "(132c) unpushed branch was pushed to origin under its canonical name"
+
+# --- (133) same, but ungated repo -> PR created, NOT armed, literal [setup-3c] line survives ---
+reset_tob_layout
+tob_add_worktree_ahead 503
+printf '601' > "$tob_state/next-pr-number"
+result=$(TOB_VERDICT=ungated run_tob)
+case "$result" in
+  *"[setup-3c] PR #601 left unarmed (ungated repo) — deferred to drain's merge lander (#720)"*) ungated_line_ok=1 ;;
+  *) ungated_line_ok=0 ;;
+esac
+assert_equals "$ungated_line_ok" "1" \
+  "(133) ungated repo -> the literal setup-3c unarmed-PR line survives byte-for-byte"
+case "$(cat "$tob_gh_log")" in
+  *"pr merge"*) merge_called=1 ;;
+  *) merge_called=0 ;;
+esac
+assert_equals "$merge_called" "0" \
+  "(133a) ungated repo -> gh pr merge is never called"
+
+# --- (134) merge-arm call hits the missing-workflow-scope signature -> literal blocked line survives ---
+reset_tob_layout
+tob_add_worktree_ahead 504
+printf '602' > "$tob_state/next-pr-number"
+# shellcheck disable=SC2016
+# Backticks below are LITERAL — single-quoting is deliberate to keep them
+# from expanding as command substitution. This fixture mirrors the real
+# GraphQL error signature auto-merge.md documents verbatim (issue #812),
+# which is what triage_orphan_branches's own `grep -qi "without .workflow.
+# scope"` check matches against.
+printf 'GraphQL: refusing to allow an OAuth App to update .github/workflows/ci.yml without `workflow` scope (enablePullRequestAutoMerge)' \
+  > "$tob_state/merge-stderr-602"
+result=$(TOB_VERDICT=gated run_tob)
+case "$result" in
+  *"[setup-3c] PR #602 auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"*) blocked_line_ok=1 ;;
+  *) blocked_line_ok=0 ;;
+esac
+assert_equals "$blocked_line_ok" "1" \
+  "(134) workflow-scope-blocked merge arm -> the literal setup-3c blocked line survives byte-for-byte"
+
+# --- (135) commits ahead, already pushed, PR already open, red rollup -> failed-pr line ---
+reset_tob_layout
+tob_add_worktree_ahead 505 --push
+printf '700' > "$tob_state/pr-for-do-work_issue-505"
+printf '1' > "$tob_state/rollup-700"
+result=$(run_tob)
+case "$result" in
+  *"failed-pr: 700"*) failed_pr_ok=1 ;;
+  *) failed_pr_ok=0 ;;
+esac
+assert_equals "$failed_pr_ok" "1" \
+  "(135) already-open PR with a red rollup -> 'failed-pr: 700' line"
+assert_equals "$result" "$(printf 'failed-pr: 700\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
+  "(135a) full output shape matches exactly"
+case "$(cat "$tob_gh_log")" in
+  *"pr create"*) dup_pr_created=1 ;;
+  *) dup_pr_created=0 ;;
+esac
+assert_equals "$dup_pr_created" "0" \
+  "(135b) an already-open PR is never re-created"
+
+# --- (136) commits ahead, already pushed, PR already open, clean rollup -> no failed-pr line ---
+reset_tob_layout
+tob_add_worktree_ahead 506 --push
+printf '701' > "$tob_state/pr-for-do-work_issue-506"
+printf '0' > "$tob_state/rollup-701"
+result=$(run_tob)
+assert_equals "$result" "summary: salvaged=1 abandoned=0 stale_assigns=0" \
+  "(136) already-open PR with a clean rollup -> no failed-pr line, salvaged=1"
+
+# --- (137) row 5: backlog.self_assign=true, stale @me issue with no worktree/PR/branch -> stale-assign line ---
+reset_tob_layout
+printf '{"version":1,"backlog":{"self_assign":true}}' > "$tob_repo/shipyard.config.json"
+printf '808\n' > "$tob_state/self-assign-list"
+result=$(run_tob)
+case "$result" in
+  *"stale-assign: 808"*) stale_assign_ok=1 ;;
+  *) stale_assign_ok=0 ;;
+esac
+assert_equals "$stale_assign_ok" "1" \
+  "(137) backlog.self_assign=true, orphaned @me issue -> 'stale-assign: 808' line"
+assert_equals "$result" "$(printf 'stale-assign: 808\nsummary: salvaged=0 abandoned=0 stale_assigns=1')" \
+  "(137a) full output shape matches exactly"
+case "$(cat "$tob_gh_log")" in
+  *"GH-CALL: issue edit 808 --repo o/r --remove-assignee @me"*) row5_cleared=1 ;;
+  *) row5_cleared=0 ;;
+esac
+assert_equals "$row5_cleared" "1" \
+  "(137b) row 5 cleared the stale @me assignment"
+
+# --- (138) row 5 gated off by default -> gh issue list is never called ---
+reset_tob_layout
+printf '809\n' > "$tob_state/self-assign-list"
+result=$(run_tob)
+assert_equals "$result" "summary: salvaged=0 abandoned=0 stale_assigns=0" \
+  "(138) backlog.self_assign unset (default false) -> stale_assigns=0"
+case "$(cat "$tob_gh_log")" in
+  *"issue list"*) row5_queried=1 ;;
+  *) row5_queried=0 ;;
+esac
+assert_equals "$row5_queried" "0" \
+  "(138a) backlog.self_assign=false (default) -> the gh issue list query is never made"
+
+# --- (139) bad usage: missing --repo-root / --repo / --default-branch -> exit 64 ---
+bash "$helper" triage-orphan-branches --repo "o/r" --default-branch "main" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(139) triage-orphan-branches missing --repo-root -> exit 64"
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --default-branch "main" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(139a) triage-orphan-branches missing --repo -> exit 64"
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(139b) triage-orphan-branches missing --default-branch -> exit 64"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

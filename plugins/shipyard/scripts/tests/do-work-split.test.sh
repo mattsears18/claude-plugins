@@ -2442,45 +2442,56 @@ assert_contains "$issue_work_path736" \
 # suffixed worktree as "already handled" in the stale-assign row.
 #
 # As of #1202 (PR moving the step-0.45 pre-relocation sweeps out of the
-# background group), step 3c's executable form lives in
+# background group), step 3c's executable form lived in
 # 01c-label-recovery-refine.md, not 00b-parallelization-cache.md — 00b's
 # background group narrowed to steps 1.6 + 3a only, and 3c's own section in
 # 01c gained the executable bash it previously lacked entirely (per PR
 # #1209's body: "Step 3c had no executable bash anywhere outside 00b's
 # background group ... Added the executable form to its own section").
-setup_worktree_path739="$repo_root/plugins/shipyard/commands/do-work/setup/01c-label-recovery-refine.md"
+#
+# As of #1365 (follow-up to #1355), step 3c's ENTIRE state machine — this
+# permissive extraction included — moved out of 01c-label-recovery-refine.md
+# and into worktree-reap.sh's `triage_orphan_branches` function, callable as
+# a single `triage-orphan-branches` subcommand (01c now documents the table
+# as spec + a single-call invocation, not the executable bash itself). The
+# property this guard protects didn't go away — it moved. Re-point the
+# needles at their new home rather than deleting the guard (see
+# `shipyard:worker-preamble`'s do-work-split.test.sh guidance: "if your
+# change legitimately removes something a structural guard counts, re-point
+# the guard at the property's new home").
+setup_worktree_path739="$repo_root/plugins/shipyard/scripts/worktree-reap.sh"
 
 assert_contains "$setup_worktree_path739" \
   "sed -E 's|^do-work/issue-([0-9]+).*|\\1|'" \
-  "01c-label-recovery-refine.md §3c extracts the issue number permissively, tolerating a collision-fallback suffix (#739)"
+  "worktree-reap.sh triage_orphan_branches extracts the issue number permissively, tolerating a collision-fallback suffix (#739, moved from 01c §3c by #1365)"
 # shellcheck disable=SC2016
-# Literal needle — must NOT expand $n; this is markdown prose text.
+# Literal needle — must NOT expand $n; this is shell script text.
 assert_contains "$setup_worktree_path739" \
   'canonical_branch="do-work/issue-$n"' \
-  "01c-label-recovery-refine.md §3c derives the canonical remote branch name independent of the local worktree branch (#739)"
+  "worktree-reap.sh triage_orphan_branches derives the canonical remote branch name independent of the local worktree branch (#739, moved from 01c §3c by #1365)"
 # shellcheck disable=SC2016
-# Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
+# Literal needle — must NOT expand $canonical_branch; this is shell script text.
 assert_contains "$setup_worktree_path739" \
   'pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)' \
-  "01c-label-recovery-refine.md §3c checks the remote for the canonical branch, not the local (possibly suffixed) branch (#739)"
+  "worktree-reap.sh triage_orphan_branches checks the remote for the canonical branch, not the local (possibly suffixed) branch (#739, moved from 01c §3c by #1365)"
 # shellcheck disable=SC2016
-# Literal needle — must NOT expand $path/$canonical_branch; this is markdown prose text.
+# Literal needle — must NOT expand $path/$canonical_branch; this is shell script text.
 assert_contains "$setup_worktree_path739" \
   'git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch"' \
-  "01c-label-recovery-refine.md §3c pushes the local worktree's commits under the canonical remote branch name (#739)"
+  "worktree-reap.sh triage_orphan_branches pushes the local worktree's commits under the canonical remote branch name (#739, moved from 01c §3c by #1365)"
 # shellcheck disable=SC2016
-# Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
+# Literal needle — must NOT expand $canonical_branch; this is shell script text.
 assert_contains "$setup_worktree_path739" \
-  'open_pr=$(gh pr list --repo <owner/repo> --head "$canonical_branch"' \
-  "01c-label-recovery-refine.md §3c looks up the open PR by the canonical branch name, not the local branch (#739)"
+  'open_pr=$("$GH" pr list --repo "$repo" --head "$canonical_branch"' \
+  "worktree-reap.sh triage_orphan_branches looks up the open PR by the canonical branch name, not the local branch (#739, moved from 01c §3c by #1365)"
 # shellcheck disable=SC2016
-# Literal needle — must NOT expand $canonical_branch; this is markdown prose text.
+# Literal needle — must NOT expand $canonical_branch; this is shell script text.
 assert_contains "$setup_worktree_path739" \
-  'gh pr create --repo <owner/repo> --head "$canonical_branch" --fill --label shipyard' \
-  "01c-label-recovery-refine.md §3c opens the fallback PR with an explicit --head against the canonical branch (#739)"
+  '"$GH" pr create --repo "$repo" --head "$canonical_branch" --fill --label shipyard' \
+  "worktree-reap.sh triage_orphan_branches opens the fallback PR with an explicit --head against the canonical branch (#739, moved from 01c §3c by #1365)"
 assert_contains "$setup_worktree_path739" \
-  "sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\\1|' | grep -qx \"\$n\"" \
-  "01c-label-recovery-refine.md §3c row-5 stale-assign check recognizes a collision-fallback worktree as already-handled (#739)"
+  "sed -E 's|^refs/heads/do-work/issue-([0-9]+).*|\\1|' | grep -qx \"\$n2\"" \
+  "worktree-reap.sh triage_orphan_branches row-5 stale-assign check recognizes a collision-fallback worktree as already-handled (#739, moved from 01c §3c by #1365)"
 
 # ── Regression: scope-preflight re-gates issues already resolved via
 #    /resolve-decisions (#962) ──────────────────────────────────────────────
