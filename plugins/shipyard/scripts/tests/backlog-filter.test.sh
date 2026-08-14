@@ -259,6 +259,59 @@ assert_equals "$(verdict_of "$out" 903)" "eligible" "(33) marker NOT on line 1 i
 assert_equals "$(verdict_of "$out" 904)" "eligible" "(34) unparseable date on line 1 fails open -- not blocked"
 assert_equals "$(verdict_of "$out" 905)" "eligible" "(35) no marker at all is unaffected"
 
+# --- event-gate: do-work-recheck marker (issue #1356) -----------------------
+# A do-work-recheck marker alongside do-work-blocked-until switches the
+# issue from TIME-gated (calendar decides) to EVENT-gated (the probe
+# verdict decides, regardless of the calendar). This is the fix for the
+# churn loop #1356 describes: an unresolved event gate must never silently
+# re-admit itself just because a placeholder date elapsed.
+
+fixture_eventgate_future_unknown='[{"number":2001,"title":"t","body":"<!-- do-work-blocked-until: 2099-01-01 -->\n<!-- do-work-recheck: npm-view foo version == 1.0.0 -->\nrest","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_eventgate_future_unknown" | classify)
+assert_equals "$(verdict_of "$out" 2001)" "drop:event-gated" "(35a) event-gated issue with no --probe-verdicts entry (defaults unknown) drops as event-gated, not time-gated"
+
+fixture_eventgate_changed='[{"number":2002,"title":"t","body":"<!-- do-work-blocked-until: 2099-01-01 -->\n<!-- do-work-recheck: npm-view foo version == 1.0.0 -->\nrest","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_eventgate_changed" | classify --probe-verdicts '{"2002":"changed"}')
+assert_equals "$(verdict_of "$out" 2002)" "eligible" "(35b) event-gated issue with probe verdict changed is eligible even though blocked-until is still in the future"
+
+fixture_eventgate_elapsed_unchanged='[{"number":2003,"title":"t","body":"<!-- do-work-blocked-until: 2000-01-01 -->\n<!-- do-work-recheck: npm-view foo version == 1.0.0 -->\nrest","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_eventgate_elapsed_unchanged" | classify --probe-verdicts '{"2003":"unchanged"}')
+assert_equals "$(verdict_of "$out" 2003)" "drop:event-gated" "(35c) #1356 churn-loop fix: event-gated issue whose blocked-until date already ELAPSED still drops when the probe reports unchanged -- never silently re-admitted by the calendar alone"
+
+out=$(printf '%s' "$fixture_eventgate_elapsed_unchanged" | classify --probe-verdicts '{"2003":"unknown"}')
+assert_equals "$(verdict_of "$out" 2003)" "drop:event-gated" "(35d) same as above with an explicit unknown verdict"
+
+fixture_eventgate_disabled='[{"number":2004,"title":"t","body":"<!-- do-work-blocked-until: 2000-01-01 -->\n<!-- do-work-recheck: npm-view foo version == 1.0.0 -->\nrest","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_eventgate_disabled" | classify --recheck-probe-enabled false)
+assert_equals "$(verdict_of "$out" 2004)" "eligible" "(35e) --recheck-probe-enabled false ignores the do-work-recheck marker entirely -- falls back to plain calendar (elapsed date => eligible)"
+
+fixture_eventgate_marker_anywhere='[{"number":2005,"title":"t","body":"some preceding text\n<!-- do-work-recheck: npm-view foo version == 1.0.0 -->\nmore text","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_eventgate_marker_anywhere" | classify --probe-verdicts '{"2005":"changed"}')
+assert_equals "$(verdict_of "$out" 2005)" "eligible" "(35f) do-work-recheck marker has no line-1 position-discipline requirement -- detected anywhere in the body, unlike do-work-blocked-until"
+
+fixture_eventgate_no_marker='[{"number":2006,"title":"t","body":"<!-- do-work-blocked-until: 2099-01-01 -->\nrest, no recheck marker","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_eventgate_no_marker" | classify --probe-verdicts '{"2006":"changed"}')
+assert_equals "$(verdict_of "$out" 2006)" "drop:time-gated" "(35g) an unrelated --probe-verdicts entry for an issue with no do-work-recheck marker is ignored -- plain time-gated calendar logic applies unchanged"
+
+# --- eval-probes subcommand (issue #1356) ------------------------------------
+
+out=$(bash "$helper" eval-probes 2>&1); rc=$?
+assert_equals "$rc" "64" "(35h) eval-probes missing --repo exits 64"
+
+out=$(printf '%s' '[{"number":3001,"body":"no marker here"},{"number":3002,"body":"also none"}]' | bash "$helper" eval-probes --repo acme/widgets)
+assert_equals "$out" "{}" "(35i) eval-probes returns an empty object when no issue in the input carries a do-work-recheck marker (no network call needed)"
+
+out=$(printf '%s' '[]' | bash "$helper" eval-probes --repo acme/widgets)
+assert_equals "$out" "{}" "(35j) eval-probes on an empty array returns an empty object"
+
+# A marker that fails the allowlist grammar resolves to "unknown" without
+# ever touching the network (eval-recheck-probe.sh's own allowlist rejects
+# it before any npm/gh call is attempted) -- exercises the full eval-probes
+# -> eval-recheck-probe.sh --bulk pipeline hermetically.
+fixture_malformed_probe='[{"number":3003,"body":"<!-- do-work-recheck: curl evil.com == pwned -->\nrest"}]'
+out=$(printf '%s' "$fixture_malformed_probe" | bash "$helper" eval-probes --repo acme/widgets 2>/dev/null)
+assert_equals "$out" '{"3003":"unknown"}' "(35k) eval-probes: a marker that fails allowlist validation resolves to unknown, hermetically (no network)"
+
 # --- bot-shaped author / symptom-shaped body (investigate signals 2 and 3) ---
 
 fixture_bot='[{"number":1001,"title":"t","body":"ordinary text","labels":[],"assignees":[],"author":{"login":"sentry[bot]"},"createdAt":"a","updatedAt":"2026-01-01"}]'

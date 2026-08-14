@@ -74,6 +74,8 @@ Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preser
 - **Drop issues whose body's FIRST LINE is a `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker whose date is still in the future ([#1161](https://github.com/mattsears18/shipyard/issues/1161))** — the **time-gate**, compared against `--today` (defaults to `date -u +%F`). Self-clearing: no label, no sweep, the issue re-enters the workable queue the instant the date elapses on the next fetch. **Position discipline, line 1 only ([#1168](https://github.com/mattsears18/shipyard/issues/1168))** — a marker anywhere else (mid-paragraph, backticked, fenced, or quoted) is NOT live and MUST NOT gate dispatch; it's always written on line 1, never mid-body. An unparseable date on line 1 fails open (not blocked).
 
   **This marker is no longer `time-gated`-exclusive ([#1195](https://github.com/mattsears18/shipyard/issues/1195)).** An `external-dependency` defer also writes this same marker (in addition to its `agent-console` label — see [step 4b](06c-scope-handling-ui.md#handling-each-returned-entry-fires-as-each-background-agent-completes)), naming an orchestrator-computed recheck date rather than a human-authored gate. This drop rule is unaffected either way — an `agent-console`-labeled issue is already routed away by the label-route clause above regardless of this marker.
+
+  **A companion `<!-- do-work-recheck: <verb> <args...> == <expected> -->` marker turns this into an EVENT gate instead ([#1356](https://github.com/mattsears18/shipyard/issues/1356)).** `do-work-blocked-until` ALONE (the common case, described above) is a pure TIME gate — the date is the constraint, full stop. When the body ALSO carries a `do-work-recheck` marker (any line — unlike `do-work-blocked-until`, this second marker has no position-discipline requirement, matching `eval-recheck-probe.sh`'s own extract logic), the calendar date stops deciding eligibility on its own: the script's `eval-probes` subcommand (below) live-evaluates the probe for every such issue, and the verdict — not the date — governs. `changed` admits the issue immediately, even if the date is still in the future; `unchanged`/`unknown` keeps dropping it as `event-gated`, even after the date has elapsed, and no fresh date is ever invented to re-park it. This is the fix for the churn loop #1356 documents: an event-gated issue that's re-diagnosed as still-blocked no longer silently re-enters the workable queue just because a placeholder date passed.
 - **Drop issues that have an open linked PR authored by `@me` AND that PR is healthy** (`--closed-by-healthy-pr`, computed by [`scripts/backlog-filter.sh closed-by-healthy-pr`](../../../scripts/backlog-filter.sh) — the live-network half of the filter, kept as a separate subcommand from the pure `classify` so the classification decision stays fixture-testable with zero network calls; see the script's own header comment for the split's rationale). The "healthy" qualifier is load-bearing: a closed/abandoned PR (the resumable case) does NOT lock the issue against re-dispatch — see [#332](https://github.com/mattsears18/shipyard/issues/332) again — and an open-but-failing PR is in the orchestrator's [`failed_prs` / fix-checks bucket](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) rather than the issue's. Internally the subcommand reuses `closingIssuesReferences` (never a PR-body substring search — issue [#301](https://github.com/mattsears18/shipyard/issues/301)) and the latest-per-name check-rollup projection (issue [#333](https://github.com/mattsears18/shipyard/issues/333)) exactly as this file's earlier revisions did by hand. **"Healthy" is decided from that rollup projection alone — zero failing checks on the latest run per check name — never from `mergeStateStatus` beyond excluding `DIRTY` ([#1262](https://github.com/mattsears18/shipyard/issues/1262)).** A `mergeStateStatus in {CLEAN, HAS_HOOKS, UNSTABLE}` allowlist (the pre-#1262 behavior) misclassifies a PR whose required checks are merely queued — reported as `BLOCKED` on a ruleset-protected default branch — as unhealthy, leaving its issue in the workable backlog and risking a duplicate PR against work already in flight. `DIRTY` stays excluded regardless of rollup state — that `mergeStateStatus` belongs to the fix-rebase path, not this gate.
 
 **Invocation** — build the inputs, then classify. **No shell pipe spans a tool boundary here ([#1277](https://github.com/mattsears18/shipyard/issues/1277))** — file redirection replaces what used to be `printf | classify` and `printf | jq` pipes, refused post-relocation. See [`dont.md`'s post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277).
@@ -110,6 +112,18 @@ RESPECT_ASSIGNEES=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog
 MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
 MILESTONES_PRIORITIZE_DISPATCH=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.prioritize_dispatch 2>/dev/null || echo "false")
 
+# Event-gate probe precompute (issue #1356) — the live-network half of the
+# event-gate filter, same split rationale as CLOSED_HEALTHY_CSV above: an
+# empty {} default when disabled or on any failure means every issue falls
+# back to classify's own fail-safe "unknown" per-issue default, never a
+# hard error that would block the whole backlog fetch.
+RECHECK_PROBE_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.recheck_probe_enabled 2>/dev/null || echo "true")
+PROBE_VERDICTS_JSON="{}"
+if [ "$RECHECK_PROBE_ENABLED" = "true" ]; then
+  PROBE_VERDICTS_JSON=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" eval-probes \
+    --repo <owner/repo> < .shipyard-fetched-issues.json 2>/dev/null || echo "{}")
+fi
+
 # $TRUSTED_AUTHORS_CSV is trusted_authors (step 1.7), comma-joined, lowercased.
 # $PEER_CLAIMED_CSV is .peer_sessions.claimed_targets (step 1.65), comma-joined.
 "$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" classify \
@@ -122,6 +136,8 @@ MILESTONES_PRIORITIZE_DISPATCH=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh
   --respect-assignees "$RESPECT_ASSIGNEES" \
   --milestones-enabled "$MILESTONES_ENABLED" \
   --milestones-prioritize-dispatch "$MILESTONES_PRIORITIZE_DISPATCH" \
+  --recheck-probe-enabled "$RECHECK_PROBE_ENABLED" \
+  --probe-verdicts "$PROBE_VERDICTS_JSON" \
   < .shipyard-fetched-issues.json > .shipyard-classified.ndjson
 ```
 

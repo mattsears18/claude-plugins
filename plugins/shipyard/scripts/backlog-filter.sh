@@ -39,6 +39,7 @@
 #            [--prioritize-label <label>] [--today YYYY-MM-DD]
 #            [--respect-assignees true|false]
 #            [--milestones-enabled true|false] [--milestones-prioritize-dispatch true|false]
+#            [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
 #     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
 #     assignees: [login,...], author: {login}, createdAt, updatedAt,
@@ -97,7 +98,64 @@
 #     orthogonal to the milestone-ranking flags above: `--respect-assignees`
 #     decides which issues reach the eligible bucket at all, the milestone
 #     flags decide only how that bucket is ordered.
+#     `--probe-verdicts` (issue #1356) is a JSON object mapping issue number
+#     (as a STRING key — `{"123":"changed"}`, not `{123:"changed"}`, since
+#     JSON object keys are always strings) to the verdict a prior
+#     `eval-probes` pass (below) already computed for that issue's
+#     `do-work-recheck` marker: `changed` / `unchanged` / `unknown`. Defaults
+#     to `{}` when omitted (every issue falls back to `unknown`, the safe
+#     default — see `--recheck-probe-enabled` below for the flag that
+#     disables this mechanism at the class level rather than per-issue).
+#     Any issue whose body carries a `do-work-recheck` marker (any line, not
+#     line-1-restricted — the position discipline only ever applied to
+#     `do-work-blocked-until`) is EVENT-GATED rather than TIME-GATED: its
+#     eligibility is decided from this map's verdict, not from the calendar
+#     date. `changed` -> eligible now, REGARDLESS of whether the paired
+#     `do-work-blocked-until` date (if any) is still in the future — the one
+#     case that brings admission forward, matching the read-side semantics
+#     `eval-recheck-probe.sh`'s own header comment documents.
+#     `unchanged`/`unknown`/no-entry-in-map -> `{"verdict":"drop","reason":
+#     "event-gated"}`, REGARDLESS of whether the calendar date has already
+#     elapsed — this is the fix for the churn loop issue #1356 documents: an
+#     event-gated issue never silently re-admits itself into the dispatch
+#     pool (and never triggers a fresh scope-agent pass that would invent a
+#     new date) just because a placeholder date happened to pass; only an
+#     explicit `changed` probe verdict does. A plain calendar-only issue
+#     (no `do-work-recheck` marker at all) is completely unaffected — this
+#     clause never runs for it, and `time_gate_future`'s line-1-only
+#     calendar check is exactly what it was before this issue.
+#     `--recheck-probe-enabled` (default `true`, mirrors the
+#     `scope.recheck_probe_enabled` config knob) is the class-level kill
+#     switch: when `false`, EVERY issue is treated as though it carries no
+#     `do-work-recheck` marker at all, regardless of its body or of
+#     `--probe-verdicts` — full calendar-only fallback, byte-identical to
+#     the pre-#1356 behavior. This is deliberately a caller-supplied flag,
+#     not something `classify` reads from config itself, so the pure
+#     function stays free of I/O (see the design note near the bottom of
+#     this header for why that purity is load-bearing).
 #     Exit 0 always (even on an empty input array — emits nothing).
+#
+#   eval-probes --repo <owner/repo>
+#     < wide-fetch-issue-json (array) on stdin — the exact same payload
+#     `classify` reads (only `number` and `body` are used).
+#     Live-queries: for every issue whose body carries a `do-work-recheck`
+#     marker (issue #1356, generalizing #1198's evaluator beyond its single
+#     original `external-dependency`-defer, operator-sweep-only caller to
+#     ANY defer class and to the ordinary dispatch-eligibility filter), runs
+#     `eval-recheck-probe.sh --bulk` and captures its verdict. This is the
+#     live-network precomputation half of the event-gate filter — kept as
+#     its own subcommand for exactly the same reason `closed-by-healthy-pr`
+#     is: `classify` itself stays a pure function with zero `gh`/`npm` calls
+#     of its own, fixture-testable forever (see the design note below).
+#     Prints a JSON object `{"<number>":"<verdict>", ...}` on stdout —
+#     ready to pass straight through as `classify --probe-verdicts`. Issues
+#     with no `do-work-recheck` marker contribute no key (silence, not an
+#     `"absent"` entry — matches `eval-recheck-probe.sh --bulk`'s own output
+#     contract). Empty object (`{}`), not empty string, when no issue in the
+#     input carries a marker — so `--probe-verdicts "$(...)"` composes
+#     directly without a caller-side empty-string special case.
+#     Exit codes: 0 success (even if no issue carries a marker); 65 if `gh`
+#     or `jq` is missing.
 #
 #   closed-by-healthy-pr --repo <owner/repo> --me <login>
 #     Live-queries GitHub: the set of issue numbers with an OPEN PR,
@@ -182,9 +240,13 @@ Usage:
       [--today YYYY-MM-DD] [--respect-assignees true|false]
       [--milestones-enabled true|false]
       [--milestones-prioritize-dispatch true|false]
+      [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
+
+  backlog-filter.sh eval-probes --repo <owner/repo>
+    < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh summary --me <login>
     < wide-fetch-issue-json (array) on stdin
@@ -328,8 +390,33 @@ def time_gate_future($issue; $today):
 def is_closed_by_healthy_pr($issue; $healthy):
   ($healthy | index($issue.number) != null);
 
-def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees):
+# is_event_gated($issue; $recheck_probe_enabled) -- issue #1356. True only
+# when the class-level kill switch is on AND the body carries a
+# `do-work-recheck` marker on ANY line (multiline flag "m" -- unlike
+# `do-work-blocked-until`, this marker carries no line-1 "position
+# discipline" requirement; eval-recheck-probe.sh extract_marker scans the
+# whole body the same way, matching every occurrence of the marker line, so
+# this mirrors the read side contract exactly). When true, the issue
+# eligibility is decided entirely by probe_verdict below -- never by the
+# calendar -- which is what stops the churn-loop this issue closes: an
+# unresolved event gate keeps dropping the issue on every single classify
+# pass regardless of whether a paired blocked-until date elapses, and never
+# invents a new date to do it.
+def is_event_gated($issue; $recheck_probe_enabled):
+  $recheck_probe_enabled and (($issue.body // "") | test("(?m)^<!-- do-work-recheck: .+ -->$"));
+
+# probe_verdict($issue; $verdicts) -- looks up the precomputed verdict
+# eval-probes already ran (network I/O happens there, never here -- classify
+# stays pure). No entry in the map (the precompute step was not run, or it
+# produced no verdict for this issue for any reason) fails safe to
+# "unknown", the same never-treat-inconclusive-as-resolved posture
+# eval-recheck-probe.sh documents in its own header comment.
+def probe_verdict($issue; $verdicts):
+  ($verdicts[($issue.number | tostring)] // "unknown");
+
+def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts):
   (matches_gate_label($issue)) as $gate_hit
+  | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
   | if is_untrusted($issue; $trusted) then
       {number: $issue.number, verdict: "drop", reason: "untrusted-author"}
     elif ($gate_hit != null) then
@@ -348,7 +435,9 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
       {number: $issue.number, verdict: "drop", reason: "assigned-other"}
     elif blocked_by_open_issue($issue; $opennums) then
       {number: $issue.number, verdict: "drop", reason: "blocked-by-open-issue"}
-    elif time_gate_future($issue; $today) then
+    elif ($event_gated and (probe_verdict($issue; $probe_verdicts) != "changed")) then
+      {number: $issue.number, verdict: "drop", reason: "event-gated"}
+    elif ((($event_gated | not)) and time_gate_future($issue; $today)) then
       {number: $issue.number, verdict: "drop", reason: "time-gated"}
     elif is_closed_by_healthy_pr($issue; $healthy) then
       {number: $issue.number, verdict: "drop", reason: "closed-by-healthy-pr"}
@@ -392,7 +481,7 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
 
 . as $issues
 | ($issues | map(.number)) as $opennums
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees))) as $classified
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by(._sort_key))
@@ -419,6 +508,13 @@ cmd_classify() {
   # its end -- the milestone-ranking gate below can only ever turn ON via
   # an explicit true/true pair.
   local milestones_enabled="false" milestones_prioritize_dispatch="false"
+  # --probe-verdicts / --recheck-probe-enabled (issue #1356). Default
+  # "{}" / "true" reproduces pre-#1356 behavior byte-for-byte for every
+  # existing caller and fixture: with an empty verdicts map and no
+  # do-work-recheck marker in the body, is_event_gated is false for every
+  # issue and classify_one falls straight through to the unchanged
+  # time_gate_future branch.
+  local probe_verdicts_json="{}" recheck_probe_enabled="true"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --me) me="${2:-}"; shift 2 ;;
@@ -431,6 +527,8 @@ cmd_classify() {
       --respect-assignees) respect_assignees="${2:-}"; shift 2 ;;
       --milestones-enabled) milestones_enabled="${2:-}"; shift 2 ;;
       --milestones-prioritize-dispatch) milestones_prioritize_dispatch="${2:-}"; shift 2 ;;
+      --probe-verdicts) probe_verdicts_json="${2:-}"; shift 2 ;;
+      --recheck-probe-enabled) recheck_probe_enabled="${2:-}"; shift 2 ;;
       *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
     esac
   done
@@ -461,6 +559,10 @@ cmd_classify() {
     true|false) ;;
     *) echo "classify: --milestones-prioritize-dispatch must be true or false, got: $milestones_prioritize_dispatch" >&2; return 64 ;;
   esac
+  case "$recheck_probe_enabled" in
+    true|false) ;;
+    *) echo "classify: --recheck-probe-enabled must be true or false, got: $recheck_probe_enabled" >&2; return 64 ;;
+  esac
   if [[ -z "$today" ]]; then
     today="$(date -u +%F)"
   fi
@@ -470,6 +572,11 @@ cmd_classify() {
   fi
 
   require_jq "backlog-filter.sh"
+
+  if ! printf '%s' "$probe_verdicts_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "classify: --probe-verdicts must be a JSON object, got: $probe_verdicts_json" >&2
+    return 64
+  fi
 
   local me_lower trusted_json healthy_json peer_json input milestone_rank_on
   me_lower=$(printf '%s' "$me" | tr '[:upper:]' '[:lower:]')
@@ -504,6 +611,8 @@ cmd_classify() {
     --argjson milestone_rank_on "$milestone_rank_on" \
     --arg symptom_re "$SYMPTOM_REGEX" \
     --argjson respect_assignees "$respect_assignees" \
+    --argjson recheck_probe_enabled "$recheck_probe_enabled" \
+    --argjson probe_verdicts "$probe_verdicts_json" \
     "$CLASSIFY_JQ"
 }
 
@@ -550,6 +659,58 @@ cmd_closed_by_healthy_pr() {
       )
       | .closingIssuesReferences[]?.number
     ] | unique | join(",")
+  '
+}
+
+# cmd_eval_probes — the live-network precomputation half of the event-gate
+# filter (issue #1356). Reads the same wide-fetch payload `classify` reads
+# (only `number`/`body` matter), extracts every issue whose body carries a
+# `do-work-recheck` marker, and evaluates each via
+# `eval-recheck-probe.sh --bulk` (the single executable source of truth for
+# marker validation + probe execution — this function never re-derives that
+# logic). Kept separate from `classify` for the same reason
+# `closed-by-healthy-pr` is (see the design note near the top of this file):
+# the classification DECISION needs to stay a pure, fixture-testable
+# function with zero network calls of its own.
+cmd_eval_probes() {
+  local repo=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      *) echo "eval-probes: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+  if [[ -z "$repo" ]]; then
+    echo "eval-probes: --repo is required" >&2
+    usage
+    return 64
+  fi
+  require_jq "backlog-filter.sh"
+
+  local evaluator input
+  evaluator="${here}/eval-recheck-probe.sh"
+  if [[ ! -f "$evaluator" ]]; then
+    echo "eval-probes: eval-recheck-probe.sh not found at $evaluator" >&2
+    return 65
+  fi
+
+  input=$(cat)
+  if [[ -z "$input" ]]; then
+    input="[]"
+  fi
+
+  # Pre-filter to {number,body} NDJSON, restricted to issues whose body
+  # actually carries a do-work-recheck marker -- avoids spawning a
+  # subprocess (let alone a network probe) for the overwhelmingly common
+  # case of a marker-free issue. eval-recheck-probe.sh --bulk would reach
+  # the identical "absent" verdict on its own; this is purely an efficiency
+  # pre-filter, not a second copy of the marker grammar (the actual
+  # validation still happens exactly once, inside eval-recheck-probe.sh).
+  printf '%s' "$input" | jq -c '
+    .[] | select((.body // "") | test("(?m)^<!-- do-work-recheck: .+ -->$"))
+        | {number, body}
+  ' | bash "$evaluator" --bulk "$repo" | jq -sc '
+    map({(.number | tostring): .verdict}) | add // {}
   '
 }
 
@@ -603,6 +764,10 @@ main() {
     closed-by-healthy-pr)
       shift
       cmd_closed_by_healthy_pr "$@"
+      ;;
+    eval-probes)
+      shift
+      cmd_eval_probes "$@"
       ;;
     summary)
       shift
