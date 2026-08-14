@@ -469,12 +469,14 @@ Record `<reaped_worktrees>`, `<reaped_branches>`, `<reaped_orphan_branches>`, `<
 
 ## End-of-session summary
 
-When the loop ends (drain completes or times out, and cleanup has run), report. Lead with a **bucket breakdown** in the same shape as step 2's backlog overview — same two-mode rendering (≥2 non-zero buckets → fixed-width aligned text table; 1 non-zero bucket → single-line summary; 0 buckets → empty-backlog one-liner). The breakdown shows the **remaining open** issues partitioned by skip reason, plus a `Workable` row carrying the remaining workable count (and a reason if 0). This bucket breakdown IS the user-facing rendering of [`setup/04f-completion-ledger.md`](./setup/04f-completion-ledger.md)'s completion ledger ([#1250](https://github.com/mattsears18/shipyard/issues/1250)) — `Workable` is that ledger's bucket 10, and `⚠️ Unaccounted` (below) is its bucket 11. **An `⚠️ Unaccounted` count > 0 gates the "zero-row / clean board" rendering off entirely** — it forces the table (or one-row) mode even when every other bucket including `Workable` reads 0, because rendering "clean board" over an unexplained issue is precisely the dishonest-completion failure this ledger exists to prevent. `Unaccounted` follows the same non-zero-only row rule as every other bucket otherwise. Then print the existing flat summary lines below it:
+When the loop ends (drain completes or times out, and cleanup has run), report. Lead with a **one-line backlog census** ([#1357](https://github.com/mattsears18/shipyard/issues/1357) — see [Backlog census line](#backlog-census-line-1357) below), then a **bucket breakdown** in the same shape as step 2's backlog overview — same two-mode rendering (≥2 non-zero buckets → fixed-width aligned text table; 1 non-zero bucket → single-line summary; 0 buckets → empty-backlog one-liner). The breakdown shows the **remaining open** issues partitioned by skip reason, plus a `Workable` row carrying the remaining workable count (and a reason if 0). This bucket breakdown IS the user-facing rendering of [`setup/04f-completion-ledger.md`](./setup/04f-completion-ledger.md)'s completion ledger ([#1250](https://github.com/mattsears18/shipyard/issues/1250)) — `Workable` is that ledger's bucket 10, and `⚠️ Unaccounted` (below) is its bucket 11. **An `⚠️ Unaccounted` count > 0 gates the "zero-row / clean board" rendering off entirely** — it forces the table (or one-row) mode even when every other bucket including `Workable` reads 0, because rendering "clean board" over an unexplained issue is precisely the dishonest-completion failure this ledger exists to prevent. `Unaccounted` follows the same non-zero-only row rule as every other bucket otherwise. Then print the existing flat summary lines below it:
 
 The full shape, **two-or-more-rows mode**:
 
 ```
 /do-work session — <owner/repo>
+
+Backlog: 11 open — 0 workable · 5 time-gated (next clears 2026-08-20) · 2 blocked (body reference) · 2 awaiting human review · 2 agent-console (operator action)
 
 Bucket                                       Count   Issues
 ───────────────────────────────────────────  ─────   ──────────────────────────────────────────────
@@ -497,6 +499,8 @@ The full shape, **one-row mode** (skip the table):
 ```
 /do-work session — <owner/repo>
 
+Backlog: 2 open — 2 workable
+
 Workable (remaining after session): 2 issues (#<a>, #<b>). Nothing skipped.
 ```
 
@@ -504,6 +508,8 @@ The full shape, **zero-row mode** (everything closed this session — clean boar
 
 ```
 /do-work session — <owner/repo>
+
+Backlog: 0 open — 0 workable
 
 Remaining open: 0 — clean board.
 ```
@@ -589,11 +595,44 @@ Roadmap sweep (#1243): <roadmap_applied_count> applied (milestones assigned / ph
 
 **End-of-session bucket-table rules** (match step 2's modes with one addition):
 
-- **Source data from a fresh fetch** — `gh issue list --repo <owner/repo> --state open --limit 200 --json number,title,labels,assignees,body,author --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}}]'`. The universe drifted since step 2; re-bucket against live state. The `--jq` projection matches step 2's so the bucket router consumes the same flattened shape on both ends. Worker-preamble §"`gh` JSON discipline" covers the convention.
+- **Source data from a fresh fetch** — `FRESH_FETCH_JSON=$(gh issue list --repo <owner/repo> --state open --limit 200 --json number,title,labels,assignees,body,author --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}}]')`. The universe drifted since step 2; re-bucket against live state. The `--jq` projection matches step 2's so the bucket router consumes the same flattened shape on both ends. Worker-preamble §"`gh` JSON discipline" covers the convention. **This is the same fetch [Backlog census line](#backlog-census-line-1357) below reuses — one fetch, two renderings, never a second `gh issue list` call for the census.**
+- **Classify against this same fetch** — run [`scripts/backlog-filter.sh classify`](../../scripts/backlog-filter.sh) (the flag shape [`04-backlog-divert.md`'s Invocation block](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) documents) over `$FRESH_FETCH_JSON`, exactly as [`drain.md`'s termination assertion](./drain.md#termination-assertion) already does for the completion ledger. Both the bucket table below and the census line above are renderings of this one classify output plus the [`setup/04f-completion-ledger.md`](./setup/04f-completion-ledger.md) bucket taxonomy it feeds — never re-derive bucket membership by hand at either render site.
 - **Same two-mode rendering as step 2.** Column-width rules, row order, truncation, and the `Workable`-row-always-prints-in-table-mode rule all match.
 - **`Workable`-row reason text when `<W_end> == 0`.** Pick the dominant cause: `everything shipped this session` / `everything left is blocked` / `everything left needs triage/design or refinement/review` / `everything left is in flight` / `nothing matches the workable filter` (fallback).
 - **`⚠️ Unaccounted` row ([#1250](https://github.com/mattsears18/shipyard/issues/1250)).** Sourced from the completion ledger's bucket 11 (see [`setup/04f-completion-ledger.md`](./setup/04f-completion-ledger.md)) — issues that matched none of the ten named buckets on this same fresh fetch. Omit the row when the count is 0 (the overwhelming common case — the ledger's own gate at [`drain.md`'s termination assertion](./drain.md#termination-assertion) already refuses to reach this summary with a non-zero unaccounted count under normal operation). If it prints anyway — a `--fast` session, a manually-forced summary, or a genuine gate bypass — that is itself worth flagging: this line is the last line of defense against a silent false-completion claim, so render it even though reaching it here means an earlier gate should have caught it first.
-- Print the bucket breakdown FIRST, above the flat lines. The `Operator queue — needs you (N)` block (see its own rule below), when non-empty, prints immediately after the bucket breakdown and before the flat lines — it is the second visually-distinct element, ahead of every routine flat line, precisely so it can't be mistaken for one.
+- Print the [Backlog census line](#backlog-census-line-1357) FIRST, above the bucket breakdown; print the bucket breakdown next, above the flat lines. The `Operator queue — needs you (N)` block (see its own rule below), when non-empty, prints immediately after the bucket breakdown and before the flat lines — it is the second visually-distinct element, ahead of every routine flat line, precisely so it can't be mistaken for one.
+
+### Backlog census line ([#1357](https://github.com/mattsears18/shipyard/issues/1357))
+
+**The gap this closes.** The bucket breakdown above answers "which issues are stuck and why" at per-issue granularity — but a reader whose only question is "why is the open-issue count non-zero" has to read the whole table (or the whole `⚠️ Unaccounted`/`Session end` machinery) to get a one-sentence answer the orchestrator already computed as a side effect of the classify pass above. Issue #1357's repro: a session dispatched zero code workers because every workable issue was correctly gated, and the operator's very next question — "why do we still have 11 open issues?" — required an ad-hoc re-fetch, a per-issue body scan for `do-work-blocked-until` markers, and a manual tally, several minutes of work to reconstruct something the session already knew.
+
+**Always prints, same standing as `Session end (#1252):`** — even when the bucket table itself collapses to one-row or zero-row mode, even under `--fast`, and even when the session dispatched nothing this turn. `0 workable` renders explicitly (never omitted) — a healthy "nothing to do" reading is a *stated* outcome, not silence a reader has to infer from an absent line.
+
+**No new `gh` call — reuse the classify output the bucket-table rules above already produced against `$FRESH_FETCH_JSON`.** Render:
+
+```
+Backlog: <total> open — <W> workable · <t> time-gated (next clears <YYYY-MM-DD>) · <b> blocked (body reference) · <h> awaiting human review · <o> agent-console (operator action) · ...
+```
+
+- `<total>` is the same open-issue count the bucket table and the `Session end` line's `terminal-state=` token already use (`unfiltered_open_count` at the drain-termination call site — see [`04f-completion-ledger.md`'s composition note](./setup/04f-completion-ledger.md#composes-with-does-not-implement) — or a direct `length` count of `$FRESH_FETCH_JSON` at any other call site).
+- `<W>` (workable) is the classify output's `eligible` count — the same value the bucket table's `Workable` row carries. **Always render this term, including `0 workable`** — it is the one term in this line that is never omitted regardless of value, per the acceptance criterion above.
+- Every other term is a **non-zero-only** clause, same convention as `⚠️ Unaccounted` and every other bucket-table row: a bucket reading 0 contributes no clause to the line at all, rather than a `0 <bucket-name>` clause cluttering the common case. A session with nothing gated renders `Backlog: 2 open — 2 workable` (no further clauses) — see the one-row-mode worked example above.
+- **Bucket names are lifted verbatim from [`backlog-ownership.md`](./setup/backlog-ownership.md#ownership-table)'s Bucket column — never restated independently.** `workable` ← bucket 8 "Workable"; `blocked (body reference)` and `time-gated` ← the two sub-conditions bucket 7 "Blocked (body reference / time-gate)" names in its own row title (the row bundles both conditions into one bucket for dispatch purposes, but the census still needs them as separate clauses per the next bullet, so both terms come from words already present in that one row's own name — not a new taxonomy); `awaiting human review` ← bucket 5.5 "Awaiting human review"; `agent-console (operator action)` ← bucket 5.6 "Agent-console (operator action)"; `needs triage` ← bucket 5 "Needs triage"; `won't fix` ← bucket 3 "Won't fix"; `discussion` ← bucket 4 "Discussion"; `in flight` ← bucket 2 "In flight"; `untrusted author` ← bucket 0.5 "Untrusted author". Map classify's machine-readable `reason` strings onto these names via the same reasons [`04-backlog-divert.md`'s Invocation block](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) and [`backlog-filter.sh`](../../scripts/backlog-filter.sh) already emit (`time-gated`, `blocked-by-open-issue`, `needs-human-review`, `operator`/`agent-console`, etc.) — the mapping is a rendering choice, not a second definition of what each bucket means.
+- **Time-gated carries the earliest upcoming clear time ([#1357](https://github.com/mattsears18/shipyard/issues/1357) acceptance criterion).** When `<t>` (the time-gated count) is non-zero, compute the minimum `do-work-blocked-until` date across that bucket's issues from the body text already present in `$FRESH_FETCH_JSON` — no second fetch, the marker is on line 1 of a body already in hand:
+
+  ```bash
+  # $FRESH_FETCH_JSON and $TIME_GATED_NUMS (issue numbers whose classify
+  # verdict was {"verdict":"drop","reason":"time-gated"}) are already in
+  # hand from the classify pass above.
+  NEXT_CLEARS=$(jq -r --argjson nums "$TIME_GATED_NUMS" '
+    [ .[] | select(([.number] | inside($nums)))
+      | (.body // "") | capture("(?m)^<!--\\s*do-work-blocked-until:\\s*(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})\\s*-->"; "").d ]
+    | sort | first // "unknown"
+  ' <<< "$FRESH_FETCH_JSON")
+  ```
+
+  Render `<t> time-gated (next clears <NEXT_CLEARS>)`. This turns "blocked" into "blocked until a knowable moment" — the difference between a backlog that is stuck and one that is scheduled. The marker format is date-only (`YYYY-MM-DD`, per [`backlog-ownership.md`](./setup/backlog-ownership.md#ownership-table)'s bucket 7 and [`04f-completion-ledger.md`](./setup/04f-completion-ledger.md#the-bucket-taxonomy)'s own worked example) — the census reports at that same granularity rather than fabricating a time-of-day the marker doesn't carry. If `NEXT_CLEARS` comes back `unknown` (a classify-flagged time-gated issue whose marker the regex couldn't re-extract — should not happen in practice since classify itself required the match, but fail loud rather than silently drop the annotation), render `(next clears date unavailable — see bucket table)` instead of a guessed date.
+- **Line-wraps in the terminal are fine** — "one-line" means one logical census statement, not a hard column-width cap; a long backlog with many non-zero buckets is expected to wrap.
 
 **Per-line rules** for the flat block:
 
