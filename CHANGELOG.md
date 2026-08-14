@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.33.20 — 2026-08-14
+
+P2: closes #1362. The operator layer's default perception tools (`screenshot`, `read_page`) assume a page eventually reaches `document_idle`. Enterprise consoles routinely never do — they hold long-poll connections open indefinitely — so those tools timed out repeatedly against pages that were actually fully rendered and interactive, and nothing was counting the attempts against a documented budget.
+
+- `plugins/shipyard/commands/do-work/operate/03-error-handling-and-safety.md` — new "Long-polling consoles that never reach `document_idle`" section: documents the timeout signature (three confirmed error strings), a tool-preference order (`javascript_tool` → `find` → `read_page` → `screenshot`, inverted from the general default because the general-purpose tools are the ones that wait on the idle signal that never comes), the `javascript_tool` `document.body.innerText.length` readiness probe as the cheap way to distinguish "still rendering" from "rendered, but never idle," and names GCP Console (`console.cloud.google.com`) and Meta App Dashboard (`developers.facebook.com`) as confirmed instances.
+- `plugins/shipyard/commands/do-work/orchestrator-state-reference.md` — new session-local `perception_retry_counts` structure: a per-origin (not per-session) failed-perception-attempt counter, capped at 2 consecutive failures, so exhausting the budget against one console doesn't silently spend another's. The 3rd consecutive failure trips a hand-back read off the counter rather than decided in the moment.
+- `orchestrator-state-reference.md` and `cleanup-summary.md` — new `operator_handbacks` reason `"never-idle"`, wired into the existing hand-back ledger and end-of-session `Operator queue — needs you` block/reason-phrase table so a perception-budget exhaustion surfaces like any other operator hand-back instead of silently stalling the drain loop; the item stays on `agent-console` (not relabeled), since the console may well be reachable on a later attempt or a different backend.
+
 ### 4.33.19 — 2026-08-14
 
 P1: closes #1359. Shipyard's config names every routing label BY STRING (the merged config's `labels` block) and nothing ever verified those strings exist as label objects in the target repo. A consumer repo that declares no `labels` block inherits shipyard's built-in defaults wholesale — including names that only ever held true of shipyard's OWN repo. Reproduced against `mattsears18/lightwork`: two inherited config-named labels (`blocked:agent`, `blocked:agent-hard`) don't exist there at all, silently, with no check anywhere in setup, dispatch, or drain catching it — a mislabeled/missing-label issue is invisible to both `/do-work` and `/my-turn` at once.
