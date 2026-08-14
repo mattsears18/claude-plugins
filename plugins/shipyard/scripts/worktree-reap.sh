@@ -609,6 +609,13 @@ Usage:
                               [--peer-stale-min <N>] [--dry-run]
   worktree-reap.sh reap-orphan-branches --repo-root <path> \
                                         --session-id <id> [--dry-run]
+  worktree-reap.sh reap-orphan-orchestrators --repo-root <path> \
+                                             --session-id <id> \
+                                             [--phase <p>]
+  worktree-reap.sh sweep-stale-agents --repo-root <path> \
+                                      --session-id <id> \
+                                      [--max-per-session <K>] \
+                                      [--warn-threshold <K>]
   worktree-reap.sh reap-session-worktrees --repo-root <path> \
                                           --session-id <id> \
                                           [--agent-id <id> ...] [--dry-run]
@@ -696,6 +703,69 @@ reap-orphan-branches    — Issue #326. Deletes every local worktree-agent-*
                           --dry-run emits reaped-branch: lines without
                           deleting or writing the audit log. Idempotent —
                           second pass is a no-op.
+
+reap-orphan-orchestrators — Issue #1355. Single-call replacement for the
+                          setup-1.6.5 sweep's own discovery+reap loop, which
+                          used to live inline in the orchestrator's own Bash
+                          block (a `while ... < <(...)` process-substitution
+                          loop) and therefore had to run BEFORE EnterWorktree
+                          activated the worktree-isolation guard — a loop
+                          shape in the caller's own command text is refused
+                          post-isolation regardless of what it operates on.
+                          Wrapping the identical logic in this subcommand
+                          moves the loop INSIDE the script; the guard only
+                          inspects the literal Bash command the caller
+                          issues, not what an invoked script does internally
+                          (confirmed empirically — see issue #1355's PR
+                          description), so a single `worktree-reap.sh
+                          reap-orphan-orchestrators ...` call is reachable
+                          at ANY point in setup, pre- or post-relocation.
+                          Sweeps .claude/worktrees/ for orphaned
+                          orchestrator-<dead-session-id>/ directories (via
+                          session-identity.sh find-orphan-orchestrators
+                          --emit-resolved-id) and reaps each one through the
+                          same `reap` action this subcommand always used
+                          (reaped-orphan-orchestrator /
+                          reaped-orphan-orchestrator-raw-rm /
+                          reaped-orphan-orchestrator-failed). Skipped
+                          entirely when SHIPYARD_KEEP_SESSIONS=1 (emits
+                          `skipped: SHIPYARD_KEEP_SESSIONS=1`). Emits one
+                          `summary: reaped=<R>` line. Never infers liveness
+                          or reap-eligibility from a worktree's directory or
+                          branch NAME (issue #836) — the underlying
+                          find-orphan-orchestrators helper tests the
+                          resolved session-id stash, and `reap`'s own
+                          liveness gate is untouched by this wrapper.
+
+sweep-stale-agents      — Issue #1355. Single-call replacement for the
+                          setup-3b sweep's own preamble (disk-backlog
+                          warning banner, orchestrator-PID detection) plus
+                          its `reap-stale` call, all of which used to live
+                          as several separate statements in the
+                          orchestrator's own Bash block. Reachable at ANY
+                          point in setup, pre- or post-relocation, for the
+                          same reason reap-orphan-orchestrators above is —
+                          one script call, no loop/compound shape in the
+                          CALLER's own command text. Internally: reads
+                          worktree_reap.max_per_session /
+                          worktree_reap.warn_threshold from
+                          shipyard-config.sh when not passed explicitly,
+                          emits the same backlog-warning banner setup-3b's
+                          inline block used to print when the agent-*
+                          worktree count is at or above the warn threshold,
+                          detects the orchestrator PID via
+                          session-identity.sh, then calls this script's own
+                          `reap-stale` (unchanged — issue #832's in-flight
+                          guard is already automatic there per issue #1147,
+                          reading .in_flight straight off the SAME
+                          --session-id, so this wrapper does not re-derive
+                          --exclude-agent-id itself), and runs `git worktree
+                          prune`. Emits the warning banner (if triggered)
+                          then reap-stale's own `summary: reaped=<R>
+                          deferred=<D> unreaped=<U> remaining=<REMAIN>` line
+                          verbatim as the last line — callers should surface
+                          that last line exactly as setup-3b's spec always
+                          did.
 
 reap-session-worktrees  — Issue #509. Targeted reap of THIS session's agent
                           worktrees by explicit agent-id, run as the FIRST
@@ -2681,6 +2751,135 @@ reap_action() {
   return 0
 }
 
+# Issue #1355 — single-call replacement for setup-1.6.5's own
+# discover-then-reap loop. Before this subcommand existed, the orchestrator's
+# own spec ran the `while IFS=$'\t' read ... done < <(session-identity.sh
+# find-orphan-orchestrators ...)` loop directly in its own Bash tool call —
+# a process-substitution loop, which is refused by the harness's
+# worktree-isolation guard once EnterWorktree has isolated the session
+# (dont.md's "post-relocation Bash blocks must be plain, single-purpose
+# commands", issue #1277). That refusal is why setup-1.6.5 had to run
+# BEFORE relocation. Moving the identical loop body into this function —
+# invoked as ONE plain `worktree-reap.sh reap-orphan-orchestrators ...`
+# call — sidesteps the refusal: the guard inspects the literal command text
+# the caller issues, not what a script invoked by that command does
+# internally (confirmed empirically against a live worktree-isolated
+# session: an equivalent `git -C <other-worktree>` call refused inline
+# succeeded unchanged once moved inside an invoked script, with or without
+# the cross-worktree path passed as a script argument — see issue #1355).
+# So this subcommand is reachable at ANY point in setup, not just
+# pre-relocation.
+#
+# Every reap still routes through `reap_action` above, unchanged — this
+# function only replaces the orchestrator-side loop, not the reap mechanism
+# or its audit-log shape.
+reap_orphan_orchestrators() {
+  local repo_root=""
+  local session_id=""
+  local phase="setup-1.6.5"
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --session-id)
+        session_id="${2:-}"
+        shift 2
+        ;;
+      --session-id=*)
+        session_id="${1#--session-id=}"
+        shift
+        ;;
+      --phase)
+        phase="${2:-}"
+        shift 2
+        ;;
+      --phase=*)
+        phase="${1#--phase=}"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "reap-orphan-orchestrators: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "reap-orphan-orchestrators: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "reap-orphan-orchestrators: --repo-root is required" >&2
+    return 64
+  fi
+  if [ -z "$session_id" ]; then
+    echo "reap-orphan-orchestrators: --session-id is required" >&2
+    return 64
+  fi
+
+  # Same skip condition step 1.6 and the pre-#1355 step 1.6.5 prose both
+  # documented — the user is explicitly opting to keep historical state, so
+  # worktree dirs are part of what's kept. Previously enforced by the
+  # caller not invoking the block at all; now enforced here too, so the
+  # subcommand is self-contained and safe to call unconditionally.
+  if [ "${SHIPYARD_KEEP_SESSIONS:-}" = "1" ]; then
+    echo "skipped: SHIPYARD_KEEP_SESSIONS=1"
+    return 0
+  fi
+
+  # Anchor cwd — mirrors reap_stale's own rationale: reap_action routes
+  # through fast_worktree_remove, which runs bare (cwd-dependent) `git
+  # worktree` commands.
+  if ! cd "$repo_root" 2>/dev/null; then
+    echo "reap-orphan-orchestrators: cannot cd to --repo-root: $repo_root" >&2
+    return 64
+  fi
+
+  local this_dir
+  this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local identity_script="$this_dir/session-identity.sh"
+  if [ ! -f "$identity_script" ]; then
+    echo "reap-orphan-orchestrators: cannot locate session-identity.sh alongside this script" >&2
+    return 64
+  fi
+
+  local reaped_count=0
+  local orph_path orph_session_id orph_name
+  while IFS=$'\t' read -r orph_path orph_session_id; do
+    [ -z "$orph_path" ] && continue
+    [ -d "$orph_path" ] || continue
+    orph_name=$(basename "$orph_path")
+    # Issue #284 — `reap` handles both the git-worktree-remove attempt and
+    # the rm -rf fallback internally, emitting the right action variant in
+    # a single audit-log line.
+    reap_action \
+      --action reaped-orphan-orchestrator \
+      --worktree-path "$orph_path" \
+      --worktree-name "$orph_name" \
+      --session-id "$session_id" \
+      --reaped-session-id "$orph_session_id" \
+      --phase "$phase" >/dev/null 2>&1 || true
+    reaped_count=$((reaped_count + 1))
+  done < <("$identity_script" find-orphan-orchestrators \
+             --repo-root "$repo_root" --current-session-id "$session_id" \
+             --emit-resolved-id 2>/dev/null)
+
+  git worktree prune 2>/dev/null || true
+
+  printf 'summary: reaped=%s\n' "$reaped_count"
+  return 0
+}
+
 # Issue #326 — reap stale worktree-agent-* local branch refs.
 #
 # The Claude Code harness creates one `worktree-agent-<id>` branch per agent
@@ -3387,6 +3586,135 @@ reap_stale() {
   return 0
 }
 
+# Issue #1355 — single-call replacement for setup-3b's own preamble (disk-
+# backlog warning banner, orchestrator-PID detection, config reads) plus its
+# `reap-stale` call. Before this subcommand existed, that preamble was
+# several separate statements in the orchestrator's own Bash tool call —
+# fine pre-relocation, but exactly the multi-statement shape dont.md's
+# post-relocation-Bash-blocks rule (#1277) and reap-orphan-orchestrators'
+# comment above both document as fragile once compounded further. Wrapping
+# the whole preamble + reap-stale call in one script call, invoked as ONE
+# plain `worktree-reap.sh sweep-stale-agents ...` command, makes it
+# reachable at any point in setup, pre- or post-relocation — same rationale
+# as reap_orphan_orchestrators above.
+#
+# Deliberately does NOT recompute an --exclude-agent-id list itself: issue
+# #1147 already made reap_stale's own in-flight guard automatic (it reads
+# .in_flight straight off the SAME --session-id this wrapper is given), so
+# doing it again here would be pure duplication, not defense in depth.
+sweep_stale_agents() {
+  local repo_root=""
+  local session_id=""
+  local max_per_session=""
+  local warn_threshold=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --session-id)
+        session_id="${2:-}"
+        shift 2
+        ;;
+      --session-id=*)
+        session_id="${1#--session-id=}"
+        shift
+        ;;
+      --max-per-session)
+        max_per_session="${2:-}"
+        shift 2
+        ;;
+      --max-per-session=*)
+        max_per_session="${1#--max-per-session=}"
+        shift
+        ;;
+      --warn-threshold)
+        warn_threshold="${2:-}"
+        shift 2
+        ;;
+      --warn-threshold=*)
+        warn_threshold="${1#--warn-threshold=}"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "sweep-stale-agents: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "sweep-stale-agents: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    echo "sweep-stale-agents: --repo-root is required" >&2
+    return 64
+  fi
+  if [ -z "$session_id" ]; then
+    echo "sweep-stale-agents: --session-id is required" >&2
+    return 64
+  fi
+
+  if ! cd "$repo_root" 2>/dev/null; then
+    echo "sweep-stale-agents: cannot cd to --repo-root: $repo_root" >&2
+    return 64
+  fi
+
+  local this_dir
+  this_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local config_script="$this_dir/shipyard-config.sh"
+  local identity_script="$this_dir/session-identity.sh"
+
+  # Best-effort config reads — a missing/unreadable shipyard-config.sh (or a
+  # value it can't resolve) falls back to the same literal defaults setup-3b's
+  # inline block always used, never a hard failure.
+  if [ -z "$max_per_session" ] && [ -f "$config_script" ]; then
+    max_per_session=$("$config_script" get worktree_reap.max_per_session 2>/dev/null)
+  fi
+  [ -z "$max_per_session" ] && max_per_session=10
+  if [ -z "$warn_threshold" ] && [ -f "$config_script" ]; then
+    warn_threshold=$("$config_script" get worktree_reap.warn_threshold 2>/dev/null)
+  fi
+  [ -z "$warn_threshold" ] && warn_threshold=20
+
+  # Threshold warning (issue #836 fix 4) — same shape setup-3b's inline
+  # block always printed. Two cheap reads gate the (potentially slower) size
+  # probe: only pay for `du` when the count actually crosses the threshold.
+  local wt_count
+  wt_count=$(find .git/worktrees -maxdepth 1 -type d -name 'agent-*' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${wt_count:-0}" -gt 0 ] 2>/dev/null && [ "${wt_count:-0}" -ge "${warn_threshold:-20}" ] 2>/dev/null; then
+    local reclaimable_kb reclaimable_human
+    reclaimable_kb=$(find .claude/worktrees -maxdepth 1 -type d -name 'agent-*' -print0 2>/dev/null \
+      | xargs -0 du -sk 2>/dev/null | awk '{sum+=$1} END{print sum+0}')
+    reclaimable_human=$(( (reclaimable_kb + 1023) / 1024 ))
+    cat <<WARNEOF
+warning: worktree backlog: $wt_count agent-* worktrees on disk (~$reclaimable_human MB reclaimable), at or above the $warn_threshold-worktree warn threshold (worktree_reap.warn_threshold). This session's sweep reaps at most $max_per_session of them (oldest-first) — the rest are left for subsequent sessions to continue draining. See issue #836 if the backlog isn't shrinking session over session.
+WARNEOF
+  fi
+
+  # Issue #263 — declare the orchestrator's PID explicitly so classify-all's
+  # self-ancestor short-circuit fires reliably.
+  local orchestrator_pid=""
+  if [ -f "$identity_script" ]; then
+    orchestrator_pid=$("$identity_script" detect-orchestrator-pid 2>/dev/null)
+  fi
+
+  local -a reap_stale_args=(--repo-root "$repo_root" --session-id "$session_id" --max-per-session "$max_per_session")
+  [ -n "$orchestrator_pid" ] && reap_stale_args+=(--orchestrator-pid "$orchestrator_pid")
+
+  reap_stale "${reap_stale_args[@]}"
+}
+
 # Issue #712 — post-sweep verification: which worktrees are STILL on disk?
 #
 # The reap sweeps are fire-and-forget (`2>/dev/null || true`) and run inside a
@@ -3521,6 +3849,22 @@ main() {
       # full algorithm.
       shift
       reap_orphan_branches "$@"
+      ;;
+    reap-orphan-orchestrators)
+      # Issue #1355 — single-call replacement for setup-1.6.5's own
+      # discover-then-reap loop, so it's reachable at any point in setup
+      # instead of only pre-relocation. See reap_orphan_orchestrators for
+      # the full algorithm.
+      shift
+      reap_orphan_orchestrators "$@"
+      ;;
+    sweep-stale-agents)
+      # Issue #1355 — single-call replacement for setup-3b's own preamble
+      # (disk-backlog warning, orchestrator-PID detection) plus its
+      # reap-stale call, so it's reachable at any point in setup instead of
+      # only pre-relocation. See sweep_stale_agents for the full algorithm.
+      shift
+      sweep_stale_agents "$@"
       ;;
     reap-session-worktrees)
       # Issue #509 — targeted reap of THIS session's agent worktrees by

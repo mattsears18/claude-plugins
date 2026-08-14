@@ -2985,6 +2985,209 @@ esac
 assert_equals "$equals_form_ok" "1" \
   "(120a) --flag=value form produces the same shape as the two-arg form"
 
+# ============================================================================
+# Issue #1355 — `reap-orphan-orchestrators` subcommand: single-call
+# replacement for the setup-1.6.5 sweep's own discover-then-reap loop, so
+# it's reachable at any point in setup (not just pre-relocation, before the
+# harness's worktree-isolation guard has activated).
+#
+# Coverage goals:
+#   - No orchestrator-* worktrees at all -> summary: reaped=0, exit 0.
+#   - An orphan orchestrator worktree (no session file — dead per
+#     find-orphan-orchestrators) is reaped, summary: reaped=1, and the
+#     directory is actually gone.
+#   - The CURRENT session's own orchestrator worktree is never touched
+#     (find-orphan-orchestrators already excludes it by id).
+#   - SHIPYARD_KEEP_SESSIONS=1 skips the sweep entirely — no reap, no audit
+#     write, `skipped: SHIPYARD_KEEP_SESSIONS=1` on stdout.
+#   - Audit log entry carries the reaped-orphan-orchestrator* action shape.
+#   - Bad usage (missing --repo-root / --session-id) exits 64.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh reap-orphan-orchestrators tests (issue #1355)"
+echo
+
+roo_repo="$tmpdir/roo-repo"
+roo_home="$tmpdir/roo-home"
+
+reset_roo_layout() {
+  rm -rf "$roo_repo" "$roo_home"
+  mkdir -p "$roo_home/sessions"
+  mkdir -p "$roo_repo/.claude/worktrees"
+  (
+    cd "$roo_repo" || exit 1
+    git init -q
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+run_roo() {
+  SHIPYARD_HOME="$roo_home" bash "$helper" reap-orphan-orchestrators \
+    --repo-root "$roo_repo" --session-id "roo-current-session" 2>/dev/null
+}
+
+roo_audit_log="$roo_home/reap-audit.jsonl"
+
+# --- (121) no orchestrator-* worktrees at all -> summary: reaped=0 ---
+reset_roo_layout
+result=$(run_roo)
+exit_code=$?
+assert_equals "$result" "summary: reaped=0" \
+  "(121) no orchestrator-* worktrees -> 'summary: reaped=0'"
+assert_exit_code "$exit_code" "0" \
+  "(121a) no orchestrator-* worktrees -> exit 0"
+
+# --- (122) orphan orchestrator dir (no session file) -> reaped, dir gone ---
+reset_roo_layout
+mkdir -p "$roo_repo/.claude/worktrees/orchestrator-dead-session-1355"
+result=$(run_roo)
+assert_equals "$result" "summary: reaped=1" \
+  "(122) orphan orchestrator dir with no session file -> 'summary: reaped=1'"
+if [ -d "$roo_repo/.claude/worktrees/orchestrator-dead-session-1355" ]; then
+  printf '  %sFAIL%s  (122a) orphan orchestrator dir still exists after sweep\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (122a) orphan orchestrator dir removed by sweep\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+
+# --- (123) audit log carries the reaped-orphan-orchestrator* action shape ---
+reset_roo_layout
+mkdir -p "$roo_repo/.claude/worktrees/orchestrator-dead-session-audit"
+run_roo >/dev/null
+if [ ! -f "$roo_audit_log" ]; then
+  printf '  %sFAIL%s  (123) audit log not created at %s\n' "$RED" "$RESET" "$roo_audit_log"
+  fail=$((fail+1))
+else
+  line=$(cat "$roo_audit_log")
+  case "$line" in
+    *'"action":"reaped-orphan-orchestrator'*) shape_ok=1 ;;
+    *) shape_ok=0 ;;
+  esac
+  case "$line" in *'"phase":"setup-1.6.5"'*) ;; *) shape_ok=0 ;; esac
+  if [ "$shape_ok" = "1" ]; then
+    printf '  %sPASS%s  (123) audit log carries reaped-orphan-orchestrator* action + setup-1.6.5 phase\n' "$GREEN" "$RESET"
+    pass=$((pass+1))
+  else
+    printf '  %sFAIL%s  (123) audit log shape mismatch — line was: %s\n' "$RED" "$RESET" "$line"
+    fail=$((fail+1))
+  fi
+fi
+
+# --- (124) the CURRENT session's own orchestrator worktree is untouched ---
+reset_roo_layout
+mkdir -p "$roo_repo/.claude/worktrees/orchestrator-roo-current-session"
+printf 'roo-current-session' > "$roo_repo/.claude/worktrees/orchestrator-roo-current-session/.shipyard-session-id"
+result=$(run_roo)
+assert_equals "$result" "summary: reaped=0" \
+  "(124) current session's own orchestrator worktree -> not reaped ('summary: reaped=0')"
+if [ -d "$roo_repo/.claude/worktrees/orchestrator-roo-current-session" ]; then
+  printf '  %sPASS%s  (124a) current session orchestrator worktree left in place\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (124a) current session orchestrator worktree was wrongly removed\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (125) SHIPYARD_KEEP_SESSIONS=1 skips the sweep entirely ---
+reset_roo_layout
+mkdir -p "$roo_repo/.claude/worktrees/orchestrator-dead-session-keep"
+result=$(SHIPYARD_KEEP_SESSIONS=1 SHIPYARD_HOME="$roo_home" bash "$helper" reap-orphan-orchestrators \
+  --repo-root "$roo_repo" --session-id "roo-current-session" 2>/dev/null)
+assert_equals "$result" "skipped: SHIPYARD_KEEP_SESSIONS=1" \
+  "(125) SHIPYARD_KEEP_SESSIONS=1 -> 'skipped: SHIPYARD_KEEP_SESSIONS=1', no sweep"
+if [ -d "$roo_repo/.claude/worktrees/orchestrator-dead-session-keep" ]; then
+  printf '  %sPASS%s  (125a) orphan dir survives under SHIPYARD_KEEP_SESSIONS=1\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (125a) orphan dir was reaped despite SHIPYARD_KEEP_SESSIONS=1\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (126) bad usage: missing --repo-root / --session-id -> exit 64 ---
+bash "$helper" reap-orphan-orchestrators --session-id "x" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(126) reap-orphan-orchestrators missing --repo-root -> exit 64"
+bash "$helper" reap-orphan-orchestrators --repo-root "$roo_repo" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(126a) reap-orphan-orchestrators missing --session-id -> exit 64"
+
+# ============================================================================
+# Issue #1355 — `sweep-stale-agents` subcommand: single-call replacement for
+# the setup-3b sweep's own preamble (disk-backlog warning, orchestrator-PID
+# detection) plus its `reap-stale` call, so it's reachable at any point in
+# setup, not just pre-relocation.
+#
+# Coverage goals:
+#   - No agent-* worktrees at all -> reap-stale's own empty summary line.
+#   - A dead-lock agent-* worktree is reaped through to the same
+#     reaped:/summary: shape `reap-stale` itself produces.
+#   - Bad usage (missing --repo-root / --session-id) exits 64.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh sweep-stale-agents tests (issue #1355)"
+echo
+
+ssa_repo="$tmpdir/ssa-repo"
+ssa_home="$tmpdir/ssa-home"
+
+reset_ssa_layout() {
+  rm -rf "$ssa_repo" "$ssa_home"
+  mkdir -p "$ssa_home"
+  mkdir -p "$ssa_repo"
+  (
+    cd "$ssa_repo" || exit 1
+    git init -q -b main
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    git commit -q --allow-empty -m "init"
+  ) >/dev/null 2>&1
+}
+
+ssa_add_worktree() {
+  local id="$1"
+  git -C "$ssa_repo" worktree add -q \
+    ".claude/worktrees/agent-$id" -b "do-work/issue-$id" >/dev/null 2>&1
+}
+
+run_ssa() {
+  SHIPYARD_HOME="$ssa_home" bash "$helper" sweep-stale-agents \
+    --repo-root "$ssa_repo" --session-id "ssa-test-session" "$@" 2>/dev/null
+}
+
+# --- (127) no agent-* worktrees at all -> reap-stale's own empty summary ---
+reset_ssa_layout
+result=$(run_ssa)
+assert_equals "$result" "summary: reaped=0 deferred=0 unreaped=0 remaining=0" \
+  "(127) no agent-* worktrees -> reap-stale's empty summary line, unchanged shape"
+
+# --- (128) a dead-lock agent worktree is reaped through the wrapper ---
+reset_ssa_layout
+ssa_add_worktree deadone
+printf 'claude agent agent-deadone (pid 999999)\n' \
+  > "$ssa_repo/.git/worktrees/agent-deadone/locked"
+result=$(run_ssa --max-per-session 10)
+case "$result" in
+  *"reaped: agent-deadone"*) reap_line_ok=1 ;;
+  *) reap_line_ok=0 ;;
+esac
+assert_equals "$reap_line_ok" "1" \
+  "(128) dead-lock agent worktree -> 'reaped: agent-deadone' line present"
+assert_equals "$result" "$(printf 'reaped: agent-deadone\nsummary: reaped=1 deferred=0 unreaped=0 remaining=0')" \
+  "(128a) sweep-stale-agents output shape matches reap-stale's own exactly"
+
+# --- (129) bad usage: missing --repo-root / --session-id -> exit 64 ---
+bash "$helper" sweep-stale-agents --session-id "x" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(129) sweep-stale-agents missing --repo-root -> exit 64"
+bash "$helper" sweep-stale-agents --repo-root "$ssa_repo" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(129a) sweep-stale-agents missing --session-id -> exit 64"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
