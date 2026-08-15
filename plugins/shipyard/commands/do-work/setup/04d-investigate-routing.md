@@ -6,15 +6,14 @@ Fragment of step **4** ([`04-backlog-divert.md`](./04-backlog-divert.md#4-fetch-
 
 [#514](https://github.com/mattsears18/shipyard/issues/514) made `needs-triage` investigate-mode's entry condition. [#556](https://github.com/mattsears18/shipyard/issues/556) routed trusted-author `needs-triage` issues to `investigate_candidates` instead of dropping them. Both were **label-only**: the sole entry signal was the presence of the `needs-triage` label.
 
-[#1090](https://github.com/mattsears18/shipyard/issues/1090) found the label carries two incompatible meanings in practice — an inbound API from third-party bots (Sentry auto-files crash reports with it) and a human convention meaning "I haven't thought this through" — with only the first meaning actually load-bearing for investigate mode. The fix mirrors [#520](https://github.com/mattsears18/shipyard/issues/520)'s `needs-refinement` retirement: replace the persisted-label-only gate with a **live detection scan**, keep the label as a *sufficient but not required* trigger during a migration window (so the inbound Sentry pipeline never breaks even before every consuming repo upgrades), and retire the label once entry no longer depends on it. This fragment implements the detection scan. The label itself is NOT retired yet — see "Migration window" below.
+[#1090](https://github.com/mattsears18/shipyard/issues/1090) found the label carried two incompatible meanings in practice — an inbound API from third-party bots (Sentry auto-files crash reports with it) and a human convention meaning "I haven't thought this through" — with only the first meaning actually load-bearing for investigate mode. The fix mirrors [#520](https://github.com/mattsears18/shipyard/issues/520)'s `needs-refinement` retirement: replace the persisted-label-only gate with a **live detection scan**, keep the label as a *sufficient but not required* trigger during a migration window (so the inbound Sentry pipeline never breaks even before every consuming repo upgrades), then retire the label once entry no longer depends on it. This fragment implements the detection scan. **The label was retired in [#1120](https://github.com/mattsears18/shipyard/issues/1120) — entry is now detection-only.** See "Label retirement — completed" below.
 
-## The three signals (OR'd — any one is sufficient)
+## The two signals (OR'd — either one is sufficient)
 
 Applies only to issues that have already survived the trusted-author gate above (`author.login` in `trusted_authors`) — investigate mode never dispatches against an untrusted author's issue, regardless of which signal matched.
 
-1. **`needs-triage` label** — accepted-but-not-required. Still sufficient on its own; this is the migration-window carve-out that keeps the Sentry integration (and any other repo's existing labeling habit) working unchanged.
-2. **Bot-shaped trusted author** — `author.login` matches `*[bot]` (REST shape) or `app/*` (GraphQL shape) — the same two shapes [`trusted-authors-normalize.sh`](../../../scripts/trusted-authors-normalize.sh) cross-adds for the `trust.authors` allowlist ([GH App alias normalization](./01-repo-recovery.md#gh-app-alias-normalization-issue-296)). Since this issue already passed the trusted-author gate, a bot-shaped login here means a bot the maintainer explicitly trusts (e.g. `app/sentry`) — not an arbitrary bot.
-3. **Symptom-shaped body** — the body reads as a crash report (a stack trace, a fingerprint, an error string) rather than a fix request. Matched by a regex over common crash/stack-trace markers:
+1. **Bot-shaped trusted author** — `author.login` matches `*[bot]` (REST shape) or `app/*` (GraphQL shape) — the same two shapes [`trusted-authors-normalize.sh`](../../../scripts/trusted-authors-normalize.sh) cross-adds for the `trust.authors` allowlist ([GH App alias normalization](./01-repo-recovery.md#gh-app-alias-normalization-issue-296)). Since this issue already passed the trusted-author gate, a bot-shaped login here means a bot the maintainer explicitly trusts (e.g. `app/sentry`) — not an arbitrary bot.
+2. **Symptom-shaped body** — the body reads as a crash report (a stack trace, a fingerprint, an error string) rather than a fix request. Matched by a regex over common crash/stack-trace markers:
 
    ```bash
    SYMPTOM_REGEX='(Traceback \(most recent call last\)|Fatal error:|Unhandled( Promise)? [Rr]ejection|Exception in thread|Segmentation fault|NullPointerException|panic:|Stack trace:|sentry\.io/(organizations|issues)/|[Ff]ingerprint:[[:space:]]*[0-9a-f]{8,}|at [A-Za-z0-9_.$]+ ?\([^)]*:[0-9]+:[0-9]+\))'
@@ -24,17 +23,18 @@ Applies only to issues that have already survived the trusted-author gate above 
 
 ## The combined predicate
 
-Run against the wide-fetch JSON from the top of step 4 (already has `number`, `labels`, `body`, `author.login`):
+Run against the wide-fetch JSON from the top of step 4 (already has `number`, `body`, `author.login`):
 
 ```bash
 INVESTIGATE_CANDIDATE_NUMBERS=$(echo "$fetched_issues_json" | jq --arg re "$SYMPTOM_REGEX" '
   [.[] | select(
-      (.labels | any(. == "needs-triage"))
-      or ((.author.login // "") | test("\\[bot\\]$|^app/"))
+      ((.author.login // "") | test("\\[bot\\]$|^app/"))
       or ((.body // "") | test($re; "i"))
     ) | .number]
 ')
 ```
+
+The executable implementation is [`backlog-filter.sh`](../../../scripts/backlog-filter.sh)'s `is_investigate_signal` — that script is the single source of truth for the classification/routing decision, and the snippet above documents what it does rather than being a second copy to run.
 
 ## Config-gated routing (unchanged config surface, generalized behavior)
 
@@ -52,18 +52,13 @@ For every issue number in `INVESTIGATE_CANDIDATE_NUMBERS`:
 - When `investigate_dispatch == "true"` (default): remove the issue from the main survivor list and append it to `investigate_candidates` instead. Do NOT add it to `raw_backlog`. The investigate-mode dispatch step (step 1.5 in the steady-state decision tree) drains `investigate_candidates` separately.
 - When `investigate_dispatch == "false"`: drop the issue entirely. This opt-out exists for repos that prefer to triage manually.
 
-**The drop-when-disabled policy now applies uniformly to all three signals, not just the label** — this is a deliberate behavior change from the pre-#1090 shape, where `investigate_dispatch: false` only affected `needs-triage`-labeled issues; a bot-authored or symptom-shaped issue with no label simply fell through to `raw_backlog` as an ordinary issue-work candidate (a poor fit — issue-work assumes the body is a verified fix spec, not raw crash data). Since entry is now detection-based, the opt-out has to be detection-based too: a maintainer who sets `investigate_dispatch: false` is saying "I don't want investigate-mode auto-driving untriaged-looking issues," and that intent should hold regardless of which signal identified the issue as untriaged-looking.
+**The drop-when-disabled policy applies uniformly to both signals** — this is a deliberate behavior change from the pre-#1090 shape, where `investigate_dispatch: false` only affected `needs-triage`-labeled issues; a bot-authored or symptom-shaped issue with no label simply fell through to `raw_backlog` as an ordinary issue-work candidate (a poor fit — issue-work assumes the body is a verified fix spec, not raw crash data). Since entry is detection-based, the opt-out is detection-based too: a maintainer who sets `investigate_dispatch: false` is saying "I don't want investigate-mode auto-driving untriaged-looking issues," and that intent should hold regardless of which signal identified the issue as untriaged-looking.
 
-**`investigate_dispatch == "false"` is the only configuration under which a matched issue is a human item** ([#1077](https://github.com/mattsears18/shipyard/issues/1077), extended by [#1090](https://github.com/mattsears18/shipyard/issues/1090)) — under the default, a trusted-author issue matching any of the three signals is autonomously dispatched via investigate mode and no human action is required, so [`01b`'s bucket-5 scoring](01b-backlog-overview.md#2-backlog-overview) and `/my-turn`'s survey both key off this same config value.
+**`investigate_dispatch == "false"` is the only configuration under which a matched issue is a human item** ([#1077](https://github.com/mattsears18/shipyard/issues/1077), extended by [#1090](https://github.com/mattsears18/shipyard/issues/1090)) — under the default, a trusted-author issue matching either signal is autonomously dispatched via investigate mode and no human action is required, so [`01b`'s bucket-5 scoring](01b-backlog-overview.md#2-backlog-overview) and `/my-turn`'s survey both key off this same config value. Both of those consumers identify the bucket by **re-running the detection predicate**, not by reading a label — that indirection is what let the label be retired in #1120 without leaving either surface blind.
 
-## Migration window — what's NOT done yet
+## Migration window — closed
 
-This fragment implements acceptance criteria 1 and 2 of [#1090](https://github.com/mattsears18/shipyard/issues/1090) (live-detection entry; `needs-triage` accepted-but-not-required). It deliberately does **not**:
-
-- Retire the `needs-triage` label. Deleting it before every consuming repo has upgraded to detection-based entry would break the inbound Sentry pipeline for anyone still on an older version — the exact failure #1090 warns against. Retirement is tracked as a separate follow-up once the migration window has genuinely elapsed (see "Label-retirement criteria" below).
-- Disposition the pre-existing corpus of human-applied `needs-triage` issues (the "scope is still open" convention some repos use). See "Pre-existing corpus disposition" below — this turned out to require no code change.
-
-Both were tracked in the follow-up filed alongside the PR that introduced this fragment: [#1120](https://github.com/mattsears18/shipyard/issues/1120).
+This fragment implements acceptance criteria 1 and 2 of [#1090](https://github.com/mattsears18/shipyard/issues/1090) (live-detection entry; `needs-triage` accepted-but-not-required). The two items #1090 deliberately left open — retiring the label, and dispositioning the pre-existing corpus of human-applied `needs-triage` issues — were both tracked in [#1120](https://github.com/mattsears18/shipyard/issues/1120) and are **both now resolved**. See "Pre-existing corpus disposition" and "Label retirement — completed" below.
 
 ### Pre-existing corpus disposition — resolved, no code change ([#1120](https://github.com/mattsears18/shipyard/issues/1120))
 
@@ -80,11 +75,14 @@ All 47 historical applications in `lightwork` are already closed — there is no
 
 **If a future session finds `needs-triage`-labeled OPEN issues that are NOT bot/Sentry-shaped** (i.e., the human convention resurfaces), the correct action is still not a code change here — let `/refine-issues`' existing signal-based scan classify them. Only re-open this question if `/refine-issues` is observed to actually miss such issues in practice.
 
-### Label-retirement criteria — the concrete, checkable gate ([#1120](https://github.com/mattsears18/shipyard/issues/1120))
+### Label retirement — completed 2026-08-15 ([#1120](https://github.com/mattsears18/shipyard/issues/1120))
 
-Retiring the `needs-triage` label (removing it as an accepted signal, deleting the `gh label create` calls in [`01c-label-recovery-refine.md`](./01c-label-recovery-refine.md) and [`00b-parallelization-cache.md`](./00b-parallelization-cache.md), deleting the label object itself) requires **both** of the following to hold — evaluate mechanically, don't re-litigate the reasoning each time:
+`needs-triage` is **retired**. It is not an accepted investigate-mode entry signal, nothing creates or applies it, and the label object was deleted from `mattsears18/shipyard`. Investigate entry is the two detection signals above and nothing else.
 
-1. **Migration window elapsed: earliest retirement date is `2026-09-20`.** Derived from #1090's close date (`2026-08-08T00:02:32Z`) plus a window mirroring the [#520](https://github.com/mattsears18/shipyard/issues/520) `needs-refinement` precedent — #520 (the code change that made the label unnecessary) closed `2026-06-11T05:11:37Z`, and the label object itself wasn't actually deleted until [#859](https://github.com/mattsears18/shipyard/issues/859) closed `2026-07-25T04:49:13Z`, a **43-day** gap. Applying the same 43-day gap to #1090's close date gives `2026-09-20`. Do not retire before this date regardless of how the live-usage condition below looks — the whole point of a window is giving un-upgraded consuming installs time to move off label-only entry.
-2. **Live-usage condition: `needs-triage` is no longer the *sole* entry signal anywhere it's checked.** Re-run the measurement above (`gh search issues --repo <owner/repo> --label needs-triage --state open --json number --jq 'length'` plus a spot-check of a sample of open matches) across every consuming repo you have visibility into. The label is safe to retire when either (a) it has zero open usage, or (b) every open `needs-triage` issue you sample also matches one of the other two live-detection signals (bot-shaped author or symptom-shaped body) — meaning the label was never load-bearing as the *sole* trigger for those issues and detection-based entry already covers them.
+**What shipped:** the label dropped from `is_investigate_signal` in [`backlog-filter.sh`](../../../scripts/backlog-filter.sh) (and from the documented predicate above); both `gh label create needs-triage` calls deleted ([`01c-label-recovery-refine.md`](./01c-label-recovery-refine.md), [`00b-parallelization-cache.md`](./00b-parallelization-cache.md)); every remaining writer re-pointed (see the RATIONALE pointer below); the `labels.needs_triage` config key and its schema property retired, following the [#1360](https://github.com/mattsears18/shipyard/issues/1360) precedent; the label object deleted.
 
-**Both conditions, not either.** The date alone doesn't prove no un-upgraded install still depends on the label; the usage check alone (run today) doesn't prove a window has elapsed. When a future session confirms both, it may proceed with the three-part retirement (drop the label as an accepted signal in the predicate above, delete the two `gh label create` calls, delete the label object) as its own PR — it is a routing/behavior change, not documentation, so it should not ride along with an unrelated doc fix.
+**Under what authority.** The gate this section used to state required **both** a migration window (earliest date `2026-09-20`) and a live-usage condition. Condition 2 was satisfied — 0 open `needs-triage` issues in both `mattsears18/shipyard` and `mattsears18/lightwork`, measured 2026-08-08, re-measured 2026-08-09, re-verified 2026-08-15. Condition 1 was **waived by explicit maintainer decision** recorded on [#1120](https://github.com/mattsears18/shipyard/issues/1120#issuecomment-5302190526) (2026-08-15, `<!-- do-work-decision-resolved -->`), 36 days early: the date was a risk-tolerance judgment about unmeasurable third-party installs, not a fact a session could verify, and the maintainer accepted that risk for any external install still on a pre-#1090 shipyard. Two prior `/do-work` dispatches correctly declined to make that call themselves (2026-08-08, 2026-08-09) — declining was right absent a recorded decision.
+
+**Consuming repos that still carry the label object** are unaffected in the only way that matters: a `needs-triage`-labeled issue is no longer *dropped* or *routed* by the label, so it lands in `raw_backlog` as an ordinary candidate — and if it is genuinely a bot/Sentry crash report it still routes to investigate mode on the bot-author or symptom-body signal. A leftover label object is inert; deleting it is optional cleanup.
+
+Cold detail — the 43-day `#520`→`#859` window derivation, the original two-condition text, and the full writer-by-writer retirement inventory — lives in [RATIONALE → `needs-triage` retirement](../../do-work-RATIONALE.md#needs-triage-retirement-1120).

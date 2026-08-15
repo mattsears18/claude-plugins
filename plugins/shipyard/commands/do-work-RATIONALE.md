@@ -1469,3 +1469,46 @@ Cold historical rationale for [`setup/00-config-worktree.md`'s step 0.3](./do-wo
 **Collapsed from four layers to two ([#883](https://github.com/mattsears18/shipyard/issues/883)).** The preamble used to also glob `$HOME/.claude/plugins/marketplaces/*/plugins/shipyard` as a third layer, hardened against a shadowing `.bak` sibling and a version-mismatched marketplace checkout ([#681](https://github.com/mattsears18/shipyard/issues/681), [#417](https://github.com/mattsears18/shipyard/issues/417)) — that layer only ever mattered when `installed_plugins.json` was unreadable or missing the `shipyard@shipyard` entry. In practice `installed_plugins.json` is populated by the harness's own plugin manager for every install method (marketplace-add-then-install, dev-linked, or otherwise) — verified directly against this maintainer's own install (`installed_plugins.json`'s `installPath` resolves to the loaded `cache/shipyard/shipyard/<version>/` directory with a real `scripts/` subdir) before this collapse landed, per the [#883 decision comment](https://github.com/mattsears18/shipyard/issues/883)'s explicit "verify layer 2 resolves across install methods before deleting layer 3" instruction. Removing the marketplace-glob layer drops ~350 bytes per occurrence (~696 → ~345 for the fallback-only bytes, ~403 total with the surrounding guards) while keeping the one layer (`installed_plugins.json`) that's both authoritative and universal. The residual risk — `installed_plugins.json` itself missing or corrupted — degrades to the repo-local-anyway fallback (a meaningful, if likely-missing, error path) rather than a silent wrong pick; this is the same fail-safe posture the old layer 4 already had, just reached one layer sooner.
 
 **Helper-script extraction was proposed and rejected — do not re-propose it.** [#883](https://github.com/mattsears18/shipyard/issues/883) was originally scoped as "ship `scripts/resolve-plugin-root.sh`, replace each of the 66 inlined copies with a 2-line `source` call." A scoping pass rejected this: every occurrence of this preamble is an ad-hoc Bash-tool block executed in a **fresh, hermetic subshell** — nothing persists between calls (the same [#354](https://github.com/mattsears18/shipyard/issues/354) constraint step 0.3's opening paragraph documents). To `source "$CLAUDE_PLUGIN_ROOT/scripts/resolve-plugin-root.sh"`, a block must first *locate* that script — which requires the identical repo-local/installed-path probe the helper was meant to replace. The circularity is the general case, not a corner case: there is no shortcut that lets a fresh subshell find a helper script without re-deriving `$CLAUDE_PLUGIN_ROOT` first. A resolve-once-and-cache-to-disk scheme would sidestep the circularity but is a materially different, higher-risk design (cross-session and concurrent-worker cache collisions, invalidation) that doesn't help a freshly-dispatched worker's first call — the scoped fix was shrinking the inlined form in place, not extracting it.
+
+## `needs-triage` retirement (issue #1120)
+
+Cold detail behind [`04d-investigate-routing.md` § "Label retirement — completed"](./do-work/setup/04d-investigate-routing.md#label-retirement--completed-2026-08-15-1120). The live rule lives there; this is the archive.
+
+### The two-condition gate that was overridden
+
+The retirement gate committed alongside #1090 required **both** of:
+
+1. **Migration window elapsed: earliest retirement date `2026-09-20`.** Derived from #1090's close date (`2026-08-08T00:02:32Z`) plus a window mirroring the [#520](https://github.com/mattsears18/shipyard/issues/520) `needs-refinement` precedent — #520 (the code change that made *that* label unnecessary) closed `2026-06-11T05:11:37Z`, and the label object was not deleted until [#859](https://github.com/mattsears18/shipyard/issues/859) closed `2026-07-25T04:49:13Z`, a **43-day** gap. The same 43 days applied to #1090's close date gives `2026-09-20`. The section said verbatim: *"Do not retire before this date regardless of how the live-usage condition below looks."*
+2. **Live-usage condition: `needs-triage` is no longer the *sole* entry signal anywhere it's checked** — zero open usage, or every sampled open match also matching a detection signal.
+
+Condition 2 held throughout. Condition 1 was waived on 2026-08-15 by a maintainer decision recorded on the issue with the `<!-- do-work-decision-resolved -->` sentinel, 36 days early.
+
+### Why the date was waivable and the usage check was not
+
+The date was never evidence of anything — it was one precedent's interval copied onto a second, unrelated close date. What it actually encodes is a **risk-tolerance choice about unmeasurable third-party installs**: how long to leave a compatibility carve-out in place for consuming repos that have not upgraded and whose state shipyard cannot observe. That is a judgment call belonging to the maintainer, not a fact a session can verify — which is exactly why two prior `/do-work` dispatches (2026-08-08, 2026-08-09) were **correct** to decline to make it and return `blocked` on the gate. The live-usage condition is the opposite: a measurable property, re-measurable cheaply on demand, and therefore never a candidate for waiver.
+
+The generalizable lesson: a spec gate mixing a *measurable* condition with a *risk-tolerance* condition should say which is which, so a session can tell what it is allowed to evaluate and what it must escalate. A worker that cannot distinguish them either over-defers (burning a dispatch re-deriving a date, as the 2026-08-09 run did at ~160k tokens) or over-reaches.
+
+### Blast radius — every writer that had to move first
+
+Deleting a label object while something still writes to it silently recreates it. The retirement therefore re-pointed every writer before the delete:
+
+| Writer | Kind | Disposition |
+|---|---|---|
+| `setup/01c-label-recovery-refine.md` | create | deleted |
+| `setup/00b-parallelization-cache.md` | create | deleted |
+| `skills/filing-github-issues/SKILL.md` | create + apply | section removed; filers route to `needs-human-review` |
+| `agents/dx-auditor.md` | apply | `Needs triage: yes` items now take `needs-human-review` |
+| `skills/dx-catalog/SKILL.md` | apply | same |
+| `agents/observability-auditor.md` | apply | vendor-choice findings take `needs-human-review` |
+| `commands/file-issue.md` | apply | gate-label guidance narrowed to `needs-human-review` |
+
+`/shipyard:refine-issues` was **not** a writer despite the repo-root `CLAUDE.md` claiming it was — its escalate branch has routed to `needs-human-review` since [#520](https://github.com/mattsears18/shipyard/issues/520). That stale bullet was corrected in the same PR.
+
+### Where the `Needs triage: yes` catalog flag went
+
+`dx-catalog`'s four `Needs triage: yes` items (and `observability-auditor`'s vendor-choice finding) marked findings whose *resolution* needs a human to pick between real alternatives — a vendor, a paid tier, a policy. Under the binary backlog that is `needs-human-review` by definition (a genuine decision, not a mechanical gap), so the flag now maps there. It is deliberately **not** mapped to `agent-console`: choosing a vendor is a decision, not a console action an agent could drive.
+
+### Config-key retirement followed #1360
+
+`labels.needs_triage` was removed from the built-in defaults, the JSON schema, and this repo's `shipyard.config.json`. This is required rather than cosmetic: [step 1.75](./do-work/setup/01-repo-recovery.md#175-verify-config-named-labels-exist-in-the-target-repo-1359) verifies every config-named label exists as a real label object in the target repo, so leaving the key while deleting the object would make the check flag a phantom label on every session. [#1360](https://github.com/mattsears18/shipyard/issues/1360) set the precedent by retiring `blocked` / `blocked_hard` the same way for the same reason.
