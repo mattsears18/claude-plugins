@@ -211,6 +211,19 @@
 # — it already lives in fix-checks-only.md's own copy of the rule and in
 # do-work-RATIONALE.md) needed the bump.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 63000 -> 66000 by
+# #1395 (2026-08-15): a new always-loaded core section telling a worker that
+# ADDS an executable script to record its git exec bit
+# (`git update-index --chmod=+x`, verified with `git ls-files -s` -> 100755).
+# It has to be core, not an on-demand fragment: the whole failure mode is
+# that the worker doesn't know the rule exists, so a fragment nobody loads
+# would be inert. The section also carries the discriminator against
+# node-bootstrap.md's OPPOSITE `chmod +x`-locally-only guidance for a
+# pre-existing hook file (#459) — without it the two rules read as
+# contradictory, which is why the rule couldn't be a one-liner. The file had
+# only 110 bytes of headroom after #1335's raise, so the bump is the whole
+# section's cost; 66000 (not 65000) leaves real headroom rather than 47 bytes.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -275,7 +288,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  63000 \
+  66000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \

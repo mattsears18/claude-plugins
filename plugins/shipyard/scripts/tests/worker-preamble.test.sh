@@ -1452,6 +1452,32 @@ if [[ -f "$classify_blocked_bail_path" ]]; then
     "classify-blocked-bail.sh's freshness check is a timestamp comparison, not a bare existence check"
 fi
 
+# Issue #1395 — a worker that ADDS a new executable script must record its
+# git exec bit itself. The rule lives in the always-loaded SKILL.md core (an
+# on-demand fragment would be inert: the failure mode is not knowing the rule
+# exists), and node-bootstrap.md's OPPOSITE `chmod +x`-locally-only guidance
+# for a PRE-EXISTING hook file (#459) carries the reciprocal discriminator so
+# the two never read as contradictory.
+assert_contains "$skill_path" \
+  "## Adding a new executable script — record the git exec bit yourself" \
+  "SKILL.md carries the #1395 exec-bit rule as an always-loaded core section"
+assert_contains "$skill_path" "git update-index --chmod=+x <path>" \
+  "SKILL.md's #1395 rule names the index-recording command, not a bare chmod"
+assert_contains "$skill_path" "git ls-files -s <path>" \
+  "SKILL.md's #1395 rule names the pre-push self-check that reads what CI reads"
+assert_contains "$skill_path" "100755" \
+  "SKILL.md's #1395 rule states the expected git mode"
+assert_contains "$skill_path" "asserts against the **git index**, not the filesystem" \
+  "SKILL.md's #1395 rule explains why a pre-staging local suite run passes honestly"
+assert_contains "$skill_path" "complementary, not contradictory" \
+  "SKILL.md's #1395 rule carries the discriminator against node-bootstrap.md's chmod guidance"
+assert_contains "$node_bootstrap_path" \
+  "it is NOT the rule for a script your own change is adding" \
+  "node-bootstrap.md's #459 chmod guidance carries the reciprocal #1395 discriminator"
+assert_contains "$node_bootstrap_path" \
+  "Adding a new executable script — record the git exec bit yourself" \
+  "node-bootstrap.md points at SKILL.md's #1395 section by name"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

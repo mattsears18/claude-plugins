@@ -127,6 +127,29 @@ For `gh` subcommands that don't take a `-C`-equivalent local-path flag (most acc
 
 **Why the mandatory/recommended split.** A misrouted read-only call wastes time and is recoverable — re-run it. A misrouted mutating call against the user's primary checkout is silent, irreversible corruption of their real working tree, and nothing else in the stack catches it: the `enforce-worktree.sh` PreToolUse hook that blocks a `git commit` targeting the PRIMARY checkout only fires when the hook's own cwd detection is itself correct, which is exactly the assumption #748 shows can intermittently fail. Re-verifying immediately before every mutating call is cheap insurance against an outcome that has no undo.
 
+## Adding a new executable script — record the git exec bit yourself ([#1395](https://github.com/mattsears18/shipyard/issues/1395))
+
+**If your change ADDS a file whose documented use is direct invocation** — any `plugins/shipyard/scripts/*.sh` in this repo, or a `bin/`/`scripts/` entrypoint elsewhere — record its executable bit **in the git index**, and give it a `#!` shebang. A bare `chmod +x` is not enough: it changes the working-tree mode only, git still commits the file at `100644`, and it lands non-executable for every consumer. Run this right after `git add`-ing the new script, before `git commit`:
+
+```bash
+git update-index --chmod=+x <path>
+```
+
+Then verify — one plain call, and the only proof that counts:
+
+```bash
+git ls-files -s <path>
+```
+
+`100755` in the first column → correct. `100644` → it didn't take; fix it before committing.
+
+**Why a clean local test run won't catch this.** The guard (`script-exec-bits.test.sh`) asserts against the **git index**, not the filesystem — so a worker that runs the suites during implementation, before staging its new script, gets an honest green and only learns of the mode bit when CI reds after the PR is already open. That has cost a wasted `fix-checks-only` dispatch twice ([#1094](https://github.com/mattsears18/shipyard/issues/1094), then PR #1394). The `git ls-files -s` check above is the whole fix: reachable before push, and reading exactly what CI reads.
+
+**Discriminator vs. [`node-bootstrap.md`](./node-bootstrap.md) § "Husky / `core.hooksPath` hooks silently skipped on a missing exec bit" — complementary, not contradictory.** Ask whose file it is:
+
+- **A script *your change is adding*** → record the bit (`git update-index --chmod=+x`). The committed mode is part of what you are shipping.
+- **A pre-existing file you merely need to *run*** (e.g. a target repo's husky hook checked out non-executable) → `chmod +x` locally only, leave the committed mode alone, and file a follow-up issue. That's the unrelated mode-fix the other rule forbids folding into your PR.
+
 ## PR-creation contract
 
 When opening a PR from any worker mode, every call **MUST** include:
