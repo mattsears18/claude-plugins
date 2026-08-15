@@ -717,6 +717,13 @@ cmd_init() {
        me_assigned_open: 0,
        last_fresh_fetch: null,
        divert_queue: [],
+       # awaiting_external — the #1390 park queue: workers that finished
+       # everything they could and are waiting on a long external job. One
+       # entry per parked worker; the orchestrator re-runs the probe on
+       # each entry every periodic-refresh tick and resumes that SAME agent
+       # when it goes terminal. Not a human hand-back until the bound
+       # (awaiting_external.max_hours) expires.
+       awaiting_external: [],
        session_prs: [],
        deferred_issues: [],
        soft_caps: {},

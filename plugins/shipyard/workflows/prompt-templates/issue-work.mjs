@@ -8,7 +8,7 @@
  * regenerate `do-work-dispatch.workflow.js`; do not hand-edit that file's
  * copy of this function.
  */
-import { worktreeAnchorLines } from './shared.mjs'
+import { worktreeAnchorLines, awaitingExternalReturnLines } from './shared.mjs'
 
 // ===========================================================================
 // Helper — build the issue-work dispatch prompt. This is the workflow-substrate
@@ -110,6 +110,7 @@ export function buildIssueWorkPrompt(unit, repoSlug) {
     `"blocked_stage": "<stage>", "blocked_reason": "<reason>" }. This is the`,
     `workflow-substrate return contract — NOT the free-text return string the`,
     `Agent-tool path uses.`,
+    ...awaitingExternalReturnLines(unit, 'issue-work'),
   )
 
   return lines.join('\n')

@@ -734,6 +734,32 @@ JSON
 "$helper" validate --layer repo 2>/dev/null
 assert_exit_code "$?" 70 "ci.max_drain_hours rejects value below minimum 0.1 (#374)"
 
+# --- #1390 awaiting_external park-queue bound ------------------------------
+# The bound is a SAFETY property, not a tuning knob: without it a wedged
+# self-hosted runner pool holds a session open indefinitely. Assert the
+# default, the round-trip, and that the schema actually rejects a
+# below-minimum value (the block is additionalProperties:false, so a missing
+# schema entry would fail config validation outright rather than silently).
+rm -f "$repo/shipyard.config.json"
+assert_equals "$("$helper" get awaiting_external.enabled)"  "true" "awaiting_external.enabled default is true (#1390)"
+assert_equals "$("$helper" get awaiting_external.max_hours)" "2"   "awaiting_external.max_hours default is 2 (#1390)"
+"$helper" set awaiting_external.max_hours 6 --repo
+assert_equals "$("$helper" get awaiting_external.max_hours)" "6" "set awaiting_external.max_hours=6 round-trips (#1390)"
+"$helper" set awaiting_external.enabled false --repo
+assert_equals "$("$helper" get awaiting_external.enabled)" "false" "set awaiting_external.enabled=false round-trips (#1390)"
+
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "awaiting_external": { "max_hours": 0 } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "awaiting_external.max_hours rejects value below minimum 0.1 (#1390)"
+
+cat > "$repo/shipyard.config.json" <<'JSON'
+{ "version": 1, "awaiting_external": { "max_ours": 2 } }
+JSON
+"$helper" validate --layer repo 2>/dev/null
+assert_exit_code "$?" 70 "awaiting_external rejects an unknown key (additionalProperties:false — #1390)"
+
 # Schema validation rejects non-boolean for skip_drain_rebase
 cat > "$repo/shipyard.config.json" <<'JSON'
 { "version": 1, "ci": { "skip_drain_rebase": "yes" } }

@@ -136,6 +136,7 @@ assert_contains "$content" '"in_flight": {}' "in_flight initialised to empty obj
 assert_contains "$content" '"ready_issues": []' "ready_issues initialised to empty array"
 assert_contains "$content" '"failed_prs": []' "failed_prs initialised to empty array"
 assert_contains "$content" '"divert_queue": []' "divert_queue initialised to empty array"
+assert_contains "$content" '"awaiting_external": []' "awaiting_external initialised to empty array (#1390)"
 assert_contains "$content" '"session_prs": []' "session_prs initialised to empty array"
 assert_contains "$content" '"deferred_issues": []' "deferred_issues initialised to empty array"
 assert_contains "$content" '"raw_backlog": []' "raw_backlog initialised to empty array"

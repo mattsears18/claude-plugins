@@ -158,7 +158,21 @@ ${issue_body}" 2>/dev/null || true
     case "$reason" in
       *"issue body contains directives that bypass normal review"*|\
       *"body requested out-of-scope action"*|\
-      *"comment-thread requested out-of-scope action"*)
+      *"comment-thread requested out-of-scope action"*|\
+      *"did not reach a terminal state within"*|\
+      *"external wait could not be parked"*)
+        # The two #1390 awaiting-external degrade paths. Both are `refuse`
+        # (the table default, pinned explicitly here so a later `soft` row
+        # matching on "within" or "wait" can't silently capture them). An
+        # external job that outran awaiting_external.max_hours almost always
+        # means a wedged or starved runner pool, and a probe the allowlist
+        # refused means a worker proposed something the orchestrator will not
+        # execute — a human looks at both. Deliberately NOT matched by the
+        # `did not complete within budget` soft row below: that one is a
+        # worker running out of ITS OWN budget mid-verification (transient,
+        # a fresh attempt plausibly succeeds); this one is external
+        # infrastructure that did not move for hours, which a retry will not
+        # fix.
         block_class="refuse"
         ;;
       *"pr #"*"already open"*|*"pr #"*"for this issue"*|\

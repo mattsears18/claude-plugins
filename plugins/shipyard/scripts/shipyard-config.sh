@@ -211,6 +211,10 @@ DEFAULTS_JQ='{
     "backpressure_min_in_flight": 1,
     "prefer_cheap_under_backpressure": true
   },
+  "awaiting_external": {
+    "enabled": true,
+    "max_hours": 2
+  },
   "flake_registry": {
     "enabled": false,
     "window_days": 7,

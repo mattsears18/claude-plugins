@@ -8,7 +8,7 @@
  * regenerate `do-work-dispatch.workflow.js`; do not hand-edit that file's
  * copy of this function.
  */
-import { worktreeAnchorLines } from './shared.mjs'
+import { worktreeAnchorLines, awaitingExternalReturnLines } from './shared.mjs'
 
 // ===========================================================================
 // Helper — build the investigate dispatch prompt. Mirrors dispatch-rules.md's
@@ -40,6 +40,7 @@ export function buildInvestigatePrompt(unit, repoSlug) {
     `{ "mode": "investigate", "outcome": "blocked", "issue": ${unit.number},`,
     `"blocked_reason": "<reason>" }. This is the workflow-substrate return contract — NOT`,
     `the free-text return string the Agent-tool path uses.`,
+    ...awaitingExternalReturnLines(unit, 'investigate'),
   )
   return lines.join('\n')
 }
