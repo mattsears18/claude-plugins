@@ -20,11 +20,13 @@
 #   - #1194 — the same class of regression recurred one layer down, in a
 #     mid-drain ad-hoc re-derivation.
 # A third divergence was found (not yet regressed in production, but
-# already committed to the spec text): `needs-triage` is explicitly
-# excluded from the drop-label enumeration in setup.md (it's routed to
+# already committed to the spec text): `needs-triage` was explicitly
+# excluded from the drop-label enumeration in setup.md (it was routed to
 # investigate_candidates instead) but was listed INSIDE the drop-label
 # enumeration in both steady-state.md and drain.md — the exact contradiction
-# a hand-rolled second copy cannot help but eventually produce.
+# a hand-rolled second copy cannot help but eventually produce. (That label
+# was retired outright in #1120; the divergence it illustrates is why this
+# script exists, and the lesson outlives the label.)
 #
 # This script is the fix: ONE implementation of the classification/routing
 # decision, invoked identically at all three call-sites, so they cannot
@@ -272,7 +274,7 @@
 # Design note — why classify takes precomputed sets rather than doing its
 # own network I/O for --closed-by-healthy-pr / --peer-claimed: the
 # classification/routing DECISION is the part that has actually drifted
-# (see the #332/#1194/needs-triage history above) and is exactly what
+# (see the #332/#1194/#1120 history above) and is exactly what
 # needs to be fixture-testable against fixed inputs, byte-for-byte,
 # forever. The live network calls that produce those input sets are
 # comparatively simple, already had their own bugs fixed once each (#301's
@@ -364,9 +366,10 @@ CLASSIFY_JQ='
 def lower: ascii_downcase;
 
 # Dispatch-gate labels that DROP an issue outright (never routed) — the
-# literal enumeration from setup.md step 4. needs-triage and agent-console
-# are deliberately absent: both are ROUTES, handled by their own clauses
-# below, never by this drop-on-label clause.
+# literal enumeration from setup.md step 4. agent-console is deliberately
+# absent: it is a ROUTE, handled by its own clause below, never by this
+# drop-on-label clause. (`needs-triage` was a second such route until
+# #1120 retired the label; investigate entry is now detection-only.)
 #
 # `tracking` is the one PROVISIONAL member of this list (defensive gate,
 # #1081, pending migration to needs-human-review by 01c sub-sweep e) — see
@@ -457,9 +460,11 @@ def matches_gate_label($issue):
 def is_agent_console($issue):
   ($issue.labels | index("agent-console") != null);
 
+# Two signals, OR-d. The third — a `needs-triage` label — was retired in
+# #1120 along with the label object itself; entry is now purely detection-
+# based (see 04d-investigate-routing.md).
 def is_investigate_signal($issue; $re):
-  ($issue.labels | index("needs-triage") != null)
-  or (($issue.author.login // "") | test("\\[bot\\]$|^app/"))
+  (($issue.author.login // "") | test("\\[bot\\]$|^app/"))
   or (($issue.body // "") | test($re; "i"));
 
 def is_untrusted($issue; $trusted):
