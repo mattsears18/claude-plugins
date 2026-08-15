@@ -1,8 +1,8 @@
 # Investigate-then-fix mode
 
-Work an **untriaged** issue — one the setup-phase dispatch fetch routes here via a **live detection scan** (bot-shaped trusted author like `app/sentry` / `sentry[bot]`, or a symptom-shaped body — a stack trace, a fingerprint, an error string; see [`04d-investigate-routing.md`](../../commands/do-work/setup/04d-investigate-routing.md)), with `needs-triage` still accepted as a sufficient trigger on its own during the migration window ([#1090](https://github.com/mattsears18/shipyard/issues/1090)) — end-to-end, without assuming a specified bug with inferable acceptance criteria. The goal is a **binary backlog**: every untriaged issue ends this dispatch as either *workable-by-`do-work`* (a PR opened) or *workable-by-human* (`needs-human-review` applied) or *closed* (confident noise / duplicate) — never left in a permanent third "untriaged" state.
+Work an **untriaged** issue — one the setup-phase dispatch fetch routes here via a **live detection scan** (bot-shaped trusted author like `app/sentry` / `sentry[bot]`, or a symptom-shaped body — a stack trace, a fingerprint, an error string; see [`04d-investigate-routing.md`](../../commands/do-work/setup/04d-investigate-routing.md)) — end-to-end, without assuming a specified bug with inferable acceptance criteria. The goal is a **binary backlog**: every untriaged issue ends this dispatch as either *workable-by-`do-work`* (a PR opened) or *workable-by-human* (`needs-human-review` applied) or *closed* (confident noise / duplicate) — never left in a permanent third "untriaged" state.
 
-This mode is the sibling of `issue-work`: where `issue-work` trusts the issue body as a (verified) spec, investigate-mode treats a cryptic crash report as **raw data to be turned into a spec first**, then dispositioned. See [#514](https://github.com/mattsears18/shipyard/issues/514) for the motivation (Sentry auto-files crash issues with `needs-triage`; `do-work`'s label filter drops them, so they accumulate untouched and only a human can move them forward).
+This mode is the sibling of `issue-work`: where `issue-work` trusts the issue body as a (verified) spec, investigate-mode treats a cryptic crash report as **raw data to be turned into a spec first**, then dispositioned. See [#514](https://github.com/mattsears18/shipyard/issues/514) for the motivation (Sentry auto-filed crash issues that `do-work`'s label filter dropped, so they accumulated untouched and only a human could move them forward — detection-based entry means they are now recognized by their shape, whatever labels they carry).
 
 **Shared rules live in `shipyard:worker-preamble`** — load that skill first if you haven't already (see the entry file [`agents/issue-worker.md`](../issue-worker.md)). This file owns only the investigate-mode lifecycle.
 
@@ -38,7 +38,7 @@ Bail with `blocked` if any of:
 
 - Issue state is `CLOSED`.
 - Issue has an assignee that isn't the authenticated `gh` user (someone else picked it up).
-- Issue carries `wontfix` / `needs-human-review` labels (a prior investigate dispatch already dispositioned it to the human queue — don't re-investigate; `needs-human-review` is investigate-mode's own human-queue disposition label — see [§4b](#4b-genuinely-needs-a-human--apply-needs-human-review-return-blocked-style-the-investigatedneeds-human-review-path) — and subsumes the former `needs-design` design-gate per [#515](https://github.com/mattsears18/shipyard/issues/515). A stray `needs-human` label was named here before [#1082](https://github.com/mattsears18/shipyard/issues/1082) — that label object never existed in this repo; it was a dead reference, not a real bail condition, and has been removed. The bare `blocked` label — distinct from the `blocked:*` family — was retired in favor of `needs-human-review` per [#1128](https://github.com/mattsears18/shipyard/issues/1128); see CLAUDE.md's Retired labels table). **`needs-triage` is NOT a bail label in this mode** — it's one of the *entry* signals (accepted-but-not-required alongside live detection, per [#1090](https://github.com/mattsears18/shipyard/issues/1090)). That's the whole point: investigate-mode is the one mode that works issues the setup-phase detection scan routes here, however they were identified.
+- Issue carries `wontfix` / `needs-human-review` labels (a prior investigate dispatch already dispositioned it to the human queue — don't re-investigate; `needs-human-review` is investigate-mode's own human-queue disposition label — see [§4b](#4b-genuinely-needs-a-human--apply-needs-human-review-return-blocked-style-the-investigatedneeds-human-review-path) — and subsumes the former `needs-design` design-gate per [#515](https://github.com/mattsears18/shipyard/issues/515). A stray `needs-human` label was named here before [#1082](https://github.com/mattsears18/shipyard/issues/1082) — that label object never existed in this repo; it was a dead reference, not a real bail condition, and has been removed. The bare `blocked` label — distinct from the `blocked:*` family — was retired in favor of `needs-human-review` per [#1128](https://github.com/mattsears18/shipyard/issues/1128); see CLAUDE.md's Retired labels table. `needs-triage` was likewise retired in [#1120](https://github.com/mattsears18/shipyard/issues/1120) — it is neither a bail label nor an entry signal anymore; entry is purely detection-based.) That's the whole point: investigate-mode is the one mode that works issues the setup-phase detection scan routes here, however they were identified.
 - **Any open PR references this issue with a closing keyword** — return `blocked: PR #<M> already open for this issue`.
 
 ### 1. Self-assign (gated on `backlog.self_assign`, issue [#1248](https://github.com/mattsears18/shipyard/issues/1248))
@@ -122,7 +122,7 @@ The crash has a clear, in-scope code fix you can verify. From here, follow `issu
 - Sync + branch onto `do-work/issue-<N>` (`issue-work` § 3).
 - Write the failing test first (the repro from step 2), then the smallest fix (`issue-work` § 4). Honor the dependency-bootstrap / hook-executable / mirror-locale-keys checks from `shipyard:worker-preamble`. Honor the per-PR release rule and the coordination-managed-version contract from `issue-work` § 4 if the repo carries them.
 - Run the pre-PR-create diff sanity check (`issue-work` § 4.5).
-- Commit + push + PR with `Closes #<N>` (`issue-work` § 5). **Remove `needs-triage`** in the same step: `gh issue edit <N> --repo <owner/repo> --remove-label needs-triage`.
+- Commit + push + PR with `Closes #<N>` (`issue-work` § 5). No label change is needed on the fix path — the PR's closing keyword dispositions the issue on merge.
 - Run the post-PR-create diff sanity check (§ 5.7) and the closing-link verification (§ 5.8).
 - Arm auto-merge gated on `originating_author_trust` (`issue-work` § 6) — `external` ⇒ `needs-human-review` + comment, no auto-merge. `trusted` ⇒ run [`issue-work` § 6.a](./issue-work.md#6-enable-auto-merge-gated-on-originating_author_trust)'s ungated-admin-direct-merge pre-check **first**, then arm per § 6.b. The trust gate and the ungated-merge gate are **orthogonal**: `trusted` does NOT mean "type `gh pr merge --auto`" — on an ungated repo shape that call is an immediate merge, not a queue, and it would land your fix before its CI runs ([#720](https://github.com/mattsears18/shipyard/issues/720)). Never re-derive the condition; call [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh).
 - Snapshot auto-merge + check state (`issue-work` § 7).
@@ -149,7 +149,6 @@ latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
 **If `latest_escalation` is non-empty AND `latest_decision` is non-empty AND `latest_decision` sorts after `latest_escalation`** (plain string `>` — ISO-8601 UTC timestamps compare correctly), a human already answered this exact question after the last time this issue was escalated. Do NOT apply `needs-human-review` — instead:
 
 ```bash
-gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true
 gh issue comment <N> --repo <owner/repo> --body "Not re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at $latest_decision). Leaving the gate off; the recorded decision should be read and acted on directly on the next pass."
 ```
 
@@ -158,7 +157,7 @@ Return: `investigated+needs-human-review #<N> (decision already recorded, gate n
 **Otherwise** (no prior escalation exists yet, or no decision was recorded after it) — proceed with the ordinary escalation:
 
 ```bash
-gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage
+gh issue edit <N> --repo <owner/repo> --add-label needs-human-review
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
 ```
@@ -182,7 +181,7 @@ gh issue comment <N> --repo <owner/repo> --body-file "$WORKTREE_PATH/.shipyard-s
 
 No cleanup follows — see `worker-preamble` § "Scratch directory" ([#1347](https://github.com/mattsears18/shipyard/issues/1347)).
 
-`needs-human-review` is the single binary-backlog human-queue label (see CLAUDE.md → Label conventions for its full semantics) — `/do-work` is blocked, a human must act, no auto-clear. The investigate-vs-review nuance ("decide before any PR" vs "sign off on what exists") lives in the issue comment above, not in a separate label. Removing `needs-triage` and adding `needs-human-review` is what moves the issue out of the permanent-untriaged state into the workable-by-human state.
+`needs-human-review` is the single binary-backlog human-queue label (see CLAUDE.md → Label conventions for its full semantics) — `/do-work` is blocked, a human must act, no auto-clear. The investigate-vs-review nuance ("decide before any PR" vs "sign off on what exists") lives in the issue comment above, not in a separate label. Adding `needs-human-review` is what moves the issue out of the permanent-untriaged state into the workable-by-human state.
 
 Return: `investigated+needs-human-review #<N> (label applied)`.
 
@@ -241,7 +240,7 @@ The `auto-merge:` and `checks:` suffix values for the fixable path are categoriz
 - **Don't strip the Sentry permalink / fingerprint** when rewriting the body. The Sentry↔GitHub integration and the orchestrator's dedup both key off it.
 - **Don't auto-close an issue you're not confident about.** When in doubt, route to `needs-human-review` (4b) — an uncertain close drops a real bug. Honor the `triage.auto_close` policy: `off` means NEVER close; `confident-only` means certain-only.
 - **Don't invent a separate human-queue label.** The investigate-mode human-queue disposition (4b) applies `needs-human-review` — the single binary-backlog human-gate (see CLAUDE.md → Label conventions). Do NOT introduce a distinct `needs-human` label; the decide-vs-sign-off nuance lives in the 4b issue comment, not the label.
-- **Don't leave `needs-triage` on the issue in ANY disposition.** Every terminal path removes it (fix removes it, needs-human-review removes-and-replaces it, close removes it implicitly) — a no-op when the issue was routed here by a detection signal other than the label (nothing to remove). Leaving it on is the permanent-untriaged state this mode exists to eliminate.
+- **Don't leave the issue in the untriaged state under ANY disposition.** Every terminal path moves it somewhere definite — a PR that closes it, `needs-human-review`, or a close as noise/duplicate. A dispatch that ends with the issue exactly as it started is the permanent-untriaged state this mode exists to eliminate. (There is no longer a triage *label* to strip: `needs-triage` was retired in [#1120](https://github.com/mattsears18/shipyard/issues/1120), so never issue a `--remove-label needs-triage` — on a repo where the label is gone that call errors, and chained with an `--add-label` it takes the whole edit down with it.)
 - **Don't expand scope on the fixable path.** New bugs you spot → new issue, not this PR (same as `issue-work`).
 - **Don't `--watch` checks** on the fixable path. Push, arm auto-merge, snapshot, return — orchestrator triage owns failure recovery (same as `issue-work`).
 - **Don't open a `Monitor`/poll loop to watch CI to completion instead of returning ([#753](https://github.com/mattsears18/shipyard/issues/753)).** On the fixable path, push, arm auto-merge, snapshot once, and return the disposition string — never start a `Monitor` sub-task or backgrounded CI watch and wait for the rollup before returning. See `shipyard:worker-preamble` § "Return-contract discipline".
