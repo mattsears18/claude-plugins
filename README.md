@@ -212,7 +212,7 @@ The `Agent` tool is *also* used for dispatches that never carry a `mode:` value 
 
 ### Label conventions
 
-Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent-soft`, `blocked:ci`), and gate labels (`needs-human-review`, `agent-console`, `needs-triage`). `agent-console` (browser/console actions `/do-work` drives itself by default via `claude-in-chrome` — see the [Quick start](#quick-start) `/do-work` example above) is distinct from `needs-human-review` (genuine human decisions). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
+Shipyard treats several label families as load-bearing — origin labels (`user-feedback`, `audit:<dimension>`), the session-stamp label (`shipyard`), state labels in the `blocked:*` namespace (`blocked:agent-soft`, `blocked:ci`), and gate labels (`needs-human-review`, `agent-console`). `agent-console` (browser/console actions `/do-work` drives itself by default via `claude-in-chrome` — see the [Quick start](#quick-start) `/do-work` example above) is distinct from `needs-human-review` (genuine human decisions). The canonical reference lives in [`CLAUDE.md`'s "Label conventions" section](./CLAUDE.md#label-conventions) — that's the source of truth; this README intentionally doesn't duplicate it.
 
 ### Observability — per-session token cost
 

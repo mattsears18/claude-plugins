@@ -485,7 +485,7 @@ Workable (remaining after session)               2   #<a>, #<b>   — OR reason 
 ⛔ Untrusted author                              1   #U → @stranger
 blocked:agent-soft label                         1   #S — will auto-clear at next-session backlog fetch
 Blocked (body reference)                         1   #D
-needs-triage / decomposition                     2   #E, #F
+needs triage / decomposition                     2   #E, #F
 Awaiting refinement                              1   #R
 Awaiting human review                            1   #H
 Discussion                                       1   #G

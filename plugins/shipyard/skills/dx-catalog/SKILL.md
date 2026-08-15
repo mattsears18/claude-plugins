@@ -27,7 +27,7 @@ Catalog of 25 polished-repo features the `dx-auditor` agent walks. Items are gro
    - Otherwise file an issue:
      - Title from the item's `Title:` field
      - Body from the standard template (see `shipyard:filing-github-issues`)
-     - Labels: `audit:dx`, plus the item's severity (`P0`/`P1`/`P2`), plus `needs-triage` if the item carries that flag
+     - Labels: `audit:dx`, plus the item's severity (`P0`/`P1`/`P2`), plus `needs-human-review` if the item carries that flag
      - Audit-key from the item's `Audit key:` field
 
 ## Severity bands (per category)
@@ -49,7 +49,7 @@ Catalog of 25 polished-repo features the `dx-auditor` agent walks. Items are gro
 - **Severity:** P1
 - **Applies to:** *(any)*
 - **Audit key:** `dx/tooling/missing-ci-workflow`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add CI workflow`
 
@@ -76,7 +76,7 @@ ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null
 - **Severity:** P1
 - **Applies to:** js, ts, py, go
 - **Audit key:** `dx/tooling/missing-linter`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add linter configuration`
 
@@ -108,7 +108,7 @@ ls .golangci.yml .golangci.yaml 2>/dev/null
 - **Severity:** P1
 - **Applies to:** js, ts, py, go
 - **Audit key:** `dx/tooling/missing-formatter`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add formatter configuration`
 
@@ -140,7 +140,7 @@ grep -lr "gofmt\|go fmt" .github/workflows/ 2>/dev/null
 - **Severity:** P1
 - **Applies to:** js, py
 - **Audit key:** `dx/tooling/missing-type-checker`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add static type checking`
 
@@ -170,7 +170,7 @@ ls mypy.ini pyrightconfig.json pyrightconfig.toml 2>/dev/null
 - **Severity:** P1
 - **Applies to:** *(any)*
 - **Audit key:** `dx/tooling/missing-pre-commit`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add pre-commit hooks`
 
@@ -198,7 +198,7 @@ ls mypy.ini pyrightconfig.json pyrightconfig.toml 2>/dev/null
 - **Severity:** P1
 - **Applies to:** *(any)*
 - **Audit key:** `dx/tooling/missing-runtime-pin`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): pin runtime version`
 
@@ -225,7 +225,7 @@ ls mypy.ini pyrightconfig.json pyrightconfig.toml 2>/dev/null
 - **Severity:** P1
 - **Applies to:** js, ts, py, rb, go
 - **Audit key:** `dx/tooling/missing-lockfile`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): commit dependency lockfile`
 
@@ -260,7 +260,7 @@ fi
 - **Severity:** P1
 - **Applies to:** *(any)*
 - **Audit key:** `dx/tooling/missing-dep-automation`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): enable automated dependency updates`
 
@@ -289,7 +289,7 @@ fi
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-readme-quickstart`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `docs(dx): add Quickstart section to README`
 
@@ -315,7 +315,7 @@ grep -iE '^#+ +(install|quickstart|getting started|setup|usage)' README.md READM
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-contributing`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `docs(dx): add CONTRIBUTING.md`
 
@@ -341,7 +341,7 @@ ls CONTRIBUTING.md CONTRIBUTING.rst docs/CONTRIBUTING.md .github/CONTRIBUTING.md
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-env-example`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `docs(dx): commit .env.example`
 
@@ -372,7 +372,7 @@ has_example=$(ls .env.example .env.sample .env.template 2>/dev/null)
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-pr-template`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `docs(dx): add pull request template`
 
@@ -399,7 +399,7 @@ ls .github/PULL_REQUEST_TEMPLATE.md .github/pull_request_template.md \
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-issue-templates`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `docs(dx): add issue templates`
 
@@ -425,7 +425,7 @@ ls .github/ISSUE_TEMPLATE/*.md .github/ISSUE_TEMPLATE/*.yml .github/ISSUE_TEMPLA
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-codeowners`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add CODEOWNERS`
 
@@ -458,7 +458,7 @@ ls .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS 2>/dev/null
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-license`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `docs(dx): add LICENSE file`
 
@@ -484,7 +484,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/onboarding/missing-setup-script`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add setup script or devcontainer`
 
@@ -512,7 +512,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Severity:** P2
 - **Applies to:** js, ts, py
 - **Audit key:** `dx/observability/missing-error-tracking`
-- **Needs triage:** **yes** (vendor choice)
+- **Needs human review:** **yes** (vendor choice)
 
 **Title:** `feat(dx): add error tracking`
 
@@ -542,7 +542,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Severity:** P2
 - **Applies to:** js, ts
 - **Audit key:** `dx/observability/missing-analytics`
-- **Needs triage:** **yes** (vendor choice)
+- **Needs human review:** **yes** (vendor choice)
 
 **Title:** `feat(dx): add product analytics`
 
@@ -570,7 +570,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Severity:** P2
 - **Applies to:** js, ts, py, go
 - **Audit key:** `dx/observability/missing-feature-flags`
-- **Needs triage:** **yes** (vendor choice)
+- **Needs human review:** **yes** (vendor choice)
 
 **Title:** `feat(dx): add feature-flag SDK`
 
@@ -600,7 +600,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 - **Severity:** P2
 - **Applies to:** js, ts, py, go, rb
 - **Audit key:** `dx/observability/missing-health-endpoint`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `feat(dx): add /health endpoint`
 
@@ -661,7 +661,7 @@ fi
 - **Severity:** P2
 - **Applies to:** js, ts, py
 - **Audit key:** `dx/observability/missing-structured-logging`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `feat(dx): adopt structured logging`
 
@@ -693,7 +693,7 @@ fi
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/claude-code/missing-claude-md`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `docs(dx): add CLAUDE.md`
 
@@ -719,7 +719,7 @@ ls CLAUDE.md .claude/CLAUDE.md 2>/dev/null
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/claude-code/missing-claude-settings`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add .claude/settings.json`
 
@@ -745,7 +745,7 @@ ls CLAUDE.md .claude/CLAUDE.md 2>/dev/null
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/claude-code/missing-recommended-mcp`
-- **Needs triage:** **yes** (which MCPs are appropriate is a judgment call)
+- **Needs human review:** **yes** (which MCPs are appropriate is a judgment call)
 
 **Title:** `chore(dx): wire recommended MCP servers`
 
@@ -786,7 +786,7 @@ echo "vercel=$vercel_signal supabase=$supabase_signal sentry=$sentry_signal mcp_
 - **Severity:** P2
 - **Applies to:** *(any)*
 - **Audit key:** `dx/claude-code/missing-stop-hook`
-- **Needs triage:** no
+- **Needs human review:** no
 
 **Title:** `chore(dx): add Claude Code Stop hook`
 

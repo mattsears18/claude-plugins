@@ -44,7 +44,7 @@ Bail with `blocked` if any of:
 
 - Issue state is `CLOSED`.
 - Issue has an assignee that isn't the authenticated `gh` user.
-- Issue carries `wontfix` / `needs-human-review` / `needs-triage` labels (a prior dispatch already dispositioned it — don't re-run the spike). (The bare `blocked` label — distinct from the `blocked:*` family — was retired in favor of `needs-human-review` per [#1128](https://github.com/mattsears18/shipyard/issues/1128); see CLAUDE.md's Retired labels table.)
+- Issue carries `wontfix` / `needs-human-review` labels (a prior dispatch already dispositioned it — don't re-run the spike). (The bare `blocked` label — distinct from the `blocked:*` family — was retired in favor of `needs-human-review` per [#1128](https://github.com/mattsears18/shipyard/issues/1128); see CLAUDE.md's Retired labels table.)
 - **Any open PR references this issue with a closing keyword** — return `blocked: PR #<M> already open for this issue`.
 
 **Resume check — a prior dispatch may have been reaped mid-spike.** Before starting fresh, check whether follow-on sub-issues already exist referencing this issue as parent (`gh search issues --repo <owner/repo> "Part of #<N>" --json number,title`) and whether a design-doc file already exists on the default branch naming this issue (see [step 5](#5-write-the-design-doc-committed-in-repo) for the path convention). If both are present, the spike was already completed by a prior dispatch that never returned cleanly — don't re-decompose or re-file duplicate sub-issues; just open the PR for whatever's left (or return `blocked: spike artifacts already exist but no PR closes this issue — manual triage required` if you can't reconcile the state).
@@ -111,7 +111,6 @@ latest_decision=$(printf '%s' "$COMMENTS_JSON" | jq -r '
 **If `latest_escalation` is non-empty AND `latest_decision` is non-empty AND `latest_decision` sorts after `latest_escalation`** (plain string `>` — ISO-8601 UTC timestamps compare correctly), a human already answered this exact question after the last time this issue was escalated. Do NOT apply `needs-human-review` — instead:
 
 ```bash
-gh issue edit <N> --repo <owner/repo> --remove-label needs-triage 2>/dev/null || true
 gh issue comment <N> --repo <owner/repo> --body "Not re-applying \`needs-human-review\` — a decision was already recorded after the prior escalation (see the decision comment posted at $latest_decision). Leaving the gate off; the recorded decision should be read and acted on directly on the next pass."
 ```
 
@@ -120,7 +119,7 @@ Return: `spiked+needs-human-review #<N> (decision already recorded, gate not re-
 **Otherwise** (no prior escalation exists yet, or no decision was recorded after it) — proceed with the ordinary escalation:
 
 ```bash
-gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage
+gh issue edit <N> --repo <owner/repo> --add-label needs-human-review
 WORKTREE_PATH="$(git rev-parse --show-toplevel)"
 mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
 ```

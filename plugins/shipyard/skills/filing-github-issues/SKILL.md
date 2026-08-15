@@ -88,7 +88,7 @@ gh label create P2 --repo <owner/repo> --color FBCA04 \
   --description "Normal — standard planned work; gets done in natural backlog order." 2>/dev/null || true
 ```
 
-Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the bucket you just assigned per `shipyard:audit-rubrics` — on **every** `gh issue create` you do, alongside `--label shipyard` and your `--label "audit:<dimension>"`. This is not optional and does not depend on whether `P0`/`P1`/`P2` already exist in the target repo's label list (unlike the "apply whichever of these actually exist" guidance for `bug`/`enhancement`/etc. under "Discover labels once" above) — severity labels are auto-created exactly like `audit:<dimension>` and `needs-triage`, because the severity bucket is the filing agent's own classification, not a repo-config decision.
+Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the bucket you just assigned per `shipyard:audit-rubrics` — on **every** `gh issue create` you do, alongside `--label shipyard` and your `--label "audit:<dimension>"`. This is not optional and does not depend on whether `P0`/`P1`/`P2` already exist in the target repo's label list (unlike the "apply whichever of these actually exist" guidance for `bug`/`enhancement`/etc. under "Discover labels once" above) — severity labels are auto-created exactly like `audit:<dimension>`, because the severity bucket is the filing agent's own classification, not a repo-config decision.
 
 ## Milestone assignment (gated on `milestones.enabled` + `milestones.assign_on_file`, issue [#1242](https://github.com/mattsears18/shipyard/issues/1242))
 
@@ -121,30 +121,28 @@ For each finding, before its `gh issue create`, choose a milestone:
 
 **Never fail a filing over a milestone.** A `gh api` error, an empty milestone list, or an inconclusive match are all reasons to file **without** a milestone, never reasons to skip filing the finding itself. This matters most here — the auditors file in bulk and unattended, and a lost finding is a much worse outcome than an unmilestoned one.
 
-## `needs-triage` label (symptom-shaped findings — auto-investigated, NOT "skip this")
+## Under-specified findings — `needs-human-review`, or no label at all
 
-`needs-triage` is investigate mode's entry signal — accepted-but-not-required alongside live detection during the migration window ([#1090](https://github.com/mattsears18/shipyard/issues/1090); see [`04d-investigate-routing.md`](../../commands/do-work/setup/04d-investigate-routing.md)) — it is **not** a "human must look before `/do-work` touches this" flag. Under the default config (`triage.investigate_dispatch: true`), a trusted-author issue carrying it is dispatched to investigate mode automatically. Reserve it for findings that genuinely need investigation before a fix can be written, not for findings that need a **decision**:
+There is **no triage label to apply.** `needs-triage` was retired in [#1120](https://github.com/mattsears18/shipyard/issues/1120); investigate mode's entry is now purely detection-based (a bot-shaped trusted author, or a symptom-shaped body — see [`04d-investigate-routing.md`](../../commands/do-work/setup/04d-investigate-routing.md)). Two cases, and neither of them is "label it for triage":
 
-- Root cause is ambiguous — the symptom is real but the fix path requires investigation you couldn't do from the audit surface.
+**Root cause is ambiguous** — the symptom is real but the fix path needs investigation you couldn't do from the audit surface. **Apply no gate label.** Write the finding's evidence into the body as it actually appeared (the stack trace, the error string, the failing request) and investigate-mode's symptom detection will route it on its own. A body that reads like a crash report *is* the signal — that's the whole point of detection-based entry, and a label would add nothing.
 
-For a finding that needs a human **decision** rather than investigation, apply `needs-human-review` instead — applying `needs-triage` to one of these gets it auto-investigated, which isn't the outcome you want:
+**The finding needs a human decision** rather than investigation → apply `needs-human-review`:
 
 - Acceptance criteria can't be made concrete without product/design/legal input (e.g., "what should the empty state look like?").
 - Scope spans multiple surfaces or repos and needs decomposition into smaller issues.
 - The finding implies a decision (which library to adopt, whether to deprecate an API) rather than a mechanical fix.
 
-If the finding is clean — concrete evidence, obvious fix, verifiable acceptance criteria — apply **neither** label. Both exist to route under-specified work correctly, not as a generic "needs review" flag.
+If the finding is clean — concrete evidence, obvious fix, verifiable acceptance criteria — apply **no** gate label. `needs-human-review` routes under-specified work to a human; it is not a generic "needs review" flag.
 
-Both labels are part of the plugin's workflow contract with `/do-work`, so **auto-create whichever you need if missing** (same exception as `audit:*`):
+`needs-human-review` is part of the plugin's workflow contract with `/do-work`, so **auto-create it if missing** (same exception as `audit:*`):
 
 ```bash
-gh label list --repo <owner/repo> --limit 100 | grep -q "^needs-triage" || \
-  gh label create "needs-triage" --repo <owner/repo> --color C2E0C6 --description "Sentry/bot crash reports (auto-investigated). Label is accepted, not required, during migration."
 gh label list --repo <owner/repo> --limit 100 | grep -q "^needs-human-review" || \
   gh label create "needs-human-review" --repo <owner/repo> --color D93F0B --description "Awaiting a human DECISION before /do-work will touch it"
 ```
 
-Then pass `--label "needs-triage"` or `--label "needs-human-review"` (whichever matches) on the `gh issue create` for that finding. Note in your end-of-run summary which issues carried either label (with reason) so the user knows what's awaiting investigation vs. awaiting their input.
+Then pass `--label "needs-human-review"` on the `gh issue create` for that finding. Note in your end-of-run summary which issues carried it (with reason) so the user knows what's awaiting their input.
 
 ## Deduplication (two-tier)
 

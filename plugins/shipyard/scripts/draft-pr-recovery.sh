@@ -55,7 +55,7 @@
 #        3461`, so the co-author trailer is the only reliable signal.
 #   bash draft-pr-recovery.sh gated-label-check      < labels.txt   (one per line)
 #     -> true if any label is a disposition/gate label that already answers
-#        "should this merge" (needs-human-review, needs-triage, wontfix,
+#        "should this merge" (needs-human-review, wontfix,
 #        discussion, duplicate, invalid, agent-console, or any blocked:*).
 #   bash draft-pr-recovery.sh is-body-empty          < body.txt
 #   bash draft-pr-recovery.sh has-wip-marker         < title-and-body.txt
@@ -101,7 +101,7 @@
 set -uo pipefail
 
 GH="${GH:-gh}"
-GATED_LABEL_RE='^(needs-human-review|needs-triage|wontfix|discussion|duplicate|invalid|agent-console|blocked:.*)$'
+GATED_LABEL_RE='^(needs-human-review|wontfix|discussion|duplicate|invalid|agent-console|blocked:.*)$'
 
 # ---------------------------------------------------------------------------
 # Pure decision. No I/O. This is the whole classification rule.
