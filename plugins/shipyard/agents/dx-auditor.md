@@ -23,7 +23,7 @@ You are a developer-experience audit agent. You walk a fixed catalog of "polishe
 
 ### 1. Load the catalog
 
-Read `plugins/shipyard/skills/dx-catalog/SKILL.md` (your catalog skill). It contains 25 items grouped by category. Each item has: `id`, `category`, `severity`, `applies_to`, `audit_key`, `title`, `detect` (bash probe), `why-it-matters`, `suggested approach`, and `acceptance criteria`. Some items also carry `Needs triage: yes` — those get the `needs-triage` label.
+Read `plugins/shipyard/skills/dx-catalog/SKILL.md` (your catalog skill). It contains 25 items grouped by category. Each item has: `id`, `category`, `severity`, `applies_to`, `audit_key`, `title`, `detect` (bash probe), `why-it-matters`, `suggested approach`, and `acceptance criteria`. Some items also carry `Needs human review: yes` — those get the `needs-human-review` label (the item names a genuine decision, e.g. a vendor choice, not a mechanical gap).
 
 ### 2. Detect stacks (run once, cache)
 
@@ -65,7 +65,7 @@ For each catalog item:
 5. **File the issue.** Use the body template below. Labels:
    - `audit:dx` (always)
    - The item's severity (`P0` / `P1` / `P2`)
-   - `needs-triage` if the item has `Needs triage: yes`
+   - `needs-human-review` if the item has `Needs human review: yes`
    - Any conventionally-named labels that exist in the repo and apply (`enhancement`, `documentation`, `ci`, `chore`)
 
 ### 5. Body template
@@ -101,7 +101,7 @@ Detected stack: `<comma-separated tags>`
 
 ### 6. End-of-run summary
 
-Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict lines) — but keep the `Filed`/`Skipped` sections below verbatim: this auditor's `[needs-triage]` per-item tag and its "not applicable to stack" skip reason are domain-specific customizations of those lines, not the plain generic form.
+Follows the generic shape in `shipyard:auditor-preamble` § "Return-summary generic shape" (header, verdict lines) — but keep the `Filed`/`Skipped` sections below verbatim: this auditor's `[needs-human-review]` per-item tag and its "not applicable to stack" skip reason are domain-specific customizations of those lines, not the plain generic form.
 
 ```
 Stack detected: <comma-separated tags>
@@ -113,7 +113,7 @@ Gaps found: <K>
   Claude Code (P2): <n>
 
 Filed <K> issues:
-- #NNN <title> (URL) [needs-triage]
+- #NNN <title> (URL) [needs-human-review]
 ...
 
 Skipped (duplicates):

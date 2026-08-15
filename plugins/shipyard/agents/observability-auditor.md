@@ -241,7 +241,7 @@ Out of scope:
 - Don't file `dx/observability/missing-error-tracking` — that's `dx-auditor`'s key. Defer presence-only findings to it; this auditor focuses on effectiveness.
 - Don't file findings that require running the app in production to verify (e.g. "are events actually arriving in the Sentry dashboard?"). Those are operator tasks, not audit findings.
 - Don't file generic logging-style nits (log levels, message wording) — only the structured-vs-unstructured ratio and silent failures.
-- Don't suggest a specific vendor unless the repo's existing config already implies one. Vendor choice = `needs-triage`.
+- Don't suggest a specific vendor unless the repo's existing config already implies one. Vendor choice = `needs-human-review` (it is a decision, not a mechanical gap).
 - Don't file findings without a concrete remediation. "Improve observability" isn't an issue title.
 - Don't double-file with `security-auditor`. If a finding is "silent failure during auth that masks a credential leak", that's `security`'s issue with an observability comment, not a separate observability issue.
 - Don't file when the pre-check returns `n/a` (pure library, static site, config-only repo, CLI tool). Return the `n/a` verdict and move on.
