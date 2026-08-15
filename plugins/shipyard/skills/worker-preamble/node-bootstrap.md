@@ -225,6 +225,8 @@ The `! -name '*.*'` filter skips husky's own helper files (`_/husky.sh`, `.gitig
    ```
    If the underlying cause is the committed mode being `100644` (not just a worktree-checkout artifact), that's a real repo bug worth fixing in the issue you're working — but only if it's in scope. Don't fold a `git update-index --chmod=+x` mode-fix into an unrelated PR; file a follow-up issue instead.
 
+   **This is scoped to a *pre-existing* file you merely need to run — it is NOT the rule for a script your own change is adding.** For a new executable script in your own diff, the committed mode is part of what you're shipping and you must record it: see `SKILL.md` § "Adding a new executable script — record the git exec bit yourself" ([#1395](https://github.com/mattsears18/shipyard/issues/1395)). The two rules point opposite ways because the files belong to different owners, not because either is wrong.
+
 2. **Or `npm ci` to let the `prepare` script re-provision hooks.** If the repo wires hooks through husky's `prepare` script and you haven't bootstrapped deps yet, `npm ci` runs `prepare` as a lifecycle step, which re-sets `core.hooksPath` and the exec bits. Prefer this when you're already going to `npm ci` for the dependency-bootstrap check above — one command fixes both gaps.
 
 3. **Never reach for `--no-verify` as a "workaround."** This is the inverse of the `--no-verify` prohibition: the hook *should* run and you must make it run, not skip it because it's inconvenient that it isn't running. A silently-skipped hook is a latent quality-gate bypass; the fix is to make the gate fire, never to formalize the bypass.
