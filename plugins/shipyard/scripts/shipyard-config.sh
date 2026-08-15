@@ -60,6 +60,11 @@
 #   SHIPYARD_REPO_ROOT — override the repo root resolution. Defaults to
 #                       `git rev-parse --show-toplevel` from cwd. Used by
 #                       the test suite to point at a tmpdir.
+#   SHIPYARD_CONFIG_FAILURE_MARKER — override the path of the session-local
+#                       schema-failure record (issue #1388). Defaults to
+#                       `$PWD/.shipyard-config-schema-failure`, and only when
+#                       `$PWD/.shipyard-plugin-root` exists (the orchestrator
+#                       worktree's own signature). Used by the test suite.
 #
 # Exit codes:
 #
@@ -97,6 +102,10 @@ Usage:
 Environment:
   SHIPYARD_HOME       base dir for user-global config (default: $HOME/.shipyard)
   SHIPYARD_REPO_ROOT  override the repo-root resolution (default: git toplevel of cwd)
+  SHIPYARD_CONFIG_FAILURE_MARKER
+                      override the session-local schema-failure record path
+                      (default: $PWD/.shipyard-config-schema-failure, written
+                      only inside the orchestrator worktree)
 
 Exit codes:
   0    success
@@ -493,6 +502,92 @@ user_schema_path() {
 }
 
 # --------------------------------------------------------------------------
+# Session-local schema-failure record (issue #1388).
+#
+# A layer that fails schema validation makes `load` — and therefore `get` —
+# exit 70 with empty stdout. That is loud at the one call site that checks
+# (`/do-work` setup step 0.4, which records SHIPYARD_CONFIG_SCHEMA_FAILURE
+# and prints a warning), but EVERY other consumer is deliberately fail-open:
+# `resolve-dispatch-model.sh`, `flake-enforce.sh`, and the worker specs all
+# wrap their reads as `... 2>/dev/null || echo <default>`, so the degrade is
+# indistinguishable from "this repo sets no override for that key".
+#
+# The fail-open behavior is correct and is NOT changed here — a config
+# problem must never fail a dispatch. What is added is a *record*: the
+# failure is appended to a session-local marker file that
+# `commands/do-work/cleanup-summary.md`'s end-of-session summary surfaces,
+# so a fail-open read is never COMPLETELY silent even when step 0.4's `load`
+# was not the call that hit it.
+#
+# Where the marker lives, and why:
+#
+#   - `$SHIPYARD_CONFIG_FAILURE_MARKER` when set (explicit override; tests).
+#   - otherwise `$PWD/.shipyard-config-schema-failure`, and ONLY when
+#     `$PWD/.shipyard-plugin-root` exists.
+#
+# `.shipyard-plugin-root` is step 0.5's stash and exists only in the
+# orchestrator's own worktree, which is created per session and reaped at
+# session end — so gating on it gives (a) session-scoped lifetime for free,
+# with no clearing step and no cross-session bleed, and (b) a guarantee that
+# a dispatched worker's `get` call can never drop an untracked file into
+# the worktree whose diff becomes a PR. Orchestrator-side reads are the ones
+# the record is for anyway (resolve-dispatch-model.sh and flake-enforce.sh
+# both run there), and a worker reading the same broken config hits the same
+# failure the orchestrator already recorded.
+#
+# Recording is best-effort and never affects the caller's exit status.
+# --------------------------------------------------------------------------
+config_failure_marker_path() {
+  if [[ -n "${SHIPYARD_CONFIG_FAILURE_MARKER:-}" ]]; then
+    printf '%s\n' "$SHIPYARD_CONFIG_FAILURE_MARKER"
+    return 0
+  fi
+  if [[ -f "$PWD/.shipyard-plugin-root" ]]; then
+    printf '%s\n' "$PWD/.shipyard-config-schema-failure"
+    return 0
+  fi
+  return 1
+}
+
+# record_schema_failure <config-file> <validator-stderr>
+#
+# Appends one TSV row: <ISO8601-UTC>\t<config file>\t<rejected fields>.
+# The rejected-fields field mirrors step 0.4's REJECTED_FIELDS shape (the
+# validator's per-field indented stderr lines, `; `-joined) so the summary
+# renders the two sources identically.
+record_schema_failure() {
+  local file="$1"
+  local detail="$2"
+  local marker fields
+  marker=$(config_failure_marker_path) || return 0
+
+  # POSIX [[:space:]] (not \s) so the grep matches on BSD grep too; awk for
+  # the join (NOT `paste -d '; '` — paste's -d is a cycled list of
+  # single-char delimiters, so '; ' would alternate ';' then ' ').
+  fields=$(printf '%s\n' "$detail" \
+    | grep -E '^[[:space:]]+\.' \
+    | sed 's/^[[:space:]]*//' \
+    | awk 'NR>1{printf "; "} {printf "%s", $0} END{if (NR>0) print ""}')
+  if [[ -z "$fields" ]]; then
+    # Non-field-shaped failure (malformed JSON, secret-like key, missing
+    # schema). Flatten the diagnostic onto one line so the TSV row holds.
+    fields=$(printf '%s' "$detail" | tr '\n\t' '  ' | sed 's/  */ /g; s/^ //; s/ *$//')
+  fi
+  [[ -z "$fields" ]] && fields="(no detail)"
+
+  # Dedupe on (file, fields): a fail-open `get` runs on nearly every
+  # orchestrator turn, so an unbounded append would grow to hundreds of
+  # identical rows in one session and bury the signal it exists to carry.
+  local key
+  key=$(printf '\t%s\t%s' "$file" "$fields")
+  if [[ -f "$marker" ]] && grep -Fq -- "$key" "$marker" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$key" >> "$marker" 2>/dev/null || true
+  return 0
+}
+
+# --------------------------------------------------------------------------
 # Layer loading
 #
 # Each function reads its layer's file (or an empty object when missing) and
@@ -509,9 +604,17 @@ load_user() {
     printf '{}\n'
     return 0
   fi
-  if ! validate_against_schema "$path" "$(user_schema_path)" >&2; then
+  local verr
+  # Capture (rather than pass through) the validator's diagnostic so the
+  # same text can be re-emitted on stderr AND recorded for the end-of-session
+  # summary (#1388). Behavior on stderr is byte-identical to the pre-#1388
+  # pass-through.
+  if ! verr=$(validate_against_schema "$path" "$(user_schema_path)" 2>&1); then
+    [[ -n "$verr" ]] && printf '%s\n' "$verr" >&2
+    record_schema_failure "$path" "$verr"
     return 70
   fi
+  [[ -n "$verr" ]] && printf '%s\n' "$verr" >&2
   cat "$path"
 }
 
@@ -582,9 +685,13 @@ load_repo() {
     printf '{}\n'
     return 0
   fi
-  if ! validate_against_schema "$path" "$(repo_schema_path)" >&2; then
+  local verr
+  if ! verr=$(validate_against_schema "$path" "$(repo_schema_path)" 2>&1); then
+    [[ -n "$verr" ]] && printf '%s\n' "$verr" >&2
+    record_schema_failure "$path" "$verr"
     return 70
   fi
+  [[ -n "$verr" ]] && printf '%s\n' "$verr" >&2
   cat "$path"
 }
 
@@ -598,9 +705,13 @@ load_local() {
     printf '{}\n'
     return 0
   fi
-  if ! validate_against_schema "$path" "$(repo_schema_path)" >&2; then
+  local verr
+  if ! verr=$(validate_against_schema "$path" "$(repo_schema_path)" 2>&1); then
+    [[ -n "$verr" ]] && printf '%s\n' "$verr" >&2
+    record_schema_failure "$path" "$verr"
     return 70
   fi
+  [[ -n "$verr" ]] && printf '%s\n' "$verr" >&2
   cat "$path"
 }
 

@@ -1045,6 +1045,111 @@ export SHIPYARD_REPO_ROOT="$repo"
 export SHIPYARD_HOME="$home"
 
 # --------------------------------------------------------------------------
+echo "== session-local schema-failure record (issue #1388)"
+# A schema-invalid layer makes every FAIL-OPEN consumer (resolve-dispatch-model.sh,
+# flake-enforce.sh, the worker specs' `get ... 2>/dev/null || echo <default>`)
+# return an empty string with exit 0 and no output — indistinguishable from
+# "this repo sets no override for that key". The fail-open posture is unchanged;
+# what these assertions pin is the *record* the end-of-session summary reads.
+rec_repo=$(mktmprepo)
+rec_home=$(mktmprepo)
+rec_orch=$(mktmprepo)
+export SHIPYARD_REPO_ROOT="$rec_repo"
+export SHIPYARD_HOME="$rec_home"
+rec_marker="$rec_orch/.shipyard-config-schema-failure"
+
+# `.shipyard-plugin-root` is step 0.5's stash — its presence is what marks a
+# directory as the orchestrator's own worktree.
+printf '%s\n' "/nonexistent/plugin/root" > "$rec_orch/.shipyard-plugin-root"
+
+# A clean config records nothing.
+printf '{"version": 1}\n' > "$rec_repo/shipyard.config.json"
+( cd "$rec_orch" && "$helper" get auto_merge.policy >/dev/null 2>&1 )
+if [[ -e "$rec_marker" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "a clean config load writes NO failure marker (#1388)"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "a clean config load writes NO failure marker (#1388)"
+  pass=$((pass+1))
+fi
+
+# Now break the repo layer. `labels.blocked` was removed from the schema, so
+# it reproduces the exact rejected-field shape the issue reports.
+printf '{"version": 1, "labels": {"blocked": "x"}}\n' > "$rec_repo/shipyard.config.json"
+
+# Fail-open behavior itself must be byte-for-byte unchanged: `get` still exits
+# 70 and still names the rejected field on stderr.
+out=$( cd "$rec_orch" && "$helper" get models.issue_work 2>&1 )
+code=$?
+assert_exit_code "$code" 70 "get on a schema-invalid repo layer still exits 70 (#1388 changes nothing here)"
+assert_contains "$out" "schema validation failed" "get still prints the loader's schema-failure diagnostic (#1388)"
+assert_contains "$out" ".labels: unknown field blocked" "get still names the rejected field on stderr (#1388)"
+
+assert_file_exists "$rec_marker" "a fail-open get records the schema failure in the orchestrator worktree (#1388)"
+marker_body=$(cat "$rec_marker" 2>/dev/null)
+assert_contains "$marker_body" "$rec_repo/shipyard.config.json" "the record names the config file that failed (#1388)"
+assert_contains "$marker_body" ".labels: unknown field blocked" "the record carries the rejected-field detail (#1388)"
+assert_equals "$(printf '%s\n' "$marker_body" | awk -F'\t' 'NF==3{c++} END{print c+0}')" "1" \
+  "the record is a 3-column TSV row (timestamp, file, rejected fields) (#1388)"
+
+# Dedupe: a fail-open `get` runs on nearly every orchestrator turn, so repeated
+# identical failures must not grow the file without bound.
+( cd "$rec_orch" && "$helper" get auto_merge.policy >/dev/null 2>&1 )
+( cd "$rec_orch" && "$helper" load >/dev/null 2>&1 )
+assert_equals "$(wc -l < "$rec_marker" | tr -d ' ')" "1" \
+  "repeat failures dedupe on (file, fields) — still one row (#1388)"
+
+# A DIFFERENT failing layer is a distinct row, not a dedupe hit. `load` short-
+# circuits on the first failing layer, so the repo layer has to be made valid
+# for the local layer to be the one that trips.
+printf '{"version": 1}\n' > "$rec_repo/shipyard.config.json"
+mkdir -p "$rec_repo/.shipyard"
+printf '{"concurrency": {"default": "not-an-integer"}}\n' > "$rec_repo/.shipyard/config.local.json"
+( cd "$rec_orch" && "$helper" get auto_merge.policy >/dev/null 2>&1 )
+assert_contains "$(cat "$rec_marker")" "$rec_repo/.shipyard/config.local.json" \
+  "a failure in the gitignored local layer records its own row (#1388)"
+assert_equals "$(wc -l < "$rec_marker" | tr -d ' ')" "2" \
+  "a distinct (file, fields) pair appends a second row rather than deduping (#1388)"
+rm -f "$rec_repo/.shipyard/config.local.json"
+printf '{"version": 1, "labels": {"blocked": "x"}}\n' > "$rec_repo/shipyard.config.json"
+
+# Outside the orchestrator worktree (no `.shipyard-plugin-root`) nothing is
+# written — a dispatched worker's `get` must never drop an untracked file into
+# a worktree whose diff becomes a PR.
+rec_worker=$(mktmprepo)
+( cd "$rec_worker" && "$helper" get models.issue_work >/dev/null 2>&1 )
+if [[ -e "$rec_worker/.shipyard-config-schema-failure" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "no marker is written outside the orchestrator worktree (#1388)"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "no marker is written outside the orchestrator worktree (#1388)"
+  pass=$((pass+1))
+fi
+
+# SHIPYARD_CONFIG_FAILURE_MARKER overrides the path outright.
+rec_override_dir=$(mktmprepo)
+( cd "$rec_worker" && SHIPYARD_CONFIG_FAILURE_MARKER="$rec_override_dir/explicit-record" \
+    "$helper" get models.issue_work >/dev/null 2>&1 )
+assert_file_exists "$rec_override_dir/explicit-record" \
+  "SHIPYARD_CONFIG_FAILURE_MARKER overrides the record path (#1388)"
+
+# `validate` is a user-invoked, already-loud call — not a silent fail-open read
+# — so it must NOT append to the record.
+rm -f "$rec_marker"
+( cd "$rec_orch" && "$helper" validate --layer repo >/dev/null 2>&1 )
+if [[ -e "$rec_marker" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "the validate subcommand does NOT write a failure marker (#1388)"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "the validate subcommand does NOT write a failure marker (#1388)"
+  pass=$((pass+1))
+fi
+
+# Restore the shared fixtures.
+export SHIPYARD_REPO_ROOT="$repo"
+export SHIPYARD_HOME="$home"
+
+# --------------------------------------------------------------------------
 echo
 total=$((pass + fail))
 if [[ $fail -eq 0 ]]; then
