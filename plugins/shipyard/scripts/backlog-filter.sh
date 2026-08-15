@@ -35,6 +35,7 @@
 # -----------
 #
 #   classify --me <login> --trusted-authors <csv> [--closed-by-healthy-pr <csv>]
+#            [--closed-by-open-pr <json-object>]
 #            [--peer-claimed <csv>] [--investigate-dispatch true|false]
 #            [--prioritize-label <label>] [--today YYYY-MM-DD]
 #            [--respect-assignees true|false]
@@ -55,12 +56,16 @@
 #       {"number":N,"verdict":"gate","reason":"<label>"}
 #       {"number":N,"verdict":"gate","reason":"tracking","evidence_pointer":"<content-sourced citation>"}
 #       {"number":N,"verdict":"gate","reason":"tracking-unjustified"}
-#     The last two shapes are `tracking`'s special case (issue #1364) — see
+#       {"number":N,"verdict":"drop","reason":"covered-by-open-pr","evidence_pointer":"PR #M closingIssuesReferences includes #N"}
+#     The `tracking` shapes are that label's special case (issue #1364) — see
 #     "Provisional gate: tracking requires a content-sourced justification"
 #     below. Every OTHER gate label (`blocked:ci`, `wontfix`, `discussion`,
 #     `needs-human-review`) always emits the plain
-#     `{"verdict":"gate","reason":"<label>"}` shape; only `tracking` ever
-#     carries `evidence_pointer` or the `tracking-unjustified` reason.
+#     `{"verdict":"gate","reason":"<label>"}` shape; among GATE verdicts only
+#     `tracking` ever carries `evidence_pointer` or the
+#     `tracking-unjustified` reason. The `covered-by-open-pr` DROP verdict
+#     (issue #1389) is the one other shape that carries an
+#     `evidence_pointer`.
 #     Output ORDER: every "eligible" line first, in rank order. The default
 #     (milestone ranking OFF — either --milestones-enabled or
 #     --milestones-prioritize-dispatch is false, matching a repo that never
@@ -106,6 +111,29 @@
 #     orthogonal to the milestone-ranking flags above: `--respect-assignees`
 #     decides which issues reach the eligible bucket at all, the milestone
 #     flags decide only how that bucket is ordered.
+#     `--closed-by-open-pr` (issue #1389) is a JSON object mapping issue
+#     number (as a STRING key, same convention as `--probe-verdicts`) to the
+#     number of an OPEN `--me`-authored PR whose `closingIssuesReferences`
+#     names that issue — REGARDLESS of that PR's check health or
+#     `mergeStateStatus`. Defaults to `{}` when omitted (the clause never
+#     fires, byte-identical to pre-#1389 behavior). Produced by the
+#     `closed-by-open-pr` subcommand below. This is deliberately a WIDER set
+#     than `--closed-by-healthy-pr`, because the two flags answer two
+#     different questions and #1389 is the bug that came from conflating
+#     them: PR health decides "does this PR belong in `failed_prs`?", which
+#     is a question about the PR. Whether an ISSUE is already covered by
+#     in-flight work is a question about the issue, and health is irrelevant
+#     to it — an issue whose open PR is red is fix-checks work on that PR,
+#     not workable issue-work, so dispatching an issue-worker at it can only
+#     bail (the #1389 repro burned 3 worker + 3 scope-agent dispatches,
+#     ~250k tokens, on five such issues in one session). The
+#     `closed/abandoned PR -> issue stays dispatchable` row is untouched:
+#     the subcommand queries `--state open` only, so a closed or abandoned
+#     PR contributes no entry and #332's resumable-work case is preserved by
+#     construction. Evaluated AFTER `--closed-by-healthy-pr` in
+#     `classify_one`, so an issue in BOTH sets keeps emitting the older
+#     `closed-by-healthy-pr` reason verbatim and only the two genuinely-new
+#     rows (open+red, open+DIRTY) emit `covered-by-open-pr`.
 #     `--probe-verdicts` (issue #1356) is a JSON object mapping issue number
 #     (as a STRING key — `{"123":"changed"}`, not `{123:"changed"}`, since
 #     JSON object keys are always strings) to the verdict a prior
@@ -192,6 +220,35 @@
 #     Exit codes: 0 success (even if the set is empty); 65 if `gh` or `jq`
 #     is missing.
 #
+#   closed-by-open-pr --repo <owner/repo> --me <login>
+#     Live-queries GitHub: the set of issue numbers with an OPEN PR authored
+#     by --me that names them in closingIssuesReferences — with NO health
+#     filter of any kind (no check-rollup walk, no mergeStateStatus test).
+#     The sibling of `closed-by-healthy-pr` above, and deliberately NOT a
+#     replacement for it: that subcommand keeps its exact current meaning
+#     and its current consumers, because "is this PR healthy?" is still the
+#     right question for the `failed_prs` / fix-checks routing it feeds.
+#     This one answers the different question issue #1389 identified as
+#     being wrongly answered by that same health check — "is this ISSUE
+#     already covered by in-flight work?" — for which health is irrelevant.
+#     Prints a JSON object `{"<issue-number>": <pr-number>, ...}` on stdout,
+#     ready to pass straight through as `classify --closed-by-open-pr`. The
+#     PR number is carried (rather than a bare CSV of issue numbers, the
+#     shape `closed-by-healthy-pr` uses) so `classify` can emit a concrete
+#     `evidence_pointer` naming the covering PR. When more than one open PR
+#     closes the same issue, the LOWEST PR number wins — arbitrary but
+#     deterministic, so the emitted evidence pointer is stable across runs.
+#     Empty object (`{}`), not empty string, when no open PR closes any
+#     issue — so `--closed-by-open-pr "$(...)"` composes without a
+#     caller-side empty-string special case.
+#     Uses `closingIssuesReferences` — GitHub's canonical "this PR
+#     auto-closes that issue" signal — never a PR-body substring search
+#     (issue #301). Its `gh pr list` projection is strictly cheaper than
+#     `closed-by-healthy-pr`'s: `number,closingIssuesReferences` only, with
+#     no `statusCheckRollup` (the expensive per-check array).
+#     Exit codes: 0 success (even if the set is empty); 65 if `gh` or `jq`
+#     is missing.
+#
 #   summary --me <login>
 #     < wide-fetch-issue-json (array) on stdin — the exact same payload
 #     `classify` reads, passed BEFORE classification runs.
@@ -243,7 +300,8 @@ usage() {
   cat <<'EOF'
 Usage:
   backlog-filter.sh classify --me <login> --trusted-authors <csv>
-      [--closed-by-healthy-pr <csv-of-numbers>] [--peer-claimed <csv-of-numbers>]
+      [--closed-by-healthy-pr <csv-of-numbers>]
+      [--closed-by-open-pr <json-object>] [--peer-claimed <csv-of-numbers>]
       [--investigate-dispatch true|false] [--prioritize-label <label>]
       [--today YYYY-MM-DD] [--respect-assignees true|false]
       [--milestones-enabled true|false]
@@ -252,6 +310,8 @@ Usage:
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
+
+  backlog-filter.sh closed-by-open-pr --repo <owner/repo> --me <login>
 
   backlog-filter.sh eval-probes --repo <owner/repo>
     < wide-fetch-issue-json (array) on stdin
@@ -436,6 +496,22 @@ def time_gate_future($issue; $today):
 def is_closed_by_healthy_pr($issue; $healthy):
   ($healthy | index($issue.number) != null);
 
+# covered_by_open_pr($issue; $covered) -- issue #1389. Returns the number of
+# an OPEN --me-authored PR whose closingIssuesReferences names this issue,
+# or null when no such PR exists. Health is deliberately NOT consulted: the
+# check-rollup/mergeStateStatus test that feeds is_closed_by_healthy_pr
+# above answers "should this PR go in failed_prs?", a question about the PR,
+# and reusing it to answer "should this issue go in raw_backlog?" is the bug
+# #1389 documents. An issue whose open PR is red is fix-checks work on that
+# PR; an issue whose open PR is DIRTY is fix-rebase work on that PR. Neither
+# is workable issue-work, so dispatching an issue-worker at either can only
+# bail (issue-work.md step 0 catches it, but only AFTER a full worker
+# dispatch has read the issue). The closed/abandoned-PR row that #332
+# protects never reaches this map at all -- the producing subcommand queries
+# --state open only -- so resumable work stays dispatchable by construction.
+def covered_by_open_pr($issue; $covered):
+  ($covered[($issue.number | tostring)] // null);
+
 # is_event_gated($issue; $recheck_probe_enabled) -- issue #1356. True only
 # when the class-level kill switch is on AND the body carries a
 # `do-work-recheck` marker on ANY line (multiline flag "m" -- unlike
@@ -460,7 +536,7 @@ def is_event_gated($issue; $recheck_probe_enabled):
 def probe_verdict($issue; $verdicts):
   ($verdicts[($issue.number | tostring)] // "unknown");
 
-def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts):
+def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts):
   (matches_gate_label($issue)) as $gate_hit
   | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
   | if is_untrusted($issue; $trusted) then
@@ -496,6 +572,17 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
       {number: $issue.number, verdict: "drop", reason: "time-gated"}
     elif is_closed_by_healthy_pr($issue; $healthy) then
       {number: $issue.number, verdict: "drop", reason: "closed-by-healthy-pr"}
+    elif (covered_by_open_pr($issue; $covered) != null) then
+      # Ordered AFTER the healthy clause on purpose (issue #1389): the
+      # covered set is a strict SUPERSET of the healthy set, so putting it
+      # first would silently relabel every already-dropped healthy row.
+      # Reaching here therefore means "open PR, but NOT healthy" -- exactly
+      # the two rows (open+red, open+DIRTY) that used to stay dispatchable.
+      (covered_by_open_pr($issue; $covered)) as $pr
+      | {number: $issue.number, verdict: "drop", reason: "covered-by-open-pr",
+         evidence_pointer: ("PR #" + ($pr | tostring)
+                            + " closingIssuesReferences includes #"
+                            + ($issue.number | tostring))}
     else
       {number: $issue.number, verdict: "eligible"}
     end
@@ -536,7 +623,7 @@ def classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; 
 
 . as $issues
 | ($issues | map(.number)) as $opennums
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts))) as $classified
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by(._sort_key))
@@ -573,11 +660,17 @@ cmd_classify() {
   # issue and classify_one falls straight through to the unchanged
   # time_gate_future branch.
   local probe_verdicts_json="{}" recheck_probe_enabled="true"
+  # --closed-by-open-pr (issue #1389). Default "{}" reproduces pre-#1389
+  # behavior byte-for-byte for every existing caller and fixture: with an
+  # empty map, covered_by_open_pr returns null for every issue and
+  # classify_one falls straight through to the unchanged `eligible` branch.
+  local covered_by_open_pr_json="{}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --me) me="${2:-}"; shift 2 ;;
       --trusted-authors) trusted_csv="${2:-}"; shift 2 ;;
       --closed-by-healthy-pr) healthy_csv="${2:-}"; shift 2 ;;
+      --closed-by-open-pr) covered_by_open_pr_json="${2:-}"; shift 2 ;;
       --peer-claimed) peer_csv="${2:-}"; shift 2 ;;
       --investigate-dispatch) investigate_dispatch="${2:-}"; shift 2 ;;
       --prioritize-label) prioritize_label="${2:-}"; shift 2 ;;
@@ -636,6 +729,14 @@ cmd_classify() {
     return 64
   fi
 
+  if [[ -z "$covered_by_open_pr_json" ]]; then
+    covered_by_open_pr_json="{}"
+  fi
+  if ! printf '%s' "$covered_by_open_pr_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "classify: --closed-by-open-pr must be a JSON object, got: $covered_by_open_pr_json" >&2
+    return 64
+  fi
+
   local me_lower trusted_json healthy_json peer_json input milestone_rank_on
   me_lower=$(printf '%s' "$me" | tr '[:upper:]' '[:lower:]')
   trusted_json=$(_csv_to_json_lower_string_array "$trusted_csv")
@@ -671,6 +772,7 @@ cmd_classify() {
     --argjson respect_assignees "$respect_assignees" \
     --argjson recheck_probe_enabled "$recheck_probe_enabled" \
     --argjson probe_verdicts "$probe_verdicts_json" \
+    --argjson covered_by_open_pr "$covered_by_open_pr_json" \
     "$CLASSIFY_JQ"
 }
 
@@ -717,6 +819,59 @@ cmd_closed_by_healthy_pr() {
       )
       | .closingIssuesReferences[]?.number
     ] | unique | join(",")
+  '
+}
+
+# cmd_closed_by_open_pr — the live-network half of the covered-by-open-PR
+# drop clause (issue #1389). Deliberately a SIBLING of
+# cmd_closed_by_healthy_pr, not a modification of it: that function answers
+# "should this PR go in failed_prs?" and must keep doing exactly that, while
+# this one answers "is this ISSUE already covered by in-flight work?" — a
+# question to which the PR's check health and mergeStateStatus are simply
+# irrelevant. Conflating the two is the bug #1389 documents.
+cmd_closed_by_open_pr() {
+  local repo="" me=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      --me) me="${2:-}"; shift 2 ;;
+      *) echo "closed-by-open-pr: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+  if [[ -z "$repo" ]]; then
+    echo "closed-by-open-pr: --repo is required" >&2
+    usage
+    return 64
+  fi
+  if [[ -z "$me" ]]; then
+    echo "closed-by-open-pr: --me is required" >&2
+    usage
+    return 64
+  fi
+  require_jq "backlog-filter.sh"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "closed-by-open-pr: gh is required but not installed" >&2
+    return 65
+  fi
+
+  # `--state open` is what preserves #332's resumable-work row by
+  # construction: a closed or merged-without-closing PR is never returned,
+  # so its issue never enters the map and stays dispatchable. The projection
+  # is deliberately narrower than cmd_closed_by_healthy_pr's — no
+  # statusCheckRollup, because no health test is performed here.
+  local pr_json
+  pr_json=$(gh pr list --repo "$repo" --state open --author "$me" --limit 200 \
+    --json number,closingIssuesReferences 2>/dev/null)
+  if [[ -z "$pr_json" ]]; then
+    pr_json="[]"
+  fi
+
+  # shellcheck disable=SC2016
+  printf '%s' "$pr_json" | jq -c '
+    [ .[] | . as $pr | (($pr.closingIssuesReferences // [])[] | {issue: .number, pr: $pr.number}) ]
+    | group_by(.issue)
+    | map({ (.[0].issue | tostring): (map(.pr) | min) })
+    | add // {}
   '
 }
 
@@ -822,6 +977,10 @@ main() {
     closed-by-healthy-pr)
       shift
       cmd_closed_by_healthy_pr "$@"
+      ;;
+    closed-by-open-pr)
+      shift
+      cmd_closed_by_open_pr "$@"
       ;;
     eval-probes)
       shift

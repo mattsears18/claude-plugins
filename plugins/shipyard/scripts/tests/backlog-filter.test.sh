@@ -9,10 +9,13 @@
 # plus a third divergence caught in the spec text itself (needs-triage
 # classified as a drop at two call-sites and a route at the third).
 #
-# This suite exercises `classify` only -- `closed-by-healthy-pr` performs
-# live `gh`/gh-batch.sh network calls by design (see the script's own
-# header comment for why that split exists) and is not fixture-tested here;
-# its bad-usage paths are covered, its network path is not.
+# This suite exercises `classify` only -- `closed-by-healthy-pr` and its
+# #1389 sibling `closed-by-open-pr` both perform live `gh` network calls by
+# design (see the script's own header comment for why that split exists) and
+# are not fixture-tested here; their bad-usage paths are covered, their
+# network paths are not. The classification DECISION each one feeds -- which
+# is the part that has actually drifted historically -- is fully covered
+# below, including all four rows of #1389's PR-state table.
 #
 # Run with:
 #   bash plugins/shipyard/scripts/tests/backlog-filter.test.sh
@@ -187,6 +190,83 @@ assert_equals "$(verdict_of "$out" 201)" "eligible" "(15) #332: issue with no en
 
 out=$(printf '%s' "$fixture_closed_pr" | classify --closed-by-healthy-pr 201)
 assert_equals "$(verdict_of "$out" 201)" "drop:closed-by-healthy-pr" "(16) closed-by-healthy-pr membership drops the issue"
+
+# --- #1389: an issue covered by an OPEN-but-UNHEALTHY PR must also drop ----
+# The bug: the "healthy" qualifier on the clause above answers "should this
+# PR go in failed_prs?" -- a question about the PR -- and was being reused to
+# answer "should this issue go in raw_backlog?", where health is irrelevant.
+# An issue whose open @me PR names it in closingIssuesReferences is COVERED
+# whether that PR is green, red, or DIRTY; dispatching an issue-worker at it
+# can only bail. The four rows of the issue's own table are pinned below,
+# one assertion each, so a regression on any single row fails loudly.
+#
+# Row shapes, expressed as set membership (the health determination itself
+# lives in the producing subcommands, not in this pure classifier):
+#   open + healthy  -> number in BOTH the healthy set and the covered map
+#   open + red      -> number in the covered map only
+#   open + DIRTY    -> number in the covered map only
+#   closed/abandoned-> number in NEITHER (the subcommand queries --state open)
+
+fixture_open_pr='[
+  {"number":211,"title":"open+healthy","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":212,"title":"open+red","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":213,"title":"open+DIRTY","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":214,"title":"closed/abandoned PR","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+
+out=$(printf '%s' "$fixture_open_pr" | classify \
+  --closed-by-healthy-pr 211 \
+  --closed-by-open-pr '{"211":901,"212":902,"213":903}')
+
+# Row 1 -- unchanged behavior. The covered map is a strict SUPERSET of the
+# healthy set, so #211 is in both; the healthy clause is evaluated first on
+# purpose, so its verdict string stays byte-identical to pre-#1389 output
+# and every existing consumer of `closed-by-healthy-pr` is unaffected.
+assert_equals "$(verdict_of "$out" 211)" "drop:closed-by-healthy-pr" "(16a) #1389: open+healthy row keeps emitting closed-by-healthy-pr verbatim (covered map does not relabel it)"
+assert_equals "$(field_of "$out" 211 "evidence_pointer")" "" "(16b) #1389: the healthy row carries no evidence_pointer (its output shape is unchanged)"
+
+# Row 2 -- newly dropped. Was dispatchable before #1389; the #1389 repro
+# burned a full worker dispatch (~162k tokens) reaching issue-work.md step
+# 0's own duplicate-PR bail on exactly this shape.
+assert_equals "$(verdict_of "$out" 212)" "drop:covered-by-open-pr" "(16c) #1389: open+RED PR covers its issue -- drops as covered-by-open-pr, not eligible"
+assert_equals "$(field_of "$out" 212 "evidence_pointer")" "PR #902 closingIssuesReferences includes #212" "(16d) #1389: the covered drop cites the covering PR by number"
+
+# Row 3 -- newly dropped. A DIRTY PR is fix-rebase work on the PR, never
+# workable issue-work on the issue.
+assert_equals "$(verdict_of "$out" 213)" "drop:covered-by-open-pr" "(16e) #1389: open+DIRTY PR covers its issue -- drops as covered-by-open-pr, not eligible"
+assert_equals "$(field_of "$out" 213 "evidence_pointer")" "PR #903 closingIssuesReferences includes #213" "(16f) #1389: the DIRTY row's evidence_pointer names its own covering PR"
+
+# Row 4 -- MUST NOT regress. This is #332's resumable-work case: a
+# closed/abandoned PR does not lock its issue. Preserved by construction
+# (the producing subcommand queries --state open only), pinned here anyway.
+assert_equals "$(verdict_of "$out" 214)" "eligible" "(16g) #1389/#332: an issue whose linked PR is closed/abandoned appears in NEITHER set and stays dispatchable"
+
+# The flag is opt-in: omitting it entirely reproduces pre-#1389 behavior
+# byte-for-byte, so no existing caller changes verdict without opting in.
+out=$(printf '%s' "$fixture_open_pr" | classify --closed-by-healthy-pr 211)
+assert_equals "$(verdict_of "$out" 212)" "eligible" "(16h) #1389: with --closed-by-open-pr omitted, the clause never fires (default {} is byte-identical to pre-#1389)"
+assert_equals "$(verdict_of "$out" 213)" "eligible" "(16i) #1389: default {} leaves the DIRTY row eligible too -- the new drop requires an explicit opt-in map"
+
+# An explicit empty map is the same as omitting the flag.
+out=$(printf '%s' "$fixture_open_pr" | classify --closed-by-open-pr '{}')
+assert_equals "$(verdict_of "$out" 212)" "eligible" "(16j) #1389: an explicit empty --closed-by-open-pr map drops nothing"
+
+# The covered clause is a DROP, not a gate -- it must not leak into the
+# eligible bucket's ranked prefix, and the eligible rows must still lead.
+out=$(printf '%s' "$fixture_open_pr" | classify --closed-by-open-pr '{"212":902,"213":903}')
+order=$(order_of "$out" | paste -sd, -)
+assert_equals "$order" "211,214,212,213" "(16k) #1389: covered drops sort into the audit-trail tail, after every eligible line"
+
+out=$(bash "$helper" classify --me x --trusted-authors a --closed-by-open-pr '[1,2]' </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(16l) #1389: a non-object --closed-by-open-pr value exits 64"
+
+out=$(bash "$helper" closed-by-open-pr 2>&1); rc=$?
+assert_equals "$rc" "64" "(16m) #1389: closed-by-open-pr missing --repo exits 64"
+
+out=$(bash "$helper" closed-by-open-pr --repo acme/widgets 2>&1); rc=$?
+assert_equals "$rc" "64" "(16n) #1389: closed-by-open-pr missing --me exits 64"
+
+assert_contains "$(bash "$helper" --help 2>&1)" "closed-by-open-pr --repo" "(16o) #1389: --help documents the closed-by-open-pr subcommand"
 
 # --- needs-triage divergence (the spec-text contradiction this issue names) --
 # setup.md never dropped needs-triage via the gate-label enumeration --

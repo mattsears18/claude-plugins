@@ -71,7 +71,7 @@
         "respect_assignees": {
           "type": "boolean",
           "default": false,
-          "description": "When true, scripts/backlog-filter.sh classify drops an issue assigned to anyone OTHER than --me (self-assigned and unassigned issues always pass regardless of this flag). When false (default), the assignee clause is skipped entirely — any open issue is dispatch-eligible no matter who (if anyone) it's assigned to. The clause only has upside on a genuine multi-contributor repo; on a single-contributor repo (the common shipyard-marketplace case) it has no correct exclusion to make; the #1194 erasure came from a shorthand version of the same clause. Does not affect the `Blocked by #N` / gate-label / trust / peer-claimed / time-gate / closed-by-healthy-pr clauses — those are unconditional."
+          "description": "When true, scripts/backlog-filter.sh classify drops an issue assigned to anyone OTHER than --me (self-assigned and unassigned issues always pass regardless of this flag). When false (default), the assignee clause is skipped entirely — any open issue is dispatch-eligible no matter who (if anyone) it's assigned to. The clause only has upside on a genuine multi-contributor repo; on a single-contributor repo (the common shipyard-marketplace case) it has no correct exclusion to make; the #1194 erasure came from a shorthand version of the same clause. Does not affect the `Blocked by #N` / gate-label / trust / peer-claimed / time-gate / closed-by-healthy-pr / covered-by-open-pr clauses — those are unconditional."
         },
         "self_assign": {
           "type": "boolean",
