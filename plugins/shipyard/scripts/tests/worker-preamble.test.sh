@@ -1382,7 +1382,7 @@ if [[ -f "$investigate_path" ]]; then
   # BEFORE the unconditional label-apply line, not after — a check added
   # after the label was already applied would be too late to matter.
   freshness_line=$(grep -n "latest_escalation=\$(printf" "$investigate_path" | head -n 1 | cut -d: -f1)
-  apply_line=$(grep -n 'gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage' "$investigate_path" | head -n 1 | cut -d: -f1)
+  apply_line=$(grep -n 'gh issue edit <N> --repo <owner/repo> --add-label needs-human-review' "$investigate_path" | head -n 1 | cut -d: -f1)
   if [[ -n "$freshness_line" && -n "$apply_line" && "$freshness_line" -lt "$apply_line" ]]; then
     printf '  %sPASS%s  investigate.md freshness check runs before the label-apply call\n' "$GREEN" "$RESET"
     pass=$((pass+1))
@@ -1404,7 +1404,7 @@ if [[ -f "$spike_path" ]]; then
     "spiked+needs-human-review #<N> (decision already recorded, gate not re-applied)" \
     "spike.md documents the decision-already-recorded return-string variant"
   freshness_line=$(grep -n "latest_escalation=\$(printf" "$spike_path" | head -n 1 | cut -d: -f1)
-  apply_line=$(grep -n 'gh issue edit <N> --repo <owner/repo> --add-label needs-human-review --remove-label needs-triage' "$spike_path" | head -n 1 | cut -d: -f1)
+  apply_line=$(grep -n 'gh issue edit <N> --repo <owner/repo> --add-label needs-human-review' "$spike_path" | head -n 1 | cut -d: -f1)
   if [[ -n "$freshness_line" && -n "$apply_line" && "$freshness_line" -lt "$apply_line" ]]; then
     printf '  %sPASS%s  spike.md freshness check runs before the label-apply call\n' "$GREEN" "$RESET"
     pass=$((pass+1))

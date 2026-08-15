@@ -6,7 +6,8 @@
 # to be re-derived from prose at three independent call-sites
 # (setup/04-backlog-divert.md step 4, steady-state.md step C, drain.md's
 # termination-assertion step 4) and drifted twice as a result (#332, #1194),
-# plus a third divergence caught in the spec text itself (needs-triage
+# plus a third divergence caught in the spec text itself (the since-retired
+# needs-triage label,
 # classified as a drop at two call-sites and a route at the third).
 #
 # This suite exercises `classify` only -- `closed-by-healthy-pr` and its
@@ -268,19 +269,30 @@ assert_equals "$rc" "64" "(16n) #1389: closed-by-open-pr missing --me exits 64"
 
 assert_contains "$(bash "$helper" --help 2>&1)" "closed-by-open-pr --repo" "(16o) #1389: --help documents the closed-by-open-pr subcommand"
 
-# --- needs-triage divergence (the spec-text contradiction this issue names) --
-# setup.md never dropped needs-triage via the gate-label enumeration --
-# it always routed it to investigate_candidates. steady-state.md and
-# drain.md's prose had it listed INSIDE the gate-label drop enumeration,
-# contradicting setup.md in the same repo. The executable filter can only
-# have one behavior: route, never gate/drop, by label alone.
+# --- needs-triage is RETIRED and fully inert (#1120) -------------------------
+# The label was investigate mode's original entry signal, kept as an
+# accepted-but-not-required trigger through #1090's migration window, and
+# retired outright in #1120 once entry no longer depended on it. It must now
+# be treated as an ordinary free-form tag: it neither routes an issue to
+# investigate nor gates/drops it. An issue carrying it with an ordinary body
+# is just an ordinary dispatch candidate.
+#
+# This guards both directions of the retirement. If the label were still a
+# route, (17) fails. If it were ever ADDED to the gate-label drop enumeration
+# (the old steady-state.md/drain.md prose contradiction), (17) fails too.
 
 fixture_triage='[{"number":301,"title":"t","body":"ordinary body","labels":["needs-triage"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
 out=$(printf '%s' "$fixture_triage" | classify)
-assert_equals "$(verdict_of "$out" 301)" "route:investigate" "(17) needs-triage-labeled trusted-author issue routes to investigate, never gate/drop"
+assert_equals "$(verdict_of "$out" 301)" "eligible" "(17) #1120: retired needs-triage label is inert — ordinary candidate, neither routed nor dropped"
 
 out=$(printf '%s' "$fixture_triage" | classify --investigate-dispatch false)
-assert_equals "$(verdict_of "$out" 301)" "drop:investigate-disabled" "(18) needs-triage drops (not gates) when triage.investigate_dispatch is false"
+assert_equals "$(verdict_of "$out" 301)" "eligible" "(18) #1120: retired needs-triage label stays inert even when triage.investigate_dispatch is false"
+
+# A genuinely symptom-shaped body still routes to investigate with no label
+# at all — the signal that replaced the label.
+fixture_symptom='[{"number":302,"title":"t","body":"Traceback (most recent call last):\n  File x","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_symptom" | classify)
+assert_equals "$(verdict_of "$out" 302)" "route:investigate" "(18b) #1120: symptom-shaped body routes to investigate with no label"
 
 # --- agent-console is a route, not a drop -----------------------------------
 
@@ -472,10 +484,12 @@ assert_equals "$order" "1202,1201" "(40) --prioritize-label tier beats every oth
 
 # --- ranking: investigate list (priority + staleness only, no type tier) ----
 
+# Routed by symptom-shaped body (#1120 retired the needs-triage label that
+# used to force this routing; the body is the live signal now).
 fixture_rank_investigate='[
-  {"number":1301,"title":"fix(x): a","body":"","labels":["needs-triage","P1"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-02-01"},
-  {"number":1302,"title":"chore: b","body":"","labels":["needs-triage","P0"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-03-01"},
-  {"number":1303,"title":"z","body":"","labels":["needs-triage"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+  {"number":1301,"title":"fix(x): a","body":"Traceback (most recent call last):","labels":["P1"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-02-01"},
+  {"number":1302,"title":"chore: b","body":"Traceback (most recent call last):","labels":["P0"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-03-01"},
+  {"number":1303,"title":"z","body":"Traceback (most recent call last):","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
 ]'
 out=$(printf '%s' "$fixture_rank_investigate" | classify)
 order=$(printf '%s\n' "$out" | jq -r 'select(.verdict=="route" and .reason=="investigate") | .number' | paste -sd, -)
@@ -492,7 +506,7 @@ assert_equals "$has_reason_key" "false" "(42) eligible verdict has no reason key
 
 fixture_grouping='[
   {"number":1501,"title":"t","body":"","labels":["wontfix"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
-  {"number":1502,"title":"t","body":"","labels":["needs-triage"],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":1502,"title":"t","body":"Traceback (most recent call last):","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
   {"number":1503,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
 ]'
 out=$(printf '%s' "$fixture_grouping" | classify)

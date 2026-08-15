@@ -195,9 +195,10 @@ assert_equals "$order" "403,402,401" "(8) within one milestone, priority then ty
 # no prioritized-label or type tier there, and no milestone tier either
 # (scope: raw_backlog only, per 04d-investigate-routing.md).
 
+# Routed by symptom-shaped body — #1120 retired the needs-triage label.
 fixture_investigate='[
-  {"number":501,"title":"t","body":"","labels":["needs-triage","P1"],"milestone":"3 · Late","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-02-01"},
-  {"number":502,"title":"t","body":"","labels":["needs-triage","P0"],"milestone":"1 · Early","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-03-01"}
+  {"number":501,"title":"t","body":"Traceback (most recent call last):","labels":["P1"],"milestone":"3 · Late","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-02-01"},
+  {"number":502,"title":"t","body":"Traceback (most recent call last):","labels":["P0"],"milestone":"1 · Early","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-03-01"}
 ]'
 out=$(classify_on <<<"$fixture_investigate")
 order=$(printf '%s\n' "$out" | jq -r 'select(.verdict=="route" and .reason=="investigate") | .number' | paste -sd, -)
