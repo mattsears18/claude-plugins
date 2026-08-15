@@ -89,7 +89,6 @@
         "blocked_soft": { "type": "string" },
         "ci_blocked": { "type": "string" },
         "needs_human_review": { "type": "string" },
-        "needs_triage": { "type": "string" },
         "user_feedback": { "type": "string" },
         "_comment": { "type": "string" }
       }
