@@ -24,7 +24,7 @@ Every open issue lands in **exactly one** bucket. The set was validated against 
 | --- | --- | --- | --- |
 | 1 | In flight this session | number is a key in the `in_flight` map | in progress |
 | 2 | PR open, awaiting merge | number in the healthy `closed_by_open_healthy_pr` set ([`04`'s own join](./04-backlog-divert.md#4-fetch--rank-the-backlog)) or in `session_prs` with a non-failing rollup | in progress |
-| 3 | PR open, checks failing | number's linked PR is in `failed_prs` | in progress (fix-checks owns it) |
+| 3 | PR open, checks failing | number's linked PR is in `failed_prs`, **or** `classify` returned `drop:covered-by-open-pr` for it ([#1389](https://github.com/mattsears18/shipyard/issues/1389)) | in progress (fix-checks / fix-rebase owns the PR) |
 | 4 | Human-gated | labels include `needs-human-review`, `discussion`, `wontfix`, or `tracking` | parked — needs a human |
 | 5 | Operator queue | labels include `agent-console` | **dispatchable** by the operator phase — see the correction below |
 | 6 | Blocked by open sibling | body contains `Blocked by #N` and `#N` is still `OPEN` | parked — self-clearing |
@@ -39,6 +39,12 @@ Every open issue lands in **exactly one** bucket. The set was validated against 
 ```
    4 → human-gated                    #3191 #3833 #3838 #3913
      ⚠ tracking-unjustified            #3986 — no recognized signal (Decision required / Options / Blocked by #N) in body
+```
+
+**Sub-annotation — a `covered-by-open-pr` drop is *covered*, never *dropped* ([#1389](https://github.com/mattsears18/shipyard/issues/1389)).** `classify` emits `{"verdict":"drop","reason":"covered-by-open-pr","evidence_pointer":"PR #<M> closingIssuesReferences includes #<N>"}` for an issue whose open `@me` PR names it in `closingIssuesReferences` but whose PR is *not* healthy — i.e. red (fix-checks owns it) or `DIRTY` (fix-rebase owns it at drain). The word `drop` in the verdict is about the **dispatch queue**, not about the work: the work is in flight, on a PR the orchestrator is already tracking. Render these under bucket 3 with the covering PR named from the `evidence_pointer` — never fold them into a generic "filtered out" count, and never let them read as parked. This is the distinction the bare verdict string exists to make greppable; a healthy covering PR still reports `closed-by-healthy-pr` and belongs to bucket 2 exactly as before.
+
+```
+   3 → PR open, checks failing        #4029 #4031 #4034 (all covered by PR #4039)
 ```
 
 **Correction — `agent-console` is bucket 5, not bucket 4.** `agent-console` marks work an agent performs *outside the build* (a cloud console, a deploy platform, a store listing); `/do-work` drains it itself via the [operator phase](../operate.md) by default. It is dispatchable, by a different worker, not parked for a human — folding it into the human-gated bucket undercounts what's actually workable and was the taxonomy's own first miscount (issue #1250's live-backlog validation). **Exception:** under `--no-operate` / `--hands-off`, the operator phase never runs, so bucket 5 collapses into bucket 4 for that session — state which case applies when rendering the ledger, don't assume.
@@ -61,7 +67,7 @@ Never print a bare "backlog empty" / "nothing left to do" / "complete" from queu
 
 ## Building the ledger — no new `gh` calls
 
-The ledger is computed entirely from data the caller already has: the fresh open-issue fetch ([step 4](./04-backlog-divert.md#4-fetch--rank-the-backlog)'s wide fetch at setup time, or [`drain.md` termination step 4](../drain.md#termination-assertion)'s fresh-fetch verification at drain time) joined against the orchestrator-state queues (`in_flight`, `failed_prs`, `ready_issues`, `raw_backlog`, `investigate_candidates`, `deferred_issues`, `trusted_authors`) and the already-computed `closed_by_open_healthy_pr` set. Walk the fetch's issue list once; for each issue, test the eleven signals **in the table's order** and stop at the first match — the order matters because a few signals could otherwise double-match (e.g. an issue in `raw_backlog` that also carries a stale `agent-console` label from a prior session belongs to bucket 5, checked before bucket 10). An issue that falls through every test lands in bucket 11.
+The ledger is computed entirely from data the caller already has: the fresh open-issue fetch ([step 4](./04-backlog-divert.md#4-fetch--rank-the-backlog)'s wide fetch at setup time, or [`drain.md` termination step 4](../drain.md#termination-assertion)'s fresh-fetch verification at drain time) joined against the orchestrator-state queues (`in_flight`, `failed_prs`, `ready_issues`, `raw_backlog`, `investigate_candidates`, `deferred_issues`, `trusted_authors`) and the already-computed `closed_by_open_healthy_pr` set plus the wider `closed-by-open-pr` map ([#1389](https://github.com/mattsears18/shipyard/issues/1389) — already computed for the same step's `classify` invocation, so bucket 3's covering-PR citation costs no additional call either). Walk the fetch's issue list once; for each issue, test the eleven signals **in the table's order** and stop at the first match — the order matters because a few signals could otherwise double-match (e.g. an issue in `raw_backlog` that also carries a stale `agent-console` label from a prior session belongs to bucket 5, checked before bucket 10). An issue that falls through every test lands in bucket 11.
 
 Render as a fixed-width table (mirroring [`cleanup-summary.md`'s existing bucket-breakdown shape](../cleanup-summary.md#end-of-session-summary)) or, on a small backlog, the compact inline form from the issue's own worked example:
 

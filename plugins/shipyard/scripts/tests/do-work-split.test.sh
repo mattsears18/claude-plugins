@@ -855,9 +855,25 @@ assert_contains "$setup_path" \
   "setup.md step 4 explains why the server-side filter was widened (#332)"
 # shellcheck disable=SC2016
 # Backticks here are literal characters in the markdown needle, not a command substitution.
+# Issue #1389 split this into TWO clauses. The pre-#1389 needle pinned the
+# single "@me AND healthy" gate, which conflated two different questions:
+# health decides the PR's routing (failed_prs / fix-checks); coverage decides
+# the ISSUE's eligibility, and is health-independent. Both clauses are pinned
+# below, plus the #332 guarantee that neither drops on a CLOSED PR.
 assert_contains "$setup_path" \
-  'have an open linked PR authored by `@me` AND that PR is healthy' \
-  "setup.md step 4 documents the @me + healthy gate for closed-by-open-pr (#332)"
+  'is this PR healthy?' \
+  "setup.md step 4 keeps the healthy-PR clause and states the question it answers (#332/#1389)"
+assert_contains "$setup_path" \
+  'is this ISSUE already covered?' \
+  "setup.md step 4 documents the health-independent covered-by-open-pr clause (#1389)"
+assert_contains "$setup_path" \
+  'covered-by-open-pr' \
+  "setup.md step 4 names the distinct covered-by-open-pr verdict (#1389)"
+# shellcheck disable=SC2016
+# Backticks here are literal characters in the markdown needle, not a command substitution.
+assert_contains "$setup_path" \
+  'both query `--state open` only' \
+  "setup.md step 4 states that NEITHER PR-coverage clause locks an issue behind a closed/abandoned PR (#332)"
 assert_contains "$setup_path" \
   'closed_by_open_healthy_pr' \
   "setup.md step 4 ships the healthy-PR jq shape variable name"
