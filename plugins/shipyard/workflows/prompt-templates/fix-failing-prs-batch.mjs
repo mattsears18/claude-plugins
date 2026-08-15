@@ -9,7 +9,7 @@
  * regenerate `do-work-dispatch.workflow.js`; do not hand-edit that file's
  * copy of this function.
  */
-import { worktreeAnchorLines } from './shared.mjs'
+import { worktreeAnchorLines, awaitingExternalReturnLines } from './shared.mjs'
 
 // ===========================================================================
 // Helper — build the fix-failing-prs-batch dispatch prompt (synthetic divert;
@@ -34,6 +34,7 @@ export function buildFixFailingPrsBatchPrompt(unit, repoSlug) {
     `root cause — <N> independent failures, sample: PR #X (<err1>), PR #Y (<err2>)" }. This is`,
     `the workflow-substrate return contract — NOT the free-text return string the Agent-tool`,
     `path uses.`,
+    ...awaitingExternalReturnLines(unit, 'fix-failing-prs-batch'),
   )
   return lines.join('\n')
 }

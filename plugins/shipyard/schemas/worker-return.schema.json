@@ -22,8 +22,8 @@
     },
     "outcome": {
       "type": "string",
-      "enum": ["shipped", "green", "pending", "dirty", "rebased", "noop", "blocked", "reaped", "disposition"],
-      "description": "Terminal outcome class, mapping onto the free-text return-string leading token. `shipped` — issue-work opened a PR (see auto_merge). `green` — fix-checks-only drove an existing PR's checks green (checks must be \"green\" with an evidence-clause summary — see #985/#987). `pending` — fix-checks-only found nothing failing but the rollup hasn't fully settled (checks:\"pending\"); an honest, non-overclaiming exit distinct from `green` — does not count toward the 3-attempt cap, no `blocked:ci` label (#985/#987). `dirty` — fix-checks-only found the PR's `mergeStateStatus` is DIRTY (conflicts with the default branch) before any checks could queue at all — GitHub can't compute a merge ref, so `pull_request`-triggered workflows never run; not a CI failure, so it does not count toward the 3-attempt cap and does not earn `blocked:ci` — the orchestrator routes it to the drain's `fix-rebase` path instead (#1015). `rebased` — fix-rebase rebased a DIRTY PR onto the default branch. `noop` — a fix mode found nothing to do (e.g. the failing run resolved itself between dispatch and read). `blocked` — a real blocker was hit before completion (see blocked_reason); the orchestrator's step-A reconcile classifies it into needs-human-review / blocked:agent-soft / no-label per #521. `reaped` — the worktree was reaped mid-run; RETRYABLE, re-enqueued with no block label (distinct from `blocked`). `disposition` — investigate/spike mode dispositioned the issue without a PR (see disposition)."
+      "enum": ["shipped", "green", "pending", "dirty", "rebased", "noop", "blocked", "reaped", "disposition", "awaiting-external"],
+      "description": "Terminal outcome class, mapping onto the free-text return-string leading token. `awaiting-external` — the worker did everything it could and the only remaining input is a long external job (a dispatched CI run, an EAS/store build, a deploy) reaching a terminal state; TERMINAL and NOT a human hand-back — no `needs-human-review`, no `blocked:ci` cap increment, no `/my-turn` surfacing (#1390). Requires `awaiting_what` + `awaiting_probe`; the orchestrator records them in its `awaiting_external` queue, re-runs the probe each refresh tick, and resumes the SAME agent when it goes terminal. Modelled on `pending` (below), generalized from a PR's own rollup to an arbitrary external job. `shipped` — issue-work opened a PR (see auto_merge). `green` — fix-checks-only drove an existing PR's checks green (checks must be \"green\" with an evidence-clause summary — see #985/#987). `pending` — fix-checks-only found nothing failing but the rollup hasn't fully settled (checks:\"pending\"); an honest, non-overclaiming exit distinct from `green` — does not count toward the 3-attempt cap, no `blocked:ci` label (#985/#987). `dirty` — fix-checks-only found the PR's `mergeStateStatus` is DIRTY (conflicts with the default branch) before any checks could queue at all — GitHub can't compute a merge ref, so `pull_request`-triggered workflows never run; not a CI failure, so it does not count toward the 3-attempt cap and does not earn `blocked:ci` — the orchestrator routes it to the drain's `fix-rebase` path instead (#1015). `rebased` — fix-rebase rebased a DIRTY PR onto the default branch. `noop` — a fix mode found nothing to do (e.g. the failing run resolved itself between dispatch and read). `blocked` — a real blocker was hit before completion (see blocked_reason); the orchestrator's step-A reconcile classifies it into needs-human-review / blocked:agent-soft / no-label per #521. `reaped` — the worktree was reaped mid-run; RETRYABLE, re-enqueued with no block label (distinct from `blocked`). `disposition` — investigate/spike mode dispositioned the issue without a PR (see disposition)."
     },
     "issue": {
       "type": ["integer", "null"],
@@ -65,6 +65,20 @@
       "type": ["string", "null"],
       "description": "When `auto_merge == \"unarmed-gate-narrowing\"`, a one-line name of the signal `detect-ci-gate-narrowing.sh` tripped on — e.g. \"new allowlist file .github/security/audit-allowlist.json\" or \"raised --audit-level low<high\" — mirroring the `(gate-narrowing: <signal>)` free-text suffix (#1139; see `skills/worker-preamble/auto-merge.md` step 0.34 and `scripts/detect-ci-gate-narrowing.sh`). Null unless that auto_merge value is set.",
       "minLength": 1
+    },
+    "awaiting_what": {
+      "type": ["string", "null"],
+      "description": "When `outcome == \"awaiting-external\"`, a one-line identification of the external job being waited on — e.g. \"mobile-e2e run 31859829802\" — mirroring the `awaiting-external #<N>: <what>` free-text token (#1390). Must be specific enough that a human reading the end-of-session summary knows exactly which job stalled, and stable enough that a second park naming the same string is recognizable as a re-park on the same job. Null unless that outcome is set.",
+      "minLength": 1
+    },
+    "awaiting_probe": {
+      "type": ["string", "null"],
+      "description": "When `outcome == \"awaiting-external\"`, the single read-only command the ORCHESTRATOR will execute verbatim, once per periodic-refresh tick, to learn whether the job has finished — e.g. \"gh run view 31859829802 --json status,conclusion\" (#1390). Because this string is executed rather than merely read, it is an injection surface: it MUST pass `scripts/validate-awaiting-external-probe.sh` (a read-only allowlist — no chaining, no substitution, no redirection, GET-only `gh api`) both worker-side before it is returned and orchestrator-side before it is ever run. A probe that fails validation is never executed; the park degrades to a `blocked:` hand-back. Null unless that outcome is set.",
+      "minLength": 1
+    },
+    "awaiting_eta": {
+      "type": ["string", "null"],
+      "description": "Optional. When `outcome == \"awaiting-external\"`, the worker's rough estimate of how long the external job still needs — e.g. \"~40m\" — mirroring the `eta <duration>` free-text token (#1390). Advisory only: it feeds the status line and the end-of-session summary, and it is NEVER the bound. The actual bound is `awaiting_external.max_hours` (default 2), anchored at the first park, so an optimistic or absent estimate cannot extend the wait."
     },
     "checks": {
       "type": ["string", "null"],
@@ -112,6 +126,11 @@
       "$comment": "A disposition outcome must name how it dispositioned.",
       "if": { "properties": { "outcome": { "const": "disposition" } } },
       "then": { "required": ["disposition"] }
+    },
+    {
+      "$comment": "An awaiting-external outcome must name the job AND the probe the orchestrator will run (#1390).",
+      "if": { "properties": { "outcome": { "const": "awaiting-external" } } },
+      "then": { "required": ["awaiting_what", "awaiting_probe"] }
     },
     {
       "$comment": "An unarmed-policy-override auto_merge value must name the overridden control (#1088).",

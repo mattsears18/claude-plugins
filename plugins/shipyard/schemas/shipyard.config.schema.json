@@ -340,6 +340,25 @@
         "_comment": { "type": "string" }
       }
     },
+    "awaiting_external": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Bounds the orchestrator-owned `awaiting_external` park queue (issue #1390). A worker whose task genuinely cannot finish until a long external job it already started — a dispatched CI run, an EAS/store build, a deploy — reaches a terminal state returns the terminal `awaiting-external` outcome instead of spinning on a narrative non-terminal return; the orchestrator holds the entry, re-runs the worker-supplied probe once per periodic-refresh tick, and resumes the SAME agent when it goes terminal. These knobs bound that wait so a wedged runner pool cannot strand a session.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the orchestrator accepts an `awaiting-external` park at all. When false, an `awaiting-external` return is immediately degraded to a `blocked:` hand-back naming the unfinished job (routed to `needs-human-review` like any other refuse) and no queue entry is created — the pre-#1390 behavior, minus the narrative spin. Turn it off on a repo where every external job is fast enough that a park is never worth the slot bookkeeping, or to isolate the feature while debugging."
+        },
+        "max_hours": {
+          "type": "number",
+          "minimum": 0.1,
+          "default": 2,
+          "description": "Wall-clock ceiling, in hours, on how long a single `awaiting_external` entry may stay parked before the orchestrator degrades it to a genuine `blocked:` hand-back naming the still-unfinished job. Anchored at the entry's FIRST park and never extended by a re-park, so a worker cannot roll the window forward indefinitely by parking again on each resume. A worker's own `awaiting_eta` is advisory and never overrides this. Default 2h — comfortably above the ~40-minute self-hosted mobile-E2E run that motivated #1390, while still well inside a session. Raise it on repos whose store/deploy pipelines legitimately run for hours; lower it where a >30-minute external wait is itself a smell worth surfacing to a human."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "scope": {
       "type": "object",
       "additionalProperties": false,

@@ -395,7 +395,18 @@ const workerReturnSchema = {
     },
     outcome: {
       type: 'string',
-      enum: ['shipped', 'green', 'pending', 'dirty', 'rebased', 'noop', 'blocked', 'reaped', 'disposition'],
+      enum: [
+        'shipped',
+        'green',
+        'pending',
+        'dirty',
+        'rebased',
+        'noop',
+        'blocked',
+        'reaped',
+        'disposition',
+        'awaiting-external',
+      ],
     },
     issue: { type: ['integer', 'null'], minimum: 1 },
     pr: { type: ['integer', 'null'], minimum: 1 },
@@ -417,6 +428,9 @@ const workerReturnSchema = {
     },
     policy_override: { type: ['string', 'null'] },
     gate_narrowing: { type: ['string', 'null'] },
+    awaiting_what: { type: ['string', 'null'] },
+    awaiting_probe: { type: ['string', 'null'] },
+    awaiting_eta: { type: ['string', 'null'] },
     checks: { type: ['string', 'null'], enum: ['green', 'pending', 'failing', null] },
     head_sha: { type: ['string', 'null'] },
     disposition: {
@@ -439,6 +453,11 @@ const workerReturnSchema = {
       // A disposition outcome must name how it dispositioned.
       if: { properties: { outcome: { const: 'disposition' } } },
       then: { required: ['disposition'] },
+    },
+    {
+      // An awaiting-external outcome must name the job AND the probe the orchestrator will run (#1390).
+      if: { properties: { outcome: { const: 'awaiting-external' } } },
+      then: { required: ['awaiting_what', 'awaiting_probe'] },
     },
     {
       // An unarmed-policy-override auto_merge value must name the overridden control (#1088).

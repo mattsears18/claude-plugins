@@ -110,8 +110,11 @@ assert_contains "$drain_path" "no other edit to this assertion is required" \
 # (2) Every one of the seven queues from #1253's Fix section is present
 #     as a row — including the two #1250 was already gating (raw_backlog,
 #     investigate_candidates) and the ones that were separately-worded
-#     "gates" before this fix (divert_queue, operator_queue).
-for q in in_flight failed_prs ready_issues raw_backlog investigate_candidates divert_queue operator_queue; do
+#     "gates" before this fix (divert_queue, operator_queue). Plus
+#     `awaiting_external` (#1390), added later and exercising exactly the
+#     structural property #1253 shipped: a new work-queue gates termination
+#     by adding one row, with no other edit to the assertion procedure.
+for q in in_flight failed_prs ready_issues raw_backlog investigate_candidates divert_queue awaiting_external operator_queue; do
   assert_contains "$drain_path" "\`$q\`" \
     "registry names the \`$q\` queue"
 done

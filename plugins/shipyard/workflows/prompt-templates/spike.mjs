@@ -8,7 +8,7 @@
  * regenerate `do-work-dispatch.workflow.js`; do not hand-edit that file's
  * copy of this function.
  */
-import { worktreeAnchorLines } from './shared.mjs'
+import { worktreeAnchorLines, awaitingExternalReturnLines } from './shared.mjs'
 
 // ===========================================================================
 // Helper — build the spike dispatch prompt. Mirrors dispatch-rules.md's
@@ -51,6 +51,7 @@ export function buildSpikePrompt(unit, repoSlug) {
     `{ "mode": "spike", "outcome": "blocked", "issue": ${unit.number}, "blocked_reason": "<reason>" }.`,
     `This is the workflow-substrate return contract — NOT the free-text return string the`,
     `Agent-tool path uses.`,
+    ...awaitingExternalReturnLines(unit, 'spike'),
   )
   return lines.join('\n')
 }

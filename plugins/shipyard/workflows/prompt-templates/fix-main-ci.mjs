@@ -9,7 +9,7 @@
  * regenerate `do-work-dispatch.workflow.js`; do not hand-edit that file's
  * copy of this function.
  */
-import { worktreeAnchorLines } from './shared.mjs'
+import { worktreeAnchorLines, awaitingExternalReturnLines } from './shared.mjs'
 
 // ===========================================================================
 // Helper — build the fix-main-ci dispatch prompt (synthetic divert; no
@@ -33,6 +33,7 @@ export function buildFixMainCiPrompt(unit, repoSlug) {
     `{ "mode": "fix-main-ci", "outcome": "blocked", "blocked_reason": "<reason>" }.`,
     `This is the workflow-substrate return contract — NOT the free-text return string the`,
     `Agent-tool path uses.`,
+    ...awaitingExternalReturnLines(unit, 'fix-main-ci'),
   )
   return lines.join('\n')
 }

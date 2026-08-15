@@ -206,3 +206,39 @@ export function worktreeAnchorLines(unit, mode) {
   }
   return worktreeAnchorCheckLines(unit.worktreePath, unit.pluginRoot, unit.pluginRootStale, unit.skillCacheStale)
 }
+
+// ===========================================================================
+// awaitingExternalReturnLines(unit, mode) — the `awaiting-external` escape
+// hatch, appended to every mode's return-contract paragraph EXCEPT
+// `fix-checks-only` (which already has `pending #<M>` for exactly this) and
+// `fix-rebase` (single-attempt, never waits on an external job).
+//
+// Issue #1390: a worker legitimately waiting on a long external job it
+// dispatched — a self-hosted E2E run, an EAS build, a deploy — had no terminal
+// return that fit. `blocked:` means "a human must look" everywhere else in the
+// spec, so a correct worker refuses to use it; the only remaining option was a
+// narrative non-terminal return, which burns a reconcile turn per cycle, holds
+// a dispatch slot, and can never resolve (a subagent's Monitor dies with it).
+// This token is the third option: terminal, honest, and not a hand-back. The
+// full worker-side contract — preconditions, probe validation, the misuse
+// table, and what happens on resume — lives in the on-demand fragment, which
+// is where a worker that actually needs it goes; these lines only have to make
+// the token discoverable at return time.
+// ===========================================================================
+export function awaitingExternalReturnLines(unit, mode) {
+  const issueField = unit.number != null ? `"issue": ${unit.number}, ` : ''
+  return [
+    ``,
+    `If — and ONLY if — you finish everything you can, commit and push it, and the`,
+    `sole remaining input is a LONG EXTERNAL JOB you already started (a dispatched CI`,
+    `run, an EAS/store build, a deploy) reaching a terminal state, return`,
+    `{ "mode": "${mode}", "outcome": "awaiting-external", ${issueField}`,
+    `"awaiting_what": "<the job, specifically>", "awaiting_probe": "<one read-only`,
+    `command reporting its terminal state>", "awaiting_eta": "<~duration>" } instead of`,
+    `narrating that you are waiting (#1390). This is TERMINAL and is NOT a human`,
+    `hand-back — the orchestrator owns the poll and resumes YOU when it goes terminal.`,
+    `Load skills/worker-preamble/awaiting-external.md before using it: the probe must`,
+    `pass scripts/validate-awaiting-external-probe.sh, and a local test suite, your own`,
+    `PR's checks, or anything needing a human is NOT this token.`,
+  ]
+}
