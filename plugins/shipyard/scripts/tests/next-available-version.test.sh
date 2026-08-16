@@ -210,6 +210,88 @@ out="$(GH="$GH_MOCK" bash "$script" compute \
 assert_contains "$out" "max_inflight_version=1.5.1" "second call folds in the persisted cursor as the new floor"
 assert_contains "$out" "next_available_version=1.5.2" "second call bumps past the persisted cursor, not from origin again"
 
+# --------------------------------------------------------------------------
+echo
+echo "reseed-if-idle — issue #1417 self-heal (caller-side, session_prs has no OPEN member)"
+# --------------------------------------------------------------------------
+
+# A stale cursor left over from a divergence (compute computed a value the
+# worker never actually claimed) is discarded when nothing in session_prs
+# is currently OPEN — the #1417 repro.
+CURSOR_STALE="${WORK}/cursor-stale"
+printf '%s' "4.37.0" > "$CURSOR_STALE"
+echo "MERGED" > "${WORK}/pr.30.state"
+out="$(GH="$GH_MOCK" bash "$script" reseed-if-idle \
+  --repo o/r --session-prs "30" --cursor-file "$CURSOR_STALE" 2>&1)"
+assert_contains "$out" "reseed=reset" "stale cursor is reset when session_prs has no OPEN member"
+if [[ -f "$CURSOR_STALE" ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "cursor file removed on reset"; fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "cursor file removed on reset"; pass=$((pass+1))
+fi
+
+# A cursor is preserved when session_prs has at least one genuinely OPEN
+# member — this is the batch-monotonicity-preserving case: reseed-if-idle
+# must be a no-op whenever something might still be relying on the cursor.
+CURSOR_LIVE="${WORK}/cursor-live"
+printf '%s' "4.37.0" > "$CURSOR_LIVE"
+echo "OPEN" > "${WORK}/pr.31.state"
+out="$(GH="$GH_MOCK" bash "$script" reseed-if-idle \
+  --repo o/r --session-prs "31" --cursor-file "$CURSOR_LIVE" 2>&1)"
+assert_contains "$out" "reseed=skipped-open-pr-found" "cursor is preserved when session_prs has an OPEN member"
+if [[ -f "$CURSOR_LIVE" ]] && [[ "$(cat "$CURSOR_LIVE")" == "4.37.0" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "cursor file untouched when preserved"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "cursor file untouched when preserved"; fail=$((fail+1))
+fi
+
+# Mixed session_prs: one MERGED, one OPEN — the OPEN member alone is enough
+# to preserve the cursor (any_open_session_pr, not all-open).
+CURSOR_MIXED="${WORK}/cursor-mixed"
+printf '%s' "4.38.0" > "$CURSOR_MIXED"
+echo "MERGED" > "${WORK}/pr.32.state"
+echo "OPEN" > "${WORK}/pr.33.state"
+out="$(GH="$GH_MOCK" bash "$script" reseed-if-idle \
+  --repo o/r --session-prs "32,33" --cursor-file "$CURSOR_MIXED" 2>&1)"
+assert_contains "$out" "reseed=skipped-open-pr-found" "one OPEN member among several is enough to preserve the cursor"
+
+# No cursor file at all and no session_prs — a genuine no-op, not an error.
+CURSOR_NONE="${WORK}/cursor-none-does-not-exist"
+out="$(GH="$GH_MOCK" bash "$script" reseed-if-idle \
+  --repo o/r --cursor-file "$CURSOR_NONE" 2>&1)"
+assert_contains "$out" "reseed=noop-no-cursor" "empty session_prs and no cursor file is a clean no-op"
+
+# --repo is required.
+out="$(bash "$script" reseed-if-idle 2>&1)"; rc=$?
+assert_contains "$out" "required" "reseed-if-idle without --repo errors"
+assert_exit "$rc" "64" "reseed-if-idle missing --repo exits 64"
+
+# --------------------------------------------------------------------------
+echo
+echo "reseed-if-idle composes with compute — the #1417 repro end-to-end"
+# --------------------------------------------------------------------------
+# Reproduces the issue body's repro: a divergence left the cursor holding a
+# computed-but-never-claimed value (4.37.0), origin is still at 4.35.19,
+# and by the time of the next dispatch every session PR has merged.
+# reseed-if-idle must clear the stale cursor BEFORE compute runs, so
+# compute re-derives the correct floor from origin alone.
+b64_version "4.35.19" > "${WORK}/manifest.main.b64"
+CURSOR_E2E="${WORK}/cursor-e2e"
+printf '%s' "4.37.0" > "$CURSOR_E2E"
+echo "MERGED" > "${WORK}/pr.40.state"
+
+RESEED_OUT="$(GH="$GH_MOCK" bash "$script" reseed-if-idle \
+  --repo o/r --session-prs "40" --cursor-file "$CURSOR_E2E" 2>&1)"
+assert_contains "$RESEED_OUT" "reseed=reset" "e2e: stale cursor reset before the next dispatch's compute"
+
+echo "fix(do-work): the next dispatch after full drain" > "${WORK}/issue.15.title"
+echo "" > "${WORK}/issue.15.body"
+out="$(GH="$GH_MOCK" bash "$script" compute \
+  --repo o/r --manifest plugin.json --version-jq .version \
+  --default-branch main --issue 15 --session-prs "40" --cursor-file "$CURSOR_E2E" 2>&1)"
+assert_contains "$out" "max_inflight_version=4.35.19" "e2e: compute re-derives the correct floor from origin, not the stale 4.37.0"
+assert_contains "$out" "next_available_version=4.35.20" "e2e: compute's patch bump lands one past the real floor, not the phantom cursor"
+
 echo
 printf '  %s passed, %s failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
