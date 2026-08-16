@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.35.16 — 2026-08-16
+
+P2: closes #1401. The operator layer's [browser backend selection](plugins/shipyard/commands/do-work/operate.md#browser-backend--selection-and-detection) had no documented handling for the most common real operator failure: the browser backend connects fine and returns HTTP 200, but lands on a sign-in wall rather than the target surface — a different case from no backend being reachable at all. The same two `agent-console` issues on `mattsears18/lightwork` were attempted and abandoned across four consecutive sessions with three different-sounding root causes before the actual cause (a running source Chrome locking its `Cookies` DB, or a wrong profile directory) was pinned down.
+
+- **`operate.md`** gains a new "Backend reachable but unauthenticated" subsection distinguishing this case from the existing no-backend degradation path, cross-referencing `shipyard:auditing-authenticated-surfaces`' existing protected-route detection technique (rule 4) rather than duplicating it, naming `/setup-browser-cookies`'s two silent-failure causes, and stating that `Imported 0 cookies` is a failure signal — not a clean no-op — indistinguishable from "already logged out everywhere" unless checked against those causes.
+- **`operate/03-error-handling-and-safety.md`**'s exhaustion-checklist item 3 (zero-result helpers) now cross-links the new subsection for the cookie-import-specific causes.
+- **`operate/05-dont.md`** gains a matching prohibition bullet: don't treat a zero-cookie import as a clean no-op, and don't hand back with a generic "operator work blocked" when the specific one-line local unblock (quit the source browser, or run the import interactively so a keychain prompt can be answered) is known.
+- Detection technique (asserting on a protected route, not `/` or a bare 200) was already fully documented in `shipyard:auditing-authenticated-surfaces` and in `operate/03-error-handling-and-safety.md` / `operate/05-dont.md`'s existing backend-ladder guidance — not duplicated here, only cross-referenced.
+
 ### 4.35.15 — 2026-08-16
 
 P1: closes #1404. `scripts/shipped-immediate-branch-reap.sh`'s `reap --issue <N>` subcommand could print `reaped=true` for a worktree removal that did **not** actually happen — the directory stayed fully present on disk and registered in `git worktree list` even though the wrapper claimed success. Reproduced twice, deterministically, in the same session (issue #1398/PR #1403, then issue #1400/PR #1405), each time confirmed by a separate, non-destructive `test -e <path>` call immediately after.
