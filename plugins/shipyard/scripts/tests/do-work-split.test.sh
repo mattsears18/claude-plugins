@@ -546,6 +546,10 @@ assert_contains "$steady_state_path" \
 #     though its full definition lives in the split-out file. The
 #     struct-derived line cap in check (2) is computed from do-work.md's own
 #     (now-twelve) bullets, unaffected by the split.
+#     Issue #1402 added a 13th hot struct (`paused_on_environment`) — the
+#     opening sentence now reads "thirteen **hot** mental data structures";
+#     the struct-derived line cap in check (2) auto-adjusts (it's derived
+#     from the live bullet count, not a hardcoded number).
 #   - steady-state.md gained the new A.−1 step (the gate body lives there).
 #   - The advisory log line shape is documented exactly (so a future
 #     regression that drops the gate without renaming everything else
@@ -556,8 +560,8 @@ assert_contains "$do_work_path" \
   'reconciled_agent_ids' \
   "do-work.md struct list names reconciled_agent_ids (#317)"
 assert_contains "$do_work_path" \
-  'twelve **hot** mental data structures' \
-  "do-work.md opening sentence reflects post-#808 hot/cold split (twelve hot)"
+  'thirteen **hot** mental data structures' \
+  "do-work.md opening sentence reflects post-#1402 hot-struct count (thirteen hot)"
 assert_contains "$steady_state_path" \
   'A.−1. Reconcile-once gate' \
   "steady-state.md carries the A.−1 reconcile-once gate (#317)"
@@ -2972,10 +2976,10 @@ assert_contains "$steady_state_path" \
   'issues/1193' \
   "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=<k>' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=0' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3023,10 +3027,10 @@ assert_contains "$steady_state_path" \
   'issues/1194' \
   "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=<k>' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=0' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.

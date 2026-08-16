@@ -358,6 +358,37 @@
         "_comment": { "type": "string" }
       }
     },
+    "paused_on_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Bounds the session-wide `paused_on_environment` pause (issue #1402) — distinct from `awaiting_external`, which parks ONE worker on a job it started. This pauses the WHOLE dispatch loop instead of ending the session when a transient, self-clearing environmental condition (currently: self-hosted CI queue-depth backpressure, issues #1156/#1399) would otherwise leave the loop with no future notification to wake it. A bounded `Monitor` watch (`scripts/watch-resume-probe.sh`) re-checks the condition and resumes the loop automatically instead of requiring a human to notice the condition cleared and re-invoke `/do-work`.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the orchestrator may enter a `paused_on_environment` pause at all. When false, the deadlock condition that would otherwise trigger a pause instead falls through to the pre-#1402 behavior (the turn ends with a `parked (...)` idle_reason and no resume mechanism is armed) — turn off to isolate the feature while debugging, or on a repo where the underlying deadlock condition (backpressure holding at `ci.backpressure_min_in_flight: 0`) is never configured."
+        },
+        "max_hours": {
+          "type": "number",
+          "minimum": 0.1,
+          "default": 4,
+          "description": "Wall-clock ceiling, in hours, on how long a single pause may stay active before the orchestrator degrades it to a genuine hand-back naming the still-saturated environment. Anchored at the pause's FIRST activation and never extended by a re-pause, mirroring `awaiting_external.max_hours`'s anchoring rule exactly — a session cannot roll the window forward indefinitely by re-pausing on the same condition. Default 4h — double `awaiting_external`'s default, since a saturated CI pool clearing (the #1402 repro observed real recovery in 45 minutes) is a coarser, less time-critical signal than a single dispatched job's ETA; lower it on a repo where a multi-hour environmental stall is itself worth surfacing to a human sooner."
+        },
+        "poll_interval_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "default": 300,
+          "description": "How often `scripts/watch-resume-probe.sh` re-checks the environmental condition while paused. Default 5 minutes — deliberately coarser than step C's own live per-dispatch re-read, since a genuinely self-clearing condition resolves on the order of tens of minutes (the #1402 repro: 45 idle minutes), and a tighter interval only spends extra `gh` API calls with no added value."
+        },
+        "pause_when_in_flight_at_or_below": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "The `in_flight` worker count (after this turn's dispatch decisions) at or below which a backpressure hold transitions into a session-wide pause instead of just leaving the slot empty for the next completion to retry. Default `0` — pause ONLY at the genuine dead-end (no worker remains in flight, so no future completion notification will ever re-trigger a retry). Under the default `ci.backpressure_min_in_flight: 1` escape valve, a hold verdict guarantees `in_flight >= 1`, so this condition is unreachable in the common case; it exists specifically to rescue a session where an operator has set `ci.backpressure_min_in_flight: 0` (already documented there as producing 'a session that goes fully idle despite non-empty queues') from a silent full stall. Raise it (e.g. to `1`) to pause proactively whenever the loop would otherwise be grinding at minimum concurrency into a saturated pool, rather than only at the strict zero-in-flight case — more aggressive, and a legitimate choice on a repo where even one worker's worth of CI-minute spend under sustained backpressure isn't worth it."
+        },
+        "_comment": { "type": "string" }
+      }
+    },
     "scope": {
       "type": "object",
       "additionalProperties": false,
