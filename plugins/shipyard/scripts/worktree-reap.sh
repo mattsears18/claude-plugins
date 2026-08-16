@@ -1231,6 +1231,10 @@ classify_lock() {
         peer_stale_min="$stale_val"
         shift
         ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
       --)
         shift
         ;;
@@ -1443,6 +1447,10 @@ classify_all() {
         fi
         peer_stale_min="$ps_val"
         shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift
@@ -1992,6 +2000,10 @@ sweep_tombstones_cmd() {
         dry_run=1
         shift
         ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
       --)
         shift
         ;;
@@ -2092,6 +2104,10 @@ disk_free_check() {
         fi
         floor_mb="$fmb_val"
         shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift
@@ -2224,6 +2240,10 @@ inspect_unpushed() {
       --fetch)
         do_fetch=1
         shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift
@@ -2484,6 +2504,10 @@ reap_action() {
         bypass_return_check="${1#--bypass-return-check=}"
         shift
         ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
       --)
         shift
         ;;
@@ -2501,7 +2525,7 @@ reap_action() {
   # Required-flag validation. Per-action additional requirements checked
   # in the action dispatch below.
   if [ -z "$action" ]; then
-    echo "reap: --action is required" >&2
+    echo "reap: --action is required (valid values: reaped, deferred, reaped-orphan-orchestrator, reaped-failed)" >&2
     return 64
   fi
   if [ -z "$worktree_path" ]; then
@@ -2746,7 +2770,7 @@ reap_action() {
       emit_line "{\"ts\":$(json_str "$ts"),\"session\":$(json_str "$session_id"),\"actor_pid\":$actor_pid,\"worktree\":$(json_str "$worktree_name"),\"action\":\"reaped-failed\",\"classification\":$(json_str "$classification"),\"reason\":$(json_str "$reason"),\"lock_pid\":$lock_pid$phase_suffix}"
       ;;
     *)
-      echo "reap: unknown --action: $action" >&2
+      echo "reap: unknown --action: $action (valid values: reaped, deferred, reaped-orphan-orchestrator, reaped-failed)" >&2
       return 64
       ;;
   esac
@@ -2806,6 +2830,10 @@ reap_orphan_orchestrators() {
       --phase=*)
         phase="${1#--phase=}"
         shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift
@@ -2928,6 +2956,10 @@ reap_orphan_branches() {
       --dry-run)
         dry_run=1
         shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift
@@ -3088,6 +3120,10 @@ reap_session_worktrees() {
       --dry-run)
         dry_run=1
         shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift
@@ -3374,6 +3410,10 @@ reap_stale() {
         dry_run=1
         shift
         ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
       --)
         shift
         ;;
@@ -3645,6 +3685,10 @@ sweep_stale_agents() {
         warn_threshold="${1#--warn-threshold=}"
         shift
         ;;
+      -h|--help)
+        usage
+        return 0
+        ;;
       --)
         shift
         ;;
@@ -3818,6 +3862,24 @@ triage_orphan_branches() {
       --default-branch=*)
         default_branch="${1#--default-branch=}"
         shift
+        ;;
+      --session-id)
+        # Accepted-and-ignored (issue #1400). This subcommand has no
+        # --session-id-scoped state to consult (no .in_flight exclusion,
+        # no per-session audit attribution) — unlike its sibling sweeps
+        # reap-orphan-orchestrators / sweep-stale-agents, which both
+        # require it. Documented here purely for CLI symmetry: a caller
+        # that reasonably assumes every sweep in this family takes
+        # --session-id (00e-pre-relocation-sweeps.md's step 7 lists all
+        # three together) gets a silent no-op instead of "unknown flag."
+        shift 2
+        ;;
+      --session-id=*)
+        shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift
@@ -4041,6 +4103,10 @@ report_unreaped() {
       --current-session-id=*)
         current_session_id="${1#--current-session-id=}"
         shift
+        ;;
+      -h|--help)
+        usage
+        return 0
         ;;
       --)
         shift

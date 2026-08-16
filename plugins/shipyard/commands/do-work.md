@@ -72,6 +72,20 @@ plugins/shipyard/scripts/session-state.sh update \
   --allow-degraded-init --degraded-init-repo "<owner/repo>" \
   --set '.in_flight = {}' \
   --set '.session_prs = ((.session_prs // []) + [<M>] | unique)'
+
+# Record that THIS agent's own terminal return reached the reconcile
+# (issue #1237) — a per-reconcile hot-path write, done once at the top of
+# step A.1 before any per-mode handling. `.returned_agent_ids` is a MAP
+# keyed by agent id, NOT an array — a `+ [...]` append (the session_prs
+# shape above) fails with `jq: error: object ({}) and array (...) cannot
+# be added`. worktree-reap.sh's `reap --action reaped` gate refuses to
+# reap an agent-* worktree unless this key is set for that agent id (see
+# do-work/steady-state.md's "Persist the return record" step for the full
+# context and the --bypass-return-check exception classes):
+plugins/shipyard/scripts/session-state.sh update \
+  --session-id "<session-id>" --expected-repo "<owner/repo>" \
+  --allow-degraded-init --degraded-init-repo "<owner/repo>" \
+  --set '.returned_agent_ids["<agent-id>"] = "<RFC3339-timestamp>"'
 ```
 
 `session-state.sh` exit codes (every subcommand, not just `bump-tokens`):

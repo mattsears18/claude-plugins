@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.35.14 — 2026-08-16
+
+P1: closes #1400. `worktree-reap.sh` and `session-state.sh`'s actual CLIs disagreed with the spec prose at three call sites — individually trivial, but each one costs a refused or errored tool call at the worst possible moment: after the orchestrator has already committed to a reap.
+
+- **`reap`'s usage errors now enumerate valid `--action` values** (`reaped`, `deferred`, `reaped-orphan-orchestrator`, `reaped-failed`) instead of naming only what's missing — both the "`--action` is required" and "unknown `--action`" error paths. Chose enumeration over defaulting: `--action` selects what gets written to the audit log for a destructive operation, and a silent default could record a `reaped` audit line for something that was actually a `reaped-failed`.
+- **`triage-orphan-branches` now accepts (and ignores) `--session-id`**, for CLI symmetry with its sibling sweeps `reap-orphan-orchestrators` / `sweep-stale-agents` — both of which require it. This subcommand has no session-scoped state to consult, so the flag is a documented no-op rather than a hard error, closing the gap where a caller reasonably assuming symmetry (per `00e-pre-relocation-sweeps.md`'s step 7, which lists all three sweeps together) hit `unknown flag: --session-id`.
+- **Every `worktree-reap.sh` subcommand now responds to `-h`/`--help`** (exit 0, prints the shared top-level `usage()` block, which already documented every subcommand's flags in full) — previously only the top-level `main()` dispatcher handled it; every subcommand's own arg-parsing loop treated `--help` as an unrecognized flag and errored.
+- **`commands/do-work.md`'s thin-entry hot-path examples now show the `.returned_agent_ids` write shape** (`.returned_agent_ids["<agent-id>"] = "<timestamp>"`) alongside the existing `bump-tokens` / `session_prs`-append `update --set` examples. It's a per-reconcile hot-path write (issue #1237) that belongs where those live rather than only in the cold reference — and it's a MAP keyed by agent id, not an array, so the natural `+ [...]` append modeled on the `session_prs` example one line above it fails with `jq: error: object ({}) and array (...) cannot be added`.
+
+Also fixed while investigating: `shipped-immediate-branch-reap.sh reap --issue <N>` can report `reaped=true` for a worktree removal that did not actually happen — a false-success return, distinct in root cause from the four items above (it's an unchecked exit-status bug in a different script, not an error-message or flag-parsing gap) — filed separately as #1404 rather than folded into this PR's scope.
+
 ### 4.35.13 — 2026-08-16
 
 P1: closes #1398. `setup/04-backlog-divert.md`'s step-4 classify block was specified as a single `Bash` call — genuinely required, since its intermediate variables (`$ME_LOGIN`, `$CLOSED_HEALTHY_CSV`, `$COVERED_BY_OPEN_PR_JSON`, `$PROBE_VERDICTS_JSON`, five config reads) don't survive between separate `Bash` tool calls — but the worktree-isolation guard refused it verbatim as "too complex to verify that it stays inside the worktree," forcing every orchestrator session to improvise its own workaround. Neither of `dont.md`'s existing remedies applied cleanly: decomposing in place would lose the shared variables, and extracting to a script was the right call but no script existed yet.
