@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.35.18 — 2026-08-16
+
+P2: closes #1410. A worker's throwaway `wip:` commit subject could land verbatim on `main` as the permanent squash-merge message, because GitHub's squash default uses the sole commit's subject — not the PR title — when a PR has exactly one commit. Nothing in `shipyard:worker-preamble` told a worker the final commit subject mattered independently of the PR title; PR #1408's fully-compliant title (`fix(scripts): ...`) shipped as `wip: fix false-success reaped=true in shipped-immediate-branch-reap.sh (#1404) (#1408)` on `main` as a result — unfixable after the fact without a history rewrite the branch ruleset forbids, and invisible to every existing CI check.
+
+- **`commit-hygiene.md`** gains a new "Final commit subject — Conventional Commits compliant, even on a single-commit PR" section: states the squash-message mechanism, cites the #1408 repro, and requires `git commit --amend` (or a local squash) before opening the PR when the final commit is a scratch `wip:` subject.
+- **`git-stash-prohibition.md`**'s "The substitute" section (the `git commit -m "wip: <why>"` idiom recommended as the sanctioned worktree-local alternative to `git stash`) now states explicitly that a `wip:` commit is transient and must never be the subject that ships, and cross-links `commit-hygiene.md`'s new section — reconciling what previously read as two contradictory fragments (one recommending `wip:` commits, the other now forbidding a `wip:` subject from shipping).
+- **`SKILL.md`**'s always-loaded "Never `git stash`" core section gains the same one-line reconciliation, since that's where every worker actually encounters the `wip:` idiom — the on-demand `git-stash-prohibition.md` fragment only loads when a worker is about to run an actual `git stash`, which the sanctioned substitute mostly avoids. The fragment-index table's `commit-hygiene.md` row is widened to cover the new trigger condition.
+- The mechanical CI guard the issue's "Suggested fix" also proposed (a `commit-subject-scan.sh` `pull_request` check) is explicitly out of scope for this PR — adding a required check means touching `.github/workflows/`, which no dispatched worker may do; see the follow-up issue if filed.
+
 ### 4.35.17 — 2026-08-16
 
 P2: closes #1407. `scripts/pre-dispatch-branch-reap.sh` and `scripts/drain-pre-dispatch-branch-reap.sh` — the two siblings of the false-success `reaped=true` pattern fixed in #1404/PR #1408 for `shipped-immediate-branch-reap.sh` — carried the identical unchecked-delegated-call shape: `reaped=true` (respectively `reap_outcome="reaped"`) was set unconditionally right after the delegated `worktree-reap.sh reap --action reaped ...` call, whose exit status and stderr were both discarded (`2>/dev/null || true`). That exit status was never trustworthy in the first place — `worktree-reap.sh`'s `reap_action()` `return`s 0 unconditionally for the `reaped` action regardless of whether the underlying removal actually succeeded.
