@@ -2972,10 +2972,10 @@ assert_contains "$steady_state_path" \
   'issues/1193' \
   "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=<k>' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=0' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3023,10 +3023,10 @@ assert_contains "$steady_state_path" \
   'issues/1194' \
   "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=<k>' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=0' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3125,8 +3125,39 @@ assert_contains "$steady_state_path" \
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
 assert_contains "$steady_state_path" \
-  '`operator_q=`, `operator=`, `peers=`, `disk_free_mb=`' \
+  '`operator_q=`, `operator=`, `peers=`, `disk_free_mb=`, `ci_backpressure=`' \
   "steady-state.md's token-presence self-check enumerates disk_free_mb= among the mandatory tokens (#1261)"
+
+# (W) The step-C queue-depth backpressure hold (#1156) and the CI-cheap bias
+# (#1157) are prose the orchestrating model is expected to execute every
+# turn, with nothing distinguishing "no self-hosted pool, correct no-op"
+# from "this session is silently skipping a load-bearing check" — a real
+# 14-hour session against a saturated 4-runner self-hosted pool never ran
+# the hold (11 PRs opened, 1 merged) though the recorded queue-depth samples
+# would have tripped it on every one (issue #1399). Fix: a
+# `ci_backpressure=<n/a|skipped-hosted|checked|held>` invariant-line token,
+# set inside the same backpressure-check block, mirroring the
+# tokens_attributed precedent for step A.0.
+assert_contains "$steady_state_path" \
+  'issues/1399' \
+  "steady-state.md cites issue #1399 as the source of the ci_backpressure invariant-line token"
+assert_contains "$steady_state_path" \
+  'ci_backpressure="held"' \
+  "steady-state.md's backpressure-check block sets ci_backpressure=held on a hold verdict (#1399)"
+assert_contains "$steady_state_path" \
+  'ci_backpressure="checked"' \
+  "steady-state.md's backpressure-check block sets ci_backpressure=checked on a dispatch verdict (#1399)"
+assert_contains "$steady_state_path" \
+  'ci_backpressure="skipped-hosted"' \
+  "steady-state.md's backpressure-check block sets ci_backpressure=skipped-hosted when the self-hosted+pool_total guard is false (#1399)"
+assert_contains "$steady_state_path" \
+  'ci_backpressure=<n/a|skipped-hosted|checked|held>' \
+  "steady-state.md step E invariant line documents the ci_backpressure token shape (#1399)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$invariant_line_path" \
+  'A missing `ci_backpressure=` token entirely is a contract violation' \
+  "invariant-line.md treats a missing ci_backpressure= token as a contract violation (#1399)"
 
 # (V) Orchestrator-side prohibition on instructing a worker to route around
 # its own worker-internal classifier denial (issue #1278). A live session

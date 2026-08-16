@@ -1160,7 +1160,9 @@ ci_shape=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<se
 pool_total=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.pool_total" 2>/dev/null)
 
 if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; then
-  # Live re-read, NOT the stale `.ci_capacity.queued_at_start` snapshot —
+  # ci_backpressure feeds step E's invariant line (issue #1399) — set below
+  # once the verdict is known. Live re-read, NOT the stale
+  # `.ci_capacity.queued_at_start` snapshot —
   # queue depth is inherently a live number (same posture as the
   # end-of-session summary's own re-query). Cache with a short TTL: this
   # fires on every dispatch turn, and the queue doesn't meaningfully change
@@ -1186,16 +1188,25 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
     --decide-backpressure "$pool_total" "${queued_live:-0}" "<in_flight>" "$multiplier" "$min_in_flight")
 
   if [ "$verdict" = "hold" ]; then
+    ci_backpressure="held"
     threshold=$(awk -v p="$pool_total" -v m="${multiplier:-5}" 'BEGIN{printf "%.0f", p*m}')
     idle_reason="parked (CI queue backpressure: queued=${queued_live:-0} > threshold=$threshold = pool_total($pool_total)×${multiplier:-5})"
     # Do NOT dispatch this turn — leave the slot empty and go straight to
     # step E's idle-proof with this idle_reason. The next completion (or
     # the next dispatch turn's fresh live re-read) retries.
+  else
+    ci_backpressure="checked"
   fi
+else
+  # Not a self-hosted pool, or pool_total unreadable — the check above is a
+  # documented no-op here, not a skipped check (see #1399).
+  ci_backpressure="skipped-hosted"
 fi
 ```
 
 **The decision itself lives in exactly one place** — [`scripts/detect-ci-runner-capacity.sh`](../../scripts/detect-ci-runner-capacity.sh)'s `--decide-backpressure` pure mode (same single-executable-source-of-truth pattern as the ungated-admin-direct-merge and gate-narrowing detectors) — do not re-derive the threshold arithmetic inline. `queued > pool_total × ci.backpressure_multiplier` (config default `5` — deliberately looser than the end-of-session summary's fixed `3×` **advisory** threshold, since holding a dispatch slot has a real cost an already-past-tense summary line doesn't) triggers a hold, **unless** the escape valve fires first: `<in_flight> < ci.backpressure_min_in_flight` (config default `1`) always dispatches regardless of queue depth, so a saturated pool can never fully stall the session with backlog work still waiting and every slot parked. A `pool_total` of `0` (shouldn't happen given the `self-hosted` + `pool_total > 0` guard above, but the script is defensive) always dispatches too — never hold on a signal that couldn't actually be read.
+
+**`ci_backpressure=<n/a|skipped-hosted|checked|held>` feeds step E's invariant line ([#1399](https://github.com/mattsears18/shipyard/issues/1399)) — the observability token for whether this check actually ran.** Before [#1399](https://github.com/mattsears18/shipyard/issues/1399), the hold above was prose the orchestrating model is expected to execute every turn, with nothing distinguishing "this repo has no self-hosted pool, so the check is a correct no-op" from "this session is silently skipping a load-bearing check" — a 14-hour session that never ran this block looked, from the outside, identical to one where the feature didn't exist. The token closes that gap the same way `tokens_attributed` closes it for step A.0: `n/a` when step C didn't run at all this turn (no freed slot — see [`invariant-line.md`](./invariant-line.md) for the default-value convention this mirrors); `skipped-hosted` when the block above ran but the `self-hosted` + `pool_total > 0` guard was false (a genuine, expected no-op on a hosted or unknown-shape repo); `checked` when the guard held and `verdict = "dispatch"`; `held` when the guard held and `verdict = "hold"` this turn (regardless of whether the CI-cheap bias below then found a substitute candidate to dispatch anyway — the hold gate itself fired). A self-hosted repo whose turns keep reporting `n/a` or `skipped-hosted` despite `dispatched_this_turn > 0` is the smell: the check should have produced `checked` or `held` and didn't.
 
 **When the check holds** — before parking the slot, try the **CI-cheap candidate bias** below (issue [#1157](https://github.com/mattsears18/shipyard/issues/1157), follow-up to #1141/#1156). **When it doesn't hold** (verdict `dispatch`, or the check was skipped because the shape isn't `self-hosted`) — proceed to the dispatch rules below exactly as before; this check changes nothing about which candidate gets picked, only whether a candidate is picked *at all* this turn.
 
@@ -1361,18 +1372,18 @@ recurring_failure_signatures = { <signature> → { prs: [<#M>...], canonical_pr:
 
 ### E. Invariant line (end of every steady-state turn)
 
-After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. Whenever you end a turn without one, you have skipped step C — go back and fix it. The `state=<state>` token also makes the per-turn write-through to the [session state file](../do-work.md#session-state-file) visible in-line. Every other token's full semantics (what it means, when it's set, and the divergence smells it surfaces) is documented in [`invariant-line.md`](./invariant-line.md) — `tokens_attributed`, `last_fresh_fetch`, `unfiltered_open_count`, `me_assigned_open`, `awaiting_ext`, `operator_q`/`operator`, `peers`, and `disk_free_mb` all live there; a missing token is a contract violation of the same severity regardless of which file documents it.
+After A → B → C → D, the **last thing emitted in the turn** is a single-line invariant check. Whenever you end a turn without one, you have skipped step C — go back and fix it. The `state=<state>` token also makes the per-turn write-through to the [session state file](../do-work.md#session-state-file) visible in-line. Every other token's full semantics (what it means, when it's set, and the divergence smells it surfaces) is documented in [`invariant-line.md`](./invariant-line.md) — `tokens_attributed`, `last_fresh_fetch`, `unfiltered_open_count`, `me_assigned_open`, `awaiting_ext`, `operator_q`/`operator`, `peers`, `disk_free_mb`, and `ci_backpressure` all live there; a missing token is a contract violation of the same severity regardless of which file documents it.
 
 **Steady-state format** (after a normal dispatch turn):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<dq> · awaiting_ext=<ae> · raw_backlog=<b> · unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=<k> · defers_this_turn=<dt> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never">
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<dq> · awaiting_ext=<ae> · raw_backlog=<b> · unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=<k> · defers_this_turn=<dt> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never">
 ```
 
 **Idle-proof format** (used ONLY when step C produced no dispatch AND `in_flight < concurrency`):
 
 ```
-[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<dq> · awaiting_ext=<ae> · raw_backlog=<b> · unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · dispatched_this_turn=0 · defers_this_turn=<dt> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never"> · idle_reason="<reason>"
+[invariant] in_flight=<n>/<concurrency> · ready_issues=<r> · scope_bg=<s> · failed_prs=<f> · divert_queue=<dq> · awaiting_ext=<ae> · raw_backlog=<b> · unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · dispatched_this_turn=0 · defers_this_turn=<dt> · state=<state> · tokens_attributed=<true|false> · last_fresh_fetch=<HH:MM:SS|"never"> · idle_reason="<reason>"
 ```
 
 `scope_bg=<s>` is the count of background scoping agents currently in flight (fired by step 6 or step D's scope-refill). When `<s> > 0`, results are arriving asynchronously into `ready_issues` — a `parked (scope refill in flight)` idle_reason is valid and expected. When `<s> == 0` and `ready_issues == 0` and `raw_backlog > 0`, that is a gap: no scoping is in progress and no scoped candidates are ready — fire a background scope-refill burst this turn before ending it.
@@ -1398,5 +1409,5 @@ The `idle_reason` MUST be one of: `all queues empty (terminating after in_flight
    - If no stale defers were found, verify the turn had a legitimate reason for zero dispatches. A scope-agent batch in flight (`scope_bg > 0`) is a valid reason. All `ready_issues` colliding with `in_flight` paths is a valid reason. Empty `in_flight` + empty queues + all issues deferred is **not** a valid reason — that means the orchestrator is about to declare termination driven entirely by self-defers, which is the failure mode issue [#246](https://github.com/mattsears18/shipyard/issues/246) documented. In this case, add `idle_reason="defers_this_turn=<d> with no dispatches and open slots — verify defer reasons before proceeding to drain"` to the invariant line and do NOT proceed to drain; instead fire a fresh termination-assertion step 4 fetch to surface any issues the defers may have hidden.
    See [RATIONALE → Over-defer self-check](../do-work-RATIONALE.md#step-e--over-defer-self-check-rationale) for the failure mode this prevents.
 
-3. **Token-presence check ([#1194](https://github.com/mattsears18/shipyard/issues/1194)).** Before the invariant line leaves the turn, literally re-read the string you are about to emit and confirm every mandatory token is present in it: `state=`, `tokens_attributed=`, `last_fresh_fetch=`, `unfiltered_open_count=`, `me_assigned_open=`, `awaiting_ext=`, `operator_q=`, `operator=`, `peers=`, `disk_free_mb=`. Each token already has its own "missing = contract violation" sentence documented above — this check is the enforcement companion those sentences lacked: a rule that only says "this would be a violation" is not the same as a rule that is actually checked before the turn ends, and a session can silently omit a required token for its entire duration with nothing catching it (the [#1194](https://github.com/mattsears18/shipyard/issues/1194) repro: `unfiltered_open_count=` absent from every turn of a 6.5-hour session). A token's absence means part of this turn's mandatory work — the state write-through, token attribution, the backlog re-fetch, or the operator preflight — did not actually happen; go back, run whichever step owns the missing token, and re-emit before ending the turn. This is a **shape** check only (is the token present in the string), not a semantic re-validation of the two checks above.
+3. **Token-presence check ([#1194](https://github.com/mattsears18/shipyard/issues/1194)).** Before the invariant line leaves the turn, literally re-read the string you are about to emit and confirm every mandatory token is present in it: `state=`, `tokens_attributed=`, `last_fresh_fetch=`, `unfiltered_open_count=`, `me_assigned_open=`, `awaiting_ext=`, `operator_q=`, `operator=`, `peers=`, `disk_free_mb=`, `ci_backpressure=`. Each token already has its own "missing = contract violation" sentence documented above — this check is the enforcement companion those sentences lacked: a rule that only says "this would be a violation" is not the same as a rule that is actually checked before the turn ends, and a session can silently omit a required token for its entire duration with nothing catching it (the [#1194](https://github.com/mattsears18/shipyard/issues/1194) repro: `unfiltered_open_count=` absent from every turn of a 6.5-hour session). A token's absence means part of this turn's mandatory work — the state write-through, token attribution, the backlog re-fetch, or the operator preflight — did not actually happen; go back, run whichever step owns the missing token, and re-emit before ending the turn. This is a **shape** check only (is the token present in the string), not a semantic re-validation of the two checks above.
 
