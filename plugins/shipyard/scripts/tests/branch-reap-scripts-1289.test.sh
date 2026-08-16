@@ -242,6 +242,55 @@ else
   printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1274) audit log records a real reaped action for the inherited worktree"; fail=$((fail+1))
 fi
 
+# --- (issue #1407 regression, sibling of #1404) the delegated
+# `worktree-reap.sh reap --action reaped` call genuinely fails to remove the
+# worktree (its parent directory is made read-only so mv / plain remove /
+# --force remove all fail, even though the worktree itself is an otherwise
+# completely ordinary, clean, dead-lock candidate). Before the #1407 fix,
+# this wrapper reported `reaped=true` unconditionally regardless of whether
+# the delegated call actually succeeded. The fix re-verifies the filesystem
+# before ever reporting success. ---
+reset_repo
+add_worktree "do-work/issue-9" "agent-predispatch9"
+seed_return_record "test-session" "predispatch9"
+wt_path6="$repo/.claude/worktrees/agent-predispatch9"
+wt_parent6="$repo/.claude/worktrees"
+chmod 555 "$wt_parent6"
+(
+  cd "$repo" || exit 1
+  out="$(SHIPYARD_HOME="$home" bash "$pre_dispatch_reap" reap --head-ref do-work/issue-9 --session-id test-session 2>&1)"
+  echo "$out" > "$TMPDIR_ROOT/predispatch-reap-fail.out"
+)
+chmod u+w "$wt_parent6" 2>/dev/null || true
+out="$(tail -1 "$TMPDIR_ROOT/predispatch-reap-fail.out")"
+if [[ -e "$wt_path6" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1407) fixture sanity check: worktree genuinely survives the blocked removal"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1407) fixture sanity check: worktree genuinely survives the blocked removal"; fail=$((fail+1))
+fi
+if [[ "$out" == reaped=true* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1407) does NOT report reaped=true when the worktree is still present on disk"; fail=$((fail+1))
+  printf '    actual: %s\n' "$out"
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1407) does NOT report reaped=true when the worktree is still present on disk"; pass=$((pass+1))
+fi
+assert_contains "$out" "reaped=failed" "(#1407) the failure is reported via a distinguishable reaped=failed token"
+# Substring only (not the full $wt_path6) — on macOS /tmp resolves through a
+# /private/var symlink, so the script's own git-derived path and this test's
+# raw mktemp path can differ by that prefix alone.
+assert_contains "$out" ".claude/worktrees/agent-predispatch9" "(#1407) the failure report names the surviving worktree_path"
+if (cd "$repo" && git rev-parse --verify "do-work/issue-9" >/dev/null 2>&1); then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1407) local branch ref is NOT dropped when the worktree still holds it checked out"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1407) local branch ref is NOT dropped when the worktree still holds it checked out"; fail=$((fail+1))
+fi
+audit_log6="$home/reap-audit.jsonl"
+if grep -q '"worktree":"agent-predispatch9".*"action":"reaped-failed".*"reason":"delegated-reap-did-not-remove-worktree"' "$audit_log6" 2>/dev/null; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1407) a reaped-failed audit line is written by the wrapper itself for the failed removal"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1407) a reaped-failed audit line is written by the wrapper itself for the failed removal"; fail=$((fail+1))
+fi
+
 # ==========================================================================
 echo
 echo "shipped-immediate-branch-reap.sh"
@@ -388,6 +437,50 @@ if grep -q '"worktree":"agent-drain4".*"action":"reap-refused"' "$home/reap-audi
   printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1274) no reap-refused audit line for the inherited drain worktree"; fail=$((fail+1))
 else
   printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1274) no reap-refused audit line for the inherited drain worktree"; pass=$((pass+1))
+fi
+
+# --- (issue #1407 regression, sibling of #1404) the delegated
+# `worktree-reap.sh reap --action reaped` call genuinely fails to remove the
+# worktree (its parent directory is made read-only). Before the #1407 fix,
+# this wrapper reported `reap_outcome=reaped` unconditionally regardless of
+# whether the delegated call actually succeeded. The fix re-verifies the
+# filesystem before ever reporting reaped, and does not drop the local
+# branch ref in that case. ---
+reset_repo
+add_worktree "do-work/issue-5" "agent-drain5"
+seed_return_record "test-session" "drain5"
+wt_path5="$repo/.claude/worktrees/agent-drain5"
+wt_parent5="$repo/.claude/worktrees"
+chmod 555 "$wt_parent5"
+(
+  cd "$repo" || exit 1
+  out="$(SHIPYARD_HOME="$home" GH="$(command -v true)" bash "$drain_reap" reap \
+    --head-ref do-work/issue-5 --repo o/r --session-id test-session 2>&1)"
+  echo "$out" > "$TMPDIR_ROOT/drain-reap-fail.out"
+)
+chmod u+w "$wt_parent5" 2>/dev/null || true
+out="$(cat "$TMPDIR_ROOT/drain-reap-fail.out")"
+if [[ -e "$wt_path5" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1407) fixture sanity check: worktree genuinely survives the blocked removal"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1407) fixture sanity check: worktree genuinely survives the blocked removal"; fail=$((fail+1))
+fi
+assert_contains "$out" "reap_outcome=failed" "(#1407) does NOT report reap_outcome=reaped when the worktree is still present on disk"
+assert_contains "$out" "reason=delegated-reap-did-not-remove-worktree" "(#1407) the failure is reported via a distinguishable reason"
+# Substring only (not the full $wt_path5) — on macOS /tmp resolves through a
+# /private/var symlink, so the script's own git-derived path and this test's
+# raw mktemp path can differ by that prefix alone.
+assert_contains "$out" ".claude/worktrees/agent-drain5" "(#1407) the failure report names the surviving worktree_path"
+if (cd "$repo" && git rev-parse --verify "do-work/issue-5" >/dev/null 2>&1); then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1407) local branch ref is NOT dropped when the worktree still holds it checked out"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1407) local branch ref is NOT dropped when the worktree still holds it checked out"; fail=$((fail+1))
+fi
+audit_log_drain5="$home/reap-audit.jsonl"
+if grep -q '"worktree":"agent-drain5".*"action":"reaped-failed".*"reason":"delegated-reap-did-not-remove-worktree"' "$audit_log_drain5" 2>/dev/null; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1407) a reaped-failed audit line is written by the wrapper itself for the failed removal"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1407) a reaped-failed audit line is written by the wrapper itself for the failed removal"; fail=$((fail+1))
 fi
 
 echo
