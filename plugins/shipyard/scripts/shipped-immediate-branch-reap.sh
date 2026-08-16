@@ -44,22 +44,44 @@
 #     (#263), walks `.git/worktrees/agent-*` for the worktree whose HEAD is
 #     exactly `do-work/issue-<N>`, classifies its lock, force-reaps
 #     regardless of classification (relabeling `peer-alive` ->
-#     `peer-alive-force` for audit visibility), drops the local branch ref
-#     so a same-session fix-rebase dispatch can recreate it cleanly, stops
-#     after the first match (`break` — at most one match per issue number),
-#     then runs `git worktree prune`.
+#     `peer-alive-force` for audit visibility). On a VERIFIED successful
+#     removal (see #1404 below), drops the local branch ref so a
+#     same-session fix-rebase dispatch can recreate it cleanly. Stops after
+#     the first match (`break` — at most one match per issue number), then
+#     runs `git worktree prune`.
 #
 #     Every mutating step is fire-and-forget (`2>/dev/null` and/or
 #     `|| true`), matching the original block's posture.
+#
+#     Issue #1404 — the delegated `worktree-reap.sh reap --action reaped`
+#     call's own exit status is NOT a trustworthy success signal: its
+#     `reap_action()` (for the `reaped` action) `return`s 0 unconditionally
+#     regardless of whether the underlying removal actually happened — it
+#     only varies which action string ("reaped" vs "reaped-failed") lands in
+#     the AUDIT LOG (see #712) — and this caller's own `2>/dev/null || true`
+#     additionally discards stderr and any non-reap_action exit (e.g. the
+#     delegated process crashing before reaching that branch at all). Before
+#     ever reporting success, this script re-checks the filesystem itself:
+#     did `$worktree_path` actually disappear? If it did not, this script
+#     records the failure via `worktree-reap.sh reap --action reaped-failed`
+#     itself (the #1274 directly-invocable failure-log path) — so the audit
+#     trail is correct even when the delegated call never wrote its own
+#     "reaped-failed" line — and reports the distinct `reaped=failed` token
+#     below rather than `reaped=true`. It also does NOT drop the local
+#     branch ref in this case, since the worktree still holds it checked
+#     out.
 #
 #     Prints exactly one line to stdout so the caller's SEPARATE, later
 #     verify-the-reap-happened call (issue #1274) can substitute these
 #     literal values (shell variables don't survive across Bash tool
 #     calls):
 #
-#       reaped=false
+#       reaped=false session_id=<id-or-unknown>
 #     or
 #       reaped=true worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid-or-null> session_id=<id-or-unknown>
+#     or (#1404 — a genuine match was found but the delegated removal did
+#     not actually take)
+#       reaped=failed worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid-or-null> session_id=<id-or-unknown> reason=delegated-reap-did-not-remove-worktree
 #
 # Exit codes: 0 always (fire-and-forget, matches the original block); 64 bad
 # usage.
@@ -134,6 +156,7 @@ case "$sub" in
     SHIPYARD_ORCHESTRATOR_PID=$("${here}/session-identity.sh" detect-orchestrator-pid)
 
     reaped=false
+    reap_failed=false
     worktree_path=""
     name=""
     local_classification=""
@@ -177,12 +200,43 @@ case "$sub" in
         --lock-pid "$lock_pid" \
         --phase "steady-state-A1-shipped" 2>/dev/null || true
 
+      # Issue #1404 — verify the delegated removal actually happened before
+      # ever reporting success. The delegated call's own exit status is not
+      # a trustworthy signal (see the header comment above): re-check the
+      # filesystem itself.
+      if [ -e "$worktree_path" ]; then
+        # The worktree survived — whether because the removal failed
+        # cleanly (worktree-reap.sh's own reap_action already logged
+        # "reaped-failed" internally, per #712) or because the delegated
+        # call crashed before ever reaching that branch (nothing logged at
+        # all). Record the failure here too, via the #1274
+        # directly-invocable failure-log action, so the audit trail is
+        # correct in BOTH cases rather than depending on every caller (e.g.
+        # steady-state.md's own belt-and-suspenders verify step, which
+        # exists for the unrelated classifier-denial case) to notice and
+        # backfill it.
+        "${here}/worktree-reap.sh" reap \
+          --action reaped-failed \
+          --worktree-path "$worktree_path" \
+          --worktree-name "$name" \
+          --session-id "$SESSION_ID" \
+          --classification "$local_classification" \
+          --reason "delegated-reap-did-not-remove-worktree" \
+          --lock-pid "$lock_pid" \
+          --phase "steady-state-A1-shipped" 2>/dev/null || true
+        reap_failed=true
+        break   # at most one match per issue number — nothing else to try
+      fi
+
       # Drop the local branch ref so a same-session fix-rebase dispatch can
       # recreate do-work/issue-<N> cleanly via `git switch` without
       # tripping the "branch already exists in another worktree" check.
       # `-D` (force) rather than `-d` because the branch may have unmerged
       # commits relative to current local main — the canonical record is
-      # on origin, not this branch.
+      # on origin, not this branch. Only reached when the removal above was
+      # actually verified (worktree_path no longer exists) — dropping the
+      # branch ref while a still-present worktree holds it checked out
+      # would be wrong (#1404).
       git branch -D "$head_ref" 2>/dev/null || true
       reaped=true
       break   # at most one match per issue number
@@ -191,6 +245,8 @@ case "$sub" in
 
     if [ "$reaped" = "true" ]; then
       echo "reaped=true worktree_path=${worktree_path} worktree_name=${name} classification=${local_classification} lock_pid=${lock_pid} session_id=${SESSION_ID}"
+    elif [ "$reap_failed" = "true" ]; then
+      echo "reaped=failed worktree_path=${worktree_path} worktree_name=${name} classification=${local_classification} lock_pid=${lock_pid} session_id=${SESSION_ID} reason=delegated-reap-did-not-remove-worktree"
     else
       echo "reaped=false session_id=${SESSION_ID}"
     fi

@@ -276,6 +276,56 @@ else
   printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "reaped worktree is gone from disk"; fail=$((fail+1))
 fi
 
+# --- (issue #1404 regression) the delegated `worktree-reap.sh reap --action
+# reaped` call genuinely fails to remove the worktree (its parent directory
+# is made read-only so mv / plain remove / --force remove all fail, even
+# though the worktree itself is an otherwise completely ordinary, clean,
+# dead-lock candidate). Before the #1404 fix, this wrapper reported
+# `reaped=true` unconditionally regardless of whether the delegated call
+# actually succeeded — reproduced live against a real worktree twice in the
+# same session (issue #1404's body + comment). The fix re-verifies the
+# filesystem before ever reporting success. ---
+reset_repo
+add_worktree "do-work/issue-8" "agent-shipped8"
+seed_return_record "test-session" "shipped8"
+wt_path5="$repo/.claude/worktrees/agent-shipped8"
+wt_parent5="$repo/.claude/worktrees"
+chmod 555 "$wt_parent5"
+(
+  cd "$repo" || exit 1
+  out="$(SHIPYARD_HOME="$home" bash "$shipped_reap" reap --issue 8 2>&1)"
+  echo "$out" > "$TMPDIR_ROOT/shipped-reap-fail.out"
+)
+chmod u+w "$wt_parent5" 2>/dev/null || true
+out="$(tail -1 "$TMPDIR_ROOT/shipped-reap-fail.out")"
+if [[ -e "$wt_path5" ]]; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1404) fixture sanity check: worktree genuinely survives the blocked removal"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1404) fixture sanity check: worktree genuinely survives the blocked removal"; fail=$((fail+1))
+fi
+if [[ "$out" == reaped=true* ]]; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1404) does NOT report reaped=true when the worktree is still present on disk"; fail=$((fail+1))
+  printf '    actual: %s\n' "$out"
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1404) does NOT report reaped=true when the worktree is still present on disk"; pass=$((pass+1))
+fi
+assert_contains "$out" "reaped=failed" "(#1404) the failure is reported via a distinguishable reaped=failed token"
+# Substring only (not the full $wt_path5) — on macOS /tmp resolves through a
+# /private/var symlink, so the script's own git-derived path and this test's
+# raw mktemp path can differ by that prefix alone.
+assert_contains "$out" ".claude/worktrees/agent-shipped8" "(#1404) the failure report names the surviving worktree_path"
+if (cd "$repo" && git rev-parse --verify "do-work/issue-8" >/dev/null 2>&1); then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1404) local branch ref is NOT dropped when the worktree still holds it checked out"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1404) local branch ref is NOT dropped when the worktree still holds it checked out"; fail=$((fail+1))
+fi
+audit_log5="$home/reap-audit.jsonl"
+if grep -q '"worktree":"agent-shipped8".*"action":"reaped-failed".*"reason":"delegated-reap-did-not-remove-worktree"' "$audit_log5" 2>/dev/null; then
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "(#1404) a reaped-failed audit line is written by the wrapper itself for the failed removal"; pass=$((pass+1))
+else
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "(#1404) a reaped-failed audit line is written by the wrapper itself for the failed removal"; fail=$((fail+1))
+fi
+
 # ==========================================================================
 echo
 echo "drain-pre-dispatch-branch-reap.sh"
