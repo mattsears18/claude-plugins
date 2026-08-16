@@ -214,6 +214,12 @@ DEFAULTS_JQ='{
     "enabled": true,
     "max_hours": 2
   },
+  "paused_on_environment": {
+    "enabled": true,
+    "max_hours": 4,
+    "poll_interval_seconds": 300,
+    "pause_when_in_flight_at_or_below": 0
+  },
   "flake_registry": {
     "enabled": false,
     "window_days": 7,

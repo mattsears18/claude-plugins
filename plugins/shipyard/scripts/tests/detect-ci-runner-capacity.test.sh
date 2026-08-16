@@ -44,6 +44,26 @@
 #   (J) the `ci.backpressure_multiplier` / `ci.backpressure_min_in_flight`
 #       config knobs exist in both the schema and the built-in defaults.
 #
+# Follow-up — issue #1402 (session-wide environmental pause + resume)
+# -------------------------------------------------------------------
+# #1156's hold retries forever in the ordinary case — a held slot just waits
+# for the next agent completion. But if a hold fires and NO worker remains
+# in flight (only reachable when an operator has set
+# `ci.backpressure_min_in_flight: 0`), there is no future completion to wake
+# the loop and a transient, self-clearing condition silently strands the
+# session. #1402 closes that gap with a session-wide `paused_on_environment`
+# pause + a bounded `Monitor`-armed resume watch
+# (`scripts/watch-resume-probe.sh`). This file additionally pins:
+#   (K) the `--decide-resume` pure resume-decision truth table;
+#   (L) `--decide-resume` argument-count usage handling;
+#   (M) steady-state.md carries a pointer to the split-out mechanism;
+#   (M2) environmental-pause.md's full mechanism (the trigger condition, the
+#       Monitor arm, the resume handling) — split out of steady-state.md
+#       under the #611 phase-file size cap;
+#   (N) the `paused_on_environment.*` config knobs exist in both the schema
+#       and the built-in defaults;
+#   (O) drain.md's termination-registry row for `paused_on_environment`.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/detect-ci-runner-capacity.test.sh
 
@@ -68,6 +88,7 @@ SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md
 CLEANUP_MD="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 SESSION_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/session-state-file.md"
 STEADY_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+ENV_PAUSE_MD="$repo_root/plugins/shipyard/commands/do-work/environmental-pause.md"
 CONFIG_SCHEMA="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 CONFIG_SH="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
 
@@ -340,6 +361,162 @@ if [[ -f "$CONFIG_SH" ]]; then
   assert_equals "shipyard-config.sh get ci.backpressure_min_in_flight resolves to the built-in default" "1" "$got"
 else
   assert_fail "shipyard-config.sh exists (missing at $CONFIG_SH)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (K) decide_resume() — pure resume-decision truth table (issue #1402).
+# ---------------------------------------------------------------------------
+echo "(K) detector script — paused_on_environment resume decision truth table"
+if [[ -f "$DETECTOR" ]]; then
+  # decide-resume <pool_total> <queued> <multiplier> <expected> <label>
+  assert_resume() {
+    local got
+    got="$(bash "$DETECTOR" --decide-resume "$1" "$2" "$3" 2>/dev/null)"
+    assert_equals "$5" "$4" "$got"
+  }
+
+  assert_resume 4 10 5 "resume" "queued (10) under threshold (4x5=20) -> resume"
+  assert_resume 4 20 5 "resume" "queued exactly at threshold (20) -> resume (strictly greater-than gate, same as decide_backpressure)"
+  assert_resume 4 21 5 "held" "queued (21) over threshold (20) -> still held"
+  assert_resume 0 100 5 "resume" "pool_total 0 (unreadable) -> always resume, never hold on an unread signal"
+  assert_resume 19 90 5 "resume" "the #1402 repro's own numbers, before recovery (pool_total=19, threshold=95) -> resume"
+  assert_resume 19 100 5 "held" "the #1402 repro's own numbers, still saturated (queued=100 > threshold=95) -> held"
+
+  # No escape valve — decide_resume takes no in_flight argument at all, unlike
+  # decide_backpressure. A high queue always holds regardless of any notion
+  # of "workers already running", because by construction none are.
+  assert_resume 4 21 1 "held" "no escape valve: a low multiplier (tighter threshold) still holds on a queue over it"
+
+  # Non-numeric inputs degrade to safe defaults rather than crashing.
+  got="$(bash "$DETECTOR" --decide-resume "" "" "" 2>/dev/null)"
+  assert_equals "empty inputs degrade to resume (pool_total defaults to 0)" "resume" "$got"
+else
+  assert_fail "detect-ci-runner-capacity.sh exists (missing at $DETECTOR)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (L) --decide-resume argument-count usage handling.
+# ---------------------------------------------------------------------------
+echo "(L) --decide-resume usage handling"
+if [[ -f "$DETECTOR" ]]; then
+  bash "$DETECTOR" --decide-resume 4 10 >/dev/null 2>/tmp/detect-ci-runner-capacity-resume-usage.$$
+  rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    assert_pass "--decide-resume with wrong arg count exits non-zero"
+  else
+    assert_fail "--decide-resume with wrong arg count exits non-zero (got exit 0)"
+  fi
+  rm -f /tmp/detect-ci-runner-capacity-resume-usage.$$
+else
+  assert_fail "--decide-resume usage handling (detector missing)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (M) steady-state.md — session-wide environmental pause wiring (issue #1402).
+# ---------------------------------------------------------------------------
+echo "(M) steady-state.md — session-wide environmental pause wiring"
+if [[ -f "$STEADY_STATE_MD" ]]; then
+  # steady-state.md itself carries only a pointer (the full mechanism was
+  # split into environmental-pause.md to stay under the phase-file size cap
+  # — issue #611 / do-work-phase-file-size.test.sh) — verify the pointer
+  # exists and correctly cross-references the split file.
+  assert_contains "$STEADY_STATE_MD" 'Session-wide environmental pause' \
+    "step C carries a pointer to the session-wide environmental pause mechanism"
+  assert_contains "$STEADY_STATE_MD" 'issues/1402' \
+    "pointer cites issue #1402"
+  assert_contains "$STEADY_STATE_MD" 'environmental-pause.md' \
+    "pointer cross-references the split-out environmental-pause.md file"
+  assert_contains "$STEADY_STATE_MD" 'watch-resume-probe.sh' \
+    "pointer names the committed watch-resume-probe.sh script"
+  assert_contains "$STEADY_STATE_MD" 'paused_env=<none|active>' \
+    "invariant line documents the paused_env token"
+else
+  assert_fail "steady-state.md exists (missing at $STEADY_STATE_MD)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (M2) environmental-pause.md — the full session-wide pause mechanism
+#      (split out of steady-state.md under the #611 phase-file size cap;
+#      issue #1402).
+# ---------------------------------------------------------------------------
+echo "(M2) environmental-pause.md — full mechanism"
+if [[ -f "$ENV_PAUSE_MD" ]]; then
+  assert_contains "$ENV_PAUSE_MD" 'issues/1402' \
+    "file cites issue #1402"
+  assert_contains "$ENV_PAUSE_MD" 'Loaded from' \
+    "file documents its own load site, mirroring disk-space-guard.md's split convention"
+  assert_contains "$ENV_PAUSE_MD" '--decide-resume' \
+    "resume decision calls the detector's --decide-resume pure decision"
+  assert_contains "$ENV_PAUSE_MD" 'paused_on_environment.pause_when_in_flight_at_or_below' \
+    "trigger reads the pause_when_in_flight_at_or_below config knob"
+  assert_contains "$ENV_PAUSE_MD" 'watch-resume-probe.sh' \
+    "arm step invokes the committed watch-resume-probe.sh script"
+  assert_contains "$ENV_PAUSE_MD" 'persistent: true' \
+    "Monitor call is armed persistent (needed whenever max_hours exceeds the 1h timeout_ms cap)"
+  assert_contains "$ENV_PAUSE_MD" 'never a fresh' \
+    "--max-wait is documented as the REMAINING time to deadline_at, never a fresh max_hours window"
+  assert_contains "$ENV_PAUSE_MD" 'canonical fresh backlog fetch' \
+    "resume handling re-runs the canonical fresh backlog fetch before resuming dispatch"
+  assert_contains "$ENV_PAUSE_MD" 'paused_env=<none|active>' \
+    "file documents the paused_env invariant-line token it feeds"
+else
+  assert_fail "environmental-pause.md exists (missing at $ENV_PAUSE_MD)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (N) paused_on_environment.* config knobs — schema + built-in defaults
+#     (issue #1402).
+# ---------------------------------------------------------------------------
+echo "(N) paused_on_environment config knobs — schema + built-in defaults"
+if [[ -f "$CONFIG_SCHEMA" ]]; then
+  assert_contains "$CONFIG_SCHEMA" '"paused_on_environment"' \
+    "schema declares the paused_on_environment block"
+  assert_contains "$CONFIG_SCHEMA" '"pause_when_in_flight_at_or_below"' \
+    "schema declares paused_on_environment.pause_when_in_flight_at_or_below"
+  if command -v jq >/dev/null 2>&1; then
+    if jq empty "$CONFIG_SCHEMA" >/dev/null 2>&1; then
+      assert_pass "shipyard.config.schema.json is valid JSON after the paused_on_environment additions"
+    else
+      assert_fail "shipyard.config.schema.json is valid JSON after the paused_on_environment additions"
+    fi
+  fi
+else
+  assert_fail "shipyard.config.schema.json exists (missing at $CONFIG_SCHEMA)"
+fi
+
+if [[ -f "$CONFIG_SH" ]]; then
+  assert_contains "$CONFIG_SH" '"paused_on_environment"' \
+    "built-in defaults declare paused_on_environment"
+
+  got="$(bash "$CONFIG_SH" get paused_on_environment.enabled 2>/dev/null)"
+  assert_equals "shipyard-config.sh get paused_on_environment.enabled resolves to the built-in default" "true" "$got"
+  got="$(bash "$CONFIG_SH" get paused_on_environment.max_hours 2>/dev/null)"
+  assert_equals "shipyard-config.sh get paused_on_environment.max_hours resolves to the built-in default" "4" "$got"
+  got="$(bash "$CONFIG_SH" get paused_on_environment.pause_when_in_flight_at_or_below 2>/dev/null)"
+  assert_equals "shipyard-config.sh get paused_on_environment.pause_when_in_flight_at_or_below resolves to the built-in default" "0" "$got"
+else
+  assert_fail "shipyard-config.sh exists (missing at $CONFIG_SH)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (O) drain.md — termination-registry row for paused_on_environment.
+# ---------------------------------------------------------------------------
+echo "(O) drain.md — paused_on_environment termination-registry row"
+DRAIN_MD_PATH="$repo_root/plugins/shipyard/commands/do-work/drain.md"
+if [[ -f "$DRAIN_MD_PATH" ]]; then
+  # shellcheck disable=SC2016  # literal markdown needle, deliberately unexpanded
+  assert_contains "$DRAIN_MD_PATH" '`paused_on_environment`' \
+    "termination registry includes a paused_on_environment row"
+  assert_contains "$DRAIN_MD_PATH" 'watch-resume-probe.sh' \
+    "registry row cross-references the resume-watch script"
+else
+  assert_fail "drain.md exists (missing at $DRAIN_MD_PATH)"
 fi
 echo
 

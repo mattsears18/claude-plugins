@@ -105,6 +105,40 @@
 # queued count is an upper bound on self-hosted contention, not an exact
 # count. Callers treat it as a coarse "is the backlog roughly in proportion
 # to the pool" signal, not a precise scheduling input.
+#
+# Usage — pure resume decision (issue #1402, hermetic, no network calls):
+#   bash detect-ci-runner-capacity.sh --decide-resume \
+#     <POOL_TOTAL> <QUEUED> <MULTIPLIER>
+#     -> prints "resume" or "held" on stdout (single line).
+#
+#   A THIRD decision, alongside `decide()` and `decide_backpressure()`:
+#   `decide_backpressure()` answers "should THIS turn fill a freed slot",
+#   gated by an escape valve that guarantees at least `MIN_IN_FLIGHT` workers
+#   stay dispatched — a guarantee that only holds while some worker IS in
+#   flight. `decide_resume()` answers the inverse question asked from a
+#   `paused_on_environment` pause, where by construction NO worker is in
+#   flight (that's the deadlock condition that caused the pause in the first
+#   place, see steady-state.md's "Session-wide environmental pause" section)
+#   — so there is no in-flight count for an escape valve to protect, and this
+#   function deliberately has none. Same threshold shape as
+#   `decide_backpressure()` (`queued > pool_total * multiplier`), inverted:
+#   "held" means the condition that caused the pause hasn't cleared yet;
+#   "resume" means it has (or POOL_TOTAL is unreadable/zero, same defensive
+#   default `decide_backpressure()` uses — never hold on a signal that
+#   couldn't actually be read).
+#
+#   - POOL_TOTAL   — the pool size recorded when the pause was armed
+#                     (`paused_on_environment.resume_probe_pool_total`).
+#   - QUEUED        — a LIVE re-read of `gh run list --status queued`.
+#   - MULTIPLIER    — `ci.backpressure_multiplier` config value (default 5),
+#                      the SAME threshold multiplier that triggered the
+#                      original hold — resume uses the same bar the hold did,
+#                      not a separate hysteresis band.
+#
+#   Both numeric inputs degrade to 0 on non-numeric input (never crash);
+#   MULTIPLIER degrades to 5. A zero/unreadable POOL_TOTAL always "resume"s
+#   — an unreadable signal is not evidence the environment is still
+#   saturated, only evidence the watcher couldn't check.
 
 set -uo pipefail
 
@@ -154,6 +188,29 @@ decide_backpressure() {
     'BEGIN { print (q > p * m) ? "hold" : "dispatch" }'
 }
 
+decide_resume() {
+  local pool_total="$1" queued="$2" multiplier="$3"
+
+  case "$pool_total" in ''|*[!0-9]*) pool_total=0 ;; esac
+  case "$queued" in ''|*[!0-9]*) queued=0 ;; esac
+  case "$multiplier" in ''|*[!0-9.]*) multiplier=5 ;; esac
+
+  # A zero/unreadable pool size always resumes — never hold a pause open on
+  # a signal we couldn't actually read (same defensive posture as
+  # decide_backpressure's zero-pool "dispatch" default).
+  if [ "$pool_total" -eq 0 ]; then
+    printf 'resume\n'
+    return 0
+  fi
+
+  # Deliberately NO escape valve here — decide_backpressure's IN_FLIGHT
+  # escape valve exists to guarantee forward progress while other workers
+  # are running; a paused_on_environment pause exists precisely because NO
+  # worker is in flight, so there is nothing for an escape valve to protect.
+  awk -v q="$queued" -v p="$pool_total" -v m="$multiplier" \
+    'BEGIN { print (q > p * m) ? "held" : "resume" }'
+}
+
 main() {
   if [ "${1:-}" = "--decide" ]; then
     if [ "$#" -ne 4 ]; then
@@ -173,11 +230,21 @@ main() {
     exit 0
   fi
 
+  if [ "${1:-}" = "--decide-resume" ]; then
+    if [ "$#" -ne 4 ]; then
+      echo "usage: $0 --decide-resume <POOL_TOTAL> <QUEUED> <MULTIPLIER>" >&2
+      exit 1
+    fi
+    decide_resume "$2" "$3" "$4"
+    exit 0
+  fi
+
   local repo="${1:-}"
   if [ -z "$repo" ]; then
     echo "usage: $0 <owner/repo>" >&2
     echo "       $0 --decide <RUNNER_COUNT> <ONLINE_COUNT> <BUSY_COUNT>" >&2
     echo "       $0 --decide-backpressure <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>" >&2
+    echo "       $0 --decide-resume <POOL_TOTAL> <QUEUED> <MULTIPLIER>" >&2
     exit 1
   fi
 
