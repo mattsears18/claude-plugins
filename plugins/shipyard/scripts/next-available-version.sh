@@ -63,6 +63,53 @@
 #     computation, matching the `|| echo ""` posture the original inline
 #     block had throughout).
 #
+#     `compute` itself is UNCHANGED by issue #1417 below — it always folds
+#     in a present --cursor-file's value, exactly as before. That is
+#     load-bearing for batch monotonicity (#437): a batch of N simultaneous
+#     dispatches runs this computation N times in sequence against the SAME
+#     --session-prs value (often with zero OPEN members, since the batch's
+#     own sibling PRs don't exist yet), relying on the cursor alone to keep
+#     slots 1..N distinct. Any self-heal that conditioned compute()'s own
+#     cursor fold-in on --session-prs would silently re-collide every slot
+#     in that case — see `reseed-if-idle` below for where the self-heal
+#     actually lives instead.
+#
+#   reseed-if-idle --repo <owner/repo> --session-prs <PR numbers, space or
+#       comma separated> --cursor-file <path>
+#     Closes issue #1417 — the cursor advances on what `compute` COMPUTED,
+#     not on what a worker actually CLAIMED (a worker legitimately taking a
+#     different bump level than the orchestrator inferred, per #671's "the
+#     level is yours to raise" contract, leaves the old computed slot
+#     unclaimed forever, and every later `compute` floors above the
+#     phantom). This is the caller-side self-healing half of the fix
+#     (issue #1417's "option 2") — a stale cursor is discarded here, at a
+#     well-defined, safe point, rather than inside `compute` trying to
+#     distinguish "trustworthy same-batch advance" from "stale cross-
+#     dispatch drift" on every call — which it cannot do from
+#     --session-prs alone, per the `compute` note above.
+#
+#     Call this ONCE per dispatch-decision round — before the single
+#     `compute` call for an ordinary per-dispatch, or once before the
+#     sequential per-slot `compute` loop for a batch fill (never inside
+#     that loop), so a batch's own monotonic cursor advances are never
+#     touched mid-batch. See dispatch-rules.md's "Next-available-version
+#     computation" section and setup/07-pool-fill.md's step 7 for the two
+#     call sites.
+#
+#     Walks --session-prs exactly like `compute` does. If ANY listed PR
+#     resolves to state OPEN, the cursor may still be backing a genuinely
+#     in-flight claim — no-op. Otherwise (including an empty
+#     --session-prs) nothing this session currently relies on the
+#     persisted cursor, so it is discarded (the file is removed) — the
+#     next `compute` call re-seeds the floor from `origin/<default-
+#     branch>`'s manifest instead of an unclaimed, possibly-inflated,
+#     holdover value.
+#
+#     Prints one `key=value` line to stdout:
+#       reseed=<reset|skipped-open-pr-found|noop-no-cursor>
+#
+#     Exit 0 always (best-effort, same posture as `compute`).
+#
 # Exit codes: 0 success; 64 bad usage; 65 missing dependency (jq/gh).
 
 set -u
@@ -76,6 +123,9 @@ usage() {
 Usage:
   next-available-version.sh compute --repo <owner/repo> --manifest <path>
       --version-jq <jq-expr> --default-branch <branch> --issue <N>
+      [--session-prs <PR numbers, space or comma separated>]
+      [--cursor-file <path>]
+  next-available-version.sh reseed-if-idle --repo <owner/repo>
       [--session-prs <PR numbers, space or comma separated>]
       [--cursor-file <path>]
 EOF
@@ -202,6 +252,50 @@ case "$sub" in
     echo "max_inflight_version=${max_inflight_version}"
     echo "bump_level=${bump_level}"
     echo "next_available_version=${next_available_version}"
+    exit 0
+    ;;
+  reseed-if-idle)
+    repo=""
+    session_prs_raw=""
+    cursor_file=".shipyard-version-cursor"
+
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --repo) repo="${2:-}"; shift 2 ;;
+        --session-prs) session_prs_raw="${2:-}"; shift 2 ;;
+        --cursor-file) cursor_file="${2:-}"; shift 2 ;;
+        *) echo "next-available-version.sh reseed-if-idle: unknown argument: $1" >&2; usage >&2; exit 64 ;;
+      esac
+    done
+
+    if [ -z "$repo" ]; then
+      echo "next-available-version.sh reseed-if-idle: --repo is required" >&2
+      usage >&2
+      exit 64
+    fi
+
+    # --- #1417: does session_prs still have an OPEN member? ----------------
+    session_prs_normalized="${session_prs_raw//,/ }"
+    # shellcheck disable=SC2086
+    set -- $session_prs_normalized
+    any_open_session_pr="false"
+    for pr in "$@"; do
+      [ -z "$pr" ] && continue
+      pr_state=$("$GH" pr view "$pr" --repo "$repo" --json state -q .state 2>/dev/null)
+      if [ "$pr_state" = "OPEN" ]; then
+        any_open_session_pr="true"
+        break
+      fi
+    done
+
+    if [ "$any_open_session_pr" = "true" ]; then
+      echo "reseed=skipped-open-pr-found"
+    elif [ -f "$cursor_file" ]; then
+      rm -f "$cursor_file"
+      echo "reseed=reset"
+    else
+      echo "reseed=noop-no-cursor"
+    fi
     exit 0
     ;;
   ""|-h|--help)

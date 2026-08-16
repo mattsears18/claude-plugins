@@ -2976,10 +2976,10 @@ assert_contains "$steady_state_path" \
   'issues/1193' \
   "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=<k>' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=0' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3027,10 +3027,10 @@ assert_contains "$steady_state_path" \
   'issues/1194' \
   "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=<k>' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · dispatched_this_turn=0' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3300,6 +3300,96 @@ assert_contains "$rationale_path" \
 assert_contains "$rationale_path" \
   'issues/1335' \
   "RATIONALE.md cites issue #1335"
+
+# (X) version_cursor self-heal + observability (issue #1417). The cursor
+# advances on what next-available-version.sh compute COMPUTED, not on what
+# a worker actually CLAIMED — a worker legitimately taking a different
+# bump level than the orchestrator inferred (#671's "the level is yours to
+# raise") leaves a phantom claimed slot in the cursor forever, which
+# compounds with every later compute call in the session. Fix: a new
+# `reseed-if-idle` subcommand, called once per dispatch-decision round
+# (never inside a batch's own sequential per-slot loop, which would
+# reintroduce #437's collision), discards the persisted cursor whenever
+# session_prs has no OPEN member — plus a `version_cursor=` invariant-line
+# token so residual drift is visible without eyeballing a version number.
+pool_fill_path1417="$repo_root/plugins/shipyard/commands/do-work/setup/07-pool-fill.md"
+orchestrator_state_reference_path1417="$repo_root/plugins/shipyard/commands/do-work/orchestrator-state-reference.md"
+
+# next-available-version.sh: the new subcommand exists and compute() is
+# explicitly documented as unchanged.
+assert_contains "$steady_state_path" \
+  'reseed-if-idle)' \
+  "next-available-version.sh implements the reseed-if-idle subcommand (#1417)"
+assert_contains "$steady_state_path" \
+  'reseed=<reset|skipped-open-pr-found|noop-no-cursor>' \
+  "next-available-version.sh documents reseed-if-idle's three output states (#1417)"
+assert_contains "$steady_state_path" \
+  "compute\` itself is UNCHANGED by issue #1417" \
+  "next-available-version.sh documents compute() as unchanged by the #1417 fix"
+
+# dispatch-rules.md: reseed-if-idle is called once per round, before compute.
+assert_contains "$dispatch_rules_path" \
+  'reseed-if-idle' \
+  "dispatch-rules.md's next-available-version section calls reseed-if-idle (#1417)"
+assert_contains "$dispatch_rules_path" \
+  'Never call it from inside a batch loop' \
+  "dispatch-rules.md warns against calling reseed-if-idle inside a batch loop (#1417)"
+assert_contains "$dispatch_rules_path" \
+  'issues/1417' \
+  "dispatch-rules.md cites issue #1417"
+
+# setup/07-pool-fill.md: the batch loop calls reseed-if-idle ONCE, before
+# the loop, never per-slot.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$pool_fill_path1417" \
+  'Run `reseed-if-idle` ONCE, before this batch loop starts' \
+  "07-pool-fill.md documents reseed-if-idle as a once-per-round call, not per-slot (#1417)"
+assert_contains "$pool_fill_path1417" \
+  'issues/1417' \
+  "07-pool-fill.md cites issue #1417"
+
+# invariant-line.md + steady-state.md: the version_cursor token.
+assert_contains "$invariant_line_path" \
+  'version_cursor=<X.Y.Z|"unset"|n/a>' \
+  "invariant-line.md documents the version_cursor token shape (#1417)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$invariant_line_path" \
+  'A missing `version_cursor=` token entirely is a contract violation' \
+  "invariant-line.md treats a missing version_cursor= token as a contract violation (#1417)"
+assert_contains "$steady_state_path" \
+  'version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=<k>' \
+  "steady-state.md step E invariant line documents the version_cursor token in the dispatch format (#1417)"
+assert_contains "$steady_state_path" \
+  'version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=0' \
+  "steady-state.md step E invariant line documents the version_cursor token in the idle-proof format (#1417)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  '`paused_env=`, `version_cursor=`' \
+  "steady-state.md's token-presence self-check enumerates version_cursor= among the mandatory tokens (#1417)"
+
+# orchestrator-state-reference.md: the version_cursor struct entry documents
+# the self-heal and the invariant-line surfacing.
+assert_contains "$orchestrator_state_reference_path1417" \
+  'Self-healed mid-session, not just at session boundaries' \
+  "orchestrator-state-reference.md's version_cursor entry documents the mid-session self-heal (#1417)"
+assert_contains "$orchestrator_state_reference_path1417" \
+  'Surfaced on the invariant line' \
+  "orchestrator-state-reference.md's version_cursor entry documents the invariant-line token (#1417)"
+
+# RATIONALE.md: the design writeup exists and names the batch-monotonicity
+# hazard a naive session_prs-only self-heal would reintroduce.
+assert_contains "$rationale_path" \
+  'version_cursor` self-heal' \
+  "RATIONALE.md carries the #1417 version_cursor self-heal writeup"
+assert_contains "$rationale_path" \
+  'issues/1417' \
+  "RATIONALE.md cites issue #1417"
+assert_contains "$rationale_path" \
+  'reintroducing the exact N−1-PRs-go-DIRTY collision #437 exists to prevent' \
+  "RATIONALE.md explains why a naive session_prs-gated compute() fold-in would break batch monotonicity (#1417)"
 
 echo
 if (( fail > 0 )); then
