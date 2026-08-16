@@ -75,15 +75,34 @@
 #     in-flight (#832 — before classify-lock), classifies its lock,
 #     relabels `peer-alive` -> `peer-alive-force`, reaps it via
 #     `worktree-reap.sh reap` with `--phase <phase>` (default
-#     `steady-state-pre-dispatch`), drops the local branch ref so the fresh
-#     worker's `git switch <head>` recreates it cleanly, stops after the
-#     first match (`break` — at most one worktree per head branch), then
-#     runs `git worktree prune`.
+#     `steady-state-pre-dispatch`). On a VERIFIED successful removal (see
+#     #1407 below), drops the local branch ref so the fresh worker's
+#     `git switch <head>` recreates it cleanly. Stops after the first match
+#     (`break` — at most one worktree per head branch), then runs
+#     `git worktree prune`.
 #
 #     Every mutating step is fire-and-forget (`2>/dev/null` and/or
 #     `|| true`), matching the original block's posture — a filesystem race
 #     (the worktree was already reaped by a concurrent path) must not abort
 #     the caller's dispatch turn.
+#
+#     Issue #1407 (sibling of #1404) — the delegated `worktree-reap.sh reap
+#     --action reaped` call's own exit status is NOT a trustworthy success
+#     signal: its `reap_action()` (for the `reaped` action) `return`s 0
+#     unconditionally regardless of whether the underlying removal actually
+#     happened — it only varies which action string ("reaped" vs
+#     "reaped-failed") lands in the AUDIT LOG (see #712) — and this caller's
+#     own `2>/dev/null || true` additionally discards stderr and any
+#     non-reap_action exit (e.g. the delegated process crashing before
+#     reaching that branch at all). Before ever reporting success, this
+#     script re-checks the filesystem itself: did `$worktree_path` actually
+#     disappear? If it did not, this script records the failure via
+#     `worktree-reap.sh reap --action reaped-failed` itself (the #1274
+#     directly-invocable failure-log path) — so the audit trail is correct
+#     even when the delegated call never wrote its own "reaped-failed"
+#     line — and reports the distinct `reaped=failed` token below rather
+#     than `reaped=true`. It also does NOT drop the local branch ref in this
+#     case, since the worktree still holds it checked out.
 #
 #     Prints exactly one line to stdout so the caller's SEPARATE, later
 #     verify-the-reap-happened call (issue #1274 — a classifier denial of
@@ -95,6 +114,9 @@
 #       reaped=false
 #     or
 #       reaped=true worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid-or-null>
+#     or (#1407 — a genuine match was found but the delegated removal did
+#     not actually take)
+#       reaped=failed worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid-or-null> reason=delegated-reap-did-not-remove-worktree
 #
 # Exit codes: 0 always (fire-and-forget, matches the original block); 64 bad
 # usage; 65 missing dependency (jq).
@@ -173,6 +195,7 @@ case "$sub" in
       --session-id "$session_id" --path .in_flight 2>/dev/null | jq -r '.[]?.agent_id // empty' 2>/dev/null)
 
     reaped=false
+    reap_failed=false
     worktree_path=""
     name=""
     local_classification=""
@@ -240,8 +263,40 @@ case "$sub" in
         --bypass-return-check "pre-dispatch head-branch reap (#1237/#1274) — target's PR already exists on GitHub (dispatch-rules.md §2d precondition); may be inherited from a prior session whose .returned_agent_ids this session can't read" \
         2>/dev/null || true
 
+      # Issue #1407 (sibling of #1404) — verify the delegated removal
+      # actually happened before ever reporting success. The delegated
+      # call's own exit status is not a trustworthy signal (see the header
+      # comment above): re-check the filesystem itself.
+      if [ -e "$worktree_path" ]; then
+        # The worktree survived — whether because the removal failed
+        # cleanly (worktree-reap.sh's own reap_action already logged
+        # "reaped-failed" internally, per #712) or because the delegated
+        # call crashed before ever reaching that branch (nothing logged at
+        # all). Record the failure here too, via the #1274
+        # directly-invocable failure-log action, so the audit trail is
+        # correct in BOTH cases rather than depending on every caller to
+        # notice and backfill it.
+        "${here}/worktree-reap.sh" reap \
+          --action reaped-failed \
+          --worktree-path "$worktree_path" \
+          --worktree-name "$name" \
+          --session-id "$session_id" \
+          --classification "$local_classification" \
+          --reason "delegated-reap-did-not-remove-worktree" \
+          --lock-pid "$lock_pid" \
+          --phase "$phase" 2>/dev/null || true
+        reap_failed=true
+        break   # at most one worktree per head branch — nothing else to try
+      fi
+
       # Drop the local branch ref so the fresh worker's `git switch <head>`
       # recreates it cleanly without the "already checked out" collision.
+      # `-D` (force) rather than `-d` because the branch may have unmerged
+      # commits relative to current local main — the canonical record is
+      # on origin, not this branch. Only reached when the removal above was
+      # actually verified (worktree_path no longer exists) — dropping the
+      # branch ref while a still-present worktree holds it checked out
+      # would be wrong (#1404/#1407).
       git branch -D "$head_ref" 2>/dev/null || true
       reaped=true
       break   # at most one worktree per head branch
@@ -250,6 +305,8 @@ case "$sub" in
 
     if [ "$reaped" = "true" ]; then
       echo "reaped=true worktree_path=${worktree_path} worktree_name=${name} classification=${local_classification} lock_pid=${lock_pid}"
+    elif [ "$reap_failed" = "true" ]; then
+      echo "reaped=failed worktree_path=${worktree_path} worktree_name=${name} classification=${local_classification} lock_pid=${lock_pid} reason=delegated-reap-did-not-remove-worktree"
     else
       echo "reaped=false"
     fi
