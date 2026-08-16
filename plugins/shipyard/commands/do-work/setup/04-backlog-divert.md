@@ -83,11 +83,11 @@ Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preser
   - `--closed-by-open-pr` → **is this ISSUE already covered?** ([#1389](https://github.com/mattsears18/shipyard/issues/1389)) The wider set, and the reason the clause above must *not* be reused here: health is irrelevant to this question. An issue whose open `@me` PR names it in `closingIssuesReferences` is covered whether that PR is green, red, or `DIRTY` — red ⇒ fix-checks *on the PR*, `DIRTY` ⇒ fix-rebase *on the PR* — so an issue-worker dispatched at it can only bail at `issue-work.md` step 0, after a full worker has read the issue. Emits its own greppable verdict, `reason: "covered-by-open-pr"` plus an `evidence_pointer` naming the covering PR, so [`04f`](./04f-completion-ledger.md#the-bucket-taxonomy) buckets it as *covered, not dropped*.
   - **Neither clause locks an issue behind a closed/abandoned PR** — both query `--state open` only, so [#332](https://github.com/mattsears18/shipyard/issues/332)'s resumable-work case holds by construction.
 
-**Invocation** — build the inputs, then classify. **No shell pipe spans a tool boundary here ([#1277](https://github.com/mattsears18/shipyard/issues/1277))** — file redirection replaces what used to be `printf | classify` and `printf | jq` pipes, refused post-relocation. See [`dont.md`'s post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277).
+**Invocation — one plain command ([#1398](https://github.com/mattsears18/shipyard/issues/1398)).** [`scripts/classify-backlog.sh`](../../../scripts/classify-backlog.sh)'s `run` subcommand absorbs the whole input-gathering + classify sequence — the five config reads, both live-network precomputed sets, and the conditional probe-verdicts call — so the orchestrator's own call is just script-invocation plus the handful of inputs only the caller can supply (the `$CLAUDE_PLUGIN_ROOT`/`$SHIPYARD_REPO_ROOT` pins, `$ME_LOGIN`, and the repo-scoped CSVs from earlier steps). Previously this section inlined the whole sequence as a single large `Bash` block — the spec's own prose called out that it genuinely needed to stay one call (the intermediate variables don't survive between separate `Bash` calls) — but pasting it as written was refused verbatim by the worktree-isolation guard ("this command is too complex to verify that it stays inside the worktree"), forcing every orchestrator session to improvise its own workaround. Extracting it mirrors the `stale-check-refresh.sh` / `next-available-version.sh` / `pre-dispatch-branch-reap.sh` / `concurrent-session-guard.sh` precedent (#1289): the classify-backlog.sh header is the non-normative description of what it does internally; this file's own copy of that description is intentionally brief — see the script's header for the full contract (`--repo`/`--me`/`--trusted-authors`/`--issues-file` required, `--peer-claimed`/`--prioritize-label`/`--out` optional).
 
 `$fetched_issues_json` is the wide-fetch array from the top of this step, held in the orchestrator's own context. Materialize it with the `Write` tool (never a `printf`/heredoc piped into the next command — see [`shipyard:worker-preamble`'s body-file convention](../../../skills/worker-preamble/body-file-convention.md)) to `.shipyard-fetched-issues.json` in the orchestrator worktree root, BEFORE the command sequence below. `Write` and `Bash` are different tools, so there's no variable-survival concern between them.
 
-Then, in **one** `Bash` call (plain sequential statements — no loop/pipe/`if`, so keeping them together avoids re-deriving `$ME_LOGIN` etc. in a second call that could never see them, since variables don't survive between separate `Bash` calls): resolve both pins, fetch the remaining inputs, then classify — redirecting in from the scratch file and out to a second one, so neither the classify call nor the extractions after it need a pipe:
+Then, in **one** `Bash` call (plain sequential statements — no loop/pipe/`if`, so keeping them together avoids re-deriving `$ME_LOGIN` etc. in a second call that could never see them, since variables don't survive between separate `Bash` calls): resolve the pins and `$ME_LOGIN`, then classify — redirecting the classify NDJSON straight to a scratch file via `--out`, so neither this call nor the extractions after it need a pipe:
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
@@ -95,61 +95,23 @@ export CLAUDE_PLUGIN_ROOT
 # Re-derive the SHIPYARD_REPO_ROOT pin from the step-0.56 stash rather than
 # `git rev-parse --show-toplevel` (issue #1059/#1064) — the latter resolves
 # to the orchestrator worktree post-relocation, not the primary checkout
-# shipyard-config.sh needs to read repo-level config from.
+# shipyard-config.sh needs to read repo-level config from. classify-
+# backlog.sh's own internal shipyard-config.sh calls read this same
+# exported SHIPYARD_REPO_ROOT, not a value passed on its command line.
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 ME_LOGIN=$(gh api user --jq '.login')
 
-# The live-network half (see the bullet above for why it's a separate call).
-CLOSED_HEALTHY_CSV=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" closed-by-healthy-pr \
-  --repo <owner/repo> --me "$ME_LOGIN")
-
-# The wider covered-by-any-open-PR map (issue #1389). `{}` on any failure
-# means the clause never fires — never a hard error blocking the fetch.
-COVERED_BY_OPEN_PR_JSON=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" closed-by-open-pr \
-  --repo <owner/repo> --me "$ME_LOGIN" 2>/dev/null || echo "{}")
-
-INVESTIGATE_DISPATCH=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get triage.investigate_dispatch 2>/dev/null || echo "true")
-RESPECT_ASSIGNEES=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.respect_assignees 2>/dev/null || echo "false")
-
-# Milestone-aware ranking gate (issue #1241) — read BOTH config keys and
-# pass them through unconditionally; the script's own AND-gate (not this
-# prose) is what decides whether ranking actually changes. A repo with no
-# `milestones` block, or `enabled:false`, gets "false" from both reads
-# (shipyard-config.sh's documented default) and the script falls back to
-# the byte-identical pre-#1241 order automatically — see backlog-filter.sh's
-# header comment.
-MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo "false")
-MILESTONES_PRIORITIZE_DISPATCH=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.prioritize_dispatch 2>/dev/null || echo "false")
-
-# Event-gate probe precompute (issue #1356) — the live-network half of the
-# event-gate filter, same split rationale as CLOSED_HEALTHY_CSV above: an
-# empty {} default when disabled or on any failure means every issue falls
-# back to classify's own fail-safe "unknown" per-issue default, never a
-# hard error that would block the whole backlog fetch.
-RECHECK_PROBE_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get scope.recheck_probe_enabled 2>/dev/null || echo "true")
-PROBE_VERDICTS_JSON="{}"
-if [ "$RECHECK_PROBE_ENABLED" = "true" ]; then
-  PROBE_VERDICTS_JSON=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" eval-probes \
-    --repo <owner/repo> < .shipyard-fetched-issues.json 2>/dev/null || echo "{}")
-fi
-
 # $TRUSTED_AUTHORS_CSV is trusted_authors (step 1.7), comma-joined, lowercased.
 # $PEER_CLAIMED_CSV is .peer_sessions.claimed_targets (step 1.65), comma-joined.
-"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" classify \
+bash "$CLAUDE_PLUGIN_ROOT/scripts/classify-backlog.sh" run \
+  --repo <owner/repo> \
   --me "$ME_LOGIN" \
   --trusted-authors "$TRUSTED_AUTHORS_CSV" \
-  --closed-by-healthy-pr "$CLOSED_HEALTHY_CSV" \
-  --closed-by-open-pr "$COVERED_BY_OPEN_PR_JSON" \
+  --issues-file .shipyard-fetched-issues.json \
   --peer-claimed "$PEER_CLAIMED_CSV" \
-  --investigate-dispatch "$INVESTIGATE_DISPATCH" \
   --prioritize-label "<--prioritize-label CLI arg value, or empty string if not passed>" \
-  --respect-assignees "$RESPECT_ASSIGNEES" \
-  --milestones-enabled "$MILESTONES_ENABLED" \
-  --milestones-prioritize-dispatch "$MILESTONES_PRIORITIZE_DISPATCH" \
-  --recheck-probe-enabled "$RECHECK_PROBE_ENABLED" \
-  --probe-verdicts "$PROBE_VERDICTS_JSON" \
-  < .shipyard-fetched-issues.json > .shipyard-classified.ndjson
+  --out .shipyard-classified.ndjson
 ```
 
 Then extract the two ranked lists. `jq` accepts the NDJSON file directly as a positional argument (a literal filename, not a variable — so this is safe as its own call), so neither extraction needs a pipe either:
