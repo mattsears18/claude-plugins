@@ -26,8 +26,10 @@ You are here because this PR ships only the completable slice; issue `#<N>` itse
    ```bash
    export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
    MILESTONE_TITLE=""
-   if [ "$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)" = "true" ] && \
-      [ "$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)" = "true" ]; then
+   milestones_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo false)
+   milestones_assign_on_file=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null || echo false)
+   if [ "$milestones_enabled" = "true" ] && \
+      [ "$milestones_assign_on_file" = "true" ]; then
      # Tier 1 — inherit #<N>'s own milestone when it has one.
      MILESTONE_TITLE=$(gh issue view <N> --repo <owner/repo> --json milestone --jq '.milestone.title // empty' 2>/dev/null)
      # Tier 2 — #<N> has none: BET-match + fallback, same as any other filer.
