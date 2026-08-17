@@ -22,9 +22,11 @@
 # the same pattern eval-recheck-probe.test.sh uses for its own live-`gh`
 # coverage — rather than the $GH-env-var mocking stale-check-refresh.test.sh
 # uses for a script that reads $GH itself. `SHIPYARD_REPO_ROOT` is pinned to
-# an empty tmp dir for every invocation so the five internal config reads
+# an empty tmp dir for every invocation so the six internal config reads
 # resolve against shipyard-config.sh's built-in defaults only, never this
-# repo's own committed shipyard.config.json.
+# repo's own committed shipyard.config.json — except in the dedicated
+# backlog.someday_milestone block near the end, which deliberately points
+# SHIPYARD_REPO_ROOT at its own populated config dir (issue #1406).
 #
 # Pure bash + jq + a stub gh. Run with:
 #   bash plugins/shipyard/scripts/tests/classify-backlog.test.sh
@@ -162,6 +164,31 @@ else
   printf '    unexpected stdout: %s\n' "$stdout_capture" | head -c 300; printf '\n'
   fail=$((fail+1))
 fi
+
+# --------------------------------------------------------------------------
+echo
+echo "run — backlog.someday_milestone config read threads through to classify (issue #1406)"
+# --------------------------------------------------------------------------
+SOMEDAY_FIXTURES="${WORK}/someday-fixtures.json"
+cat > "$SOMEDAY_FIXTURES" <<'EOF'
+[
+  {"number": 200, "title": "feat: someday", "body": "", "labels": [], "assignees": [], "author": {"login": "alice"}, "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "milestone": "6 · Someday"}
+]
+EOF
+
+# No repo config present (CONFIG_ROOT reused from above, still empty of a
+# someday_milestone override) -- off by default, the issue stays eligible.
+out="$(run_script run --repo o/r --me alice --trusted-authors alice --issues-file "$SOMEDAY_FIXTURES" 2>&1)"
+assert_contains "$out" '"verdict":"eligible"' "off by default: a Someday-milestone issue is eligible with no backlog.someday_milestone configured"
+
+# A repo config setting backlog.someday_milestone -- the same read
+# classify-backlog.sh's own run subcommand resolves internally -- drops it.
+SOMEDAY_CONFIG_ROOT="${WORK}/someday-config-root"
+mkdir -p "$SOMEDAY_CONFIG_ROOT"
+echo '{"version":1,"backlog":{"someday_milestone":"Someday"}}' > "${SOMEDAY_CONFIG_ROOT}/shipyard.config.json"
+
+out="$(SHIPYARD_REPO_ROOT="$SOMEDAY_CONFIG_ROOT" PATH="${TMP_BIN}:${PATH}" bash "$script" run --repo o/r --me alice --trusted-authors alice --issues-file "$SOMEDAY_FIXTURES" 2>&1)"
+assert_contains "$out" '"reason":"someday-milestone"' "backlog.someday_milestone config read threads through classify-backlog.sh to classify's drop verdict"
 
 echo
 printf '  %s passed, %s failed\n' "$pass" "$fail"

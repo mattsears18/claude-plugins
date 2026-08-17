@@ -29,6 +29,7 @@ Every open issue lands in **exactly one** bucket. The set was validated against 
 | 5 | Operator queue | labels include `agent-console` | **dispatchable** by the operator phase — see the correction below |
 | 6 | Blocked by open sibling | body contains `Blocked by #N` and `#N` is still `OPEN` | parked — self-clearing |
 | 7 | Time-gated | body's first line is a `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker with a date still in the future | parked — self-clearing; an **expired** marker flips the issue to bucket 9, never stays in bucket 7 |
+| 7.5 | Someday-parked | `classify` returned `drop:someday-milestone` for it — the issue's milestone matches the configured `backlog.someday_milestone` title ([#1406](https://github.com/mattsears18/shipyard/issues/1406)) | parked — inert unless `backlog.someday_milestone` is set (off by default); self-clearing only when a human moves the issue out of that milestone, since no probe is expressible for the class of event this park exists for |
 | 8 | Investigate queue | number in `investigate_candidates` | **dispatchable** — routed, not yet worked |
 | 9 | Untrusted author | `author.login` (lowercased) not in `trusted_authors` | parked — needs allowlist vouching |
 | 10 | Dispatchable | number in `raw_backlog` or `ready_issues`, or passes every filter above with no matching signal | **must be 0 at a completion claim** — a non-zero count here means the session is stopping short, not finishing |
@@ -51,6 +52,12 @@ Every open issue lands in **exactly one** bucket. The set was validated against 
 
 **Correction — time-gated is its own bucket, not silently dispatchable.** A first pass at this taxonomy omitted bucket 7 entirely and misreported gated issues as dispatchable. The `do-work-blocked-until` marker is self-clearing by design (no label, no sweep needed) — the ledger just has to actually read it, on line 1 only, exactly as [`04`'s own filter](./04-backlog-divert.md#4-fetch--rank-the-backlog) does.
 
+**Bucket 7.5 — Someday-parked is a fractional bucket by design, not a renumbering ([#1406](https://github.com/mattsears18/shipyard/issues/1406)).** `classify`'s `drop:someday-milestone` verdict is a THIRD, distinct park mechanism from bucket 6 (blocked-by-sibling) and bucket 7 (time-gated) — see `scripts/backlog-filter.sh`'s own header comment for why it is not modeled as a leaf of either. It is inserted as `7.5` (mirroring `backlog-ownership.md`'s own precedent for fractional bucket insertions, e.g. its `0.5`/`5.5`/`5.6`) specifically so it never renumbers buckets 8–11 — those numbers are cross-referenced by name elsewhere (`cleanup-summary.md`'s `Workable`/`⚠️ Unaccounted` rows read bucket 10/11 by number). Render it the same way bucket 4's `tracking-unjustified` sub-line renders — its own row, never folded into a flat count — since a growing Someday park is exactly the kind of thing worth an operator noticing, per the issue's own point 3 ("stop paying full scope cost every session for an identical answer" is only honest if the count stays visible, not merely non-dispatched):
+
+```
+   1 → someday-parked                #3605 (milestone: 6 · Someday)
+```
+
 ## The load-bearing rule
 
 **If any open issue cannot be placed in a bucket, that is a filter defect. Report it loudly and do NOT terminate.** This is what makes the failure self-diagnosing instead of silent: any future change that starts erasing issues from the workable queue surfaces as a growing bucket 11, by construction, instead of silently shrinking bucket 10 to zero. Never force an unaccounted issue into a parked bucket to make the ledger look clean — a guessed placement reproduces exactly the miscounting this ledger exists to catch (both prior corrections above were miscounts in the safe-looking direction, i.e. *more* parked than reality).
@@ -67,17 +74,18 @@ Never print a bare "backlog empty" / "nothing left to do" / "complete" from queu
 
 ## Building the ledger — no new `gh` calls
 
-The ledger is computed entirely from data the caller already has: the fresh open-issue fetch ([step 4](./04-backlog-divert.md#4-fetch--rank-the-backlog)'s wide fetch at setup time, or [`drain.md` termination step 4](../drain.md#termination-assertion)'s fresh-fetch verification at drain time) joined against the orchestrator-state queues (`in_flight`, `failed_prs`, `ready_issues`, `raw_backlog`, `investigate_candidates`, `deferred_issues`, `trusted_authors`) and the already-computed `closed_by_open_healthy_pr` set plus the wider `closed-by-open-pr` map ([#1389](https://github.com/mattsears18/shipyard/issues/1389) — already computed for the same step's `classify` invocation, so bucket 3's covering-PR citation costs no additional call either). Walk the fetch's issue list once; for each issue, test the eleven signals **in the table's order** and stop at the first match — the order matters because a few signals could otherwise double-match (e.g. an issue in `raw_backlog` that also carries a stale `agent-console` label from a prior session belongs to bucket 5, checked before bucket 10). An issue that falls through every test lands in bucket 11.
+The ledger is computed entirely from data the caller already has: the fresh open-issue fetch ([step 4](./04-backlog-divert.md#4-fetch--rank-the-backlog)'s wide fetch at setup time, or [`drain.md` termination step 4](../drain.md#termination-assertion)'s fresh-fetch verification at drain time) joined against the orchestrator-state queues (`in_flight`, `failed_prs`, `ready_issues`, `raw_backlog`, `investigate_candidates`, `deferred_issues`, `trusted_authors`) and the already-computed `closed_by_open_healthy_pr` set plus the wider `closed-by-open-pr` map ([#1389](https://github.com/mattsears18/shipyard/issues/1389) — already computed for the same step's `classify` invocation, so bucket 3's covering-PR citation costs no additional call either). Walk the fetch's issue list once; for each issue, test the twelve signals (the eleven numbered buckets plus fractional bucket 7.5) **in the table's order** and stop at the first match — the order matters because a few signals could otherwise double-match (e.g. an issue in `raw_backlog` that also carries a stale `agent-console` label from a prior session belongs to bucket 5, checked before bucket 10). An issue that falls through every test lands in bucket 11.
 
 Render as a fixed-width table (mirroring [`cleanup-summary.md`'s existing bucket-breakdown shape](../cleanup-summary.md#end-of-session-summary)) or, on a small backlog, the compact inline form from the issue's own worked example:
 
 ```
-34 open · 14 dispatchable
+35 open · 14 dispatchable
   10 → PR open, awaiting merge
    4 → human-gated                    #3191 #3833 #3838 #3913
    1 → operator queue (agent-console) #3790
    4 → blocked by open sibling        #3903 #3904 #3908 #3909
    2 → time-gated                     #3605 (2026-10-01)  #2691 (2026-11-01)
+   1 → someday-parked                 #2695 (milestone: 6 · Someday)
   13 → dispatchable by a code worker
    1 → dispatchable via operator phase
 ```

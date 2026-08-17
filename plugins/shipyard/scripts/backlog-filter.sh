@@ -43,6 +43,7 @@
 #            [--respect-assignees true|false]
 #            [--milestones-enabled true|false] [--milestones-prioritize-dispatch true|false]
 #            [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
+#            [--someday-milestone <title>]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
 #     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
 #     assignees: [login,...], author: {login}, createdAt, updatedAt,
@@ -59,15 +60,16 @@
 #       {"number":N,"verdict":"gate","reason":"tracking","evidence_pointer":"<content-sourced citation>"}
 #       {"number":N,"verdict":"gate","reason":"tracking-unjustified"}
 #       {"number":N,"verdict":"drop","reason":"covered-by-open-pr","evidence_pointer":"PR #M closingIssuesReferences includes #N"}
+#       {"number":N,"verdict":"drop","reason":"someday-milestone","evidence_pointer":"milestone <title>"}
 #     The `tracking` shapes are that label's special case (issue #1364) — see
 #     "Provisional gate: tracking requires a content-sourced justification"
 #     below. Every OTHER gate label (`blocked:ci`, `wontfix`, `discussion`,
 #     `needs-human-review`) always emits the plain
 #     `{"verdict":"gate","reason":"<label>"}` shape; among GATE verdicts only
 #     `tracking` ever carries `evidence_pointer` or the
-#     `tracking-unjustified` reason. The `covered-by-open-pr` DROP verdict
-#     (issue #1389) is the one other shape that carries an
-#     `evidence_pointer`.
+#     `tracking-unjustified` reason. The `covered-by-open-pr` and
+#     `someday-milestone` DROP verdicts (issues #1389 and #1406) are the
+#     other shapes that carry an `evidence_pointer`.
 #     Output ORDER: every "eligible" line first, in rank order. The default
 #     (milestone ranking OFF — either --milestones-enabled or
 #     --milestones-prioritize-dispatch is false, matching a repo that never
@@ -171,6 +173,36 @@
 #     not something `classify` reads from config itself, so the pure
 #     function stays free of I/O (see the design note near the bottom of
 #     this header for why that purity is load-bearing).
+#     `--someday-milestone <title>` (issue #1406) is a THIRD, distinct park
+#     mechanism from time-gate/event-gate above — not a leaf of either. An
+#     issue whose `milestone` field (the same flattened title the
+#     milestone-ranking flags above already read) matches this title —
+#     compared case-insensitively, trimmed, against the title with any
+#     leading `N · ` sequence-number prefix stripped, so the configured
+#     value is just the human-readable name ("Someday"), not the whole
+#     "6 · Someday" string that would drift every time
+#     `shipyard:update-roadmap` renumbers phases — drops with
+#     {"verdict":"drop","reason":"someday-milestone","evidence_pointer":
+#     "milestone <title>"}, unconditionally, with NO probe and NO calendar
+#     involved. This is deliberately NOT modeled as a leaf of the
+#     time-gate/event-gate taxonomy: an event gate's eligibility is decided
+#     by a live probe verdict against a `do-work-recheck` marker, and a
+#     "Someday" milestone issue is explicitly the case where no such probe
+#     is expressible (`eval-recheck-probe.sh`'s allowlist covers `npm-view`
+#     and `gh-api` only) — bolting a third "always unknown, never probed"
+#     state onto `is_event_gated`/`probe_verdict` would only obscure that
+#     these are two structurally different admission questions ("has the
+#     watched value changed" vs. "has a human moved this out of Someday").
+#     Defaults to "" (empty string), which never matches any issue's
+#     milestone (a real milestone title is never empty) — the mechanism is
+#     off by construction until a caller passes a non-empty title, matching
+#     the `backlog.someday_milestone` config knob's own default. Evaluated
+#     independently of `--milestones-enabled`/`--milestones-prioritize-
+#     dispatch` — those two gate milestone-aware RANKING of the eligible
+#     bucket; this gates ELIGIBILITY itself and must keep working on a repo
+#     that has not opted into milestone-ranked dispatch at all (the #1406
+#     motivating repro has `milestones.enabled: false`). See
+#     do-work-RATIONALE.md for the full design writeup.
 #     Exit 0 always (even on an empty input array — emits nothing).
 #
 #   eval-probes --repo <owner/repo>
@@ -309,6 +341,7 @@ Usage:
       [--milestones-enabled true|false]
       [--milestones-prioritize-dispatch true|false]
       [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
+      [--someday-milestone <title>]
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
@@ -448,6 +481,29 @@ def milestone_seq($issue):
     else ($cap.n | tonumber)
     end;
 
+# milestone_title_bare($issue) -- the issue milestone title with any
+# leading "N · " sequence-number prefix stripped, trimmed and lowercased.
+# "6 · Someday" -> "someday". An unmilestoned issue (null/absent) -> "".
+# Shared by is_someday below -- kept as its own def so a future consumer
+# does not have to re-derive the strip regex. NOTE: no literal apostrophes
+# anywhere in this program string -- see the style note near the top of
+# this CLASSIFY_JQ definition.
+def milestone_title_bare($issue):
+  ($issue.milestone // "") as $m
+  | ($m | sub("^\\s*[0-9]+\\s*·\\s*"; "") | ascii_downcase | gsub("^\\s+|\\s+$"; ""));
+
+# is_someday($issue; $someday) -- issue #1406. True only when $someday is
+# non-empty (the off-by-default posture -- an empty configured title never
+# matches any real milestone) AND the issue bare milestone title
+# case-insensitively equals it. Deliberately an EXACT match, not a
+# substring/regex test -- a milestone named "Someday, maybe" is a
+# different phase than one named "Someday", and silently catching both
+# would be the same "shorthand erased real signal" class of bug #332 and
+# #1194 document for the label-drop clauses above.
+def is_someday($issue; $someday):
+  ($someday | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $target
+  | ($target != "") and (milestone_title_bare($issue) == $target);
+
 def prioritized_tier($issue; $plabel):
   if ($plabel == "") then 0
   elif ($issue.labels | index($plabel) != null) then 0
@@ -541,7 +597,7 @@ def is_event_gated($issue; $recheck_probe_enabled):
 def probe_verdict($issue; $verdicts):
   ($verdicts[($issue.number | tostring)] // "unknown");
 
-def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts):
+def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone):
   (matches_gate_label($issue)) as $gate_hit
   | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
   | if is_untrusted($issue; $trusted) then
@@ -575,6 +631,9 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
       {number: $issue.number, verdict: "drop", reason: "event-gated"}
     elif ((($event_gated | not)) and time_gate_future($issue; $today)) then
       {number: $issue.number, verdict: "drop", reason: "time-gated"}
+    elif is_someday($issue; $someday_milestone) then
+      {number: $issue.number, verdict: "drop", reason: "someday-milestone",
+       evidence_pointer: ("milestone " + ($issue.milestone // ""))}
     elif is_closed_by_healthy_pr($issue; $healthy) then
       {number: $issue.number, verdict: "drop", reason: "closed-by-healthy-pr"}
     elif (covered_by_open_pr($issue; $covered) != null) then
@@ -628,7 +687,7 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
 
 . as $issues
 | ($issues | map(.number)) as $opennums
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts))) as $classified
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by(._sort_key))
@@ -670,6 +729,13 @@ cmd_classify() {
   # empty map, covered_by_open_pr returns null for every issue and
   # classify_one falls straight through to the unchanged `eligible` branch.
   local covered_by_open_pr_json="{}"
+  # --someday-milestone (issue #1406). Default "" -- an empty configured
+  # title never matches a real milestone title (is_someday requires a
+  # non-empty $target), so the clause is off by construction for every
+  # existing caller and fixture until a non-empty value is explicitly
+  # passed. Mirrors the `backlog.someday_milestone` config knob's own
+  # default and off-by-default posture.
+  local someday_milestone=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --me) me="${2:-}"; shift 2 ;;
@@ -685,6 +751,7 @@ cmd_classify() {
       --milestones-prioritize-dispatch) milestones_prioritize_dispatch="${2:-}"; shift 2 ;;
       --probe-verdicts) probe_verdicts_json="${2:-}"; shift 2 ;;
       --recheck-probe-enabled) recheck_probe_enabled="${2:-}"; shift 2 ;;
+      --someday-milestone) someday_milestone="${2:-}"; shift 2 ;;
       *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
     esac
   done
@@ -778,6 +845,7 @@ cmd_classify() {
     --argjson recheck_probe_enabled "$recheck_probe_enabled" \
     --argjson probe_verdicts "$probe_verdicts_json" \
     --argjson covered_by_open_pr "$covered_by_open_pr_json" \
+    --arg someday_milestone "$someday_milestone" \
     "$CLASSIFY_JQ"
 }
 

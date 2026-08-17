@@ -49,11 +49,14 @@
 #         `milestones.enabled` (default false), `milestones.
 #         prioritize_dispatch` (fallback false on error; the built-in
 #         config default is actually true, but stays inert unless
-#         `milestones.enabled` is also true), and `scope.
-#         recheck_probe_enabled` (default true) via `shipyard-config.sh
-#         get` (each read falls back to its documented value on any error,
-#         matching the `|| echo "<default>"` posture the original inline
-#         block had for every config read);
+#         `milestones.enabled` is also true), `scope.
+#         recheck_probe_enabled` (default true), and `backlog.
+#         someday_milestone` (default "" — off; issue #1406, deliberately
+#         NOT gated on `milestones.enabled`, since the whole point is to
+#         work on a repo that has not opted into milestone-ranked dispatch
+#         at all) via `shipyard-config.sh get` (each read falls back to its
+#         documented value on any error, matching the `|| echo "<default>"`
+#         posture the original inline block had for every config read);
 #       - runs `backlog-filter.sh closed-by-healthy-pr` and
 #         `closed-by-open-pr` against --repo/--me (the latter falls back to
 #         `{}` on any failure — the clause never fires rather than aborting
@@ -153,6 +156,7 @@ case "$sub" in
     milestones_enabled=$("$SHIPYARD_CONFIG" get milestones.enabled 2>/dev/null || echo "false")
     milestones_prioritize_dispatch=$("$SHIPYARD_CONFIG" get milestones.prioritize_dispatch 2>/dev/null || echo "false")
     recheck_probe_enabled=$("$SHIPYARD_CONFIG" get scope.recheck_probe_enabled 2>/dev/null || echo "true")
+    someday_milestone=$("$SHIPYARD_CONFIG" get backlog.someday_milestone 2>/dev/null || echo "")
 
     # --- Live-network precomputed sets --------------------------------------
     closed_healthy_csv=$("$BACKLOG_FILTER" closed-by-healthy-pr --repo "$repo" --me "$me")
@@ -178,6 +182,7 @@ case "$sub" in
       --milestones-prioritize-dispatch "$milestones_prioritize_dispatch" \
       --recheck-probe-enabled "$recheck_probe_enabled" \
       --probe-verdicts "$probe_verdicts_json" \
+      --someday-milestone "$someday_milestone" \
       < "$issues_file")
     classify_rc=$?
 
