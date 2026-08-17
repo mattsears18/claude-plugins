@@ -472,11 +472,20 @@ fi
 # (4) The step-0.56 origin itself must still document the stash file this
 # whole pin depends on — a rename there would silently break every
 # consumer's `cat ".../.shipyard-primary-root"` re-derivation with no error.
-ORIGIN_MD="$DO_WORK_DIR/setup/00-config-worktree.md"
-if [[ -f "$ORIGIN_MD" ]] && grep -qF '.shipyard-primary-root' "$ORIGIN_MD"; then
-  assert_pass "setup/00-config-worktree.md still documents the .shipyard-primary-root stash (step 0.56 origin)"
+# Scan across setup/*.md to find which file documents step 0.56, since the
+# split (issue #1431) moved it to 00k-repo-root-pin.md.
+found_origin=false
+for origin_file in "$DO_WORK_DIR"/setup/*.md; do
+  if [[ -f "$origin_file" ]] && grep -q '### 0.56' "$origin_file" && grep -qF '.shipyard-primary-root' "$origin_file"; then
+    found_origin=true
+    origin_name=$(basename "$origin_file")
+    break
+  fi
+done
+if $found_origin; then
+  assert_pass "setup/$origin_name still documents the .shipyard-primary-root stash (step 0.56 origin)"
 else
-  assert_fail "setup/00-config-worktree.md still documents the .shipyard-primary-root stash (step 0.56 origin)"
+  assert_fail "setup/*.md must document the .shipyard-primary-root stash (step 0.56 origin) — cannot find it in any setup file"
 fi
 
 echo
