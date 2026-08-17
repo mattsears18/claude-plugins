@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.44.0 — 2026-08-17
+
+Minor (closes #1448): ships the deliberately-deferred second half of #1429's `blocked-by-in-flight-pr` requeue work — reusing the original scope agent's cached ready-shape scope to skip a second scope-agent dispatch once a blocking PR resolves, gated on a mandatory semantic-premise re-validation against the merged PR's actual diff. #1429 shipped the safe half (auto-requeue via a fresh scope pass) on its own, exactly as its body asked; this revision ships the cost-avoidance half and its required safety gate together, never one without the other, avoiding the exact stale-premise bug #1426 diagnosed (lightwork#4148 — an acceptance criterion depending on a claim the holding PR had deleted).
+
+- **A new optional `would_be_ready_scope` field** on a `blocked-by-in-flight-pr` deferred-shape scope-agent return — the same `files`/`phase_1_scope` shape a plain ready return carries, present only when the agent judges the issue would be immediately dispatchable the instant `blocking_prs` resolves. Validated identically to a ready return's own `files`/`phase_1_scope`.
+- **Persistence via a new `<!-- do-work-blocked-by-prs-scope -->` comment marker** (`06c-scope-handling-ui.md`'s new step 4f), written alongside — never replacing — the existing step-4e body marker, so the cache survives across sessions the way `cached-diagnosis` comments already do for every other defer class.
+- **A new deep-linked fragment, `setup/06f-pr-collision-cache-reuse.md`**, documents the full procedure: cache lookup, a `blocking_prs`-consistency check, classifying the collision as textual-only (no premise to invalidate — safe to reuse) vs. semantic (a quoted claim the merged PR's diff is checked against), and the three-way outcome — confirmed-deleted claim invalidates the premise and falls through to a fresh scope-agent dispatch, confirmed-unchanged claim reuses the cache, anything ambiguous fails safe to NOT reuse. Wired from a new "PR-collision cache-reuse check" in `06-scope-preflight.md` (the common, ordinary-fetch re-admission path) and from `drain.md` 5.b (the backstop path for pre-marker or marker-write-failed entries) — one shared procedure, so the two call sites can't drift.
+- **`do-work.md`'s canonical `deferred_issues` struct and prose, and `06b-scope-carveouts.md`'s scoping-agent prompt instruction**, updated to document the shipped mechanism in place of the prior "deliberately not wired here" language.
+- Test coverage: `do-work-split.test.sh` gains a regression section (cache-reuse-skips-scope-dispatch, premise-invalidated-falls-through-to-fresh-scope, the new fragment's existence and routing-table entry, the comment-marker persistence, and the retired "unwired" framing) — all against the concatenated spec files.
+
 ### 4.43.1 — 2026-08-17
 
 P2 (closes #1431's AC4). AC1–AC3 shipped inside PR #1428 (the `06c-scope-handling-ui.md` split). This revision finishes AC4: re-measure `00-config-worktree.md` and `01-repo-recovery.md` — both sat inside the token-budget warn band (59,006 and 58,724 bytes respectively, against a 60,000-byte cap and a 57,000-byte warn threshold) — and split each at a genuine structural seam, following the same router/fragment precedent as `#611` / `#994` / `#1233` / `#1428`.
