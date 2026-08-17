@@ -244,6 +244,100 @@ out=$(run_hook '{"tool_name":"Agent","tool_input":{}}')
 assert_exit "$out" "0" "missing subagent_type → allowed"
 
 # -----------------------------------------------------------------------------
+echo "== CI-backpressure check-skipped gate (issue #1414)"
+# -----------------------------------------------------------------------------
+# The hook's own decision logic (fresh-marker allow, stale-marker+live-hold
+# block, every-ambiguity-allows) is pinned in
+# scripts/tests/assert-ci-backpressure-checked.test.sh against the pure
+# --decide mode. This section only pins the WRAPPING behavior in this hook:
+# that a literal "block" from the checker actually blocks a slot-filling
+# dispatch, that "allow" (or anything else) never does, and that
+# shipyard:verify-worker is excluded from the gate regardless of what the
+# checker says. ASSERT_CI_BACKPRESSURE_CHECKED_SH lets these tests substitute
+# a stub instead of exercising the real session-state/gh-backed --live path.
+
+stub_dir=$(mktemp -d)
+trap 'rm -rf "$stub_dir"' EXIT
+
+block_stub="$stub_dir/block.sh"
+cat > "$block_stub" <<'STUB'
+#!/usr/bin/env bash
+echo "block"
+STUB
+chmod +x "$block_stub"
+
+allow_stub="$stub_dir/allow.sh"
+cat > "$allow_stub" <<'STUB'
+#!/usr/bin/env bash
+echo "allow"
+STUB
+chmod +x "$allow_stub"
+
+garbage_stub="$stub_dir/garbage.sh"
+cat > "$garbage_stub" <<'STUB'
+#!/usr/bin/env bash
+echo "not-a-real-verdict"
+exit 1
+STUB
+chmod +x "$garbage_stub"
+
+run_hook_with_checker() {
+  # Args: checker_path, payload
+  local checker="$1" payload="$2"
+  local stderr exit_code
+  stderr=$(ASSERT_CI_BACKPRESSURE_CHECKED_SH="$checker" \
+    bash -c 'printf "%s" "$1" | bash "$2"' _ "$payload" "$hook" 2>&1 >/dev/null)
+  exit_code=$?
+  printf '%s::%s' "$exit_code" "$stderr"
+}
+
+echo "-- True-positive: checker says block -> dispatch is blocked"
+out=$(run_hook_with_checker "$block_stub" "$(mkpayload_isolated shipyard:issue-worker)")
+assert_blocked_with "$out" "CI-backpressure" \
+  "issue-worker, isolated, checker=block -> blocked with #1414 message"
+
+out=$(run_hook_with_checker "$block_stub" "$(mkpayload_isolated shipyard:fix-checks-worker)")
+assert_blocked_with "$out" "1414" \
+  "fix-checks-worker, isolated, checker=block -> blocked, message cites #1414"
+
+echo "-- True-negative: checker says allow -> dispatch proceeds"
+out=$(run_hook_with_checker "$allow_stub" "$(mkpayload_isolated shipyard:issue-worker)")
+assert_exit "$out" "0" "issue-worker, isolated, checker=allow -> allowed"
+
+echo "-- Fail-open: unexpected checker output never blocks"
+out=$(run_hook_with_checker "$garbage_stub" "$(mkpayload_isolated shipyard:issue-worker)")
+assert_exit "$out" "0" "issue-worker, isolated, checker prints garbage -> allowed (only an exact 'block' string blocks)"
+
+out=$(run_hook_with_checker "$stub_dir/does-not-exist.sh" "$(mkpayload_isolated shipyard:issue-worker)")
+assert_exit "$out" "0" "issue-worker, isolated, checker script missing entirely -> allowed"
+
+echo "-- shipyard:verify-worker is excluded from the gate regardless of verdict"
+out=$(run_hook_with_checker "$block_stub" "$(mkpayload_isolated shipyard:verify-worker)")
+assert_exit "$out" "0" "verify-worker, isolated, checker=block -> STILL allowed (not a slot-fill dispatch)"
+
+echo "-- A call still missing isolation is blocked by the isolation guard first, before the backpressure gate ever runs"
+out=$(run_hook_with_checker "$block_stub" "$(mkpayload_no_isolation shipyard:issue-worker)")
+assert_blocked_with "$out" "isolation" \
+  "issue-worker, NOT isolated, checker=block -> blocked by isolation guard, not the backpressure message"
+
+echo "-- Workflow shape: checker says block -> blocked too"
+workflow_payload=$(python3 -c "
+import json
+print(json.dumps({
+    'tool_name': 'Workflow',
+    'tool_input': {
+        'workflow': 'do-work-dispatch.workflow.js',
+        'args': {'issues': [{'mode': 'issue-work', 'worktreePath': '/some/worktree'}]},
+    },
+}))")
+out=$(run_hook_with_checker "$block_stub" "$workflow_payload")
+assert_blocked_with "$out" "CI-backpressure" \
+  "Workflow do-work-dispatch, all isolated, checker=block -> blocked with #1414 message"
+
+out=$(run_hook_with_checker "$allow_stub" "$workflow_payload")
+assert_exit "$out" "0" "Workflow do-work-dispatch, all isolated, checker=allow -> allowed"
+
+# -----------------------------------------------------------------------------
 echo "== Summary"
 # -----------------------------------------------------------------------------
 

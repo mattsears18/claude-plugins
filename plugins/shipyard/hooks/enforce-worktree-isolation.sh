@@ -52,6 +52,86 @@
 # Exit 0 for any call we don't care about (different tool, different subagent,
 # a `Workflow` call against some other workflow). Malformed input fails OPEN —
 # a hook crash would block every dispatch.
+#
+# ---------------------------------------------------------------------------
+# ADDITIONAL, INDEPENDENT gate layered on top of isolation (issue #1414) —
+# CI-backpressure check-skipped.
+# ---------------------------------------------------------------------------
+# Once isolation passes for a call that fills a BACKLOG SLOT (a fresh
+# mode-driven-worker dispatch — the same set the isolation guard above
+# governs, MINUS shipyard:verify-worker: verify-worker is a nested,
+# read-only sub-dispatch from WITHIN an already-running issue-work worker,
+# not a step-C backlog-slot fill, and generates no new CI load, so it's out
+# of scope for a check that exists to protect a self-hosted CI pool from
+# over-dispatch), this file also runs
+# scripts/assert-ci-backpressure-checked.sh --live and blocks the dispatch
+# when it prints "block".
+#
+# That script is the mechanical backstop for steady-state.md's queue-depth
+# backpressure check (issue #1156) having ACTUALLY RUN this turn — the same
+# "prose the orchestrating model is expected to execute, with nothing that
+# fails when it's skipped" gap the isolation guard above already closes for
+# worktree isolation, applied to the backpressure hold. #1399 made a
+# systematically-skipping session VISIBLE (the `ci_backpressure=` invariant-
+# line token); this closes the loop by PREVENTING the skip's consequence —
+# see steady-state.md's "Queue-depth backpressure check" section and
+# invariant-line.md's `ci_backpressure` entry for the full mechanism.
+#
+# Fails OPEN on every ambiguity, per the #938 precedent (a plausible-looking
+# mechanical gate that bricked the dispatch loop): an unresolvable session,
+# unreadable session state, a missing script, a failed live `gh` re-read, or
+# non-numeric threshold inputs all degrade to "allow" inside that script —
+# never to "block". This wrapper only escalates an EXACT "block" string; a
+# crashed, timed-out, or unexpected-output run of the checker is
+# indistinguishable from "allow" here, by construction.
+#
+# ASSERT_CI_BACKPRESSURE_CHECKED_SH lets a test suite substitute a stub
+# script (see hooks/tests/enforce-worktree-isolation.test.sh) rather than
+# exercising the real session-state/gh-backed --live path.
+run_ci_backpressure_gate() {
+  local here checker
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  checker="${ASSERT_CI_BACKPRESSURE_CHECKED_SH:-${here}/../scripts/assert-ci-backpressure-checked.sh}"
+
+  [[ -f "$checker" ]] || return 0
+
+  local verdict
+  if command -v timeout >/dev/null 2>&1; then
+    verdict=$(timeout 15 bash "$checker" --live 2>/dev/null)
+  else
+    verdict=$(bash "$checker" --live 2>/dev/null)
+  fi
+
+  if [[ "$verdict" == "block" ]]; then
+    cat >&2 <<EOF
+BLOCKED by shipyard/hooks/enforce-worktree-isolation.sh (CI-backpressure
+check-skipped gate, issue #1414).
+
+This repo's CI runs on a self-hosted runner pool whose live queue depth is
+over the configured backpressure threshold (ci.backpressure_multiplier),
+and there is no fresh evidence this turn's step-C queue-depth backpressure
+check (steady-state.md, issues #1156/#1399) actually ran. Dispatching
+another backlog-slot-filling worker right now would add more CI load onto
+an already-saturated pool.
+
+Re-run steady-state.md's "Queue-depth backpressure check" block this turn
+(it writes a fresh .last_backpressure_check marker as a side effect) before
+retrying the dispatch. If the check legitimately produced a "hold" verdict,
+either let the slot stay parked this turn, or use the CI-cheap candidate
+bias (issue #1157) to pick a substitute candidate instead.
+
+This gate fails OPEN on any ambiguity per the #938 precedent — it only
+blocks when a live re-read positively confirms an over-threshold pool AND
+no fresh checked/held marker exists. Docs:
+commands/do-work/steady-state.md (queue-depth backpressure check),
+commands/do-work/invariant-line.md (ci_backpressure token),
+scripts/assert-ci-backpressure-checked.sh (the decision logic), issue #1414.
+EOF
+    exit 2
+  fi
+
+  return 0
+}
 
 set -u
 
@@ -85,7 +165,14 @@ if [[ "$tool_name" == "Workflow" ]]; then
     | join(", ")
   ' 2>/dev/null) || exit 0
 
-  [[ -z "$unisolated" ]] && exit 0
+  if [[ -z "$unisolated" ]]; then
+    # Isolation is fine for every work unit in this call. Every mode
+    # dispatched through this substrate fills a backlog slot (see this
+    # file's header), so the CI-backpressure gate applies unconditionally
+    # here — no subagent-type filtering needed the way Shape 2 needs it.
+    run_ci_backpressure_gate
+    exit 0
+  fi
 
   cat >&2 <<EOF
 BLOCKED by shipyard/hooks/enforce-worktree-isolation.sh.
@@ -143,6 +230,12 @@ esac
 
 isolation=$(printf '%s' "$input" | jq -r '.tool_input.isolation // empty')
 if [[ "$isolation" == "worktree" ]]; then
+  # Isolation is fine. Only a backlog-slot-filling dispatch is subject to
+  # the CI-backpressure gate — shipyard:verify-worker is a nested sub-
+  # dispatch, not a slot fill (see this file's header), so it's excluded.
+  if [[ "$subagent" != "shipyard:verify-worker" ]]; then
+    run_ci_backpressure_gate
+  fi
   exit 0
 fi
 

@@ -1197,6 +1197,16 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
   else
     ci_backpressure="checked"
   fi
+
+  # Mechanical backstop, not just observability (#1414) — persist a
+  # durable marker so hooks/enforce-worktree-isolation.sh's
+  # scripts/assert-ci-backpressure-checked.sh --live gate can tell "this
+  # turn's check ran" from "it didn't" (the in-memory $ci_backpressure
+  # variable doesn't survive past this Bash-tool call). Fire-and-forget.
+  # Full mechanism: invariant-line.md's ci_backpressure entry.
+  "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
+    --set ".last_backpressure_check = {verdict: \"$ci_backpressure\", at: \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+    >/dev/null 2>&1 || true
 else
   # Not a self-hosted pool, or pool_total unreadable — the check above is a
   # documented no-op here, not a skipped check (see #1399).
