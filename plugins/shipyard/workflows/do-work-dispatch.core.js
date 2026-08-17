@@ -349,7 +349,8 @@ const emit = (message) => {
 
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
-//     verifyGate, userFeedback, phase1Scope, nextAvailableVersion, changelogPath }
+//     verifyGate, userFeedback, phase1Scope, tokenBudgetWarning,
+//     nextAvailableVersion, changelogPath }
 const selectedIssues = Array.isArray(input.issues) ? input.issues : []
 
 // Per-role model map, mirroring resolve-dispatch-model.sh's tiering. Passed in so
@@ -493,6 +494,7 @@ const workUnits = selectedIssues.map((it) => ({
   verifyGate: it.verifyGate === true,
   userFeedback: it.userFeedback === true,
   phase1Scope: it.phase1Scope ?? null,
+  tokenBudgetWarning: it.tokenBudgetWarning ?? null,
   nextAvailableVersion: it.nextAvailableVersion ?? null,
   changelogPath: it.changelogPath ?? null,
   // fix-checks-only / fix-rebase — target an EXISTING PR's branch, not a fresh one

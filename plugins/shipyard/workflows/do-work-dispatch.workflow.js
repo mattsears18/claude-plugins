@@ -1303,18 +1303,6 @@ function buildIssueWorkPrompt(unit, repoSlug) {
     )
   }
 
-  // Claimed-paths token-budget-warn augmentation — mirrors dispatch-rules.md's
-  // "Claimed-paths token-budget-warn augmentation" paragraph verbatim (#1443).
-  if (unit.tokenBudgetWarning) {
-    lines.push(
-      ``,
-      `**Token-budget warn-band notice:** ${unit.tokenBudgetWarning} Run`,
-      `\`setup-phase-file-token-budget.test.sh\` locally before pushing this file, and`,
-      `prefer condensing prose over extending it further. Advisory only — this never`,
-      `gates, defers, or reorders your dispatch.`,
-    )
-  }
-
   // Next-available-version coordination — mirrors dispatch-rules.md's
   // "Coordination-managed paths" paragraph verbatim.
   if (unit.nextAvailableVersion) {
@@ -1325,6 +1313,18 @@ function buildIssueWorkPrompt(unit, repoSlug) {
       `version is **${unit.nextAvailableVersion}**. Use this exact value when bumping the`,
       `manifest${unit.changelogPath ? ` and add a fresh entry above the highest existing entry in \`${unit.changelogPath}\`` : ''} — do NOT compute your own version from`,
       `\`origin/<default-branch>\`.`,
+    )
+  }
+
+  // Claimed-paths token-budget-warn augmentation — mirrors dispatch-rules.md's
+  // "Claimed-paths token-budget-warn augmentation" paragraph verbatim (#1443).
+  if (unit.tokenBudgetWarning) {
+    lines.push(
+      ``,
+      `**Token-budget warn-band notice:** ${unit.tokenBudgetWarning} Run`,
+      `\`setup-phase-file-token-budget.test.sh\` locally before pushing this file, and`,
+      `prefer condensing prose over extending it further. Advisory only — this never`,
+      `gates, defers, or reorders your dispatch.`,
     )
   }
 
