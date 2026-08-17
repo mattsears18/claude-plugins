@@ -254,7 +254,7 @@ gh pr list --repo <owner/repo> --state open --author @me \
   --limit 100
 ```
 
-Filter to PRs where the **latest run per check name** has `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` (or `state` for legacy check-runs). Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
+Filter to PRs where the **latest run per check name** has `conclusion in {FAILURE, ERROR, TIMED_OUT, CANCELLED, ACTION_REQUIRED}` (or `state` for legacy check-runs) AND `mergeStateStatus != "DIRTY"` (mirrors `drain.md`'s `R_new`, [#1060](https://github.com/mattsears18/shipyard/issues/1060)). Ignore `PENDING` / `IN_PROGRESS` — those are still running and auto-merge will catch them.
 
 **Use the latest-per-name projection, not a naïve rollup walk** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). Same reasoning as step 4.5b above: `statusCheckRollup` returns every check run for the head SHA, and stale FAILURE entries superseded by later SUCCESS would otherwise re-enqueue PRs into `failed_prs` that are actually green. The orchestrator then dispatches a fix-checks worker, which returns `noop: already green` — wasted dispatch slot and tokens. De-duplicate first:
 
@@ -269,12 +269,12 @@ failed_pr_numbers=$(gh pr list --repo <owner/repo> --state open --author @me \
     | ($pr.statusCheckRollup | group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last)) as $latest
     | ($latest | map(select((.conclusion // .state // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $fails
     | ($latest | map(select(((.conclusion // null) == null) and ((.state // .status // "") | test("PENDING|IN_PROGRESS|QUEUED|EXPECTED")))) | length) as $pending
-    | select($fails > 0 or ($pr.mergeStateStatus == "BLOCKED" and $pending == 0))]')
+    | select(($fails > 0 or ($pr.mergeStateStatus == "BLOCKED" and $pending == 0)) and $pr.mergeStateStatus != "DIRTY")]')
 ```
 
 Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 3c may already have enqueued some). These are the highest-priority work items *after* `divert_queue` because a red PR you opened last session won't auto-merge no matter how many new issues you ship. Note: this query is `@me`-scoped on purpose — `failed_prs` is for fix-checks work on PRs *you authored*. The all-authors count from step 4.5b feeds the divert decision, not this queue.
 
-**Why `BLOCKED` alone is never the trigger — the `$pr.mergeStateStatus == "BLOCKED"` guard is deliberately narrower than "not mergeable" ([#1435](https://github.com/mattsears18/shipyard/issues/1435)).** `DIRTY` is excluded by construction — it routes to `fix-rebase`, never `fix-checks`, per [`dont.md`'s #1060 rule](../dont.md); a DIRTY PR's rollup is also empty (no merge ref, nothing queues), so without this guard it would vacuously pass `$pending == 0` and get misrouted. A `BLOCKED` PR blocked by a required **review**, not CI, is a rarer accepted false positive: the dispatched worker finds nothing red and returns `noop: already green #<M>` — a bounded one-dispatch cost, cheaper than leaving a stuck PR silent indefinitely.
+**Why `BLOCKED` alone is never the trigger — the `$pr.mergeStateStatus == "BLOCKED"` guard is deliberately narrower than "not mergeable" ([#1435](https://github.com/mattsears18/shipyard/issues/1435)).** `DIRTY` is excluded via the outer select's explicit `$pr.mergeStateStatus != "DIRTY"` conjunct ([#1441](https://github.com/mattsears18/shipyard/issues/1441)), needed for **both** branches — a DIRTY PR's rollup can still carry a stale frozen FAILURE (tripping `$fails > 0`) and would otherwise vacuously pass `$pending == 0` too. A `BLOCKED` PR blocked by a required **review**, not CI, is a rarer accepted false positive: the dispatched worker finds nothing red and returns `noop: already green #<M>` — a bounded one-dispatch cost, cheaper than leaving a stuck PR silent indefinitely.
 
 **Classification, not one state.** A session PR's blocked-ness resolves to one of three causes: **conflict** (`DIRTY` → `fix-rebase` via `session_prs`, step 5.7 / the drain's `D_dirty` classifier), **red** (an explicit failing check, or `BLOCKED` with zero pending → `failed_prs` → `fix-checks-only`), and **pending** (`BLOCKED`/unmergeable with checks still queued — a healthy queue wait, left alone). A watcher tracking only open-vs-closed count can't tell a permanently red-blocked PR from one progressing through a busy queue — don't infer "settling" from open/closed alone; use this classification instead.
 
