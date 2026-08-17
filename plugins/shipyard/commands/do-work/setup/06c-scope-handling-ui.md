@@ -1,6 +1,6 @@
-# /shipyard:do-work — Setup phase · scope entry handling + UI + timing flush
+# /shipyard:do-work — Setup phase · scope entry handling
 
-**Setup sub-phase (cluster 4 of 5, part 3 of 3 — [#994](https://github.com/mattsears18/shipyard/issues/994)).** Finishes step **6** from [`06b-scope-carveouts.md`](./06b-scope-carveouts.md) — handling each returned scope-agent entry (ready / deferred / already-landed / rejected, the re-gate guard, `raw_backlog` removal) — then owns steps **6.5 → 6.8**: the status-line + state-change-banner UI and the setup-timing flush into session state. Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Prev: [`06b-scope-carveouts.md`](./06b-scope-carveouts.md) (same cluster, part 2). Next sub-phase: [`07-pool-fill.md`](./07-pool-fill.md).
+**Setup sub-phase (cluster 4 of 5, part 3 of 4 — [#994](https://github.com/mattsears18/shipyard/issues/994), re-split by [#1431](https://github.com/mattsears18/shipyard/issues/1431)).** Finishes step **6** from [`06b-scope-carveouts.md`](./06b-scope-carveouts.md) — handling each returned scope-agent entry (ready / deferred / already-landed / rejected, the re-gate guard, `raw_backlog` removal). Steps **6.5 → 6.8** (status-line + state-change-banner UI, setup-timing flush) moved to [`06e-scope-ui-timing.md`](./06e-scope-ui-timing.md) when this file crossed its token-budget cap. Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Prev: [`06b-scope-carveouts.md`](./06b-scope-carveouts.md) (same cluster, part 2). Next: [`06e-scope-ui-timing.md`](./06e-scope-ui-timing.md) (same cluster, part 4).
 
 #### Handling each returned entry (fires as each background agent completes)
 
@@ -12,6 +12,7 @@
   Check that `evidence_pointer` is present and non-empty AND matches the per-class shape table in the [Deferred shape](06-scope-preflight.md#6-initial-scope-pre-flight) docs. The shape checks are intentionally lightweight — string-matching the orchestrator can run inline without dispatching a fresh agent:
 
   - `confirmed-blocker-still-open` → `evidence_pointer` must contain at least one `#<digits>` reference (regex: `#\d+`). For each `#N` referenced, the orchestrator does a single `gh issue view <N> --repo <owner/repo> --json state -q .state` and confirms the named blocker is `OPEN`. If any cited blocker is `CLOSED` / `MERGED`, the defer is **rejected** — the supposed block has already resolved. If none of the cited references parse as `#<digits>`, the defer is also rejected as malformed.
+  - `blocked-by-in-flight-pr` ([#1426](https://github.com/mattsears18/shipyard/issues/1426)) → `evidence_pointer` must start with `Blocked by in-flight PR:` plus at least one `#<digits>` reference. `blocking_prs` must be a non-empty array whose elements exactly match the pointer's `#<digits>` tokens — a mismatch either way is malformed. Confirm each via `gh pr view <N> --repo <owner/repo> --json state -q .state`; any `MERGED`/`CLOSED` entry **rejects** the defer (the collision already resolved).
   - `external-dependency` → `evidence_pointer` must not match the rejected shapes (no "looks like", "probably", "likely", "seems", "feels" speculative-judgment words). The orchestrator does not validate that the named external system exists (that would be unbounded) — the check is shape-only.
   - `human-decision-required` → same speculative-judgment word check as `external-dependency`. Additionally, generic phrases like "needs design review", "needs product input" without a specific decision named are rejected. **A design or architecture decision is rejected even when named specifically ([#767](https://github.com/mattsears18/shipyard/issues/767))** — accepted only when it's a content/brand-voice call, never a plain UI/architecture design choice (see [Design/architecture/epic/spike decisions are in-scope by default](06b-scope-carveouts.md#designarchitectureepicspike-decisions-are-in-scope-by-default-not-a-defer-reason-767)). The structured prefixes `Proposes .github/workflows/`, `Proposes .claude/settings.json`, `Proposes .claude/settings.local.json`, `Proposes .mcp.json`, `Proposes .claude/hooks/`, `Proposes invoking orchestrator-only skill/command`, and `Classifier denied dispatch on both permitted attempts` are explicitly accepted — each is synthesized directly by orchestrator-side code (the [pre-scope detectors](06-scope-preflight.md#pre-scope-orchestrator-side-detectors-synthetic-defers), [dispatch-rules.md's two-denial hand-back](../dispatch-rules.md#3-on-a-second-denial-stop-hand-back-to-the-human-never-a-third-attempt)), never returned by a scope agent. See [RATIONALE → human-decision-required accepted-prefix list](../../do-work-RATIONALE.md#step-6--human-decision-required-accepted-prefix-list-issues-591-767-953-1294) for why each is accepted and how the list tracks the `scope.self_modification_paths` / `scope.orchestrator_only_skills` config arrays.
   - `untrusted-author` → `evidence_pointer` must contain `author: <login>` where `<login>` matches GitHub's login regex (`[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}`). The orchestrator does not re-validate the login against `trusted_authors` here (step 1.7 already did that); this is a shape-only check that the agent supplied a concrete login.
@@ -41,6 +42,7 @@
      | `human-decision-required` (classifier-denied sub-case) | `<!-- do-work-classifier-undispatchable -->` | #953 — same class, but this hand-back is synthesized by [`dispatch-rules.md`'s two-denial hard stop](../dispatch-rules.md#3-on-a-second-denial-stop-hand-back-to-the-human-never-a-third-attempt), never returned by a scope agent; the distinct marker records that **no worker ran at all** (dispatch itself was refused), as opposed to a scope agent's read of the issue's content |
      | `untrusted-author` | *(no marker)* | Not gated by `needs-human-review`; dedupe is not needed (trust-clearance defers are rare) |
      | `confirmed-blocker-still-open` | *(no marker)* | Not gated by `needs-human-review`; the `Blocked by #N` body-reference filter handles exclusion; dedupe is not needed (blocker state changes externally) |
+     | `blocked-by-in-flight-pr` | *(no marker)* | [#1426](https://github.com/mattsears18/shipyard/issues/1426) — ungated; no dedupe needed (the cited PRs' state changes externally, as for `confirmed-blocker-still-open`). No dispatch-filter exclusion in this revision — see [setup.md step 6](06-scope-preflight.md#6-initial-scope-pre-flight) |
      | `time-gated` | `<!-- do-work-time-gated -->` **(comment marker — distinct from the separate `<!-- do-work-blocked-until: YYYY-MM-DD -->` BODY marker step 4 also writes for this class, below)** | #1165 — the comment marker is this recording path's own dedupe sentinel and the [freshness check's](06-scope-preflight.md#scope-result-freshness-check-skip-dispatch-when-a-fresh-diagnosis-comment-exists) reuse discriminator; the body marker is the one the step-4 dispatch filter ([#1161](https://github.com/mattsears18/shipyard/issues/1161)) actually reads to drop the issue |
 
      Concretely, the comment bodies for the three scope-agent-facing labelled classes (the `<!-- do-work-classifier-undispatchable -->` sub-case's comment shape is documented at its own origin, [`dispatch-rules.md`'s two-denial hand-back](../dispatch-rules.md#3-on-a-second-denial-stop-hand-back-to-the-human-never-a-third-attempt), not here — it is never produced by this recording path):
@@ -77,23 +79,24 @@
 
      For `time-gated` specifically, **step 4 below additionally writes a separate `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker into the issue BODY** (not this comment) — that body marker, not this comment marker, is what the [step-4 dispatch filter](04-backlog-divert.md#4-fetch--rank-the-backlog) reads. This comment is diagnostic provenance + the freshness-check dedupe sentinel only.
 
-  3. **Normalize `defer_reason_class` before recording** ([#547](https://github.com/mattsears18/shipyard/issues/547)). The valid set is exactly six literal tokens: `external-dependency`, `human-decision-required`, `untrusted-author`, `confirmed-blocker-still-open`, `confirmed-non-shippable-as-single-PR`, `time-gated` ([#1165](https://github.com/mattsears18/shipyard/issues/1165)). A scope agent may return a value that is *missing*, *present-but-invalid* (free-text paraphrase, invented synonym), or *valid*. Handle each case before appending to `deferred_issues`:
+  3. **Normalize `defer_reason_class` before recording** ([#547](https://github.com/mattsears18/shipyard/issues/547)). The valid set is exactly seven literal tokens: `external-dependency`, `human-decision-required`, `untrusted-author`, `confirmed-blocker-still-open`, `confirmed-non-shippable-as-single-PR`, `time-gated` ([#1165](https://github.com/mattsears18/shipyard/issues/1165)), `blocked-by-in-flight-pr` ([#1426](https://github.com/mattsears18/shipyard/issues/1426)). A scope agent may return a value that is *missing*, *present-but-invalid* (free-text paraphrase, invented synonym), or *valid*. Handle each case before appending to `deferred_issues`:
 
      - **Missing** (`defer_reason_class` absent or null): default to `confirmed-non-shippable-as-single-PR` and log `[scope-preflight] #<N> deferred return missing defer_reason_class — defaulted to confirmed-non-shippable-as-single-PR`.
-     - **Present but not one of the six valid tokens**: run the evidence-pointer shape table against the `evidence_pointer` field to infer the nearest valid class, then log the normalization. Apply these inference rules in order:
-       - If `evidence_pointer` matches the `confirmed-blocker-still-open` shape (contains `#<digits>`) → normalize to `confirmed-blocker-still-open`.
+     - **Present but not one of the seven valid tokens** — this is the case an unrecognized/invented value like `"file-collision"` hits, and the orchestrator MUST NOT let it pass through silently: run the evidence-pointer shape table against the `evidence_pointer` field to infer the nearest valid class, then log a **`WARNING:`**-prefixed normalization line so an invented token is never absorbed without a trace. Apply these inference rules in order:
+       - If `evidence_pointer` matches the `blocked-by-in-flight-pr` shape (starts with `Blocked by in-flight PR:` followed by `#<digits>`) → normalize to `blocked-by-in-flight-pr`. **This check runs BEFORE the `confirmed-blocker-still-open` check below** — both shapes commonly contain a bare `#<digits>` reference, and checking the more specific structured-prefix shape first is what stops a PR-collision defer from silently mis-normalizing into the issue-level-dependency class (the exact conflation issue [#1426](https://github.com/mattsears18/shipyard/issues/1426) reports).
+       - Else if `evidence_pointer` matches the `confirmed-blocker-still-open` shape (contains `#<digits>`) → normalize to `confirmed-blocker-still-open`.
        - Else if `evidence_pointer` matches the `untrusted-author` shape (`author: <login>` pattern) → normalize to `untrusted-author`.
        - Else if `evidence_pointer` matches the `time-gated` shape (starts with `Time-gate:` followed by a parseable, still-future `YYYY-MM-DD` date) → normalize to `time-gated`.
        - Else if `evidence_pointer` matches the `confirmed-non-shippable-as-single-PR` shape (starts with `Missing dependency:` / `Multi-service coordination:` / `Multi-PR sequence:` / `Body cites <artifact>:`) → normalize to `confirmed-non-shippable-as-single-PR`.
        - Else if `evidence_pointer` matches the `human-decision-required` shape (names a concrete decision — no speculative words, not a generic phrase) → normalize to `human-decision-required`.
        - Else → normalize to `external-dependency` (the broadest residual class for a present-but-unclassifiable pointer).
 
-       In all normalization cases log `[scope-preflight] #<N> defer_reason_class "<raw>" normalized to <normalized-class> (evidence_pointer shape match)`. If the `evidence_pointer` is also missing or fails its own shape check *in addition* to the class being invalid, the **rejection path** applies (not normalization) — the normalization branch only fires when the pointer itself is valid for at least one class's shape.
-     - **Present and one of the six valid tokens**: use as-is.
+       In all normalization cases log `[scope-preflight] WARNING: #<N> defer_reason_class "<raw>" is not one of the seven valid tokens — normalized to <normalized-class> (evidence_pointer shape match)`. If the `evidence_pointer` is also missing or fails its own shape check *in addition* to the class being invalid, the **rejection path** applies (not normalization) — the normalization branch only fires when the pointer itself is valid for at least one class's shape. Normalizing to `blocked-by-in-flight-pr` with `blocking_prs` absent is a shape failure of that class — take the rejection path, since the pre-drain re-validation ([`drain.md` 5.b](../drain.md#5b--re-validate-scope-agent-and-cached-diagnosis-entries)) can't re-check an entry missing the field it keys on.
+     - **Present and one of the seven valid tokens**: use as-is.
 
-     Append the entry `{ issue: N, reason: "<deferred reason>", defer_reason_class: "<normalized-or-original class>", evidence_pointer: "<pointer from the agent's return>", provenance: "scope-agent", deferred_at: "<current ISO-8601 UTC timestamp>", would_be_dispatchable_as_phase_1_if?: "<from the agent's return when provided>" }` to a session-level `deferred_issues` list (initialize as `[]` at startup alongside `ready_issues` / `raw_backlog`) — see [`do-work.md`'s `deferred_issues` entry](../../do-work.md#orchestrator-state) for the valid provenance values, the `defer_reason_class` allowed set, and the restriction on mid-session writes. The `evidence_pointer` field has no default — its absence triggers the rejection path above, not normalization. Increment `defers_this_turn` by 1 — feeds the step E invariant line and the pre-drain audit, and the end-of-session summary's `Deferred:` block ([End-of-session summary](../cleanup-summary.md#end-of-session-summary)).
+     Append the entry `{ issue: N, reason: "<deferred reason>", defer_reason_class: "<normalized-or-original class>", evidence_pointer: "<pointer from the agent's return>", provenance: "scope-agent", deferred_at: "<current ISO-8601 UTC timestamp>", would_be_dispatchable_as_phase_1_if?: "<from the agent's return when provided>", blocking_prs?: [N, ...] }` to a session-level `deferred_issues` list (initialize as `[]` at startup alongside `ready_issues` / `raw_backlog`) — see [`do-work.md`'s `deferred_issues` entry](../../do-work.md#orchestrator-state) for the valid provenance values, the `defer_reason_class` allowed set, and the restriction on mid-session writes. The `evidence_pointer` field has no default — its absence triggers the rejection path above, not normalization. `blocking_prs` is carried only for `blocked-by-in-flight-pr`. Increment `defers_this_turn` by 1 — feeds the step E invariant line, the pre-drain audit, and the end-of-session summary's `Deferred:` block; `blocked-by-in-flight-pr` reports under its own `Queued behind in-flight PRs:` line instead ([End-of-session summary](../cleanup-summary.md#end-of-session-summary)).
 
-  3.5. **Re-gate guard — a resolved decision cannot be silently re-applied ([#962](https://github.com/mattsears18/shipyard/issues/962)).** Before step 4 applies `needs-human-review`, check whether this issue already carries a **decision-resolution comment** newer than the most recent removal of `needs-human-review`. This runs only for the two classes step 4 gates with `needs-human-review` — `human-decision-required` and `confirmed-non-shippable-as-single-PR`; `external-dependency` gates with `agent-console` instead and `time-gated` gates with no label at all, so both are out of scope here. See [RATIONALE → Re-gate guard](../../do-work-RATIONALE.md#step-6--re-gate-guard-a-resolved-decision-cannot-be-silently-re-applied-issue-962) for the repro this closes.
+  3.5. **Re-gate guard — a resolved decision cannot be silently re-applied ([#962](https://github.com/mattsears18/shipyard/issues/962)).** Before step 4 applies `needs-human-review`, check whether this issue already carries a **decision-resolution comment** newer than the most recent removal of `needs-human-review`. This runs only for the two classes step 4 gates with `needs-human-review` — `human-decision-required` and `confirmed-non-shippable-as-single-PR`; `external-dependency` gates with `agent-console` instead, and `time-gated` / `blocked-by-in-flight-pr` gate with no label at all, so all three are out of scope here. See [RATIONALE → Re-gate guard](../../do-work-RATIONALE.md#step-6--re-gate-guard-a-resolved-decision-cannot-be-silently-re-applied-issue-962) for the repro this closes.
 
      Two sentinels count as a decision-resolution comment, treated identically because both record the same fact (a human answered the blocking questions) through different call paths: `/shipyard:resolve-decisions`'s own `<!-- shipyard-resolve-decisions -->` (posted automatically by both `/resolve-decisions` and `/my-turn`'s reused decision-gated walkthrough — see [`resolve-decisions.md`'s Record + unblock](../../resolve-decisions.md#record--unblock)) and a maintainer's hand-written `<!-- do-work-decision-resolved -->` ([#569](https://github.com/mattsears18/shipyard/issues/569), CLAUDE.md § "Decision-resolved sentinel").
 
@@ -113,20 +116,25 @@
 
      This check runs for **every** defer-recording call site that funnels through this Recording path — the fresh scope-agent path, the cached-diagnosis freshness-check reuse ([step 6 of the freshness check](06-scope-preflight.md#scope-result-freshness-check-skip-dispatch-when-a-fresh-diagnosis-comment-exists) above), and the pre-drain re-validation ([`drain.md` 5.a/5.b](../drain.md#5a--re-validate-orchestrator-judgment-entries)). It is deliberately orchestrator-side and mechanical — same "prompts are not contracts" defense-in-depth posture as the `evidence_pointer` shape validator below. A scope agent with genuine new grounds to re-gate can still do so — it just has to say what changed.
 
-  4. **Apply the surfacing gate label — `agent-console` for `external-dependency`, `needs-human-review` for `confirmed-non-shippable-as-single-PR` and `human-decision-required`, and NO label at all for `time-gated`** (issues [#498](https://github.com/mattsears18/shipyard/issues/498), [#519](https://github.com/mattsears18/shipyard/issues/519), [#536](https://github.com/mattsears18/shipyard/issues/536), [#608](https://github.com/mattsears18/shipyard/issues/608), [#1165](https://github.com/mattsears18/shipyard/issues/1165)) — but **ensure-then-label-then-verify**, never a bare `--add-label` that silently depends on [step 3a](01c-label-recovery-refine.md#3-ensure-label-exists--recover-from-prior-session)'s best-effort background create having landed (issue [#508](https://github.com/mattsears18/shipyard/issues/508)). `agent-console` lets `/do-work` *drive* the operator action via the [operator phase](../operate.md) rather than only hand back ([#608](https://github.com/mattsears18/shipyard/issues/608)); `time-gated` gets a self-clearing body marker instead (step 4a below), since the whole point of the class is that no human review is needed:
+  4. **Apply the surfacing gate label — `agent-console` for `external-dependency`, `needs-human-review` for `confirmed-non-shippable-as-single-PR` and `human-decision-required`, and NO label at all for `time-gated` or `blocked-by-in-flight-pr`** (issues [#498](https://github.com/mattsears18/shipyard/issues/498), [#519](https://github.com/mattsears18/shipyard/issues/519), [#536](https://github.com/mattsears18/shipyard/issues/536), [#608](https://github.com/mattsears18/shipyard/issues/608), [#1165](https://github.com/mattsears18/shipyard/issues/1165)) — but **ensure-then-label-then-verify**, never a bare `--add-label` that silently depends on [step 3a](01c-label-recovery-refine.md#3-ensure-label-exists--recover-from-prior-session)'s best-effort background create having landed (issue [#508](https://github.com/mattsears18/shipyard/issues/508)). `agent-console` lets `/do-work` *drive* the operator action via the [operator phase](../operate.md) rather than only hand back ([#608](https://github.com/mattsears18/shipyard/issues/608)); `time-gated` gets a self-clearing body marker instead (step 4a below), since the whole point of the class is that no human review is needed:
 
      ```bash
      # Pick the gate label by class: external-dependency → agent-console
      # (a browser/console operator action; /do-work can drive it), time-gated
-     # → no label at all (see step 4a below for its own body-marker path),
-     # everything else → needs-human-review (genuine human decision / epic
-     # handoff).
+     # and blocked-by-in-flight-pr → no label at all (neither needs a human
+     # decision — time-gated self-clears via a body marker, see step 4a
+     # below; blocked-by-in-flight-pr self-clears only in principle, via a
+     # future scope pass finding the holding PR merged — #1426), everything
+     # else → needs-human-review (genuine human decision / epic handoff).
      case "$DEFER_REASON_CLASS" in
-       external-dependency) GATE_LABEL="agent-console" ;;
-       time-gated)          GATE_LABEL="" ;;
-       *)                   GATE_LABEL="needs-human-review" ;;
+       external-dependency)     GATE_LABEL="agent-console" ;;
+       time-gated)               GATE_LABEL="" ;;
+       blocked-by-in-flight-pr)  GATE_LABEL="" ;;
+       *)                         GATE_LABEL="needs-human-review" ;;
      esac
-     # time-gated applies no label at all — skip straight to step 4a below.
+     # time-gated / blocked-by-in-flight-pr apply no label at all —
+     # time-gated skips straight to step 4a below; blocked-by-in-flight-pr
+     # has no step-4a equivalent in this revision and just continues.
      if [ -n "$GATE_LABEL" ]; then
        # Ensure the label exists first — step 3a creates it, but 3a's
        # `gh label create … &` group is backgrounded + `2>/dev/null || true`,
@@ -157,7 +165,7 @@
      fi
      ```
 
-     This is the keystone that converts the silent diagnosis comment into a tracked handoff: it exits the issue from the re-scope loop — `/do-work` stops re-scoping it every session (both `agent-console` and `needs-human-review` are in the [step 4 dispatch-exclusion set](04-backlog-divert.md#4-fetch--rank-the-backlog) below) — and routes it to the right queue: an `agent-console` issue surfaces to `/my-turn` as a human-actionable operator item **and** becomes drainable by `/do-work` ([#608](https://github.com/mattsears18/shipyard/issues/608)); a `needs-human-review` issue surfaces to `/my-turn` as a human-blocked decision. See [RATIONALE → needs-human-review extended (#536)](../../do-work-RATIONALE.md#binary-backlog-phase-3--needs-human-review-extended-to-external-dependency--human-decision-required-defers-issue-536) for the failure mode a missing gate label caused, and step 2 above for the marker table that discriminates the classes. **Split the mutations** — if this defer path also clears the `@me` self-assign, run `--remove-assignee @me` as its **own** `gh issue edit` call, never combined with `--add-label` in one atomic invocation; otherwise a missing-label failure drops the unassign too (issue [#508](https://github.com/mattsears18/shipyard/issues/508)). If the `gh issue edit` fails (rate limit, permission), the read-back warning fires and the diagnosis comment from step 2 is still posted. **For the two classes that never applied any label to begin with** (`untrusted-author`, `confirmed-blocker-still-open`) do **not** apply `needs-human-review` here — see step 2's marker table for their own auto-recovery paths. In all cases: do not close the issue, do not assign to a human.
+     This is the keystone that converts the silent diagnosis comment into a tracked handoff: it exits the issue from the re-scope loop — `/do-work` stops re-scoping it every session (both `agent-console` and `needs-human-review` are in the [step 4 dispatch-exclusion set](04-backlog-divert.md#4-fetch--rank-the-backlog) below) — and routes it to the right queue: an `agent-console` issue surfaces to `/my-turn` as a human-actionable operator item **and** becomes drainable by `/do-work` ([#608](https://github.com/mattsears18/shipyard/issues/608)); a `needs-human-review` issue surfaces to `/my-turn` as a human-blocked decision. See [RATIONALE → needs-human-review extended (#536)](../../do-work-RATIONALE.md#binary-backlog-phase-3--needs-human-review-extended-to-external-dependency--human-decision-required-defers-issue-536) for the failure mode a missing gate label caused, and step 2 above for the marker table that discriminates the classes. **Split the mutations** — if this defer path also clears the `@me` self-assign, run `--remove-assignee @me` as its **own** `gh issue edit` call, never combined with `--add-label` in one atomic invocation; otherwise a missing-label failure drops the unassign too (issue [#508](https://github.com/mattsears18/shipyard/issues/508)). If the `gh issue edit` fails (rate limit, permission), the read-back warning fires and the diagnosis comment from step 2 is still posted. **For the three classes that never applied any label to begin with** (`untrusted-author`, `confirmed-blocker-still-open`, `blocked-by-in-flight-pr`) do **not** apply `needs-human-review` here — see step 2's marker table for their own auto-recovery paths. In all cases: do not close the issue, do not assign to a human.
 
   4a. **`time-gated` only — write the self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker instead of a label** ([#1165](https://github.com/mattsears18/shipyard/issues/1165)). Run this step only when `$DEFER_REASON_CLASS == "time-gated"`; skip it entirely for every other class. Extract `<date>` from the validated `evidence_pointer` (the `YYYY-MM-DD` token immediately after the `Time-gate:` prefix — already confirmed parseable and future-dated by the [evidence validation](#handling-each-returned-entry-fires-as-each-background-agent-completes) above). **Prepend, as line 1 — never appended or inserted elsewhere** — the [step-4 dispatch filter](04-backlog-divert.md#4-fetch--rank-the-backlog) matches line 1 only ([#1434](https://github.com/mattsears18/shipyard/issues/1434)), mirroring [#1161](https://github.com/mattsears18/shipyard/issues/1161):
 
@@ -272,178 +280,5 @@ Remove every processed issue number from `raw_backlog` regardless of which shape
 
 The same handling applies anywhere scoping runs (step 6 initial pre-flight + step D's background scope refill). A scoping agent's return contract is identical across those call sites; the orchestrator branches on `deferred` presence the same way each time.
 
-### 6.5 Status line + state-change banners (UI)
 
-There are two UI surfaces — both unconditionally re-print whenever repo-health state changes, so the user never has to scroll back to figure out what's going on.
-
-#### Status line — one-line repo-health header
-
-Print before the initial pool fill, and again at the top of any turn where state visibly changed (a completion landed, a divert flipped, the failing-PR count crossed the threshold either way, main flipped color, or a soft-collision claim count changed). Format:
-
-```
-/do-work · <owner/repo> · main:<emoji> · in-flight: <n>/<concurrency> [<labels>] · failing PRs: <m> (@me: <k>)<soft-suffix><divert-suffix>
-```
-
-Fields:
-
-- **main:** — `🟢 green`, `🔴 red (<workflow-summary>, run <id>)`, `⏳ pending`, or `❔ unknown`. When red, `<workflow-summary>` is derived from `main_ci.red_workflow_count` and `main_ci.red_workflow_names`:
-  - 1 failing workflow → `<workflow-name>, run <id>` (e.g. `Deploy to Play Store, run 18234567`)
-  - 2–3 failing workflows → `<name1>, <name2>[, <name3>], run <id>` (list all names if they fit, truncate with `+N more` if needed to keep the status line under ~120 chars)
-  - 4+ failing workflows → `<red_workflow_count> workflows: <name1>, <name2>, +<N> more, run <id>` (limit to 2 names before `+N more`)
-
-  In all cases the run ID (`main_ci.earliest_red_run_id`) remains at the end of the parenthetical so the user can navigate directly to the failing run. No extra `gh` call — all data is in the `main_ci` cache from step 4.5a.
-
-  When `main_ci.non_required_red_workflow_count > 0` (non-required workflows are red but main is gated to required-only), append a parenthetical suffix to the main field after the primary `🟢/🔴/⏳/❔` parenthetical (or directly after the emoji when status is green / pending / unknown): ` (infra: <name1>, <name2>[, +<N> more])`. Limit to 2 names plus `+N more` to stay terse. Example: `main:🟢 (infra: Android Release Notes)` — the green emoji communicates "no divert", the parenthetical surfaces the non-gating failure so the maintainer doesn't lose visibility into it. When `non_required_red_workflow_count == 0` (the common case), omit the suffix entirely.
-- **in-flight labels** — comma-separated, derived from each entry's `kind`/`target`: issue → `#N`, fix-checks → `fix-checks #M`, fix-main-ci → `⚠️ fix-main-ci`, fix-failing-prs-batch → `⚠️ fix-prs-batch`. Empty list → `[ ]`.
-- **failing PRs:** — the all-authors count from `failing_pr_count_all`. The `(@me: <k>)` parenthetical comes from `failed_prs.length + in_flight fix-checks count`. Append ` ⚠️` to the count when it's ≥ 10 (matches the divert threshold).
-- **soft-suffix** — when one or more soft-collision paths are claimed by in-flight workers, append ` · [soft: <path>×<n>, <path>×<n>, ...]` listing each distinct claimed soft path and how many in-flight workers are holding it. Order by claim count desc, then alphabetical. Bracket and brackets are part of the surface (visually similar to the in-flight labels). Append ` ⚠️` to any path whose count equals `--soft-collision-concurrency` (the cap — next claimer on that path will park). Omit the suffix entirely when no soft-collision claims are active.
-- **divert-suffix** — when a divert is enqueued but not yet in flight, append ` · diverting: <kind>`. When already in flight, the `[ ]` labels already make that visible, no suffix needed.
-- **flake-escalated-suffix** ([#589](https://github.com/mattsears18/shipyard/issues/589)) — when any signature in `main_ci_fix_attempts` has `escalated == true`, append ` · flake-escalated: <sig> (<attempts> fix attempts, each green-on-PR/red-on-merge)`. This is the fix-main-ci attempt-cap circuit breaker firing: main is still red on `<sig>` but the orchestrator has stopped auto-diverting because each of `<attempts>` fix PRs passed on its own PR run and re-reddened the merge commit (a flaky-CI signature). When more than one signature is escalated, list each (comma-separated). The suffix persists until a human gets main green on `<sig>` (which clears the counter). Distinct from `· diverting:` — an escalated signature is explicitly NOT being diverted.
-
-Examples:
-
-```
-/do-work · mattsears18/lightwork · main:🟢 · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
-/do-work · mattsears18/shipyard · main:🟢 · in-flight: 3/4 [#63, #65, #67] · failing PRs: 0 (@me: 0) · [soft: plugins/shipyard/commands/do-work.md×3 ⚠️, CHANGELOG.md×3 ⚠️]
-/do-work · mattsears18/lightwork · main:🔴 (Deploy to Play Store, run 18234567) · in-flight: 2/2 [⚠️ fix-main-ci, #769] · failing PRs: 12 ⚠️ (@me: 2) · diverting: fix-failing-prs-batch
-/do-work · mattsears18/lightwork · main:🔴 (3 workflows: Deploy to Play Store, Lighthouse CI, +1 more, run 18234567) · in-flight: 1/2 [⚠️ fix-main-ci] · failing PRs: 0 (@me: 0)
-/do-work · mattsears18/lightwork · main:🟢 (infra: Android Release Notes) · in-flight: 2/2 [#769, #768] · failing PRs: 3 (@me: 1)
-/do-work · mattsears18/lightwork · main:⏳ · in-flight: 0/2 [ ] · failing PRs: 0 (@me: 0)
-/do-work · mattsears18/lightwork · main:🔴 (Web E2E Tests, run 18234567) · in-flight: 1/2 [#769] · failing PRs: 0 (@me: 0) · flake-escalated: Web E2E Tests (3 fix attempts, each green-on-PR/red-on-merge)
-```
-
-The soft-suffix is the human's signal that merge conflicts may surface at PR-land time on those paths. When a count hits the cap (` ⚠️`), the orchestrator is also one step away from parking — and the user can decide whether to bump `--soft-collision-concurrency` mid-session (next-session-only, the cap isn't hot-reloadable today) or let dispatch park.
-
-When to print the status line: (a) startup, right before the initial pool fill; (b) any turn where `divert_queue` gained or lost an entry; (c) any turn where `main_ci.status` changed since the previous print; (d) any turn where `failing_pr_count_all` crossed the 10 threshold in either direction; (e) start of the end-of-session summary; (f) right after any state-change banner below; (g) any turn where a soft-collision claim count crossed `--soft-collision-concurrency` (entering or leaving the cap) on any path.
-
-#### State-change banners — make divert events impossible to miss
-
-The status line is for at-a-glance state. **Banners** are for the moments where state CHANGES — they're a 3-line block with blank lines above and below, so they stand out from completion-reconcile logs. Print every time one of the trigger conditions fires; never suppress them.
-
-**Main flipped red → enqueueing a fix-main-ci diversion:**
-
-```
-
-⚠️  MAIN CI RED — diverting next available slot to fix
-   Failed workflow: <earliest_red_workflow_name>
-   Earliest red run: <earliest_red_run_url>
-   Triggered at: <YYYY-MM-DDTHH:MM:SSZ>
-
-```
-
-When `red_workflow_count > 1`, replace the single `Failed workflow:` line with a plural form listing all failing workflows from `red_workflow_names`:
-
-```
-
-⚠️  MAIN CI RED — diverting next available slot to fix
-   Failed workflows (3): Deploy to Play Store, Lighthouse CI, Visual Regression
-   Earliest red run: <earliest_red_run_url>
-   Triggered at: <YYYY-MM-DDTHH:MM:SSZ>
-
-```
-
-The workflow list in the banner is always the **full** `red_workflow_names` list (no truncation — banners are one-shot so verbosity is fine). Use a comma-separated inline list.
-
-When `non_required_red_workflow_count > 0` AND the banner above is firing (a `green → red` transition on the *gating* set), append an info line after the workflows list noting which non-required workflows are also red, so the maintainer's mental model stays accurate:
-
-```
-   Non-required workflows also red (not diverting): Android Release Notes
-```
-
-When the banner is NOT firing because the gating set is green but `non_required_red_workflow_count` flipped from 0 → ≥1 (e.g. an infra workflow just turned red while CI stayed green), print a softer notification banner instead — this is a `🔔` advisory, not a divert trigger:
-
-```
-
-🔔  NON-REQUIRED CI WORKFLOW(S) RED — main_ci.status stays green, no divert
-   Failed (non-required): Android Release Notes
-   Note: these workflows aren't in branch protection's required_status_checks list; resolve in their respective consoles.
-
-```
-
-Trigger this notification banner only on the 0 → ≥1 transition (not every refresh) to keep the surface terse — the per-turn status-line `(infra: ...)` suffix carries the steady-state visibility.
-
-**fix-main-ci dispatched (slot now in flight):**
-
-```
-
-🔧  DISPATCHED fix-main-ci on slot <id> — agent investigating <earliest_red_run_id>
-
-```
-
-**fix-main-ci attempt-cap hit → flake escalation, NOT diverting** ([#589](https://github.com/mattsears18/shipyard/issues/589)). Fired once per signature on the transition into `main_ci_fix_attempts[<sig>].escalated == true` (when `attempts >= main_ci.max_fix_attempts` and the red branch of [step 4.5a's enqueue rule](04-backlog-divert.md#45-divert-checks-main-ci--pr-pileup) declines to enqueue):
-
-```
-
-🚩  FIX-MAIN-CI CAP HIT — likely flaky test, NOT diverting again
-   Workflow: <earliest_red_workflow_name>
-   Fix attempts this session: <attempts> (each green on its own PR run, red on the merge commit)
-   Latest fix PR: #<last_pr> · earliest red run: <earliest_red_run_url>
-   This pass-on-PR/fail-on-merge pattern is a strong flaky-CI signal (a deterministic
-   regression would fail the PR run too). Recommended: quarantine the test (test.fixme /
-   skip) + file a tracking issue, OR investigate CI-side. No further auto-dispatch for this
-   workflow until a human gets main green on it.
-
-```
-
-The cap is the fix-main-ci analogue of the `blocked:ci` 3-attempt circuit breaker for fix-checks. After the banner fires, the status line carries `· flake-escalated: <sig> (<attempts> fix attempts, each green-on-PR/red-on-merge)` until a human resolves it (main goes green on `<sig>`, which clears the counter at the next green refresh).
-
-**Main flipped back to green (red → green transition):**
-
-```
-
-✅  MAIN CI RESTORED — back to green at run <newest_green_run_id>
-
-```
-
-If a fix-main-ci diversion is in flight when this fires, also add: `   (in-flight fix-main-ci will finish naturally; result may already be redundant)`.
-
-**Failing-PR count crossed UP through 10 — enqueueing a fix-failing-prs-batch diversion:**
-
-```
-
-⚠️  FAILING PR PILEUP — <n> open PRs are red, threshold is 10
-   Sample: #<a>, #<b>, #<c>, ... (+ <k> more)
-   Diverting next available slot to investigate common root cause.
-
-```
-
-**fix-failing-prs-batch dispatched:**
-
-```
-
-🔧  DISPATCHED fix-failing-prs-batch on slot <id> — investigating <n> failing PRs
-
-```
-
-**Failing-PR count crossed DOWN through 10:**
-
-```
-
-✅  PR PILEUP CLEARED — <n> failing PRs remain (below 10 threshold)
-
-```
-
-**Diversion completed (any kind):**
-
-When a `fix-main-ci` or `fix-failing-prs-batch` worker returns, print a banner BEFORE the normal reconcile line:
-
-- `shipped` → `✅  DIVERSION RESOLVED — fix-main-ci shipped via PR #<M> (auto-merge enabled)`
-- `noop` → `➖  DIVERSION NO-OP — fix-main-ci: main already green by the time the agent started`
-- `blocked` → `🛑  DIVERSION BLOCKED — fix-main-ci: <reason>. No auto-retry; needs human attention.` (and the status line that follows will keep showing `main:🔴` until a human resolves it)
-
-**End-of-session — diversion summary block.** The end-of-session summary (below) carries a `Diversions:` block when `D > 0` — counts per kind, with shipped/noop/blocked breakdowns and PR numbers. That's how the user sees what diversions fired even if they weren't watching the session live.
-
-The rule of thumb is: banners are LOUD and one-shot (printed when the transition happens), the status line is the persistent at-a-glance view (re-printed whenever the underlying state changes). Both should appear together when a divert fires — banner first, then the updated status line immediately below it.
-
-### 6.8 Flush setup timing into session state
-
-**Before dispatching the first wave of workers**, flush the setup-timing sidecar into the session state file's `setup` block. This ensures the timing data survives even if the session terminates mid-run (e.g. a Claude Code crash between pool fill and the first completion notification). The flush is fire-and-forget — a failure must NOT block pool fill.
-
-```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" flush \
-  --session-id "<session-id>" 2>/dev/null || true
-```
-
-After this call the sidecar is gone and the session state file's `.setup` block contains the full per-phase wall-clock breakdown. The cost-history flush at end-of-session will pick it up automatically.
+**Steps 6.5 → 6.8 (status line + state-change banners, setup-timing flush) live in [`06e-scope-ui-timing.md`](./06e-scope-ui-timing.md)** — split out when this file crossed its token-budget cap ([#1431](https://github.com/mattsears18/shipyard/issues/1431)). Continue there, then hand off to [`07-pool-fill.md`](./07-pool-fill.md).
