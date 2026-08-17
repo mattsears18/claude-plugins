@@ -14,14 +14,30 @@ If (3) doesn't hold — the remainder needs a human decision or an operator/brow
 
 You are here because this PR ships only the completable slice; issue `#<N>` itself is not resolved. [§5's second exception](./issue-work.md#5-commit--push--pr) already required you to reference `#<N>` with a bare URL (never a closing keyword) and [§5.85's trigger shape (5)](./issue-work.md#585-post-pr-create-non-close-parentepic-leak-verification) already required the leak-verification loop to run treating `#<N>` as the protected issue — confirm both ran and passed before continuing.
 
-1. **File a fresh follow-up issue** for the deferred acceptance-criteria items, per [`shipyard:filing-github-issues`](../../skills/filing-github-issues/SKILL.md) conventions — a clear title, the specific deferred AC bullets, and a one-line note of *why* it was split out (name the off-limits/ownership constraint). Apply the `shipyard` session-stamp label **ensure-then-label** (this repo's standing convention — a missing label is created, never silently dropped) but apply **no gate label** — no `agent-console` and no `needs-human-review`. The entire point of this shape is that the follow-up is immediately dispatch-eligible, not parked behind a review queue.
+1. **File a fresh follow-up issue** for the deferred acceptance-criteria items, per [`shipyard:filing-github-issues`](../../skills/filing-github-issues/SKILL.md) conventions — a clear title, the specific deferred AC bullets, a one-line note of *why* it was split out (name the off-limits/ownership constraint), and — on a repo with `milestones.enabled` + `milestones.assign_on_file` both `true` — a milestone resolved per `shipyard:worker-preamble`'s [`milestone-prohibition.md`](../../skills/worker-preamble/milestone-prohibition.md) fragment: inherit `#<N>`'s own milestone when it already has one; otherwise run `shipyard:filing-github-issues` § "Milestone assignment" in full (BET-matching against the open milestone list, falling back to `milestones.fallback` when nothing matches) — never skip straight to filing bare just because `#<N>` has no milestone to inherit (issue [#1421](https://github.com/mattsears18/shipyard/issues/1421)). Apply the `shipyard` session-stamp label **ensure-then-label** (this repo's standing convention — a missing label is created, never silently dropped) but apply **no gate label** — no `agent-console` and no `needs-human-review`. The entire point of this shape is that the follow-up is immediately dispatch-eligible, not parked behind a review queue.
 
    ```bash
    WORKTREE_PATH="$(git rev-parse --show-toplevel)"
    mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
    ```
 
-   Write the follow-up issue body (with the `Write` tool — a heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979)) to `$WORKTREE_PATH/.shipyard-scratch/followup-issue-body.md`, then:
+   Write the follow-up issue body (with the `Write` tool — a heredoc `--body "$(cat <<EOF ... EOF)"` is refused per [#979](https://github.com/mattsears18/shipyard/issues/979)) to `$WORKTREE_PATH/.shipyard-scratch/followup-issue-body.md`, then resolve the milestone (a no-op — `MILESTONE_TITLE` stays empty — when `milestones.enabled`/`milestones.assign_on_file` isn't both `true`):
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   MILESTONE_TITLE=""
+   milestones_enabled=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null || echo false)
+   milestones_assign_on_file=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null || echo false)
+   if [ "$milestones_enabled" = "true" ] && \
+      [ "$milestones_assign_on_file" = "true" ]; then
+     # Tier 1 — inherit #<N>'s own milestone when it has one.
+     MILESTONE_TITLE=$(gh issue view <N> --repo <owner/repo> --json milestone --jq '.milestone.title // empty' 2>/dev/null)
+     # Tier 2 — #<N> has none: BET-match + fallback, same as any other filer.
+     # Run shipyard:filing-github-issues § "Milestone assignment" steps 1-4
+     # here against this follow-up's own content (never #<N>'s title/keywords)
+     # when MILESTONE_TITLE is still empty at this point.
+   fi
+   ```
 
    ```bash
    gh label create shipyard --repo <owner/repo> \
@@ -29,6 +45,7 @@ You are here because this PR ships only the completable slice; issue `#<N>` itse
    FOLLOWUP=$(gh issue create --repo <owner/repo> --label shipyard \
      --title "<deferred-scope title>" \
      --body-file "$WORKTREE_PATH/.shipyard-scratch/followup-issue-body.md" \
+     ${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"} \
      --json number --jq '.number' 2>&1 | tail -1)
    ```
 
