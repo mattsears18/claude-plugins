@@ -475,11 +475,13 @@ When filling a slot, walk this decision tree:
    **Claimed-paths token-budget-warn augmentation (advisory only, [#1443](https://github.com/mattsears18/shipyard/issues/1443)).** After `claimed_paths` is computed for the candidate (step 6), check each hard/soft path against the warn band [`setup-phase-file-token-budget.test.sh`](../../scripts/tests/setup-phase-file-token-budget.test.sh) already enforces, via that script's own `--warn-check <path>` mode — never re-derive the 60,000-byte cap as a second literal:
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
    token_budget_warning=""
    for p in "${claimed_paths[@]}"; do
-     read -r verdict bytes remaining <<<"$("$CLAUDE_PLUGIN_ROOT/scripts/tests/setup-phase-file-token-budget.test.sh" --warn-check "$p")"
+     result=$("$CLAUDE_PLUGIN_ROOT/scripts/tests/setup-phase-file-token-budget.test.sh" --warn-check "$p")
+     read -r verdict bytes remaining <<<"$result"
      if [ "$verdict" = "WARN" ]; then
-       token_budget_warning="\`$p\` is already ${bytes} bytes, only ${remaining} bytes below the warn-band cap."
+       token_budget_warning="\`$p\` is already $bytes bytes, only $remaining bytes below the warn-band cap."
        break
      fi
    done
