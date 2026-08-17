@@ -101,6 +101,18 @@ export function buildIssueWorkPrompt(unit, repoSlug) {
     )
   }
 
+  // Claimed-paths token-budget-warn augmentation — mirrors dispatch-rules.md's
+  // "Claimed-paths token-budget-warn augmentation" paragraph verbatim (#1443).
+  if (unit.tokenBudgetWarning) {
+    lines.push(
+      ``,
+      `**Token-budget warn-band notice:** ${unit.tokenBudgetWarning} Run`,
+      `\`setup-phase-file-token-budget.test.sh\` locally before pushing this file, and`,
+      `prefer condensing prose over extending it further. Advisory only — this never`,
+      `gates, defers, or reorders your dispatch.`,
+    )
+  }
+
   lines.push(
     ``,
     `Return a STRUCTURED result matching schemas/worker-return.schema.json — e.g.`,

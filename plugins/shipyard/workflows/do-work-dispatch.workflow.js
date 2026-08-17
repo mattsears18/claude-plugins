@@ -349,7 +349,8 @@ const emit = (message) => {
 
 // Per-work-unit shape (issue-work fields documented alongside the builder below):
 //   { number, mode, model, trust, branch, worktreePath,
-//     verifyGate, userFeedback, phase1Scope, nextAvailableVersion, changelogPath }
+//     verifyGate, userFeedback, phase1Scope, tokenBudgetWarning,
+//     nextAvailableVersion, changelogPath }
 const selectedIssues = Array.isArray(input.issues) ? input.issues : []
 
 // Per-role model map, mirroring resolve-dispatch-model.sh's tiering. Passed in so
@@ -493,6 +494,7 @@ const workUnits = selectedIssues.map((it) => ({
   verifyGate: it.verifyGate === true,
   userFeedback: it.userFeedback === true,
   phase1Scope: it.phase1Scope ?? null,
+  tokenBudgetWarning: it.tokenBudgetWarning ?? null,
   nextAvailableVersion: it.nextAvailableVersion ?? null,
   changelogPath: it.changelogPath ?? null,
   // fix-checks-only / fix-rebase — target an EXISTING PR's branch, not a fresh one
@@ -1311,6 +1313,18 @@ function buildIssueWorkPrompt(unit, repoSlug) {
       `version is **${unit.nextAvailableVersion}**. Use this exact value when bumping the`,
       `manifest${unit.changelogPath ? ` and add a fresh entry above the highest existing entry in \`${unit.changelogPath}\`` : ''} — do NOT compute your own version from`,
       `\`origin/<default-branch>\`.`,
+    )
+  }
+
+  // Claimed-paths token-budget-warn augmentation — mirrors dispatch-rules.md's
+  // "Claimed-paths token-budget-warn augmentation" paragraph verbatim (#1443).
+  if (unit.tokenBudgetWarning) {
+    lines.push(
+      ``,
+      `**Token-budget warn-band notice:** ${unit.tokenBudgetWarning} Run`,
+      `\`setup-phase-file-token-budget.test.sh\` locally before pushing this file, and`,
+      `prefer condensing prose over extending it further. Advisory only — this never`,
+      `gates, defers, or reorders your dispatch.`,
     )
   }
 
