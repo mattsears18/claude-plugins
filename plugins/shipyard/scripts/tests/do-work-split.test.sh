@@ -3555,6 +3555,101 @@ assert_contains "$drain_path" \
   'PR-COLLISION-gated' \
   "drain.md's mechanical-filter enumeration (step 4/termination-assertion) includes the new PR-collision gate reason (#1429)"
 
+# (U) blocked-by-in-flight-pr cache-reuse + semantic premise re-validation
+# (issue #1448, the deliberately-deferred second half of #1429). A
+# blocked-by-in-flight-pr deferred return can now optionally carry a cached
+# would_be_ready_scope; re-admission reuses it ONLY after a mandatory
+# semantic-premise re-validation against the merged PR's actual diff — never
+# on merge state alone, closing the exact stale-premise bug #1426 diagnosed.
+
+# AC1: the deferred-shape scope-agent return shape carries the optional
+# cached field, validated the same way a ready return's files/phase_1_scope
+# are.
+assert_contains "$setup_path" \
+  'would_be_ready_scope' \
+  "setup.md's Deferred shape docs carry the optional would_be_ready_scope field (#1448)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'Validated the same way a ready return'"'"'s `files`/`phase_1_scope` are' \
+  "setup.md documents would_be_ready_scope is validated identically to a plain ready return's files/phase_1_scope (#1448)"
+
+# The new deep-link fragment exists and carries the full mechanism.
+pr_collision_fragment_path="$setup_dir/06f-pr-collision-cache-reuse.md"
+if [[ -f "$pr_collision_fragment_path" ]]; then
+  pass=$((pass+1))
+  printf '%sPASS%s  06f-pr-collision-cache-reuse.md fragment exists (#1448)\n' "$GREEN" "$RESET"
+else
+  fail=$((fail+1))
+  printf '%sFAIL%s  06f-pr-collision-cache-reuse.md fragment does not exist (#1448)\n' "$RED" "$RESET"
+fi
+
+# setup.md's routing table carries a row for the new fragment.
+assert_contains "$setup_router_path" \
+  '06f-pr-collision-cache-reuse.md' \
+  "setup.md's routing table has a row for the new 06f fragment (#1448)"
+
+# Persistence: the write side (step 4f) posts a dedicated comment marker
+# distinct from the step-4e body marker, so the cache survives across
+# sessions the way cached-diagnosis comments do for every other class.
+assert_contains "$setup_path" \
+  'do-work-blocked-by-prs-scope' \
+  "06c-scope-handling-ui.md step 4f persists would_be_ready_scope as a dedicated comment marker (#1448)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  '4f. **`blocked-by-in-flight-pr` only, and only when the deferred return also carried `would_be_ready_scope`' \
+  "06c-scope-handling-ui.md's step 4f is gated on would_be_ready_scope being present, mirroring step 4e's own class gate (#1448)"
+
+# AC2/AC3 (cache-reuse-skips-scope-dispatch / premise-invalidated-falls-
+# through-to-fresh-scope): the fragment documents BOTH outcomes of the
+# semantic-premise re-validation, not just the merge-state check #1429 left
+# in place.
+assert_contains "$setup_path" \
+  'premise the deferred issue'"'"'s fix depended on' \
+  "06f documents that a confirmed semantic deletion invalidates the premise and falls through to a fresh scope-agent dispatch (#1448, premise-invalidated-falls-through-to-fresh-scope)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'Promote the candidate directly to `ready_issues`' \
+  "06f documents that a validated cache promotes straight to ready_issues without a fresh scope-agent dispatch (#1448, cache-reuse-skips-scope-dispatch)"
+assert_contains "$setup_path" \
+  'fail-safe to NOT reuse' \
+  "06f documents the fail-safe-to-gated posture for an ambiguous/inconclusive premise read (#1448)"
+
+# The scope-agent prompt instruction tells the agent when to supply the
+# cached field, and how it feeds the reuse optimization.
+assert_contains "$setup_path" \
+  'ALSO supply `would_be_ready_scope' \
+  "06b-scope-carveouts.md's scoping-agent prompt instructs the agent to optionally supply would_be_ready_scope (#1448)"
+
+# AC4: drain.md 5.b no longer describes the optimization as unwired — it now
+# points at the shared cache-reuse procedure instead of always falling
+# through to a fresh dispatch on a resolved collision.
+assert_contains "$drain_path" \
+  'PR-collision cache-reuse procedure' \
+  "drain.md 5.b now runs the cache-reuse procedure before falling through to a fresh scope-agent dispatch (#1448)"
+if grep -q 'the point-2 "reuse the cached scope without paying for a second dispatch" optimization is deliberately not wired here' "$drain_path"; then
+  fail=$((fail+1))
+  printf '%sFAIL%s  drain.md still describes the cache-reuse optimization as deliberately unwired (#1448 should have replaced this language)\n' "$RED" "$RESET"
+else
+  pass=$((pass+1))
+  printf '%sPASS%s  drain.md no longer describes the cache-reuse optimization as deliberately unwired (#1448)\n' "$GREEN" "$RESET"
+fi
+
+# do-work.md's deferred_issues prose documents the shipped cache-reuse path
+# rather than pointing at #1448 as a still-open follow-up.
+assert_contains "$do_work_path" \
+  'mandatory semantic-premise re-validation against the merged PR' \
+  "do-work.md documents the mandatory premise re-validation gate on cache reuse (#1448)"
+if grep -q 'is deliberately \*\*not\*\* wired here; see \[#1448\]' "$do_work_path"; then
+  fail=$((fail+1))
+  printf '%sFAIL%s  do-work.md still describes #1448 as an unwired follow-up\n' "$RED" "$RESET"
+else
+  pass=$((pass+1))
+  printf '%sPASS%s  do-work.md no longer describes #1448 as an unwired follow-up\n' "$GREEN" "$RESET"
+fi
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2
