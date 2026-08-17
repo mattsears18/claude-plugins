@@ -1204,8 +1204,9 @@ if [ "$ci_shape" = "self-hosted" ] && [ "${pool_total:-0}" -gt 0 ] 2>/dev/null; 
   # turn's check ran" from "it didn't" (the in-memory $ci_backpressure
   # variable doesn't survive past this Bash-tool call). Fire-and-forget.
   # Full mechanism: invariant-line.md's ci_backpressure entry.
+  CHECKED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
-    --set ".last_backpressure_check = {verdict: \"$ci_backpressure\", at: \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+    --set ".last_backpressure_check = {verdict: \"$ci_backpressure\", at: \"$CHECKED_AT\"}" \
     >/dev/null 2>&1 || true
 else
   # Not a self-hosted pool, or pool_total unreadable — the check above is a
