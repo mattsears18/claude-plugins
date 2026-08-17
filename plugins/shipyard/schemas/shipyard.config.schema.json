@@ -66,7 +66,7 @@
     "backlog": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Controls the assignee clause of /shipyard:do-work's backlog eligibility filter (issue #1248). Both keys default to the single-contributor-repo shape: assignees are ignored for dispatch eligibility, and /do-work never writes an assignment itself. A genuine multi-contributor repo — where 'assigned to someone else' is a meaningful 'not mine' signal — sets both to true to restore the pre-#1248 behavior.",
+      "description": "Controls scripts/backlog-filter.sh classify's eligibility clauses that are properties of the ISSUE POOL itself (assignee ownership, a manual Someday park) rather than of an individual issue's body/labels. `respect_assignees` and `self_assign` default to the single-contributor-repo shape: assignees are ignored for dispatch eligibility, and /do-work never writes an assignment itself. A genuine multi-contributor repo — where 'assigned to someone else' is a meaningful 'not mine' signal — sets both to true to restore the pre-#1248 behavior.",
       "properties": {
         "respect_assignees": {
           "type": "boolean",
@@ -77,6 +77,11 @@
           "type": "boolean",
           "default": false,
           "description": "When true, /do-work self-assigns a candidate issue to @me before dispatching (`gh issue edit <N> --add-assignee @me`), in addition to always stamping the `shipyard` session-stamp label. When false (default), no assignment call is made — the `shipyard` label alone carries provenance and human visibility. The self-assign was originally documented as a 'soft-lock against parallel /do-work instances', but that claim only holds across different GitHub identities: a second same-identity session evaluates its own self-assigned issue as `assignee == @me` and dispatches it anyway, so no lock actually occurs for the common single-operator case. The real collision guard is the concurrent-session worktree/PID lock (see dispatch-rules.md), which is unaffected by this flag. Set true only on a genuine multi-contributor repo that wants @me-assignment as a visible claim marker independent of the lock."
+        },
+        "someday_milestone": {
+          "type": "string",
+          "default": "",
+          "description": "Issue #1406. When non-empty, scripts/backlog-filter.sh classify drops (verdict `drop`, reason `someday-milestone`) any open issue whose GitHub milestone title — with its leading `N · ` sequence-number prefix stripped, compared case-insensitively and trimmed — exactly equals this value. Set it to the bare human-readable name of your repo's 'parked, event-gated, no probe expressible' phase (e.g. `\"Someday\"` for a milestone titled `6 · Someday`) — never the whole numbered title, which drifts every time `shipyard:update-roadmap` renumbers phases. Defaults to `\"\"` (empty string), which never matches a real milestone title, so the clause is INERT until a repo explicitly opts in — a repo that parks work in a milestone loosely (not as a deliberate 'stop re-scoping this' signal) must not silently lose that work from dispatch. Deliberately scoped under `backlog.*`, not `milestones.*`, and evaluated unconditionally of `milestones.enabled` / `milestones.prioritize_dispatch` — those two keys gate milestone-aware RANKING of the eligible bucket (issue #1241) and are themselves inert while `milestones.enabled` is false (see `commands/do-work/dont.md`'s `milestones.*` guard); this key gates ELIGIBILITY itself and must keep working on exactly the repo shape that motivated it, one with `milestones.enabled: false`. See `commands/do-work/setup/04f-completion-ledger.md`'s bucket 7.5 for the completion-ledger accounting and `commands/do-work-RATIONALE.md` for the full design writeup."
         },
         "_comment": { "type": "string" }
       }

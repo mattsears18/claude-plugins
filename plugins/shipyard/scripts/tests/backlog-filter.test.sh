@@ -424,6 +424,35 @@ fixture_eventgate_no_marker='[{"number":2006,"title":"t","body":"<!-- do-work-bl
 out=$(printf '%s' "$fixture_eventgate_no_marker" | classify --probe-verdicts '{"2006":"changed"}')
 assert_equals "$(verdict_of "$out" 2006)" "drop:time-gated" "(35g) an unrelated --probe-verdicts entry for an issue with no do-work-recheck marker is ignored -- plain time-gated calendar logic applies unchanged"
 
+# --- someday-milestone (issue #1406) -----------------------------------------
+# A THIRD, distinct park mechanism from time-gate/event-gate above: an issue
+# whose milestone matches the configured --someday-milestone title drops
+# unconditionally, with no probe and no calendar involved. Off by default
+# (empty --someday-milestone never matches any real milestone).
+
+fixture_someday='[
+  {"number":3101,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":"6 · Someday"},
+  {"number":3102,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":"1 · Foundation"},
+  {"number":3103,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":null},
+  {"number":3104,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":3105,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":"6 ·   someday  "},
+  {"number":3106,"title":"t","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01","milestone":"6 · Someday, maybe"}
+]'
+out=$(printf '%s' "$fixture_someday" | classify --someday-milestone "Someday")
+assert_equals "$(verdict_of "$out" 3101)" "drop:someday-milestone" "(35l) issue in the configured Someday milestone drops with a distinct reason"
+assert_equals "$(field_of "$out" 3101 "evidence_pointer")" "milestone 6 · Someday" "(35m) someday-milestone drop carries an evidence_pointer citing the milestone title"
+assert_equals "$(verdict_of "$out" 3102)" "eligible" "(35n) issue in a different milestone is unaffected"
+assert_equals "$(verdict_of "$out" 3103)" "eligible" "(35o) unmilestoned issue (milestone: null) is unaffected"
+assert_equals "$(verdict_of "$out" 3104)" "eligible" "(35p) issue with no milestone key at all is unaffected"
+assert_equals "$(verdict_of "$out" 3105)" "drop:someday-milestone" "(35q) match is case-insensitive and tolerant of extra whitespace around the bare title"
+assert_equals "$(verdict_of "$out" 3106)" "eligible" "(35r) match is exact, not substring -- 'Someday, maybe' does not match configured 'Someday'"
+
+out=$(printf '%s' "$fixture_someday" | classify)
+assert_equals "$(verdict_of "$out" 3101)" "eligible" "(35s) off by default -- omitting --someday-milestone never drops a Someday-parked issue"
+
+out=$(printf '%s' "$fixture_someday" | classify --someday-milestone "")
+assert_equals "$(verdict_of "$out" 3101)" "eligible" "(35t) an explicit empty --someday-milestone is equivalent to omitting it"
+
 # --- eval-probes subcommand (issue #1356) ------------------------------------
 
 out=$(bash "$helper" eval-probes 2>&1); rc=$?
