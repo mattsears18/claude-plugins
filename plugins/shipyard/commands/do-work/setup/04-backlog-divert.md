@@ -280,25 +280,16 @@ The `-label:blocked:ci` filter is still correct because [step 3d's auto-clear sw
 
 Closes [#373](https://github.com/mattsears18/shipyard/issues/373) — the **cross-session DIRTY-PR blackhole**: a PR left `DIRTY` by a prior session is invisible to both steady-state (fix-rebase is drain-only) and the drain (it's not in `session_prs`), forever, until a human rebases it manually. See [RATIONALE → Step 5.7 cross-session DIRTY-PR blackhole](../../do-work-RATIONALE.md#step-57--the-cross-session-dirty-pr-blackhole-issue-373) for the full failure mechanism and the `mattsears18/lightwork` repro (PRs #1355/#1361/#1364/#1371 stranded 24+ hours).
 
-This step snapshots the inherited DIRTY PRs authored by `@me` and seeds them into `session_prs` at setup, so the existing drain machinery owns them — no new dispatch surface. The drain's per-poll `D_dirty` classifier then dispatches a fix-rebase worker for each (subject to the same `--concurrency` cap, `rebase_blocked_prs` gate, and 3-successful-rebase rate cap that govern session-opened DIRTY PRs). Query source is a direct DIRTY-PR query, not `failed_prs` (which holds only red-check PRs and would miss the DIRTY-but-green repro case) — projected the same `@me` + healthy-checks way the drain's `D_dirty` set already is.
+This step snapshots the inherited DIRTY PRs authored by `@me` and seeds them into `session_prs` at setup, so the existing drain machinery owns them — no new dispatch surface. The drain's per-poll `D_dirty` classifier then dispatches a fix-rebase worker for each (subject to the same `--concurrency` cap, `rebase_blocked_prs` gate, and 3-successful-rebase rate cap that govern session-opened DIRTY PRs). Query source is a direct DIRTY-PR query, not `failed_prs` (which is scoped to red-check PRs and would miss the DIRTY-but-green case) — projected the same `@me` + `mergeStateStatus == "DIRTY"` way the drain's `D_dirty` set already is.
 
-This read is part of the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it can fire in parallel with steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5. Query `@me`-authored open PRs and keep those whose `mergeStateStatus == "DIRTY"` AND whose latest-run-per-name check rollup has **no** hard failure (the drain's [`D_dirty` definition](../drain.md#drain-protocol) — a PR that's both DIRTY *and* red is fix-checks work, not rebase work, and the step-5 scan already enqueued it):
+This read is part of the [setup parallelization batch](00-config-worktree.md#07-setup-parallelization-contract-fire-once-batch) — it can fire in parallel with steps 1 / 2 / 3d.1 / 3d.2 / 4.5a / 4.5b / 5. Query `@me`-authored open PRs and keep those whose `mergeStateStatus == "DIRTY"`, regardless of check colour — matching the drain's [`D_dirty` definition](../drain.md#drain-protocol) exactly: as of [#1060](https://github.com/mattsears18/shipyard/issues/1060), `mergeStateStatus == "DIRTY"` alone routes a PR to `fix-rebase`, because no check can be queued or refreshed while a PR is DIRTY — a failing check on a DIRTY PR is a frozen fossil of the last buildable base, not live evidence about the PR's current health, so it's never a reason to withhold the PR from this seed. (`drain.md`'s `D_dirty_red` is an *informational* subset of `D_dirty` for the status line only, never a routing distinction — this seed doesn't need to reproduce that split, since the drain re-derives `D_dirty_red` itself from a fresh rollup read at poll time.)
 
 ```bash
 inherited_dirty_pr_numbers=$(gh pr list --repo <owner/repo> --state open --author @me \
   --search '-is:draft' \
-  --json number,mergeStateStatus,statusCheckRollup \
+  --json number,mergeStateStatus \
   --limit 200 \
-  --jq '[.[]
-    | select(.mergeStateStatus == "DIRTY")
-    | select(
-        [.statusCheckRollup
-         | group_by(.name)
-         | map(sort_by(.completedAt // .startedAt // "") | last)
-         | .[]
-         | select((.conclusion // .state // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
-        | length == 0)
-    | .number]')
+  --jq '[.[] | select(.mergeStateStatus == "DIRTY") | .number]')
 ```
 
 Append each number to `session_prs`, **deduped** against entries already there (a PR this session opened and that has since gone DIRTY is already in `session_prs` — don't double-add). The dedup also means re-running this step is idempotent. Do NOT mark these PRs in any other queue (`failed_prs`, `ready_issues`, `divert_queue`) — `session_prs` membership is the entire mechanism; the drain's existing classifier does the rest. See [RATIONALE → Step 5.7](../../do-work-RATIONALE.md#step-57--the-cross-session-dirty-pr-blackhole-issue-373) for why this seeds at setup rather than re-querying inside drain.
