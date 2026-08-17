@@ -138,7 +138,8 @@ DEFAULTS_JQ='{
   "backlog": {
     "respect_assignees": false,
     "self_assign": false,
-    "someday_milestone": ""
+    "someday_milestone": "",
+    "someday_recheck_days": 30
   },
   "labels": {
     "session_stamp": "shipyard",
