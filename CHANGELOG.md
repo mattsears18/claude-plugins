@@ -4,6 +4,15 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.40.6 — 2026-08-17
+
+P2 (closes #1439): step 5.7's inherited-DIRTY seed in `04-backlog-divert.md` still filtered to DIRTY-*and*-green PRs, citing the pre-#1060 rule that a DIRTY-and-red PR is fix-checks work. #1060 inverted that routing — a DIRTY PR routes to `fix-rebase` regardless of check colour, since no check can queue or refresh while a PR is DIRTY — so the filter's premise was stale even though its rationale sentence still cited the superseded rule.
+
+- **`plugins/shipyard/commands/do-work/setup/04-backlog-divert.md`** step 5.7's `jq` filter now selects on `mergeStateStatus == "DIRTY"` alone (dropped the no-hard-failure `select`, and the now-unused `statusCheckRollup` field from the `--json` projection); the surrounding rationale prose cites #1060's DIRTY-routes-to-fix-rebase rule instead of the superseded fix-checks routing.
+- Kept `steady-state.md`'s step-D cross-reference to this seed, and `do-work-RATIONALE.md`'s step 5.7 writeup, consistent with the corrected filter (both previously described the now-removed "healthy checks" predicate).
+- `drain.md`'s `D_dirty_red` informational subset is unchanged — it's derived independently from a live rollup read at poll time, not from this seed's output, so the red/green distinction stays reportable.
+- Left the optional stretch goal (seeding on the first idle turn at `--concurrency 1` rather than waiting for step D's periodic refresh) as a follow-up — the lazy-load carve-out already hands this off to step D's sub-step 2 the same session, and widening the seed trigger is a separate, larger change than this filter fix.
+
 ### 4.40.4 — 2026-08-17
 
 P1: closes #1433. A `fix-rebase` bail return blends genuinely-verified facts (which file conflicted, and why the marker shape made it non-trivial) with an unverified causal reading of the conflict ("main added X"; "the correct merge is very likely union both") — asserted in the same confident voice as the facts, with nothing in the mode requiring the causal half to be checked. Live repro this session (`mattsears18/lightwork` PR #4157, `do-work-20260816T171356Z-9805`): a worker asserted `main added Algolia domains` from conflict-marker shape alone and suggested unioning both sides into a CSP `connect-src`; `git log` against `origin/main` shows main had actually *removed* those origins (a prior security-motivated PR), so the suggested union would have silently re-widened a production CSP. The bail itself was correct — only the narrative bolted onto it was wrong.
