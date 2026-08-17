@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.40.2 — 2026-08-17
+
+P1: closes #1434. `backlog-filter.sh`'s `time_gate_future` matcher deliberately honors `<!-- do-work-blocked-until: YYYY-MM-DD -->` only on line 1 of the issue body (protects against matching the marker text merely quoted in prose elsewhere in the body), but nowhere that instructs an orchestrator to *write* the marker said so — an orchestrator that appended it anywhere else produced a silent no-op defer: the diagnosis comment posts, the marker is visibly present, and the issue stays fully dispatch-eligible. Hit live this session deferring #1415.
+
+- **`commands/do-work.md`**'s `deferred_issues` entry now states the line-1 requirement for both the `time-gated` write and the `external-dependency` recheck-marker write (#1195), which shares the same marker shape.
+- **`commands/do-work/setup/06-scope-preflight.md`**'s `time-gated` class description states the line-1 requirement and the deliberate contrast with the separate `<!-- do-work-someday-recheck -->` marker (#1422), which is scanned multiline **by design** — orchestrator-written/orchestrator-read only, no human placement convention to protect. The two conventions stay documented as distinct.
+- **`commands/do-work/setup/06c-scope-handling-ui.md`**'s Recording path (steps 4a/4b, the actual write sites) now states the line-1 requirement inline and strengthens the post-write read-back check from a bare presence grep to a line-1-anchored match — a marker that landed off line 1 now prints a loud `SILENT NO-OP defer` warning instead of passing a check that only confirmed the marker existed *somewhere* in the body. Kept deliberately terse: this file already sits in the `setup/` token-budget warn band (#1430, 59147/60000 bytes after this change) and the structural split is a deferred follow-up (#1431).
+
 ### 4.40.1 — 2026-08-17
 
 P1: closes #1430. `06c-scope-handling-ui.md` sat 109 bytes under the 60,000-byte `setup/` token-budget cap, and any ordinary edit tripped CI late — two separate PRs (#1427, #1428) hit this in the same session before the file's own size dropped when #1427 relocated ~5KB of prose out to `do-work-RATIONALE.md`. The structural split (this issue's AC1/AC2) is deferred to a follow-up (#1431) because PR #1428 is still open, in `blocked rebase`, and already collided with #1427 in three hunks of that same file — splitting it now would very likely strand #1428 entirely.

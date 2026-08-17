@@ -159,7 +159,7 @@
 
      This is the keystone that converts the silent diagnosis comment into a tracked handoff: it exits the issue from the re-scope loop — `/do-work` stops re-scoping it every session (both `agent-console` and `needs-human-review` are in the [step 4 dispatch-exclusion set](04-backlog-divert.md#4-fetch--rank-the-backlog) below) — and routes it to the right queue: an `agent-console` issue surfaces to `/my-turn` as a human-actionable operator item **and** becomes drainable by `/do-work` ([#608](https://github.com/mattsears18/shipyard/issues/608)); a `needs-human-review` issue surfaces to `/my-turn` as a human-blocked decision. See [RATIONALE → needs-human-review extended (#536)](../../do-work-RATIONALE.md#binary-backlog-phase-3--needs-human-review-extended-to-external-dependency--human-decision-required-defers-issue-536) for the failure mode a missing gate label caused, and step 2 above for the marker table that discriminates the classes. **Split the mutations** — if this defer path also clears the `@me` self-assign, run `--remove-assignee @me` as its **own** `gh issue edit` call, never combined with `--add-label` in one atomic invocation; otherwise a missing-label failure drops the unassign too (issue [#508](https://github.com/mattsears18/shipyard/issues/508)). If the `gh issue edit` fails (rate limit, permission), the read-back warning fires and the diagnosis comment from step 2 is still posted. **For the two classes that never applied any label to begin with** (`untrusted-author`, `confirmed-blocker-still-open`) do **not** apply `needs-human-review` here — see step 2's marker table for their own auto-recovery paths. In all cases: do not close the issue, do not assign to a human.
 
-  4a. **`time-gated` only — write the self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker instead of a label** ([#1165](https://github.com/mattsears18/shipyard/issues/1165)). Run this step only when `$DEFER_REASON_CLASS == "time-gated"`; skip it entirely for every other class. Extract `<date>` from the validated `evidence_pointer` (the `YYYY-MM-DD` token immediately after the `Time-gate:` prefix — already confirmed parseable and future-dated by the [evidence validation](#handling-each-returned-entry-fires-as-each-background-agent-completes) above). Prepend the marker to the issue **body** — never a comment, since the [step-4 dispatch filter](04-backlog-divert.md#4-fetch--rank-the-backlog) reads directly from the body, exactly mirroring how a human hand-writes it per [#1161](https://github.com/mattsears18/shipyard/issues/1161):
+  4a. **`time-gated` only — write the self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` body marker instead of a label** ([#1165](https://github.com/mattsears18/shipyard/issues/1165)). Run this step only when `$DEFER_REASON_CLASS == "time-gated"`; skip it entirely for every other class. Extract `<date>` from the validated `evidence_pointer` (the `YYYY-MM-DD` token immediately after the `Time-gate:` prefix — already confirmed parseable and future-dated by the [evidence validation](#handling-each-returned-entry-fires-as-each-background-agent-completes) above). **Prepend, as line 1 — never appended or inserted elsewhere** — the [step-4 dispatch filter](04-backlog-divert.md#4-fetch--rank-the-backlog) matches line 1 only ([#1434](https://github.com/mattsears18/shipyard/issues/1434)), mirroring [#1161](https://github.com/mattsears18/shipyard/issues/1161):
 
      ```bash
      CURRENT_BODY=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body')
@@ -175,17 +175,17 @@
 $CURRENT_BODY"
      fi
      gh issue edit <N> --repo <owner/repo> --body "$NEW_BODY"
-     # Read back and warn loudly if the marker still isn't present — a silent
-     # no-op here means the issue keeps getting re-scoped every session,
-     # exactly the waste this class exists to eliminate.
-     if ! gh issue view <N> --repo <owner/repo> --json body --jq '.body' | grep -q '<!-- do-work-blocked-until:'; then
-       echo "[scope-preflight] WARNING: #<N> do-work-blocked-until body marker did not land — issue will be re-scoped next session instead of self-clearing"
+     # Verify LINE 1, not mere presence -- the filter matches line 1 only
+     # (#1434), so an off-line-1 marker is a silent no-op this catches loudly.
+     READBACK_FIRST_LINE=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body' | head -1)
+     if ! echo "$READBACK_FIRST_LINE" | grep -qE '^<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->$'; then
+       echo "[scope-preflight] WARNING: #<N> do-work-blocked-until marker not on line 1 (line 1 was: \"$READBACK_FIRST_LINE\") — SILENT NO-OP defer, filter only matches line 1 (#1434)"
      fi
      ```
 
      No label is applied — not `needs-human-review`, not `agent-console`. The marker alone gates via the [step-4 client-side filter](04-backlog-divert.md#4-fetch--rank-the-backlog) — drops while `today < date`, re-admits at date elapsed.
 
-  4b. **Write a self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker** when `$DEFER_REASON_CLASS == "external-dependency"` ([#1195](https://github.com/mattsears18/shipyard/issues/1195)):
+  4b. **Write a self-clearing `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker** when `$DEFER_REASON_CLASS == "external-dependency"` ([#1195](https://github.com/mattsears18/shipyard/issues/1195)). Same line-1-only constraint as 4a ([#1434](https://github.com/mattsears18/shipyard/issues/1434)):
 
      ```bash
      export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
@@ -211,8 +211,10 @@ $CURRENT_BODY"
      if [ "$NEW_BODY" != "$CURRENT_BODY" ]; then
        gh issue edit <N> --repo <owner/repo> --body "$NEW_BODY"
      fi
-     if ! gh issue view <N> --repo <owner/repo> --json body --jq '.body' | grep -q '<!-- do-work-blocked-until:'; then
-       echo "[scope-preflight] WARNING: #<N> do-work-blocked-until marker did not land"
+     # Same line-1 read-back verification as 4a (#1434).
+     READBACK_FIRST_LINE=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body' | head -1)
+     if ! echo "$READBACK_FIRST_LINE" | grep -qE '^<!-- do-work-blocked-until: [0-9]{4}-[0-9]{2}-[0-9]{2} -->$'; then
+       echo "[scope-preflight] WARNING: #<N> do-work-blocked-until marker not on line 1 (line 1 was: \"$READBACK_FIRST_LINE\") — SILENT NO-OP defer (#1434)"
      fi
      ```
 
