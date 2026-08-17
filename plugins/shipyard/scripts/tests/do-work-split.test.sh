@@ -3494,6 +3494,67 @@ assert_contains "$cleanup_path" \
   'not folded into it' \
   "cleanup-summary.md explains why the queued-behind-PRs count is reported separately from Deferred: (#1426)"
 
+# (T) blocked-by-in-flight-pr becomes a REQUEUE signal, not just a diagnosis
+# (issue #1429, point 2 of #1426's own acceptance criteria). A self-clearing
+# `do-work-blocked-by-prs` body marker (step 4e) plus backlog-filter.sh
+# classify's --pr-collision-verdicts map (populated by eval-pr-collision, an
+# unconditional precompute wired into classify-backlog.sh) drop the issue
+# from the workable set while any blocking_prs entry is OPEN and re-admit it
+# to a FRESH scope-agent pass the instant every entry resolves -- without
+# waiting for pre-drain re-validation or a fresh session. Cache-reuse (skip
+# the fresh scope-agent dispatch entirely) plus the semantic premise
+# re-validation that reuse would require is deliberately NOT shipped here --
+# tracked as its own follow-up (#1448) per #1429's own instruction to ship a
+# coherent slice rather than half-wire the unsafe optimization.
+
+assert_contains "$setup_path" \
+  'do-work-blocked-by-prs: N,M -->' \
+  "setup.md documents the do-work-blocked-by-prs self-clearing marker for blocked-by-in-flight-pr (#1429)"
+assert_contains "$setup_path" \
+  'issues/1429' \
+  "setup.md cites issue #1429 as the source of the pr-collision requeue marker"
+assert_contains "$setup_path" \
+  'issues/1448' \
+  "setup.md cites the #1448 follow-up for the still-unwired cache-reuse + semantic re-validation optimization"
+
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  '4e. **`blocked-by-in-flight-pr` only' \
+  "06c-scope-handling-ui.md's step 4e writes the self-clearing marker for blocked-by-in-flight-pr, mirroring step 4a's time-gated marker (#1429)"
+assert_contains "$setup_path" \
+  'never appended or inserted elsewhere' \
+  "step 4e enforces the same line-1-only position discipline as do-work-blocked-until, not do-work-recheck's any-line convention (#1429)"
+
+# The gate-label case statement must still apply NO label to this class --
+# the marker gates dispatch eligibility now, not a label.
+assert_contains "$setup_path" \
+  'blocked-by-in-flight-pr)  GATE_LABEL="" ;;' \
+  "setup.md gate-label case statement still applies no label to blocked-by-in-flight-pr after #1429"
+
+# do-work.md canonical deferred_issues prose must document the marker and
+# the still-open cache-reuse follow-up.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$do_work_path" \
+  '`<!-- do-work-blocked-by-prs: N,M -->` body marker' \
+  "do-work.md deferred_issues prose documents the blocked-by-in-flight-pr self-clearing marker (#1429)"
+assert_contains "$do_work_path" \
+  'CAN become dispatch-eligible without waiting for pre-drain re-validation or a fresh session' \
+  "do-work.md documents that the marker changes dispatch eligibility on its own, unlike the pre-#1429 behavior"
+assert_contains "$do_work_path" \
+  'issues/1448' \
+  "do-work.md cross-references the #1448 cache-reuse follow-up"
+
+# drain.md 5.b must now describe itself as a backstop, not the primary
+# trigger, now that the marker gates at every ordinary backlog fetch.
+assert_contains "$drain_path" \
+  'This 5.b check is now a backstop, not the primary trigger' \
+  "drain.md 5.b documents that the self-clearing marker (not pre-drain re-validation) is now the primary blocked-by-in-flight-pr requeue trigger (#1429)"
+assert_contains "$drain_path" \
+  'PR-COLLISION-gated' \
+  "drain.md's mechanical-filter enumeration (step 4/termination-assertion) includes the new PR-collision gate reason (#1429)"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

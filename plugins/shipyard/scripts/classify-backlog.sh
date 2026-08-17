@@ -67,6 +67,11 @@
 #       - when `scope.recheck_probe_enabled` resolves true, runs
 #         `backlog-filter.sh eval-probes` against --issues-file (falls back
 #         to `{}` on any failure, same posture);
+#       - unconditionally runs `backlog-filter.sh eval-pr-collision` against
+#         --issues-file (issue #1429) — no kill-switch gate, since the
+#         underlying probe is a fixed `gh pr view --json state` call, not
+#         the arbitrary allowlisted-verb grammar `eval-probes` guards
+#         (falls back to `{}` on any failure, same posture);
 #       - feeds every resolved input into `backlog-filter.sh classify`,
 #         reading --issues-file as stdin;
 #       - pipes the resulting NDJSON into `backlog-filter.sh
@@ -181,6 +186,8 @@ case "$sub" in
       probe_verdicts_json=$("$BACKLOG_FILTER" eval-probes --repo "$repo" < "$issues_file" 2>/dev/null || echo "{}")
     fi
 
+    pr_collision_verdicts_json=$("$BACKLOG_FILTER" eval-pr-collision --repo "$repo" < "$issues_file" 2>/dev/null || echo "{}")
+
     # --- Classify ------------------------------------------------------------
     classify_out=$("$BACKLOG_FILTER" classify \
       --me "$me" \
@@ -195,6 +202,7 @@ case "$sub" in
       --milestones-prioritize-dispatch "$milestones_prioritize_dispatch" \
       --recheck-probe-enabled "$recheck_probe_enabled" \
       --probe-verdicts "$probe_verdicts_json" \
+      --pr-collision-verdicts "$pr_collision_verdicts_json" \
       --someday-milestone "$someday_milestone" \
       --someday-recheck-days "$someday_recheck_days" \
       < "$issues_file")
