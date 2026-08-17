@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.40.8 — 2026-08-17
+
+P2 (closes #1441): step 5's `failed_prs` snapshot in `04-backlog-divert.md` had no `mergeStateStatus != "DIRTY"` exclusion, unlike `drain.md`'s `R_new` (load-bearing since #1060). A DIRTY-and-red PR could still be popped into `failed_prs` and dispatched to `fix-checks-only`, which trips that mode's own DIRTY short-circuit and bails with `dirty #<M>` without attempting anything.
+
+- **`plugins/shipyard/commands/do-work/setup/04-backlog-divert.md`** step 5's `jq` filter now adds `$pr.mergeStateStatus != "DIRTY"` to the outer `select`, covering both the failing-check branch and the `BLOCKED`-with-zero-pending branch (#1435) — a DIRTY PR's rollup isn't reliably empty, so either branch could vacuously match without this guard. `steady-state.md`'s step-D sub-step 2 inherits the fix automatically (it re-runs the step-5 query by reference, not an inline duplicate).
+- Corrected the adjacent rationale prose, which had claimed DIRTY was "excluded by construction" via the `BLOCKED` guard alone — that was never true for the failing-check branch, which is exactly this bug.
+
 ### 4.40.7 — 2026-08-17
 
 Minor: Condensed verbose prose in `steady-state.md` to stay under the 256KB Read limit without losing essential content about BLOCKED-PR classification logic.
