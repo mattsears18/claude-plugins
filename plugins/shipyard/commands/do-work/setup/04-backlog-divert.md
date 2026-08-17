@@ -258,21 +258,25 @@ Filter to PRs where the **latest run per check name** has `conclusion in {FAILUR
 
 **Use the latest-per-name projection, not a naïve rollup walk** (issue [#333](https://github.com/mattsears18/shipyard/issues/333)). Same reasoning as step 4.5b above: `statusCheckRollup` returns every check run for the head SHA, and stale FAILURE entries superseded by later SUCCESS would otherwise re-enqueue PRs into `failed_prs` that are actually green. The orchestrator then dispatches a fix-checks worker, which returns `noop: already green` — wasted dispatch slot and tokens. De-duplicate first:
 
+**Second discriminator — `mergeStateStatus == "BLOCKED"` with zero pending checks ([#1435](https://github.com/mattsears18/shipyard/issues/1435)).** A pure "latest conclusion is FAILURE" scan is blind to one real case: a required status-check *context* that never triggered a run at all (a renamed/disabled workflow, a required-check name that no longer maps to any job) never appears in `statusCheckRollup`, so it never matches the FAILURE-conclusion test above — yet GitHub still reports the PR as `BLOCKED` forever, because the required context is simply never satisfied. `BLOCKED` ∧ zero checks currently pending/in-progress is definitionally not queue latency (a healthy PR's `BLOCKED` clears the moment its last pending check resolves) — it is a second, independent signal that something needs fixing, and it doesn't require any check to have explicitly failed. Both discriminators are cheap: they read the same `statusCheckRollup` payload already being fetched, with no additional `gh` call.
+
 ```bash
 failed_pr_numbers=$(gh pr list --repo <owner/repo> --state open --author @me \
   --search '-label:blocked:ci -is:draft' \
   --json number,title,headRefName,statusCheckRollup,mergeStateStatus \
   --limit 100 \
-  --jq '[.[] | select(
-    [.statusCheckRollup
-     | group_by(.name)
-     | map(sort_by(.completedAt // .startedAt // "") | last)
-     | .[]
-     | select((.conclusion // .state // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))]
-    | length > 0)]')
+  --jq '[.[] | . as $pr
+    | ($pr.statusCheckRollup | group_by(.name) | map(sort_by(.completedAt // .startedAt // "") | last)) as $latest
+    | ($latest | map(select((.conclusion // .state // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))) | length) as $fails
+    | ($latest | map(select(((.conclusion // null) == null) and ((.state // .status // "") | test("PENDING|IN_PROGRESS|QUEUED|EXPECTED")))) | length) as $pending
+    | select($fails > 0 or ($pr.mergeStateStatus == "BLOCKED" and $pending == 0))]')
 ```
 
 Each entry → push onto `failed_prs`, **deduped against entries already in `failed_prs`** (step 3c may already have enqueued some). These are the highest-priority work items *after* `divert_queue` because a red PR you opened last session won't auto-merge no matter how many new issues you ship. Note: this query is `@me`-scoped on purpose — `failed_prs` is for fix-checks work on PRs *you authored*. The all-authors count from step 4.5b feeds the divert decision, not this queue.
+
+**Why `BLOCKED` alone is never the trigger — the `$pr.mergeStateStatus == "BLOCKED"` guard is deliberately narrower than "not mergeable" ([#1435](https://github.com/mattsears18/shipyard/issues/1435)).** `DIRTY` is excluded by construction (the literal string doesn't match `"BLOCKED"`) — a DIRTY PR routes to `fix-rebase`, never `fix-checks`, per [`dont.md`'s #1060 rule](../dont.md); a DIRTY PR's rollup is also empty by construction (no merge ref, so nothing ever queues), so it would otherwise vacuously satisfy `$pending == 0` and get misrouted if this guard were missing. A `BLOCKED` PR whose block reason is a required **review**, not CI (fails == 0, pending == 0, but nothing to fix in code) is a rarer false positive this discriminator accepts: the dispatched `fix-checks-only` worker reads the live rollup itself, finds nothing red, and returns `noop: already green #<M>` — a bounded one-dispatch cost, not a correctness bug, and cheaper than leaving a genuinely-stuck PR silent indefinitely (the failure mode this closes).
+
+**Classification, not one state.** A session PR's blocked-ness now resolves to one of three causes, never treated as a single undifferentiated `BLOCKED`: **conflict** (`mergeStateStatus == "DIRTY"` → routed to `fix-rebase` via `session_prs`, per step 5.7 / the drain's `D_dirty` classifier), **red** (an explicit failing required check, or `BLOCKED` with zero pending — both land in `failed_prs` → `fix-checks-only`), and **pending** (`BLOCKED` or otherwise unmergeable with checks still queued/running — genuinely healthy queue wait, left alone). **A merge-train watcher that only tracks open-vs-closed PR count cannot see any of this** — a permanently red-blocked PR and a PR steadily progressing through a busy CI queue both read as "still open," so silence from such a watcher is not evidence of progress. Don't infer "settling" from open-vs-closed alone; the classification above is what actually distinguishes them.
 
 The `-label:blocked:ci` filter is still correct because [step 3d's auto-clear sweep](01c-label-recovery-refine.md#3-ensure-label-exists--recover-from-prior-session) already ran — refreshed PRs are unlabeled by 3d and flow through normally; only genuinely-stuck PRs still carry the label here. See [RATIONALE → Step 5 filter correctness](../../do-work-RATIONALE.md#step-5--why-the--labelblockedci-filter-is-still-correct).
 
