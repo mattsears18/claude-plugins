@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.40.7 — 2026-08-17
+
+Minor: Condensed verbose prose in `steady-state.md` to stay under the 256KB Read limit without losing essential content about BLOCKED-PR classification logic.
+
+- **`plugins/shipyard/commands/do-work/steady-state.md`** step 2's prose was trimmed while preserving the mechanism: how BLOCKED PRs with zero pending checks are classified as red (not queue latency) and dispatched to fix-checks-only immediately after merge events.
+
 ### 4.40.6 — 2026-08-17
 
 P2 (closes #1439): step 5.7's inherited-DIRTY seed in `04-backlog-divert.md` still filtered to DIRTY-*and*-green PRs, citing the pre-#1060 rule that a DIRTY-and-red PR is fix-checks work. #1060 inverted that routing — a DIRTY PR routes to `fix-rebase` regardless of check colour, since no check can queue or refresh while a PR is DIRTY — so the filter's premise was stale even though its rationale sentence still cited the superseded rule.
@@ -12,6 +18,15 @@ P2 (closes #1439): step 5.7's inherited-DIRTY seed in `04-backlog-divert.md` sti
 - Kept `steady-state.md`'s step-D cross-reference to this seed, and `do-work-RATIONALE.md`'s step 5.7 writeup, consistent with the corrected filter (both previously described the now-removed "healthy checks" predicate).
 - `drain.md`'s `D_dirty_red` informational subset is unchanged — it's derived independently from a live rollup read at poll time, not from this seed's output, so the red/green distinction stays reportable.
 - Left the optional stretch goal (seeding on the first idle turn at `--concurrency 1` rather than waiting for step D's periodic refresh) as a follow-up — the lazy-load carve-out already hands this off to step D's sub-step 2 the same session, and widening the seed trigger is a separate, larger change than this filter fix.
+
+### 4.40.5 — 2026-08-17
+
+P1: closes #1435. A session PR with auto-merge armed and a red (or never-triggered) required check reported `mergeStateStatus == "BLOCKED"` — the exact same value a perfectly healthy PR shows while its checks are still queued. Nothing distinguished the two, so a stuck PR read as ordinary queue latency indefinitely (the repro: PR #4159 in `mattsears18/lightwork` sat `OPEN` / `BLOCKED` / auto-merge-armed for ~8 hours before a human happened to notice). The fix wires the cheap discriminator the issue itself called out: `BLOCKED` with zero pending checks is definitionally not queue latency, since a healthy PR's `BLOCKED` clears the instant its last pending check resolves.
+
+- **`commands/do-work/setup/04-backlog-divert.md`**'s step 5 failed-PR scan now enqueues a PR into `failed_prs` when either its rollup shows an explicit failing required check, OR its `mergeStateStatus` is `BLOCKED` with zero checks currently pending — the second condition also catches a required check that never triggered a run at all (a renamed/disabled workflow), which the pure explicit-failure scan is structurally blind to since a never-run check never appears in `statusCheckRollup`. `DIRTY` PRs are excluded by construction (the literal string doesn't match `"BLOCKED"`), preserving #1060's DIRTY-routes-to-fix-rebase-not-fix-checks rule.
+- **`commands/do-work/steady-state.md`**'s D-tail cross-PR dependency-update sweep applies the same classification using the batched rollup read it already performs for every `session_prs` member — this fires immediately after a merge-completion event rather than waiting for the next periodic refresh.
+- **`commands/do-work/dont.md`** adds a rule against treating `BLOCKED` as one undifferentiated state or inferring "still settling" from open-vs-closed PR counts alone.
+- Ran `rollup-latest-per-name.test.sh`, `compound-block-scan.test.sh`, `backlog-filter.test.sh`, and `do-work-split.test.sh` locally; all green (503+119+119 assertions relevant to the changed files). Full battery left to required CI.
 
 ### 4.40.4 — 2026-08-17
 
