@@ -1792,8 +1792,8 @@ assert_contains "$dont_path" \
   "Don't hand a workable issue to the human" \
   "dont.md carries the attempt-then-escalate dispatch-loop rule (#531)"
 assert_contains "$dont_path" \
-  'match none of the six' \
-  "dont.md ties the invalid defer rationalizations to the six defer_reason_class values (#531, #1165)"
+  'match none of the seven' \
+  "dont.md ties the invalid defer rationalizations to the seven defer_reason_class values (#531, #1165, #1426)"
 assert_contains "$rationale_path" \
   'Self-filed follow-ups re-enter the backlog like any other issue' \
   "RATIONALE.md states self-filed follow-ups re-enter the backlog (#531)"
@@ -1992,8 +1992,8 @@ assert_contains "$setup_path" \
 
 # The three-branch enumeration must be present (missing / present-but-invalid / valid).
 assert_contains "$setup_path" \
-  'Present but not one of the six valid tokens' \
-  "setup.md recording path enumerates the present-but-invalid branch (#547, #1165)"
+  'Present but not one of the seven valid tokens' \
+  "setup.md recording path enumerates the present-but-invalid branch (#547, #1165, #1426)"
 
 # The inference rules must cite the evidence_pointer shape for normalization.
 assert_contains "$setup_path" \
@@ -2587,12 +2587,13 @@ assert_contains "$setup_path" \
   "setup.md re-gate guard's rejection log line cites issue #962"
 
 # The guard must scope itself to the two needs-human-review-gating classes,
-# not external-dependency (which gates agent-console instead).
+# not external-dependency (which gates agent-console instead), and not
+# time-gated / blocked-by-in-flight-pr (which gate with no label at all).
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
 assert_contains "$setup_path" \
-  'external-dependency` gates with `agent-console` instead and `time-gated` gates with no label at all' \
-  "setup.md re-gate guard scopes itself to human-decision-required / confirmed-non-shippable-as-single-PR (#962, #1165)"
+  'external-dependency` gates with `agent-console` instead, and `time-gated` / `blocked-by-in-flight-pr` gate with no label at all' \
+  "setup.md re-gate guard scopes itself to human-decision-required / confirmed-non-shippable-as-single-PR (#962, #1165, #1426)"
 
 # ── Issue #997 — worker must re-read issue state before posting a decision;
 #    /my-turn can resolve the same issue mid-dispatch ──────────────────────
@@ -2940,8 +2941,8 @@ assert_contains "$cleanup_path" \
   'confirmed-non-shippable-as-single-PR` / `time-gated`' \
   "cleanup-summary.md Deferred: line bracket enumeration includes time-gated (#1165)"
 assert_contains "$dont_path" \
-  'match none of the six' \
-  "dont.md dispatch-loop rule updated to the six-value defer_reason_class enum (#1165)"
+  'match none of the seven' \
+  "dont.md dispatch-loop rule updated to the seven-value defer_reason_class enum (#1165, #1426)"
 
 # (R) The step-4 do-work-blocked-until extraction must disambiguate a LIVE
 # marker from the same literal string merely quoted in prose — e.g. a doc
@@ -3390,6 +3391,108 @@ assert_contains "$rationale_path" \
 assert_contains "$rationale_path" \
   'reintroducing the exact N−1-PRs-go-DIRTY collision #437 exists to prevent' \
   "RATIONALE.md explains why a naive session_prs-gated compute() fold-in would break batch monotonicity (#1417)"
+
+# (S) A seventh `defer_reason_class`, `blocked-by-in-flight-pr`, distinguishes
+# an in-flight-PR file/content collision from a genuine issue-level
+# dependency, and defer_reason_class validation warns rather than silently
+# absorbing an unrecognized value (issue #1426).
+#
+# Repro: /shipyard:do-work --concurrency 4 against mattsears18/lightwork
+# returned 0 READY / 5 DEFERRED from a five-issue scope batch; three of the
+# five were file-collision-only, and one scope agent invented an unvalidated
+# "file-collision" defer_reason_class that passed silently. A second
+# collision (lightwork#4101) got bundled into confirmed-blocker-still-open
+# alongside a genuine issue-level blocker, making the two indistinguishable
+# in the deferred_issues ledger.
+#
+# This slice ships the class + its validation + its own summary line
+# (points 1, 3, 4 of #1426's acceptance criteria). Point 2 — automatically
+# re-queuing the issue once every blocking_prs entry merges, reusing the
+# cached scope instead of paying for a second scope-agent dispatch — is
+# deliberately NOT wired here; see the tracking follow-up filed alongside
+# this PR.
+
+assert_contains "$setup_path" \
+  'issues/1426' \
+  "setup.md cites issue #1426 as the source of the blocked-by-in-flight-pr class"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  '`blocked-by-in-flight-pr` (' \
+  "setup.md defer_reason_class enum documents the blocked-by-in-flight-pr class (#1426)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'blocking_prs: [N, ...]' \
+  "setup.md documents the required blocking_prs companion field (#1426)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'MUST start with `Blocked by in-flight PR:`' \
+  "setup.md documents the Blocked by in-flight PR: evidence_pointer shape (#1426)"
+assert_contains "$setup_path" \
+  'when the collision is semantic rather than merely textual' \
+  "setup.md carve-out captures the #4148 semantic-collision case, not just a textual file-path citation (#1426)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'Not the right class for a PR that merely holds the files this issue needs to edit' \
+  "setup.md cross-references confirmed-blocker-still-open away from pure PR/file collisions (#1426)"
+
+# defer_reason_class validation must warn on an unrecognized value rather than
+# silently absorbing it (point 3 of #1426).
+assert_contains "$setup_path" \
+  'WARNING:' \
+  "setup.md recording-path normalization explicitly warns on an unrecognized defer_reason_class value (#1426)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$setup_path" \
+  'This check runs BEFORE the `confirmed-blocker-still-open` check below' \
+  "setup.md orders the blocked-by-in-flight-pr shape check ahead of the bare #<digits> confirmed-blocker-still-open check, so a PR-collision pointer can't silently mis-normalize (#1426)"
+assert_contains "$setup_path" \
+  'the seven valid tokens' \
+  "setup.md's normalized-token enumeration has grown to seven (#1426)"
+
+# The gate-label logic must apply NO label to this class — it's a
+# self-clearing wait on a merge, not a human decision.
+assert_contains "$setup_path" \
+  'blocked-by-in-flight-pr)  GATE_LABEL="" ;;' \
+  "setup.md gate-label case statement applies no label to blocked-by-in-flight-pr (#1426)"
+
+# drain.md must re-validate blocking_prs entries the same way it re-validates
+# confirmed-blocker-still-open's #N references.
+assert_contains "$drain_path" \
+  'blocked-by-in-flight-pr' \
+  "drain.md 5.b per-class re-validation and pre-drain audit banner cover the blocked-by-in-flight-pr class (#1426)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$drain_path" \
+  'for every PR in `blocking_prs`; all must still be `OPEN`' \
+  "drain.md 5.b re-runs gh pr view against every blocking_prs entry (#1426)"
+
+# do-work.md canonical struct must carry the new class + companion field.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$do_work_path" \
+  '"time-gated" | "blocked-by-in-flight-pr"' \
+  "do-work.md canonical deferred_issues struct includes blocked-by-in-flight-pr in the defer_reason_class enum (#1426)"
+assert_contains "$do_work_path" \
+  'blocking_prs?: [N, ...]' \
+  "do-work.md canonical deferred_issues struct includes the blocking_prs companion field (#1426)"
+
+# cleanup-summary.md must report blocked-by-in-flight-pr entries on their own
+# line, excluded from the plain Deferred: count (point 4 of #1426).
+assert_contains "$cleanup_path" \
+  'Queued behind in-flight PRs (#1426):' \
+  "cleanup-summary.md renders a dedicated Queued behind in-flight PRs: template line (#1426)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$cleanup_path" \
+  'after excluding every `blocked-by-in-flight-pr` entry' \
+  "cleanup-summary.md's Deferred: line explicitly excludes blocked-by-in-flight-pr entries (#1426)"
+assert_contains "$cleanup_path" \
+  'not folded into it' \
+  "cleanup-summary.md explains why the queued-behind-PRs count is reported separately from Deferred: (#1426)"
 
 echo
 if (( fail > 0 )); then
