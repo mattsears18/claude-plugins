@@ -43,6 +43,16 @@
 # Pure bash, no external dependencies. CI auto-discovers this file via
 # tests.yml's `find plugins -type f -name '*.test.sh'`, so no workflow edit
 # is needed.
+#
+# Issue #1443: `--warn-check <path>` is a reusable, non-test invocation mode
+# so dispatch-rules.md's claimed_paths warn-band check can query this file's
+# own MAX_BYTES/WARN_BYTES thresholds instead of duplicating them as a
+# second, independently-drifting literal. Prints one of:
+#   WARN <bytes> <remaining>  -- in the warn band
+#   PASS <bytes>               -- under the warn band (or out of this test's
+#                                  setup/-only scope, or missing/unreadable)
+# and always exits 0 -- this mode never fails a build; only a bare (no-arg)
+# run of this file can FAIL.
 
 set -u
 
@@ -68,6 +78,24 @@ TOKEN_CAP=25000
 # Warn-on-approach threshold (issue #1430): 95% of MAX_BYTES. Non-fatal —
 # only MAX_BYTES failing the run.
 WARN_BYTES=$((57 * 1000))
+
+if [[ "${1:-}" == "--warn-check" ]]; then
+  target="${2:-}"
+  if [[ -n "$target" && -f "$target" ]]; then
+    target_dir="$(cd "$(dirname "$target")" && pwd)"
+    case "$target_dir/$(basename "$target")" in
+      "$setup_dir"/*)
+        bytes=$(wc -c < "$target" | tr -d ' ')
+        if (( bytes > WARN_BYTES )); then
+          echo "WARN $bytes $((MAX_BYTES - bytes))"
+          exit 0
+        fi
+        ;;
+    esac
+  fi
+  echo "PASS -"
+  exit 0
+fi
 
 pass=0
 warn=0

@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.41.0 — 2026-08-17
+
+Minor: ships #1430's deferred point 3 — dispatch-time visibility into the setup/ token-budget warn band, so a worker whose claimed paths already sit close to the cap finds out before pushing rather than after CI reds (closes #1443).
+
+- **`plugins/shipyard/scripts/tests/setup-phase-file-token-budget.test.sh`** gains a `--warn-check <path>` invocation mode that reports a single file's warn-band status (`WARN <bytes> <remaining>` / `PASS -`) against the suite's own existing `MAX_BYTES`/`WARN_BYTES` thresholds — the single source of truth for the cap, reused rather than duplicated.
+- **`plugins/shipyard/commands/do-work/dispatch-rules.md`** adds a "Claimed-paths token-budget-warn augmentation": at dispatch time, each candidate's `claimed_paths` is checked via `--warn-check`, and when a path is in the band, one advisory sentence naming the file, its size, and remaining headroom is appended to the dispatch prompt's Context block. Never gates, defers, or reorders dispatch.
+- **`plugins/shipyard/workflows/do-work-dispatch.workflow.js`** wires the same augmentation into `buildIssueWorkPrompt` (`unit.tokenBudgetWarning`) so the `Workflow`-substrate alternate shape renders it too, not just the default `Agent`-tool shape.
+
 ### 4.40.8 — 2026-08-17
 
 P2 (closes #1441): step 5's `failed_prs` snapshot in `04-backlog-divert.md` had no `mergeStateStatus != "DIRTY"` exclusion, unlike `drain.md`'s `R_new` (load-bearing since #1060). A DIRTY-and-red PR could still be popped into `failed_prs` and dispatched to `fix-checks-only`, which trips that mode's own DIRTY short-circuit and bails with `dirty #<M>` without attempting anything.

@@ -472,6 +472,25 @@ When filling a slot, walk this decision tree:
 
    The text comes verbatim from the scope-agent's `phase_1_scope` field; the orchestrator does not re-derive it. This makes the slice-vs-defer bias load-bearing at dispatch time: a worker told it's on a phase-1 slice still has the issue-work.md scope-discipline rules ("If you spot other bugs while in the code, file new issues — don't fix them here. Scope creep makes PRs unreviewable and stalls auto-merge.") and the explicit slice description tells the worker *which* items count as scope creep for this particular candidate. Absent a `phase_1_scope` field (the common case — single-phase issues), no paragraph is added and dispatch proceeds with the unmodified prompt.
 
+   **Claimed-paths token-budget-warn augmentation (advisory only, [#1443](https://github.com/mattsears18/shipyard/issues/1443)).** After `claimed_paths` is computed for the candidate (step 6), check each hard/soft path against the warn band [`setup-phase-file-token-budget.test.sh`](../../scripts/tests/setup-phase-file-token-budget.test.sh) already enforces, via that script's own `--warn-check <path>` mode — never re-derive the 60,000-byte cap as a second literal:
+
+   ```bash
+   token_budget_warning=""
+   for p in "${claimed_paths[@]}"; do
+     read -r verdict bytes remaining <<<"$("$CLAUDE_PLUGIN_ROOT/scripts/tests/setup-phase-file-token-budget.test.sh" --warn-check "$p")"
+     if [ "$verdict" = "WARN" ]; then
+       token_budget_warning="\`$p\` is already ${bytes} bytes, only ${remaining} bytes below the warn-band cap."
+       break
+     fi
+   done
+   ```
+
+   When `token_budget_warning` is non-empty, append a Context paragraph to the dispatch prompt between the `mode:` line and the Return values line:
+
+   > **Token-budget warn-band notice:** `<token_budget_warning>` Run `setup-phase-file-token-budget.test.sh` locally before pushing this file, and prefer condensing prose over extending it further. Advisory only — this never gates, defers, or reorders your dispatch.
+
+   Only ever fires when a claimed path resolves under `commands/do-work/setup/` — the only directory that script measures; the script itself reports `PASS -` (no paragraph added) for any path outside its scope or under its 57,000-byte warn floor, so the common case (no claimed path anywhere near the cap) costs one cheap `stat`-backed call per path and adds nothing to the prompt.
+
    **Operator-residual augmentation ([#851](https://github.com/mattsears18/shipyard/issues/851)).** <!-- dispatch-prompt-parity: waived — not yet rendered by buildIssueWorkPrompt; see #918 --> Not yet wired into `buildIssueWorkPrompt` — a `Workflow`-substrate dispatch of a candidate carrying `operator_residual` currently loses this Context paragraph ([#918](https://github.com/mattsears18/shipyard/issues/918)); the default `Agent`-tool shape is unaffected. When the candidate's `ready_issues` entry also carries an `operator_residual` field (populated by [setup.md step 6's operator-slice carve-out](./setup/06b-scope-carveouts.md#operator-slice-carve-out--ship-the-code-slice-hand-back-only-the-operator-remainder-851) — an `agent-console`/security-flavored obstacle with a shippable code slice split out), append a second Context paragraph immediately after the phase-1-slice paragraph above:
 
    > **Operator residual (scope-agent-supplied, #851):** After shipping the phase-1 slice above, issue #<N> is **NOT** resolved — do not close it. A narrow `<operator|security>` action stays on this SAME issue: `<operator_residual>`. This is `<a security/access-control mutation — the residual gets needs-human-review | a plain operator/console action — the residual gets agent-console>` (from `operator_residual_security_sensitive`). Your PR must reference #<N> **without** a closing keyword — bare-URL form, never `Closes`/`Fixes`/`Resolves #<N>` or a bare `#<N>` token. Follow `agents/issue-worker/issue-work.md` §5.85's trigger shape (3) (treat #<N> as the protected issue) and §6.5 (post the disposition comment naming what shipped and what's handed back, then apply the residual label) rather than closing this issue. This mirrors the split shipped by hand in PR #900 for issue #867.
