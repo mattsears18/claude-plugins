@@ -46,6 +46,10 @@ refine_cmd="$repo_root/plugins/shipyard/commands/refine-issues.md"
 dont_md="$repo_root/plugins/shipyard/commands/do-work/dont.md"
 schema="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 config_sh="$repo_root/plugins/shipyard/scripts/shipyard-config.sh"
+milestone_prohibition="$repo_root/plugins/shipyard/skills/worker-preamble/milestone-prohibition.md"
+issue_work_cmd="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+deferred_slice_cmd="$repo_root/plugins/shipyard/agents/issue-worker/issue-work-deferred-slice-dispatch.md"
+drain_cmd="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 
 pass=0
 fail=0
@@ -178,6 +182,39 @@ echo "== dont.md — the filer-never-creates-a-milestone prohibition is worker-r
 
 assert_file_contains "$dont_md" "Don't let a filing path" \
   "dont.md carries the filing-path milestone-creation prohibition (#1242)"
+
+# --------------------------------------------------------------------------
+echo
+echo "== #1421 — worker follow-up filing no longer silently skips milestone assignment"
+
+assert_file_contains "$milestone_prohibition" "Inherit first." \
+  "milestone-prohibition.md documents tier 1 (inherit parent's milestone)"
+assert_file_contains "$milestone_prohibition" "Fall through when there's nothing to inherit." \
+  "milestone-prohibition.md documents tier 2 (BET-match + fallback when parent has none)"
+assert_file_contains "$milestone_prohibition" 'shipyard:filing-github-issues' \
+  "milestone-prohibition.md points tier 2 at the shared Milestone assignment section"
+assert_file_contains "$milestone_prohibition" "must NOT skip tier 2 and file bare" \
+  "milestone-prohibition.md prohibits silently degrading to no milestone (#1421)"
+assert_file_contains "$milestone_prohibition" "never author a new one" \
+  "milestone-prohibition.md still prohibits the worker from creating a milestone in either tier (AC4)"
+
+assert_file_contains "$issue_work_cmd" "milestone-prohibition.md" \
+  "issue-work.md's follow-up-filing bullet points at milestone-prohibition.md, not just the provenance-label section (#1421)"
+assert_file_contains "$issue_work_cmd" "assign a milestone per \`shipyard:worker-preamble\`'s" \
+  "issue-work.md's follow-up-filing bullet instructs milestone assignment"
+
+assert_file_contains "$deferred_slice_cmd" 'MILESTONE_TITLE=""' \
+  "issue-work-deferred-slice-dispatch.md resolves a milestone before filing its follow-up issue (#1421)"
+# shellcheck disable=SC2016  # literal text — must NOT expand
+assert_file_contains "$deferred_slice_cmd" '${MILESTONE_TITLE:+--milestone "$MILESTONE_TITLE"}' \
+  "deferred-slice follow-up's gh issue create passes --milestone conditionally"
+assert_file_contains "$deferred_slice_cmd" ".milestone.title // empty" \
+  "deferred-slice follow-up inherits #<N>'s own milestone (tier 1) before falling through to BET-matching"
+
+assert_file_contains "$drain_cmd" "shipyard:filing-github-issues" \
+  "drain.md's friction-issue filing paragraph points orchestrator-filed issues at the shared filing skill (#1421)"
+assert_file_contains "$drain_cmd" "never an ad hoc \`gh issue create\` with no provenance label or milestone resolution" \
+  "drain.md prohibits ad hoc, milestone-blind gh issue create for orchestrator-filed friction issues"
 
 # --------------------------------------------------------------------------
 echo
