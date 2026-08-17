@@ -218,6 +218,25 @@ $CURRENT_BODY"
 
   4c. **Optional `do-work-recheck` probe marker for `external-dependency`** (#1201) — after the calendar marker above, check whether `evidence_pointer` also carries a recognized probe hint; if so, construct + write a companion recheck marker via the shared validator. See [`06d-recheck-probe-authorship.md`](./06d-recheck-probe-authorship.md).
 
+  4d. **Someday-recheck clock reset — when this deferred issue was escalated via the Someday-milestone recheck cadence** ([#1422](https://github.com/mattsears18/shipyard/issues/1422), follow-up to #1406). Runs regardless of `$DEFER_REASON_CLASS` (unlike 4a/4b above, which are class-specific) and regardless of whether steps 1–4 above applied a label — the someday-recheck marker is orthogonal to the gate label a defer class picks. A Someday-parked issue reaches this Deferred-entries branch at all only via `someday_recheck_state`'s `"escalate"` outcome (see [`04-backlog-divert.md`](04-backlog-divert.md#4-fetch--rank-the-backlog)) — `classify` emitted it as a plain `eligible` line specifically because a real scope-agent pass was due, so whatever this scope agent concluded needs the cadence clock reset regardless of WHY it deferred (a Someday-parked issue can land on `external-dependency`, `human-decision-required`, or any other class — the milestone doesn't constrain the reason, only that a human decided this isn't a current priority):
+
+     Check whether this issue's milestone (the flattened title already in hand from the wide-fetch payload, or a fresh `gh issue view <N> --repo <owner/repo> --json milestone --jq '.milestone.title // ""'` if not) matches `backlog.someday_milestone`'s configured value — bare-title comparison (strip the leading `N · ` prefix, compare case-insensitively and trimmed), mirroring `is_someday` in `backlog-filter.sh`. When it matches AND `backlog.someday_recheck_days` resolves non-zero:
+
+     ```bash
+     export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+     SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null) || SHIPYARD_REPO_ROOT="$(git rev-parse --show-toplevel)"
+     export SHIPYARD_REPO_ROOT
+     DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.someday_recheck_days 2>/dev/null || echo 30)
+     DAYS=${DAYS//[!0-9]/30}
+     printf '%s\n' '{"number": <N>, "someday_recheck_action": "cheap-reset"}' \
+       | "$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" someday-recheck-write \
+           --repo <owner/repo> --someday-recheck-days "$DAYS" --today "$(date -u +%F)"
+     ```
+
+     Reuses the exact same `someday-recheck-write` subcommand [`04-backlog-divert.md`](04-backlog-divert.md#4-fetch--rank-the-backlog)'s per-session sweep already calls — a synthetic single-line NDJSON tagged `"cheap-reset"` is precisely the shape it already consumes, so there is no separate marker-writing logic here. This is what makes the cadence actually **reset** (issue #1422 acceptance criterion 3) after a real scope-agent pass reaches the same "not ready yet" conclusion the cheap path would have — the someday-recheck marker gets pushed out another `backlog.someday_recheck_days` days regardless of which defer class the diagnosis landed on, so next session's `classify` pass returns to the ordinary `drop:someday-milestone` / `not-due` state instead of escalating again immediately.
+
+     **Do NOT run this step for a `ready` outcome** (the Ready-entries branch above, not this Deferred-entries branch) — a Someday-parked issue a recheck found genuinely shippable proceeds to normal dispatch like any other `ready` candidate. Touching its someday-recheck marker there would be pointless: the issue is either closing this session (no more open issue to re-park) or, if its milestone still says Someday next session, it simply re-escalates — a human choosing to leave a now-known-shippable issue parked in Someday is itself a signal worth re-surfacing every cadence window, not one to suppress.
+
   5. **Inline auto-decompose a mechanically-decomposable epic.** This step fires **only** when ALL of the following hold; otherwise skip it (the human handoff recorded by steps 1–4 is the final state, exactly as before #665):
 
      - `defer_reason_class == "confirmed-non-shippable-as-single-PR"` (the epic-decomposition class — the one that just got `needs-human-review` + the `<!-- do-work-needs-decomposition -->` marker in steps 2/4), **and**
