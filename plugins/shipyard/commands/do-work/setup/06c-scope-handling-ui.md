@@ -228,9 +228,10 @@ $CURRENT_BODY"
      export SHIPYARD_REPO_ROOT
      DAYS=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get backlog.someday_recheck_days 2>/dev/null || echo 30)
      DAYS=${DAYS//[!0-9]/30}
+     TODAY=$(date -u +%F)
      printf '%s\n' '{"number": <N>, "someday_recheck_action": "cheap-reset"}' \
        | "$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" someday-recheck-write \
-           --repo <owner/repo> --someday-recheck-days "$DAYS" --today "$(date -u +%F)"
+           --repo <owner/repo> --someday-recheck-days "$DAYS" --today "$TODAY"
      ```
 
      Reuses the exact same `someday-recheck-write` subcommand [`04-backlog-divert.md`](04-backlog-divert.md#4-fetch--rank-the-backlog)'s per-session sweep already calls — a synthetic single-line NDJSON tagged `"cheap-reset"` is precisely the shape it already consumes, so there is no separate marker-writing logic here. This is what makes the cadence actually **reset** (issue #1422 acceptance criterion 3) after a real scope-agent pass reaches the same "not ready yet" conclusion the cheap path would have — the someday-recheck marker gets pushed out another `backlog.someday_recheck_days` days regardless of which defer class the diagnosis landed on, so next session's `classify` pass returns to the ordinary `drop:someday-milestone` / `not-due` state instead of escalating again immediately.
