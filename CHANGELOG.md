@@ -4,6 +4,12 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.40.7 — 2026-08-17
+
+Minor: Condensed verbose prose in `steady-state.md` to stay under the 256KB Read limit without losing essential content about BLOCKED-PR classification logic.
+
+- **`plugins/shipyard/commands/do-work/steady-state.md`** step 2's prose was trimmed while preserving the mechanism: how BLOCKED PRs with zero pending checks are classified as red (not queue latency) and dispatched to fix-checks-only immediately after merge events.
+
 ### 4.40.6 — 2026-08-17
 
 P2 (closes #1439): step 5.7's inherited-DIRTY seed in `04-backlog-divert.md` still filtered to DIRTY-*and*-green PRs, citing the pre-#1060 rule that a DIRTY-and-red PR is fix-checks work. #1060 inverted that routing — a DIRTY PR routes to `fix-rebase` regardless of check colour, since no check can queue or refresh while a PR is DIRTY — so the filter's premise was stale even though its rationale sentence still cited the superseded rule.
