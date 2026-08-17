@@ -1,6 +1,6 @@
 # /shipyard:do-work — Setup phase · session-id storage
 
-**Setup sub-phase fragment, loaded from [`00-config-worktree.md`](./00-config-worktree.md)'s step-0.55 pointer — part of the ordered per-session walk, not a conditional deep-link.** Runs immediately after step 0.5's `EnterWorktree` relocation completes. Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Prev: [`00-config-worktree.md`](./00-config-worktree.md#05-move-into-the-orchestrators-worktree) (step 0.5). Next: back to [`00-config-worktree.md`](./00-config-worktree.md#056-pin-shipyard_repo_root-to-the-primary-checkout-1059) for step 0.56.
+**Setup sub-phase fragment, loaded from [`00-config-worktree.md`](./00-config-worktree.md)'s step-0.55 pointer — part of the ordered per-session walk, not a conditional deep-link.** Runs immediately after step 0.5's `EnterWorktree` relocation completes. Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Prev: [`00-config-worktree.md`](./00-config-worktree.md#05-move-into-the-orchestrators-worktree) (step 0.5). Next: [`00k-repo-root-pin.md`](./00k-repo-root-pin.md) for step 0.56.
 
 ### 0.55 Session-id storage (per-worktree, not /tmp)
 
@@ -52,4 +52,4 @@ The `REPO_ROOT` derived from `git rev-parse --show-toplevel` here only feeds the
 
 **Don't reach for option 2 from #365** ("skip the file entirely, compute the session id from the worktree path"). The compute-from-worktree-path approach is appealing in theory but invasive in practice — the orchestrator's many Bash tool calls would all need to walk `git worktree list` to find their worktree, parse the orchestrator-<id> suffix, and handle the edge cases where the cwd isn't inside an orchestrator worktree (foreground vs. background subshells, the user's primary-checkout invocation, etc.). The per-worktree stash file is the minimum-surgery shim that addresses the race without redesigning the lookup pattern. Reserve compute-from-worktree-path for a follow-up issue if the stash-file approach ever becomes load-bearing in a way that warrants the larger change.
 
-**Return to [`00-config-worktree.md`'s step 0.56](./00-config-worktree.md#056-pin-shipyard_repo_root-to-the-primary-checkout-1059) once this step completes.**
+**Continue to [`00k-repo-root-pin.md`'s step 0.56](./00k-repo-root-pin.md#056-pin-shipyard_repo_root-to-the-primary-checkout-1059) once this step completes.**

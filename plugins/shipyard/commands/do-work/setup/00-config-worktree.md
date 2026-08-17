@@ -4,44 +4,7 @@
 
 ## Lightweight C=1 path — what's skipped and what stays
 
-Default `--concurrency` is `1`, and at C=1 a substantial chunk of the orchestrator's parallel-coordination machinery is **already skipped** by per-step gates throughout the spec. This section is a single index of those gates so a reader doesn't have to grep across the phase files to assemble the picture — every entry below is implemented by the linked spec callout, not by this section. Closes [#347](https://github.com/mattsears18/shipyard/issues/347).
-
-**The C=1 path is the default.** No flag, no config opt-in — pass `--concurrency 1` (or omit `--concurrency` entirely; `1` is the default) and the gates below fire automatically.
-
-### What's skipped at C=1
-
-| Skipped at C=1 | Why | Owning callout |
-|---|---|---|
-| Parallel setup batch (`step_0_7_parallel_batch` timing window, the fire-once-batch read burst, pre-population of a candidate pool) | At C=1 there's only one slot — no peer agents to coordinate against and no benefit from pre-populating a pool of more than one candidate. Steps 1 → 5 run serially instead. | [step 0.7](#07-setup-parallelization-contract-fire-once-batch) |
-| Initial failing-PR snapshot (step 5) | The failing-PR set is only relevant when there's a free slot to dispatch a fix-checks worker against it, and at C=1 the slot is guaranteed to be free between dispatches. Defer the query to the first idle turn in steady-state's step D. | [step 5](04-backlog-divert.md#5-snapshot-failing-prs) |
-| Batched initial scope pre-flight (step 6's `2 × concurrency` pre-flight) | At C=1 pre-flighting 2 candidates upfront is wasted token spend — by the time the single slot returns, rankings may have shifted and pre-flighted decisions are stale. Pre-flight only the top candidate immediately before each dispatch instead. | [step 6](06-scope-preflight.md#6-initial-scope-pre-flight) |
-| Initial pool fill burst (step 7's parallel `Agent` burst across N slots) | The "pool" is a single slot. Dispatch exactly one worker via the same dispatch rules; no `run_in_background: true` needed. | [step 7](07-pool-fill.md#7-initial-pool-fill) |
-| Path-collision check (step C's `claimed_paths.hard` ∩ `in_flight` pass) | The check is a pure overhead pass that always resolves to "no collision" because `in_flight` is either empty or holds exactly one slot (the current worker, which has already been released by step B before step C runs). | [steady-state.md step C — Hard collision](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) |
-| Soft-cap counter (the `--soft-collision-concurrency` tier) | No main-concurrency cap to burst past and no peer slots to share a path with. Don't track `claimed_paths.soft`, don't decrement on return, don't consult the soft cap. | [steady-state.md step C — Soft collision](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) |
-| Section-aware lockfile-collision check (`lockfile_sections` claim-and-check) | No peer slots and no contention on any lockfile section — the check always resolves to "no collision." The scope pre-flight still returns `lockfile_sections` in its ready shape so the session-state schema remains valid, but the orchestrator ignores the field at dispatch time. | [steady-state.md step C — Section-aware lockfile rule](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) |
-| Rolling scope-refill background burst (step D's `2 × concurrency` background scope agents) | The just-in-time per-dispatch scope call (above) is the C=1 equivalent. `scope_bg_count` stays `0` and the per-dispatch JIT call is synchronous. | [step 6 C=1 note](06-scope-preflight.md#6-initial-scope-pre-flight) (see also the in-state struct ref at [`scope_bg_count`](../../do-work.md#orchestrator-state)) |
-
-### What stays at C=1
-
-These steps are **not** gated by concurrency — they fire identically at C=1 and C≥2:
-
-- **Worktree relocation (step 0.5).** The orchestrator runs in its own isolated worktree at every concurrency level. This is the lock against `/do-work` running concurrently in the user's primary checkout (the threat the [worktree-isolation contract](../dont.md) names), and the safety property is independent of how many workers the orchestrator dispatches.
-- **Config opt-in check (step 0.4).** The merged 4-layer config is read once at session start regardless of concurrency — defaults / pricing / model overrides / auto-merge policy all apply at C=1 too.
-- **Session-state init (step 0.45, moved pre-relocation — [#1202](https://github.com/mattsears18/shipyard/issues/1202)) + every write-through.** The session-state JSON file is the durable record that [`/shipyard:status`](../../status.md), the orphan session-file sweep, the cost-tracking comments, and a future `--resume <session-id>` flag all read from. The mirror fires whether the session has one slot or four.
-- **Trusted-author allowlist (step 1.7) + bucket 0.5 + step 4 client-side filter.** Author trust is the security gate against prompt-injection from stranger-authored issues. It fires before dispatch at every concurrency level; lowering it for "single-trusted-author personal repo" sessions would defeat the defense-in-depth posture documented in [`dont.md`'s security boundary](../dont.md).
-- **Pre-relocation synchronous sweep ([step 0.45](00e-pre-relocation-sweeps.md#045-pre-relocation-session-state-init--the-worktree-cross-referencing-sweeps-1202)).** The orphan orchestrator-worktree sweep (1.6.5), the stale agent-worktree reap (3b), and the orphan `do-work/*` branch triage (3c) — every sweep that performs a cross-worktree `git -C <other-worktree>` operation — now runs synchronously BEFORE `EnterWorktree` (step 0.5), at every concurrency level, per [#1202](https://github.com/mattsears18/shipyard/issues/1202). See step 0.45 for why: post-relocation, the worktree-isolation guard refuses exactly these operations.
-- **Background cleanup group (the `(...) &` subshell in step 0.7).** Now carries only the two sweeps that touch no worktree paths — the orphan session-*file* sweep (1.6) and label create (3a) — running in a single background subshell at every concurrency level. Skipping them at C=1 would mean orphan session files from earlier C=1 crashes accumulate forever (issue [#280](https://github.com/mattsears18/shipyard/issues/280)).
-- **Per-step setup-timing brackets** (`setup-timing.sh start` / `end` calls in steps 0.5, 1.7, 3.5, 4, 6). These are the data source for the [#258](https://github.com/mattsears18/shipyard/issues/258) measurement umbrella and the cross-session perf ledger — kept at every level. The only `setup-timing` call that's skipped at C=1 is the `step_0_7_parallel_batch` window itself (there's nothing to time when the batch doesn't run).
-- **Backlog fetch + rank + triage (step 4), divert checks (step 4.5).** The dispatch queues still need to exist and stay current at C=1; only the parallel coordination over the *fill* changes.
-- **Drain + cleanup + end-of-session summary.** Drain semantics are identical at C=1 — the per-poll merge-train watcher, the fix-rebase dispatch for `D_dirty`, the progress-based exit + `max_drain_hours` ceiling, the end-of-session HTML report — all apply unchanged.
-
-### When the inline-trivial fast path **also** fires (orthogonal to C=1)
-
-The C=1 path above is about *what the orchestrator does for any candidate at C=1*. The [inline-trivial fast path](../inline-trivial.md) is a **separate, orthogonal** dispatch-time optimization that fires for *some candidates* (typos, dep-bumps, doc-only, comment-only, config-tweak — pattern-matched) when `inline_trivial.enabled == true` in config. Inline-trivial works at every concurrency level, requires opt-in via config (default OFF), and is **conservative-by-default** with strict eligibility rules (body ≤ 200 chars, no headings, no long code fences, no disqualifying labels, trusted author). Don't confuse the two: C=1 is "the orchestrator runs sequentially with no parallel-coordination overhead"; inline-trivial is "for this specific candidate, the orchestrator runs the work inline instead of dispatching a worker." A session can be C=1 with inline-trivial off (the default), C=1 with inline-trivial on, C≥2 with inline-trivial off, or C≥2 with inline-trivial on — every combination is valid and the two optimizations stack.
-
-### When to pick C=1 vs C≥2
-
-C=1 is the default and the right choice for most personal-repo backlogs because the dominant failure mode is the manifest / version-row hard collision documented in the [thin entry's `--concurrency` flag docs](../../do-work.md#args). Pick `--concurrency 2+` only when realized parallelism is genuinely real — a feature-development backlog against a service with no per-PR version bump, where two workers can land truly independent changes simultaneously without colliding on `package.json` or `CHANGELOG.md`. The [#268](https://github.com/mattsears18/shipyard/issues/268) dogfooding rationale walks through the empirical observation that drove the default.
+**Full detail moved to [`00j-c1-path-index.md`](./00j-c1-path-index.md)** ([#1431](https://github.com/mattsears18/shipyard/issues/1431), splitting this file back under the per-file byte cap). Load it now — it owns the complete reference index: the "what's skipped at C=1" table (with a link to each gate's owning callout), the "what stays at C=1" list, how the inline-trivial fast path stacks orthogonally with concurrency, and when to pick C=1 vs C≥2. This is a reference index, not a numbered step — deep-link only, not part of the ordered per-session walk.
 
 ## Setup (run once)
 
@@ -404,42 +367,7 @@ End-of-session cleanup also runs from the orchestrator worktree, and reaps the o
 
 ### 0.56 Pin `SHIPYARD_REPO_ROOT` to the primary checkout ([#1059](https://github.com/mattsears18/shipyard/issues/1059))
 
-**Every config read after step 0.5's relocation silently loses the `.shipyard/config.local.json` layer.** `shipyard-config.sh`'s `repo_root()` resolves via `git rev-parse --show-toplevel` from cwd unless `SHIPYARD_REPO_ROOT` overrides it. [Step 0.4](#04-check-the-repo-level-opt-in-shipyardconfigjson)'s `EFFECTIVE_CONFIG` is unaffected (it runs pre-relocation), but every OTHER config read this session — a fresh `shipyard-config.sh get`, or a helper like `resolve-dispatch-model.sh` / `flake-enforce.sh` — resolves against cwd at call time, which post-relocation is the orchestrator worktree: a fresh `origin/<default-branch>` checkout with no gitignored files. `.shipyard/config.local.json` silently drops out with no warning — and not just for `models.*`: `trust.authors`, `auto_merge.policy`, `concurrency.*`, `cost_tracking.*`, `ci.*`, `flake_registry.*` all revert too.
-
-**Pin it here, reusing step 0.55's fix (#1182)** — `SHIPYARD_PRIMARY_CHECKOUT_ROOT` doesn't survive this call's hermetic boundary; substitute the literal step 0.4 echoed to stderr, worktree-relative:
-
-```bash
-printf '%s\n' "<primary-root literal, 0.4>" > .shipyard-primary-root
-export SHIPYARD_REPO_ROOT="<primary-root literal, 0.4>"
-```
-
-**Every subsequent orchestrator Bash block calling `shipyard-config.sh` (directly or via `resolve-dispatch-model.sh` / `flake-enforce.sh`) should re-derive and export it from the stash** — hermetic Bash-tool calls don't carry shell state forward (see [step 0.3](#03-claude_plugin_root-re-export-preamble-every-bash-tool-call)):
-
-```bash
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
-export SHIPYARD_REPO_ROOT
-```
-
-**Scope: orchestrator session only — never propagate into a dispatched worker.** `SHIPYARD_REPO_ROOT` redirects the whole repo config layer. A worker's own `agent-*` worktree must resolve its own config against its own cwd; inheriting this pin would silently misdirect it. Never add `SHIPYARD_REPO_ROOT` to a dispatch prompt.
-
-**Originally shipped as a phase-1 slice** — the pin at its origin plus the one known-affected consumer ([step 5.8's flake-registry enforcement](04-backlog-divert.md#58-enforce-the-flake-registry-chronic-flake-escalation)). Every other post-relocation call site across `steady-state.md` / `dispatch-rules.md` — including the per-dispatch model resolution — was swept in the same shape shortly after ([#1064](https://github.com/mattsears18/shipyard/issues/1064)), and `scripts/tests/shipyard-repo-root-preamble.test.sh` now mechanically discovers every `*.md` file under `commands/do-work/` and asserts every bash block calling `shipyard-config.sh` / `resolve-dispatch-model.sh` carries the re-export preamble — a *new* call site is covered automatically the moment it's added, with nothing to remember to extend ([#1105](https://github.com/mattsears18/shipyard/issues/1105)).
-
-**Still-live gap this closed only partially — a per-call-site preamble depends on every live orchestrator session actually running it, every single call.** [#1263](https://github.com/mattsears18/shipyard/issues/1263)'s repro reproduced exactly this: a bare `resolve-dispatch-model.sh fix-checks-only` invocation from the orchestrator worktree, with no re-exported pin, silently fell back to the built-in default rather than the repo's configured override — even though the documented dispatch-site call carries the preamble. Documentation compliance and runtime compliance are different guarantees; a passing regression test on the *spec* doesn't prove every live *session* followed it every time. `scripts/resolve-dispatch-model.sh` now resolves the `.shipyard-primary-root` stash **internally** as a second line of defense (its own `ensure_repo_root_pin()`, run at the top of every subcommand): when `SHIPYARD_REPO_ROOT` is unset, it reads the stash file at cwd's git toplevel itself before falling through to `shipyard-config.sh`'s own default resolution — so a caller of this script (documented or not, preamble-following or not) still resolves `models.<mode>` against the pinned primary checkout. This is safe to apply unconditionally: the stash file only ever exists in the orchestrator's own worktree (a plain `>` redirect at pin time above, never `git add`ed), so a dispatched worker's separate `agent-*` worktree structurally can never pick it up — the "never propagate into a dispatched worker" scope boundary holds without the script needing to know which kind of caller it is. **This fix is scoped to `resolve-dispatch-model.sh` only, not `shipyard-config.sh` itself** — a shared config-repo-root helper would be the more DRY location, but `scripts/shipyard-config.sh` is a contested surface with in-flight sibling PRs at the time of #1263's fix, so the fallback lives in the one script the issue's own repro named rather than the file every config read funnels through; a future consolidation is open territory. The per-call-site preamble above is kept as the documented, explicit path (and the regression test still enforces it) — the internal fallback is redundant-by-design belt-and-suspenders, not a replacement for it.
-
-**Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer exists and changes the merged result (re-derived from stash files, not shell vars — #1182):
-
-```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-PINNED_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
-if [ -n "$PINNED_ROOT" ] && [ -f "$PINNED_ROOT/.shipyard/config.local.json" ]; then
-  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$(pwd)" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
-  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$PINNED_ROOT" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
-  if [ "$UNPINNED_CONFIG" != "$PINNED_CONFIG" ]; then
-    echo "warning: .shipyard/config.local.json in the primary checkout changes the effective config (issue #1059). SHIPYARD_REPO_ROOT is pinned for THIS session, but a call site that skips re-exporting it (see above) will still read the un-pinned config. Verify trust/auto-merge/model behavior this session." >&2
-  fi
-fi
-```
+**Full detail moved to [`00k-repo-root-pin.md`](./00k-repo-root-pin.md)** ([#1431](https://github.com/mattsears18/shipyard/issues/1431), splitting this file back under the per-file byte cap). Load it now — it owns the complete step: why every post-relocation config read otherwise silently loses the `.shipyard/config.local.json` layer, the pin + re-derive-from-stash mechanism, the orchestrator-only scope boundary, the phase-1-slice shipping history, the still-live per-call-site gap and its internal-fallback mitigation, and the drift-warning defense in depth.
 
 ### 0.6 Re-read stale spec files (#1191)
 
