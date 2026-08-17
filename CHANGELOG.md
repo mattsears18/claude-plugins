@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.40.1 — 2026-08-17
+
+P1: closes #1430. `06c-scope-handling-ui.md` sat 109 bytes under the 60,000-byte `setup/` token-budget cap, and any ordinary edit tripped CI late — two separate PRs (#1427, #1428) hit this in the same session before the file's own size dropped when #1427 relocated ~5KB of prose out to `do-work-RATIONALE.md`. The structural split (this issue's AC1/AC2) is deferred to a follow-up (#1431) because PR #1428 is still open, in `blocked rebase`, and already collided with #1427 in three hunks of that same file — splitting it now would very likely strand #1428 entirely.
+
+- **`scripts/tests/setup-phase-file-token-budget.test.sh`** now WARNs, non-fatally, once a `setup/` sub-file crosses 57,000 bytes (95% of the 60,000-byte cap) — printing the remaining headroom in bytes. Only crossing the 60,000-byte hard cap still fails the suite; a warn-band file still passes. As of this landing, `00-config-worktree.md` (59,006 bytes), `01-repo-recovery.md` (58,724 bytes), and `06c-scope-handling-ui.md` (58,735 bytes) are all inside the warn band — evidence the threshold catches real near-misses across the cluster, not one outlier.
+- **`do-work-RATIONALE.md`** documents the warn threshold alongside the cap's existing writeup.
+- Ran `bash plugins/shipyard/scripts/tests/setup-phase-file-token-budget.test.sh` and `bash plugins/shipyard/scripts/tests/do-work-phase-file-size.test.sh` locally; both green. Full 163-suite battery left to required CI.
+
 ### 4.39.0 — 2026-08-17
 
 P2: closes #1422, follow-up to #1406. #1406 shipped `backlog.someday_milestone` as a permanent, unconditional drop — a Someday-parked issue stopped paying scope cost every session, but at the price of never being looked at again until a human manually moved it out of the milestone. The issue's own framing ("stop paying full scope cost every session for an identical answer" is not the same as "never look again") argued for a slow re-scope cadence instead, reusing the closest existing mechanisms rather than inventing a fourth cadence concept.
