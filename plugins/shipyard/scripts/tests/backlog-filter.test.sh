@@ -453,6 +453,55 @@ assert_equals "$(verdict_of "$out" 3101)" "eligible" "(35s) off by default -- om
 out=$(printf '%s' "$fixture_someday" | classify --someday-milestone "")
 assert_equals "$(verdict_of "$out" 3101)" "eligible" "(35t) an explicit empty --someday-milestone is equivalent to omitting it"
 
+# --- someday-recheck-days (issue #1422, follow-up to #1406) ------------------
+# The slow re-scope cadence: --someday-recheck-days 0 (the default when
+# omitted) reproduces #1406's original permanent-drop behavior byte-for-byte
+# -- no someday_recheck_action field at all, even when a marker is present in
+# the body. Non-zero threads through one of four pure states.
+
+out=$(printf '%s' "$fixture_someday" | classify --someday-milestone "Someday")
+assert_equals "$(field_of "$out" 3101 "someday_recheck_action")" "" "(35u) --someday-recheck-days omitted (defaults 0): no someday_recheck_action field at all -- byte-identical to pre-#1422"
+
+out=$(printf '%s' "$fixture_someday" | classify --someday-milestone "Someday" --someday-recheck-days 0)
+assert_equals "$(field_of "$out" 3101 "someday_recheck_action")" "" "(35v) explicit --someday-recheck-days 0 is equivalent to omitting it"
+assert_equals "$(verdict_of "$out" 3101)" "drop:someday-milestone" "(35v) ...and still an unconditional permanent drop"
+
+# --today is 2026-08-11 (the classify() helper's fixed default); cadence 30.
+fixture_someday_recheck='[
+  {"number":3201,"title":"no marker yet","body":"","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01T00:00:00Z","milestone":"6 · Someday"},
+  {"number":3202,"title":"future marker","body":"<!-- do-work-someday-recheck: 2026-09-01 -->\n\nbody","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01T00:00:00Z","milestone":"6 · Someday"},
+  {"number":3203,"title":"elapsed, unchanged","body":"<!-- do-work-someday-recheck: 2026-08-01 -->\n\nbody","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-06-01T00:00:00Z","milestone":"6 · Someday"},
+  {"number":3204,"title":"elapsed, changed since write","body":"<!-- do-work-someday-recheck: 2026-08-01 -->\n\nbody","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-07-15T00:00:00Z","milestone":"6 · Someday"},
+  {"number":3205,"title":"marker date == today","body":"<!-- do-work-someday-recheck: 2026-08-11 -->\n\nbody","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01T00:00:00Z","milestone":"6 · Someday"}
+]'
+out=$(printf '%s' "$fixture_someday_recheck" | classify --someday-milestone "Someday" --someday-recheck-days 30)
+
+assert_equals "$(verdict_of "$out" 3201)" "drop:someday-milestone" "(35w) no marker yet: still a drop this pass"
+assert_equals "$(field_of "$out" 3201 "someday_recheck_action")" "first-park" "(35w) ...tagged first-park so the caller writes the initial marker"
+
+assert_equals "$(verdict_of "$out" 3202)" "drop:someday-milestone" "(35x) marker still in the future: still a drop"
+assert_equals "$(field_of "$out" 3202 "someday_recheck_action")" "not-due" "(35x) ...tagged not-due -- no write needed"
+
+assert_equals "$(verdict_of "$out" 3203)" "drop:someday-milestone" "(35y) cadence elapsed but nothing changed since the marker was written: still a drop"
+assert_equals "$(field_of "$out" 3203 "someday_recheck_action")" "cheap-reset" "(35y) ...tagged cheap-reset -- zero scope-agent cost, just refresh the marker"
+
+assert_equals "$(verdict_of "$out" 3204)" "eligible" "(35z) cadence elapsed AND updatedAt advanced past the marker's write date: escalated straight to eligible"
+assert_equals "$(field_of "$out" 3204 "someday_recheck_action")" "" "(35z) ...an escalated issue is a plain eligible line, no someday_recheck_action field (it is not a someday-milestone drop this pass)"
+assert_equals "$(field_of "$out" 3204 "reason")" "" "(35z) ...and no reason field either"
+
+assert_equals "$(field_of "$out" 3205 "someday_recheck_action")" "cheap-reset" "(35za) marker date == today counts as ELAPSED (not not-due) -- a same-day marker is never treated as still in the future"
+
+# Every-other-clause interaction: someday-recheck-days must not affect an
+# issue that isn't someday-parked in the first place.
+out=$(printf '%s' "$fixture_someday" | classify --someday-milestone "Someday" --someday-recheck-days 30)
+assert_equals "$(field_of "$out" 3102 "someday_recheck_action")" "" "(35zb) an issue in a DIFFERENT milestone never gets a someday_recheck_action field, cadence on or not"
+
+out=$(bash "$helper" classify --me x --trusted-authors a --someday-recheck-days not-a-number </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(35zc) non-numeric --someday-recheck-days exits 64"
+
+out=$(bash "$helper" classify --me x --trusted-authors a --someday-recheck-days -5 </dev/null 2>&1); rc=$?
+assert_equals "$rc" "64" "(35zd) negative --someday-recheck-days exits 64"
+
 # --- eval-probes subcommand (issue #1356) ------------------------------------
 
 out=$(bash "$helper" eval-probes 2>&1); rc=$?

@@ -43,7 +43,7 @@
 #            [--respect-assignees true|false]
 #            [--milestones-enabled true|false] [--milestones-prioritize-dispatch true|false]
 #            [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
-#            [--someday-milestone <title>]
+#            [--someday-milestone <title>] [--someday-recheck-days <N>]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
 #     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
 #     assignees: [login,...], author: {login}, createdAt, updatedAt,
@@ -60,7 +60,7 @@
 #       {"number":N,"verdict":"gate","reason":"tracking","evidence_pointer":"<content-sourced citation>"}
 #       {"number":N,"verdict":"gate","reason":"tracking-unjustified"}
 #       {"number":N,"verdict":"drop","reason":"covered-by-open-pr","evidence_pointer":"PR #M closingIssuesReferences includes #N"}
-#       {"number":N,"verdict":"drop","reason":"someday-milestone","evidence_pointer":"milestone <title>"}
+#       {"number":N,"verdict":"drop","reason":"someday-milestone","evidence_pointer":"milestone <title>","someday_recheck_action":"first-park"|"not-due"|"cheap-reset"}
 #     The `tracking` shapes are that label's special case (issue #1364) — see
 #     "Provisional gate: tracking requires a content-sourced justification"
 #     below. Every OTHER gate label (`blocked:ci`, `wontfix`, `discussion`,
@@ -69,7 +69,15 @@
 #     `tracking` ever carries `evidence_pointer` or the
 #     `tracking-unjustified` reason. The `covered-by-open-pr` and
 #     `someday-milestone` DROP verdicts (issues #1389 and #1406) are the
-#     other shapes that carry an `evidence_pointer`.
+#     other shapes that carry an `evidence_pointer`. The `someday-milestone`
+#     DROP additionally carries `someday_recheck_action` whenever
+#     `--someday-recheck-days` is non-zero (issue #1422) — the caller's
+#     signal for whether to write/refresh the `do-work-someday-recheck` body
+#     marker; see `someday-recheck-write` below. When the recheck cadence
+#     ELAPSED and something about the issue changed since the marker was
+#     written, the issue is NOT a someday-milestone drop at all that pass —
+#     it comes back as a plain `{"verdict":"eligible"}` line instead (no
+#     `someday_recheck_action` field), for exactly one real scope-agent pass.
 #     Output ORDER: every "eligible" line first, in rank order. The default
 #     (milestone ranking OFF — either --milestones-enabled or
 #     --milestones-prioritize-dispatch is false, matching a repo that never
@@ -203,7 +211,50 @@
 #     that has not opted into milestone-ranked dispatch at all (the #1406
 #     motivating repro has `milestones.enabled: false`). See
 #     do-work-RATIONALE.md for the full design writeup.
+#     `--someday-recheck-days <N>` (issue #1422, follow-up to #1406) is the
+#     slow re-scope cadence, in days, for a someday-milestone-parked issue.
+#     Default "0" — disables the cadence entirely, reproducing #1406's
+#     original "permanent drop, never look again" behavior byte-for-byte
+#     until a caller explicitly passes a non-zero value (the
+#     `backlog.someday_recheck_days` config knob's own built-in default is
+#     30 — a real caller resolves and passes THAT, this script's own
+#     internal default only protects existing callers/fixtures that predate
+#     this flag). Non-zero: `someday_recheck_state()` (see CLASSIFY_JQ) is
+#     evaluated purely from data already in the wide-fetch payload — no
+#     extra I/O, `classify` stays a pure function — and decides one of
+#     "first-park"/"not-due"/"cheap-reset"/"escalate" per someday-parked
+#     issue; see that function's own doc comment for the full state
+#     semantics. Irrelevant (never evaluated) for an issue that doesn't
+#     match `--someday-milestone` in the first place.
 #     Exit 0 always (even on an empty input array — emits nothing).
+#
+#   someday-recheck-write --repo <owner/repo> --someday-recheck-days <N>
+#            [--today YYYY-MM-DD]
+#     < classify NDJSON (or any NDJSON carrying {number, someday_recheck_action})
+#       on stdin
+#     The I/O half of the `someday_recheck_state` mechanism above — kept out
+#     of `classify` for the same reason `eval-probes`/`closed-by-healthy-pr`
+#     are: the pure decision and the live GitHub write are different
+#     concerns, and only the write needs network access. For every input
+#     line whose `someday_recheck_action` is `"first-park"` or
+#     `"cheap-reset"` (any other value, or an absent field, is ignored —
+#     `"not-due"` needs no write, `"escalate"` issues are not someday-drops
+#     at all that pass), fetches the issue's current body, writes or
+#     refreshes a `<!-- do-work-someday-recheck: YYYY-MM-DD -->` marker
+#     dated `--today + --someday-recheck-days` days (mirrors the
+#     `do-work-blocked-until` writer's own idempotent
+#     "sed-replace-if-present, else prepend" shape — see
+#     06c-scope-handling-ui.md step 4b), and edits the issue only when the
+#     body actually changed. `--someday-recheck-days 0` is a no-op (nothing
+#     to write — mirrors `classify`'s own disabled posture). A single
+#     synthetic line `{"number":N,"someday_recheck_action":"cheap-reset"}`
+#     is also a valid, minimal input — this is how 06c-scope-handling-ui.md
+#     step 4d resets the cadence clock for one specific issue after a
+#     scope-agent's own defer conclusion lands, without needing a full
+#     classify NDJSON on hand. Best-effort: a per-issue `gh` failure logs a
+#     WARNING to stderr and continues to the next issue rather than aborting
+#     the whole call. Exit 0 always (even on empty/no-matching input); 64
+#     bad usage; 65 missing jq.
 #
 #   eval-probes --repo <owner/repo>
 #     < wide-fetch-issue-json (array) on stdin — the exact same payload
@@ -341,12 +392,16 @@ Usage:
       [--milestones-enabled true|false]
       [--milestones-prioritize-dispatch true|false]
       [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
-      [--someday-milestone <title>]
+      [--someday-milestone <title>] [--someday-recheck-days <N>]
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
 
   backlog-filter.sh closed-by-open-pr --repo <owner/repo> --me <login>
+
+  backlog-filter.sh someday-recheck-write --repo <owner/repo>
+      --someday-recheck-days <N> [--today YYYY-MM-DD]
+    < classify NDJSON (or {number, someday_recheck_action} lines) on stdin
 
   backlog-filter.sh eval-probes --repo <owner/repo>
     < wide-fetch-issue-json (array) on stdin
@@ -504,6 +559,75 @@ def is_someday($issue; $someday):
   ($someday | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $target
   | ($target != "") and (milestone_title_bare($issue) == $target);
 
+# someday_recheck_marker_date($issue) -- issue #1422. Extracts the date
+# from a <!-- do-work-someday-recheck: YYYY-MM-DD --> marker anywhere in
+# the body (multiline scan -- mirrors the do-work-recheck marker own "no
+# line-1 position discipline" convention, not the do-work-blocked-until
+# marker: this marker is orchestrator-written and orchestrator-read only,
+# never hand-authored on a specific line, so there is no human placement
+# convention to protect). A DISTINCT marker text from do-work-blocked-
+# until on purpose -- it answers a different question (when to next
+# reconsider a Someday park recheck cadence, not when an issue becomes
+# calendar-eligible again), and conflating the two would let an unrelated
+# defer class own blocked-until date (e.g. an external-dependency
+# recheck window) silently gate the Someday cadence or vice versa.
+# Returns the date string, or null when no marker is present. Reuses the
+# capture()-wrapped-in-[...]-then-first defensive pattern from
+# time_gate_future/milestone_seq above, for the same reason: capture()
+# produces zero outputs (not null) on no match.
+def someday_recheck_marker_date($issue):
+  ($issue.body // "") as $b
+  | ([$b | capture("(?m)^<!--\\s*do-work-someday-recheck:\\s*(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})\\s*-->\\s*$")] | first) as $cap
+  | if ($cap == null) then null else $cap.d end;
+
+# someday_recheck_state($issue; $today; $cadence_days) -- issue #1422, the
+# follow-up to #1406 own "drop is unconditional once matched" note. The
+# pure decision behind the slow-cadence re-scope, computable entirely from
+# data classify already has in hand (issue.body, issue.updatedAt) -- no
+# extra I/O, keeping classify itself a pure function per this file own
+# header design note. One of four states:
+#   "first-park"  -- no do-work-someday-recheck marker exists yet (this
+#                     issue has never been through the cadence before, or
+#                     the cadence was just turned on). The caller writes
+#                     an initial marker $cadence_days out; no comparison
+#                     baseline exists yet so there is nothing to escalate.
+#   "not-due"     -- a marker exists and its date is still in the future.
+#                     No action needed.
+#   "cheap-reset" -- the marker elapsed, but nothing about the issue has
+#                     changed since the marker was written (updatedAt --
+#                     which GitHub bumps on a body edit, a new comment, OR
+#                     a label change -- has not advanced past that write
+#                     date). The caller silently refreshes the marker for
+#                     another cadence window. Zero scope-agent cost -- this
+#                     is the DEFAULT, expected-common outcome the issue own
+#                     cost framing argues for ("stop paying full scope
+#                     cost every session for an identical answer").
+#   "escalate"    -- the marker elapsed AND something changed since it was
+#                     written. The caller lets this ONE issue back into
+#                     `eligible` for exactly one real scope-agent pass this
+#                     session (see classify_one is_someday branch below)
+#                     rather than reopening it to permanent dispatch
+#                     eligibility.
+# $cadence_days == 0 disables the mechanism entirely -- the caller (see the
+# call site below) never invokes this function in that case, reproducing
+# #1406 original unconditional-permanent-drop behavior byte-for-byte.
+def someday_recheck_state($issue; $today; $cadence_days):
+  (someday_recheck_marker_date($issue)) as $marker_date
+  | if ($marker_date == null) then
+      "first-park"
+    elif ($marker_date > $today) then
+      "not-due"
+    else
+      # Elapsed. The date the marker was WRITTEN is derivable from the
+      # marker itself (every writer computes marker_date == write_date +
+      # cadence_days) -- no separate "last checked" field needs to be
+      # persisted anywhere.
+      ($marker_date | strptime("%Y-%m-%d") | mktime) as $marker_epoch
+      | ($marker_epoch - ($cadence_days * 86400)) as $window_start_epoch
+      | ($window_start_epoch | strftime("%Y-%m-%dT%H:%M:%SZ")) as $window_start
+      | if (($issue.updatedAt // "") > $window_start) then "escalate" else "cheap-reset" end
+    end;
+
 def prioritized_tier($issue; $plabel):
   if ($plabel == "") then 0
   elif ($issue.labels | index($plabel) != null) then 0
@@ -597,7 +721,7 @@ def is_event_gated($issue; $recheck_probe_enabled):
 def probe_verdict($issue; $verdicts):
   ($verdicts[($issue.number | tostring)] // "unknown");
 
-def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone):
+def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone; $someday_recheck_days):
   (matches_gate_label($issue)) as $gate_hit
   | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
   | if is_untrusted($issue; $trusted) then
@@ -632,8 +756,24 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
     elif ((($event_gated | not)) and time_gate_future($issue; $today)) then
       {number: $issue.number, verdict: "drop", reason: "time-gated"}
     elif is_someday($issue; $someday_milestone) then
-      {number: $issue.number, verdict: "drop", reason: "someday-milestone",
-       evidence_pointer: ("milestone " + ($issue.milestone // ""))}
+      (if ($someday_recheck_days > 0) then
+         (someday_recheck_state($issue; $today; $someday_recheck_days)) as $recheck_state
+         | if ($recheck_state == "escalate") then
+             # #1422 -- exactly ONE real scope-agent pass this session, not
+             # permanent dispatch eligibility: the marker gets refreshed
+             # (resetting the cadence clock) wherever the scope-agent own
+             # conclusion is recorded, whatever defer class it lands on --
+             # see 06c-scope-handling-ui.md step 4d.
+             {number: $issue.number, verdict: "eligible"}
+           else
+             {number: $issue.number, verdict: "drop", reason: "someday-milestone",
+              evidence_pointer: ("milestone " + ($issue.milestone // "")),
+              someday_recheck_action: $recheck_state}
+           end
+       else
+         {number: $issue.number, verdict: "drop", reason: "someday-milestone",
+          evidence_pointer: ("milestone " + ($issue.milestone // ""))}
+       end)
     elif is_closed_by_healthy_pr($issue; $healthy) then
       {number: $issue.number, verdict: "drop", reason: "closed-by-healthy-pr"}
     elif (covered_by_open_pr($issue; $covered) != null) then
@@ -687,7 +827,7 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
 
 . as $issues
 | ($issues | map(.number)) as $opennums
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone))) as $classified
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone; $someday_recheck_days))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by(._sort_key))
@@ -701,7 +841,8 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
       )))
   )
 | .[]
-| (if has("evidence_pointer") then {number, verdict, reason, evidence_pointer}
+| (if has("someday_recheck_action") then {number, verdict, reason, evidence_pointer, someday_recheck_action}
+   elif has("evidence_pointer") then {number, verdict, reason, evidence_pointer}
    elif has("reason") then {number, verdict, reason}
    else {number, verdict}
    end)
@@ -736,6 +877,13 @@ cmd_classify() {
   # passed. Mirrors the `backlog.someday_milestone` config knob's own
   # default and off-by-default posture.
   local someday_milestone=""
+  # --someday-recheck-days (issue #1422). Default "0" -- disables the
+  # slow-cadence re-scope mechanism entirely, reproducing #1406's original
+  # unconditional-permanent-drop behavior byte-for-byte for every existing
+  # caller and fixture that predates this flag. A real caller passes the
+  # resolved `backlog.someday_recheck_days` config value (built-in default
+  # 30) explicitly, same convention as every other config-backed flag here.
+  local someday_recheck_days="0"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --me) me="${2:-}"; shift 2 ;;
@@ -752,6 +900,7 @@ cmd_classify() {
       --probe-verdicts) probe_verdicts_json="${2:-}"; shift 2 ;;
       --recheck-probe-enabled) recheck_probe_enabled="${2:-}"; shift 2 ;;
       --someday-milestone) someday_milestone="${2:-}"; shift 2 ;;
+      --someday-recheck-days) someday_recheck_days="${2:-}"; shift 2 ;;
       *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
     esac
   done
@@ -791,6 +940,13 @@ cmd_classify() {
   fi
   if ! [[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
     echo "classify: --today must be YYYY-MM-DD, got: $today" >&2
+    return 64
+  fi
+  if [[ -z "$someday_recheck_days" ]]; then
+    someday_recheck_days="0"
+  fi
+  if ! [[ "$someday_recheck_days" =~ ^[0-9]+$ ]]; then
+    echo "classify: --someday-recheck-days must be a non-negative integer, got: $someday_recheck_days" >&2
     return 64
   fi
 
@@ -846,6 +1002,7 @@ cmd_classify() {
     --argjson probe_verdicts "$probe_verdicts_json" \
     --argjson covered_by_open_pr "$covered_by_open_pr_json" \
     --arg someday_milestone "$someday_milestone" \
+    --argjson someday_recheck_days "$someday_recheck_days" \
     "$CLASSIFY_JQ"
 }
 
@@ -946,6 +1103,95 @@ cmd_closed_by_open_pr() {
     | map({ (.[0].issue | tostring): (map(.pr) | min) })
     | add // {}
   '
+}
+
+# cmd_someday_recheck_write — the I/O half of the someday-recheck cadence
+# (issue #1422). Kept out of `classify` for the same reason
+# `closed-by-healthy-pr`/`eval-probes` are: the pure decision
+# (someday_recheck_state, evaluated inside CLASSIFY_JQ) and the live GitHub
+# write are different concerns, and only the write needs network access.
+cmd_someday_recheck_write() {
+  local repo="" someday_recheck_days="" today=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      --someday-recheck-days) someday_recheck_days="${2:-}"; shift 2 ;;
+      --today) today="${2:-}"; shift 2 ;;
+      *) echo "someday-recheck-write: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+
+  if [[ -z "$repo" ]]; then
+    echo "someday-recheck-write: --repo is required" >&2
+    usage
+    return 64
+  fi
+  if [[ -z "$someday_recheck_days" ]] || ! [[ "$someday_recheck_days" =~ ^[0-9]+$ ]]; then
+    echo "someday-recheck-write: --someday-recheck-days must be a non-negative integer" >&2
+    usage
+    return 64
+  fi
+  if [[ -z "$today" ]]; then
+    today="$(date -u +%F)"
+  fi
+  if ! [[ "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    echo "someday-recheck-write: --today must be YYYY-MM-DD, got: $today" >&2
+    return 64
+  fi
+
+  require_jq "backlog-filter.sh"
+
+  # 0 -- mechanism disabled, mirrors classify's own posture. Still consume
+  # stdin so a caller piping via `|` doesn't see a broken-pipe error.
+  if [[ "$someday_recheck_days" -eq 0 ]]; then
+    cat >/dev/null
+    return 0
+  fi
+
+  local new_date
+  # jq-based date arithmetic, not a shell `date -d`/`date -v` fallback
+  # chain, and NOT bare `date`'s idea of "now" -- this must add
+  # $someday_recheck_days to $today (the caller-supplied or default-derived
+  # value validated above), not to whatever the wall clock reads at call
+  # time, or a caller that pins --today for determinism/tests would get a
+  # marker date computed off the wrong anchor. Mirrors someday_recheck_state
+  # in CLASSIFY_JQ's own strptime/mktime/strftime pattern, so both halves of
+  # this mechanism agree on the exact same date math.
+  new_date=$(jq -rn --arg today "$today" --argjson days "$someday_recheck_days" '
+    ($today | strptime("%Y-%m-%d") | mktime) as $t
+    | ($t + ($days * 86400)) | strftime("%Y-%m-%d")
+  ')
+
+  local input numbers n current_body new_body
+  input=$(cat)
+  if [[ -z "$input" ]]; then
+    return 0
+  fi
+
+  # select() on a possibly-absent field: `.someday_recheck_action ==
+  # "first-park"` is false (not an error) when the field is absent, so
+  # ordinary classify NDJSON lines with no such field are silently skipped
+  # -- no separate `has(...)` guard needed.
+  numbers=$(printf '%s\n' "$input" | jq -r 'select(.someday_recheck_action == "first-park" or .someday_recheck_action == "cheap-reset") | .number' 2>/dev/null)
+
+  for n in $numbers; do
+    if ! current_body=$(gh issue view "$n" --repo "$repo" --json body --jq '.body' 2>/dev/null); then
+      echo "someday-recheck-write: WARNING: #$n could not be read — skipping marker write" >&2
+      continue
+    fi
+    if printf '%s' "$current_body" | grep -q '<!-- do-work-someday-recheck:'; then
+      new_body=$(printf '%s' "$current_body" | sed -E "s/<!-- do-work-someday-recheck: [0-9]{4}-[0-9]{2}-[0-9]{2} -->/<!-- do-work-someday-recheck: $new_date -->/")
+    else
+      new_body="<!-- do-work-someday-recheck: $new_date -->
+
+$current_body"
+    fi
+    if [[ "$new_body" != "$current_body" ]]; then
+      if ! gh issue edit "$n" --repo "$repo" --body "$new_body" >/dev/null 2>&1; then
+        echo "someday-recheck-write: WARNING: #$n do-work-someday-recheck marker edit failed" >&2
+      fi
+    fi
+  done
 }
 
 # cmd_eval_probes — the live-network precomputation half of the event-gate
@@ -1054,6 +1300,10 @@ main() {
     closed-by-open-pr)
       shift
       cmd_closed_by_open_pr "$@"
+      ;;
+    someday-recheck-write)
+      shift
+      cmd_someday_recheck_write "$@"
       ;;
     eval-probes)
       shift

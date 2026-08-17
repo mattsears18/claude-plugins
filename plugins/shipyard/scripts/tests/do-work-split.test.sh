@@ -1881,9 +1881,9 @@ assert_contains "$setup_path" \
 assert_contains "$setup_path" \
   'do-work-human-decision-required' \
   "setup.md step 6 recording path stamps <!-- do-work-human-decision-required --> on human-decision-required defers (#536)"
-assert_contains "$setup_path" \
-  'defers accumulated 5+ consecutive identical diagnosis comments across sessions because no label was applied to gate re-dispatch' \
-  "setup.md step 6 applies needs-human-review to external-dependency and human-decision-required defers (#536)"
+assert_contains "$rationale_path" \
+  'defers accumulated 5+ identical diagnosis comments per issue across sessions' \
+  "RATIONALE.md documents the failure mode needs-human-review closes for external-dependency / human-decision-required defers (#536)"
 assert_contains "$setup_path" \
   'Comment dedupe check' \
   "setup.md step 6 recording path includes a comment dedupe check before posting (#536)"

@@ -29,7 +29,7 @@ Every open issue lands in **exactly one** bucket. The set was validated against 
 | 5 | Operator queue | labels include `agent-console` | **dispatchable** by the operator phase — see the correction below |
 | 6 | Blocked by open sibling | body contains `Blocked by #N` and `#N` is still `OPEN` | parked — self-clearing |
 | 7 | Time-gated | body's first line is a `<!-- do-work-blocked-until: YYYY-MM-DD -->` marker with a date still in the future | parked — self-clearing; an **expired** marker flips the issue to bucket 9, never stays in bucket 7 |
-| 7.5 | Someday-parked | `classify` returned `drop:someday-milestone` for it — the issue's milestone matches the configured `backlog.someday_milestone` title ([#1406](https://github.com/mattsears18/shipyard/issues/1406)) | parked — inert unless `backlog.someday_milestone` is set (off by default); self-clearing only when a human moves the issue out of that milestone, since no probe is expressible for the class of event this park exists for |
+| 7.5 | Someday-parked | `classify` returned `drop:someday-milestone` for it — the issue's milestone matches the configured `backlog.someday_milestone` title ([#1406](https://github.com/mattsears18/shipyard/issues/1406)) | parked — inert unless `backlog.someday_milestone` is set (off by default); the PARK itself only clears when a human moves the issue out of that milestone (no probe is expressible for the class of event this park exists for), but the RE-SCOPE is self-clearing on a slow cadence — `backlog.someday_recheck_days` ([#1422](https://github.com/mattsears18/shipyard/issues/1422), follow-up to #1406; default 30 days, `0` disables) periodically re-admits the issue for exactly one scope-agent pass rather than parking it forever unexamined |
 | 8 | Investigate queue | number in `investigate_candidates` | **dispatchable** — routed, not yet worked |
 | 9 | Untrusted author | `author.login` (lowercased) not in `trusted_authors` | parked — needs allowlist vouching |
 | 10 | Dispatchable | number in `raw_backlog` or `ready_issues`, or passes every filter above with no matching signal | **must be 0 at a completion claim** — a non-zero count here means the session is stopping short, not finishing |
@@ -57,6 +57,8 @@ Every open issue lands in **exactly one** bucket. The set was validated against 
 ```
    1 → someday-parked                #3605 (milestone: 6 · Someday)
 ```
+
+**Bucket 7.5 stays bucket 7.5 for an issue mid-recheck-cadence too ([#1422](https://github.com/mattsears18/shipyard/issues/1422)).** `someday_recheck_state`'s `"first-park"`/`"not-due"`/`"cheap-reset"` outcomes are all still `drop:someday-milestone` — the ledger doesn't need a sub-bucket for them, since none change which bucket the issue lands in, only whether the orchestrator writes/refreshes a marker as a side effect. The one outcome that DOES change the bucket is `"escalate"`: `classify` emits a plain `eligible` line for that issue instead, so it lands in bucket 10 (dispatchable) like any other candidate, for exactly one scope-agent pass — not a defect, and not evidence the Someday park stopped working; it's the cadence doing its job.
 
 ## The load-bearing rule
 

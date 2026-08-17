@@ -50,13 +50,16 @@
 #         prioritize_dispatch` (fallback false on error; the built-in
 #         config default is actually true, but stays inert unless
 #         `milestones.enabled` is also true), `scope.
-#         recheck_probe_enabled` (default true), and `backlog.
+#         recheck_probe_enabled` (default true), `backlog.
 #         someday_milestone` (default "" — off; issue #1406, deliberately
 #         NOT gated on `milestones.enabled`, since the whole point is to
 #         work on a repo that has not opted into milestone-ranked dispatch
-#         at all) via `shipyard-config.sh get` (each read falls back to its
-#         documented value on any error, matching the `|| echo "<default>"`
-#         posture the original inline block had for every config read);
+#         at all), and `backlog.someday_recheck_days` (built-in default 30
+#         — issue #1422, the slow re-scope cadence for a someday_milestone
+#         park; inert whenever someday_milestone is "") via
+#         `shipyard-config.sh get` (each read falls back to its documented
+#         value on any error, matching the `|| echo "<default>"` posture
+#         the original inline block had for every config read);
 #       - runs `backlog-filter.sh closed-by-healthy-pr` and
 #         `closed-by-open-pr` against --repo/--me (the latter falls back to
 #         `{}` on any failure — the clause never fires rather than aborting
@@ -65,7 +68,13 @@
 #         `backlog-filter.sh eval-probes` against --issues-file (falls back
 #         to `{}` on any failure, same posture);
 #       - feeds every resolved input into `backlog-filter.sh classify`,
-#         reading --issues-file as stdin.
+#         reading --issues-file as stdin;
+#       - pipes the resulting NDJSON into `backlog-filter.sh
+#         someday-recheck-write` (issue #1422), which writes/refreshes the
+#         `do-work-someday-recheck` body marker for any `first-park`/
+#         `cheap-reset` line — best-effort (`|| true`), never fails the
+#         whole `run` call. A no-op whenever `someday_recheck_days` is `0`
+#         or no line carries `someday_recheck_action` (the common case).
 #     Writes the classify NDJSON to --out (default: stdout). Same NDJSON
 #     shape as `backlog-filter.sh classify` — see that script's header for
 #     the full per-line verdict contract. `raw_backlog` /
@@ -157,6 +166,10 @@ case "$sub" in
     milestones_prioritize_dispatch=$("$SHIPYARD_CONFIG" get milestones.prioritize_dispatch 2>/dev/null || echo "false")
     recheck_probe_enabled=$("$SHIPYARD_CONFIG" get scope.recheck_probe_enabled 2>/dev/null || echo "true")
     someday_milestone=$("$SHIPYARD_CONFIG" get backlog.someday_milestone 2>/dev/null || echo "")
+    someday_recheck_days=$("$SHIPYARD_CONFIG" get backlog.someday_recheck_days 2>/dev/null || echo "30")
+    if ! [[ "$someday_recheck_days" =~ ^[0-9]+$ ]]; then
+      someday_recheck_days="30"
+    fi
 
     # --- Live-network precomputed sets --------------------------------------
     closed_healthy_csv=$("$BACKLOG_FILTER" closed-by-healthy-pr --repo "$repo" --me "$me")
@@ -183,6 +196,7 @@ case "$sub" in
       --recheck-probe-enabled "$recheck_probe_enabled" \
       --probe-verdicts "$probe_verdicts_json" \
       --someday-milestone "$someday_milestone" \
+      --someday-recheck-days "$someday_recheck_days" \
       < "$issues_file")
     classify_rc=$?
 
@@ -190,6 +204,15 @@ case "$sub" in
       echo "classify-backlog.sh run: backlog-filter.sh classify exited $classify_rc" >&2
       exit "$classify_rc"
     fi
+
+    # --- Someday-recheck marker write (issue #1422) --------------------------
+    # Best-effort side effect: writes/refreshes the do-work-someday-recheck
+    # body marker for any first-park/cheap-reset line in $classify_out. Never
+    # fails the whole `run` call -- a marker-write failure here just means
+    # the same someday-parked issue gets re-evaluated (and the write
+    # re-attempted) on the very next classify-backlog.sh invocation.
+    printf '%s\n' "$classify_out" | "$BACKLOG_FILTER" someday-recheck-write \
+      --repo "$repo" --someday-recheck-days "$someday_recheck_days" 2>&1 | sed 's/^/classify-backlog.sh run: /' >&2 || true
 
     if [ -n "$out" ]; then
       printf '%s\n' "$classify_out" > "$out"
