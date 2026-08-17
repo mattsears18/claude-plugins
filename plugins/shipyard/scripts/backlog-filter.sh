@@ -43,6 +43,7 @@
 #            [--respect-assignees true|false]
 #            [--milestones-enabled true|false] [--milestones-prioritize-dispatch true|false]
 #            [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
+#            [--pr-collision-verdicts <json-object>]
 #            [--someday-milestone <title>] [--someday-recheck-days <N>]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
 #     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
@@ -60,6 +61,7 @@
 #       {"number":N,"verdict":"gate","reason":"tracking","evidence_pointer":"<content-sourced citation>"}
 #       {"number":N,"verdict":"gate","reason":"tracking-unjustified"}
 #       {"number":N,"verdict":"drop","reason":"covered-by-open-pr","evidence_pointer":"PR #M closingIssuesReferences includes #N"}
+#       {"number":N,"verdict":"drop","reason":"pr-collision-gated"}
 #       {"number":N,"verdict":"drop","reason":"someday-milestone","evidence_pointer":"milestone <title>","someday_recheck_action":"first-park"|"not-due"|"cheap-reset"}
 #     The `tracking` shapes are that label's special case (issue #1364) — see
 #     "Provisional gate: tracking requires a content-sourced justification"
@@ -181,6 +183,28 @@
 #     not something `classify` reads from config itself, so the pure
 #     function stays free of I/O (see the design note near the bottom of
 #     this header for why that purity is load-bearing).
+#     `--pr-collision-verdicts` (issue #1429) is a JSON object mapping issue
+#     number (STRING key, same convention as `--probe-verdicts`) to
+#     `"resolved"` or `"open"` — the verdict a prior `eval-pr-collision` pass
+#     (below) already computed for that issue's `do-work-blocked-by-prs`
+#     marker. Defaults to `{}` (every issue falls back to `"open"`, the safe
+#     default — no separate class-level kill switch, since the underlying
+#     probe is a fixed `gh pr view --json state` call, not the arbitrary
+#     allowlisted-verb grammar `--recheck-probe-enabled` guards). Any issue
+#     whose body's FIRST LINE (line-1-only, like `do-work-blocked-until` —
+#     NOT the any-line convention `do-work-recheck` uses) carries a
+#     `do-work-blocked-by-prs: N,M` marker is PR-COLLISION-GATED: `"resolved"`
+#     (every listed PR is now MERGED or CLOSED) admits the issue; `"open"`
+#     (at least one listed PR is still OPEN, or the map carries no entry for
+#     this issue) drops it with `{"verdict":"drop","reason":
+#     "pr-collision-gated"}`. This is the self-clearing companion to a
+#     `blocked-by-in-flight-pr` defer (see 06-scope-preflight.md) — it re-
+#     admits the issue to a FRESH scope-agent pass the moment every blocking
+#     PR resolves, rather than requiring pre-drain re-validation or a human
+#     to notice. It does NOT reuse a cached scope from the original defer —
+#     that cost-avoidance optimization, and the semantic premise re-
+#     validation it would require, is deliberately not wired here; see
+#     do-work.md's `deferred_issues` entry for the tracked follow-up.
 #     `--someday-milestone <title>` (issue #1406) is a THIRD, distinct park
 #     mechanism from time-gate/event-gate above — not a leaf of either. An
 #     issue whose `milestone` field (the same flattened title the
@@ -275,6 +299,25 @@
 #     contract). Empty object (`{}`), not empty string, when no issue in the
 #     input carries a marker — so `--probe-verdicts "$(...)"` composes
 #     directly without a caller-side empty-string special case.
+#     Exit codes: 0 success (even if no issue carries a marker); 65 if `gh`
+#     or `jq` is missing.
+#
+#   eval-pr-collision --repo <owner/repo>
+#     < wide-fetch-issue-json (array) on stdin — same payload `classify`
+#     reads (only `number`/`body` used).
+#     Live-queries: for every issue whose body's first line carries a
+#     `do-work-blocked-by-prs: N,M` marker (issue #1429), queries every
+#     listed PR's current state via `gh pr view <N> --json state -q .state`
+#     — a single fixed call per PR, no arbitrary command grammar, so unlike
+#     `eval-probes` there is no separate allowlist-evaluator script to
+#     delegate to. Verdict is `"resolved"` only when EVERY listed PR is
+#     MERGED or CLOSED; `"open"` otherwise (including a query error or an
+#     unrecognized state) — same fail-safe-to-gated posture
+#     `eval-recheck-probe.sh` documents for its own probes. Prints a JSON
+#     object `{"<number>":"resolved"|"open", ...}` on stdout, ready to pass
+#     straight through as `classify --pr-collision-verdicts`. Issues with no
+#     marker contribute no key. Empty object (`{}`) when no issue in the
+#     input carries a marker.
 #     Exit codes: 0 success (even if no issue carries a marker); 65 if `gh`
 #     or `jq` is missing.
 #
@@ -392,6 +435,7 @@ Usage:
       [--milestones-enabled true|false]
       [--milestones-prioritize-dispatch true|false]
       [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
+      [--pr-collision-verdicts <json-object>]
       [--someday-milestone <title>] [--someday-recheck-days <N>]
     < wide-fetch-issue-json (array) on stdin
 
@@ -404,6 +448,9 @@ Usage:
     < classify NDJSON (or {number, someday_recheck_action} lines) on stdin
 
   backlog-filter.sh eval-probes --repo <owner/repo>
+    < wide-fetch-issue-json (array) on stdin
+
+  backlog-filter.sh eval-pr-collision --repo <owner/repo>
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh summary --me <login>
@@ -721,9 +768,36 @@ def is_event_gated($issue; $recheck_probe_enabled):
 def probe_verdict($issue; $verdicts):
   ($verdicts[($issue.number | tostring)] // "unknown");
 
-def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone; $someday_recheck_days):
+# is_pr_collision_gated($issue) -- issue #1429. True when the FIRST LINE of
+# the body carries a `do-work-blocked-by-prs: N,M` marker -- the self-
+# clearing companion to a `blocked-by-in-flight-pr` defer (mirrors the
+# line-1-only position discipline `do-work-blocked-until` uses, not the
+# any-line convention `do-work-recheck` uses, since this marker is written
+# by the same step-4e recording path that writes `do-work-blocked-until`
+# for the other two self-clearing classes). Same capture()-then-[...]-then-
+# first idiom time_gate_future uses above, for the same reason: a bare
+# `as $cap` bind would swallow the entire output of classify_one on every
+# non-matching (the common) case.
+def is_pr_collision_gated($issue):
+  ($issue.body // "") as $b
+  | ($b | split("\n") | (.[0] // "")) as $first_line
+  | ([$first_line | capture("^<!--\\s*do-work-blocked-by-prs:\\s*(?<prs>[0-9]+(,[0-9]+)*)\\s*-->\\s*$")] | first) as $cap
+  | ($cap != null);
+
+# pr_collision_verdict($issue; $verdicts) -- looks up the precomputed
+# verdict eval-pr-collision already ran (network I/O happens there, never
+# here -- classify stays pure, same discipline as probe_verdict above). No
+# entry in the map (the precompute step was not run, or it produced no
+# verdict for this issue for any reason) fails safe to "open" -- the GATED
+# value -- never "resolved", so a missing precompute keeps the issue
+# dropped rather than silently admitting it.
+def pr_collision_verdict($issue; $verdicts):
+  ($verdicts[($issue.number | tostring)] // "open");
+
+def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days):
   (matches_gate_label($issue)) as $gate_hit
   | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
+  | is_pr_collision_gated($issue) as $pr_collision_gated
   | if is_untrusted($issue; $trusted) then
       {number: $issue.number, verdict: "drop", reason: "untrusted-author"}
     elif ($gate_hit != null) then
@@ -753,6 +827,8 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
       {number: $issue.number, verdict: "drop", reason: "blocked-by-open-issue"}
     elif ($event_gated and (probe_verdict($issue; $probe_verdicts) != "changed")) then
       {number: $issue.number, verdict: "drop", reason: "event-gated"}
+    elif ($pr_collision_gated and (pr_collision_verdict($issue; $pr_collision_verdicts) != "resolved")) then
+      {number: $issue.number, verdict: "drop", reason: "pr-collision-gated"}
     elif ((($event_gated | not)) and time_gate_future($issue; $today)) then
       {number: $issue.number, verdict: "drop", reason: "time-gated"}
     elif is_someday($issue; $someday_milestone) then
@@ -827,7 +903,7 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
 
 . as $issues
 | ($issues | map(.number)) as $opennums
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $someday_milestone; $someday_recheck_days))) as $classified
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by(._sort_key))
@@ -865,6 +941,16 @@ cmd_classify() {
   # issue and classify_one falls straight through to the unchanged
   # time_gate_future branch.
   local probe_verdicts_json="{}" recheck_probe_enabled="true"
+  # --pr-collision-verdicts (issue #1429). Default "{}" reproduces pre-#1429
+  # behavior byte-for-byte: with an empty verdicts map and no do-work-
+  # blocked-by-prs marker in the body, is_pr_collision_gated is false for
+  # every issue and classify_one falls straight through to the unchanged
+  # time_gate_future branch. No kill-switch flag (unlike --recheck-probe-
+  # enabled) -- the underlying probe is a fixed `gh pr view --json state`
+  # per listed PR, not the arbitrary allowlisted-verb grammar
+  # eval-recheck-probe.sh guards, so there is no equivalent security
+  # surface to gate off.
+  local pr_collision_verdicts_json="{}"
   # --closed-by-open-pr (issue #1389). Default "{}" reproduces pre-#1389
   # behavior byte-for-byte for every existing caller and fixture: with an
   # empty map, covered_by_open_pr returns null for every issue and
@@ -899,6 +985,7 @@ cmd_classify() {
       --milestones-prioritize-dispatch) milestones_prioritize_dispatch="${2:-}"; shift 2 ;;
       --probe-verdicts) probe_verdicts_json="${2:-}"; shift 2 ;;
       --recheck-probe-enabled) recheck_probe_enabled="${2:-}"; shift 2 ;;
+      --pr-collision-verdicts) pr_collision_verdicts_json="${2:-}"; shift 2 ;;
       --someday-milestone) someday_milestone="${2:-}"; shift 2 ;;
       --someday-recheck-days) someday_recheck_days="${2:-}"; shift 2 ;;
       *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
@@ -957,6 +1044,14 @@ cmd_classify() {
     return 64
   fi
 
+  if [[ -z "$pr_collision_verdicts_json" ]]; then
+    pr_collision_verdicts_json="{}"
+  fi
+  if ! printf '%s' "$pr_collision_verdicts_json" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    echo "classify: --pr-collision-verdicts must be a JSON object, got: $pr_collision_verdicts_json" >&2
+    return 64
+  fi
+
   if [[ -z "$covered_by_open_pr_json" ]]; then
     covered_by_open_pr_json="{}"
   fi
@@ -1000,6 +1095,7 @@ cmd_classify() {
     --argjson respect_assignees "$respect_assignees" \
     --argjson recheck_probe_enabled "$recheck_probe_enabled" \
     --argjson probe_verdicts "$probe_verdicts_json" \
+    --argjson pr_collision_verdicts "$pr_collision_verdicts_json" \
     --argjson covered_by_open_pr "$covered_by_open_pr_json" \
     --arg someday_milestone "$someday_milestone" \
     --argjson someday_recheck_days "$someday_recheck_days" \
@@ -1246,6 +1342,90 @@ cmd_eval_probes() {
   '
 }
 
+# cmd_eval_pr_collision — the live-network precomputation half of the
+# `blocked-by-in-flight-pr` self-clearing marker (issue #1429). Reads the
+# same wide-fetch payload `classify` reads (only `number`/`body` matter),
+# extracts every issue whose body's FIRST LINE carries a
+# `do-work-blocked-by-prs: N,M` marker, and for each queries every listed
+# PR's current state via a single, fixed `gh pr view <N> --json state -q
+# .state` call — no arbitrary command grammar, so (unlike eval-probes /
+# eval-recheck-probe.sh) there is no separate allowlist-evaluator script to
+# delegate to. Verdict is "resolved" only when EVERY listed PR is MERGED or
+# CLOSED; "open" otherwise, including when a query errors or returns
+# anything unrecognized — the same fail-safe-to-gated posture
+# eval-recheck-probe.sh documents (never treat an inconclusive read as
+# proof the collision resolved). Kept separate from `classify` for the
+# same reason `closed-by-healthy-pr` / `eval-probes` are: the
+# classification DECISION stays a pure, fixture-testable function with
+# zero network calls of its own.
+cmd_eval_pr_collision() {
+  local repo=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      *) echo "eval-pr-collision: unknown arg $1" >&2; usage; return 64 ;;
+    esac
+  done
+  if [[ -z "$repo" ]]; then
+    echo "eval-pr-collision: --repo is required" >&2
+    usage
+    return 64
+  fi
+  require_jq "backlog-filter.sh"
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "eval-pr-collision: gh is required but not installed" >&2
+    return 65
+  fi
+
+  local input
+  input=$(cat)
+  if [[ -z "$input" ]]; then
+    input="[]"
+  fi
+
+  # Pre-filter to {number, prs} pairs, restricted to issues whose body's
+  # first line actually carries the marker -- same efficiency pre-filter
+  # eval-probes uses, avoiding a subprocess (let alone a network call) for
+  # the overwhelmingly common marker-free case. `prs` is the raw
+  # comma-separated capture group; re-split in bash below rather than
+  # re-deriving the marker regex a second time in jq beyond the capture
+  # this line already performs.
+  local pairs number prs_csv pr verdict any_open
+  pairs=$(printf '%s' "$input" | jq -r '
+    .[] | (.body // "") as $b
+        | ($b | split("\n") | (.[0] // "")) as $first_line
+        | ($first_line | capture("^<!--\\s*do-work-blocked-by-prs:\\s*(?<prs>[0-9]+(,[0-9]+)*)\\s*-->\\s*$")) as $cap
+        | select($cap != null)
+        | "\(.number)\t\($cap.prs)"
+  ' 2>/dev/null)
+
+  printf '{'
+  local first_entry=true
+  while IFS=$'\t' read -r number prs_csv; do
+    [[ -z "$number" ]] && continue
+    any_open=false
+    IFS=',' read -ra pr_list <<<"$prs_csv"
+    for pr in "${pr_list[@]}"; do
+      verdict=$(gh pr view "$pr" --repo "$repo" --json state -q .state 2>/dev/null)
+      case "$verdict" in
+        MERGED|CLOSED) ;;
+        *) any_open=true ;;
+      esac
+    done
+    if [[ "$first_entry" == "true" ]]; then
+      first_entry=false
+    else
+      printf ','
+    fi
+    if [[ "$any_open" == "true" ]]; then
+      printf '"%s":"open"' "$number"
+    else
+      printf '"%s":"resolved"' "$number"
+    fi
+  done <<<"$pairs"
+  printf '}\n'
+}
+
 # cmd_summary — the unfiltered_open_count / me_assigned_open invariant-line
 # tokens (issue #1246). Reads the same wide-fetch payload `classify` reads,
 # BEFORE classification runs, so a regression in the classifier itself is
@@ -1308,6 +1488,10 @@ main() {
     eval-probes)
       shift
       cmd_eval_probes "$@"
+      ;;
+    eval-pr-collision)
+      shift
+      cmd_eval_pr_collision "$@"
       ;;
     summary)
       shift

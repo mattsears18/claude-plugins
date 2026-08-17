@@ -42,7 +42,7 @@
      | `human-decision-required` (classifier-denied sub-case) | `<!-- do-work-classifier-undispatchable -->` | #953 — same class, but this hand-back is synthesized by [`dispatch-rules.md`'s two-denial hard stop](../dispatch-rules.md#3-on-a-second-denial-stop-hand-back-to-the-human-never-a-third-attempt), never returned by a scope agent; the distinct marker records that **no worker ran at all** (dispatch itself was refused), as opposed to a scope agent's read of the issue's content |
      | `untrusted-author` | *(no marker)* | Not gated by `needs-human-review`; dedupe is not needed (trust-clearance defers are rare) |
      | `confirmed-blocker-still-open` | *(no marker)* | Not gated by `needs-human-review`; the `Blocked by #N` body-reference filter handles exclusion; dedupe is not needed (blocker state changes externally) |
-     | `blocked-by-in-flight-pr` | *(no marker)* | [#1426](https://github.com/mattsears18/shipyard/issues/1426) — ungated; no dedupe needed (the cited PRs' state changes externally, as for `confirmed-blocker-still-open`). No dispatch-filter exclusion in this revision — see [setup.md step 6](06-scope-preflight.md#6-initial-scope-pre-flight) |
+     | `blocked-by-in-flight-pr` | *(no comment marker — as of [#1429](https://github.com/mattsears18/shipyard/issues/1429), step 4e below additionally writes the self-clearing `<!-- do-work-blocked-by-prs: N,M -->` BODY marker for this class, alongside no label)* | [#1426](https://github.com/mattsears18/shipyard/issues/1426) — ungated; no dedupe needed (the cited PRs' state changes externally, as for `confirmed-blocker-still-open`). Dispatch-filter exclusion now handled by the body marker — see [setup.md step 6](06-scope-preflight.md#6-initial-scope-pre-flight) |
      | `time-gated` | `<!-- do-work-time-gated -->` **(comment marker — distinct from the separate `<!-- do-work-blocked-until: YYYY-MM-DD -->` BODY marker step 4 also writes for this class, below)** | #1165 — the comment marker is this recording path's own dedupe sentinel and the [freshness check's](06-scope-preflight.md#scope-result-freshness-check-skip-dispatch-when-a-fresh-diagnosis-comment-exists) reuse discriminator; the body marker is the one the step-4 dispatch filter ([#1161](https://github.com/mattsears18/shipyard/issues/1161)) actually reads to drop the issue |
 
      Concretely, the comment bodies for the three scope-agent-facing labelled classes (the `<!-- do-work-classifier-undispatchable -->` sub-case's comment shape is documented at its own origin, [`dispatch-rules.md`'s two-denial hand-back](../dispatch-rules.md#3-on-a-second-denial-stop-hand-back-to-the-human-never-a-third-attempt), not here — it is never produced by this recording path):
@@ -122,19 +122,18 @@
      # Pick the gate label by class: external-dependency → agent-console
      # (a browser/console operator action; /do-work can drive it), time-gated
      # and blocked-by-in-flight-pr → no label at all (neither needs a human
-     # decision — time-gated self-clears via a body marker, see step 4a
-     # below; blocked-by-in-flight-pr self-clears only in principle, via a
-     # future scope pass finding the holding PR merged — #1426), everything
-     # else → needs-human-review (genuine human decision / epic handoff).
+     # decision — both self-clear via a body marker instead: time-gated at
+     # step 4a below, blocked-by-in-flight-pr at step 4e below, issue
+     # #1429), everything else → needs-human-review (genuine human decision
+     # / epic handoff).
      case "$DEFER_REASON_CLASS" in
        external-dependency)     GATE_LABEL="agent-console" ;;
        time-gated)               GATE_LABEL="" ;;
        blocked-by-in-flight-pr)  GATE_LABEL="" ;;
        *)                         GATE_LABEL="needs-human-review" ;;
      esac
-     # time-gated / blocked-by-in-flight-pr apply no label at all —
-     # time-gated skips straight to step 4a below; blocked-by-in-flight-pr
-     # has no step-4a equivalent in this revision and just continues.
+     # time-gated / blocked-by-in-flight-pr apply no label at all — both
+     # write a self-clearing body marker instead (step 4a / step 4e below).
      if [ -n "$GATE_LABEL" ]; then
        # Ensure the label exists first — step 3a creates it, but 3a's
        # `gh label create … &` group is backgrounded + `2>/dev/null || true`,
@@ -247,6 +246,35 @@ $CURRENT_BODY"
      Reuses the exact same `someday-recheck-write` subcommand [`04-backlog-divert.md`](04-backlog-divert.md#4-fetch--rank-the-backlog)'s per-session sweep already calls — a synthetic single-line NDJSON tagged `"cheap-reset"` is precisely the shape it already consumes. This is what makes the cadence actually **reset** (issue #1422 acceptance criterion 3): the marker gets pushed out another `backlog.someday_recheck_days` days regardless of which defer class the diagnosis landed on, so next session's `classify` pass returns to the ordinary `drop:someday-milestone` / `not-due` state instead of escalating again immediately.
 
      **Do NOT run this step for a `ready` outcome** (the Ready-entries branch, not this Deferred-entries branch) — see the RATIONALE entry above for why.
+
+  4e. **`blocked-by-in-flight-pr` only — write the self-clearing `<!-- do-work-blocked-by-prs: N,M -->` body marker instead of a label** ([#1429](https://github.com/mattsears18/shipyard/issues/1429)). Run this step only when `$DEFER_REASON_CLASS == "blocked-by-in-flight-pr"`; skip it entirely for every other class. `blocking_prs` is already a validated, non-empty array of PR numbers (confirmed by the [evidence validation](#handling-each-returned-entry-fires-as-each-background-agent-completes) above). **Prepend, as line 1 — never appended or inserted elsewhere** — [`backlog-filter.sh`'s `is_pr_collision_gated`](../../../scripts/backlog-filter.sh) matches line 1 only, mirroring `do-work-blocked-until`'s own position discipline (NOT `do-work-recheck`'s any-line convention):
+
+     ```bash
+     PR_LIST=$(printf '%s\n' "${BLOCKING_PRS[@]}" | paste -sd, -)   # e.g. "900,901"
+     CURRENT_BODY=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body')
+     if echo "$CURRENT_BODY" | grep -q '<!-- do-work-blocked-by-prs:'; then
+       # A marker already exists (e.g. a re-diagnosis found a different or
+       # additional holding PR) -- replace the PR list in place rather than
+       # stacking a second marker. Idempotent: if the list is unchanged,
+       # this is a no-op edit.
+       NEW_BODY=$(echo "$CURRENT_BODY" | sed -E "s/<!-- do-work-blocked-by-prs: [0-9]+(,[0-9]+)* -->/<!-- do-work-blocked-by-prs: $PR_LIST -->/")
+     else
+       NEW_BODY="<!-- do-work-blocked-by-prs: $PR_LIST -->
+
+$CURRENT_BODY"
+     fi
+     if [ "$NEW_BODY" != "$CURRENT_BODY" ]; then
+       gh issue edit <N> --repo <owner/repo> --body "$NEW_BODY"
+     fi
+     # Verify LINE 1, not mere presence -- the filter matches line 1 only,
+     # so an off-line-1 marker is a silent no-op this catches loudly.
+     READBACK_FIRST_LINE=$(gh issue view <N> --repo <owner/repo> --json body --jq '.body' | head -1)
+     if ! echo "$READBACK_FIRST_LINE" | grep -qE '^<!-- do-work-blocked-by-prs: [0-9]+(,[0-9]+)* -->$'; then
+       echo "[scope-preflight] WARNING: #<N> do-work-blocked-by-prs marker not on line 1 (line 1 was: \"$READBACK_FIRST_LINE\") — SILENT NO-OP defer"
+     fi
+     ```
+
+     No label is applied — not `needs-human-review`, not `agent-console` (step 4's case statement already resolved `GATE_LABEL=""` for this class). The marker alone gates dispatch eligibility from here on: `backlog-filter.sh classify`'s `--pr-collision-verdicts` map (populated by the `eval-pr-collision` subcommand, wired into [`classify-backlog.sh`](../../../scripts/classify-backlog.sh)) drops the issue while any listed PR is still `OPEN` and re-admits it — to a **fresh** scope-agent pass, not a cached one — the instant every listed PR resolves to `MERGED`/`CLOSED`. This closes the "re-diagnose every session with no persisted state" waste #1429's Finding block describes; reusing the original scope agent's cached ready-shape scope to skip that fresh pass entirely is a distinct, deliberately unwired follow-up — see [#1448](https://github.com/mattsears18/shipyard/issues/1448).
 
   5. **Inline auto-decompose a mechanically-decomposable epic.** This step fires **only** when ALL of the following hold; otherwise skip it (the human handoff recorded by steps 1–4 is the final state, exactly as before #665):
 

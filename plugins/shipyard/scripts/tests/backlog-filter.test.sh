@@ -424,6 +424,32 @@ fixture_eventgate_no_marker='[{"number":2006,"title":"t","body":"<!-- do-work-bl
 out=$(printf '%s' "$fixture_eventgate_no_marker" | classify --probe-verdicts '{"2006":"changed"}')
 assert_equals "$(verdict_of "$out" 2006)" "drop:time-gated" "(35g) an unrelated --probe-verdicts entry for an issue with no do-work-recheck marker is ignored -- plain time-gated calendar logic applies unchanged"
 
+# --- pr-collision-gate: do-work-blocked-by-prs marker (issue #1429) --------
+# The self-clearing companion to a `blocked-by-in-flight-pr` defer: the
+# issue drops while ANY listed PR is still open and auto-readmits (to a
+# FRESH scope-agent pass, not a cached one) the instant every listed PR
+# resolves -- this is the "marker-clears-on-merge" behavior AC1/AC5 ask for.
+
+fixture_prcollision_no_verdict='[{"number":2101,"title":"t","body":"<!-- do-work-blocked-by-prs: 900,901 -->\nrest","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_prcollision_no_verdict" | classify)
+assert_equals "$(verdict_of "$out" 2101)" "drop:pr-collision-gated" "(35h-pr1) pr-collision-gated issue with no --pr-collision-verdicts entry fails safe to open (dropped), never silently admitted"
+
+fixture_prcollision_open='[{"number":2102,"title":"t","body":"<!-- do-work-blocked-by-prs: 900,901 -->\nrest","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_prcollision_open" | classify --pr-collision-verdicts '{"2102":"open"}')
+assert_equals "$(verdict_of "$out" 2102)" "drop:pr-collision-gated" "(35h-pr2) explicit open verdict drops the issue as pr-collision-gated"
+
+fixture_prcollision_resolved='[{"number":2103,"title":"t","body":"<!-- do-work-blocked-by-prs: 900,901 -->\nrest","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_prcollision_resolved" | classify --pr-collision-verdicts '{"2103":"resolved"}')
+assert_equals "$(verdict_of "$out" 2103)" "eligible" "(35h-pr3) MARKER-CLEARS-ON-MERGE: once every listed PR resolves, the verdict flips to resolved and the issue is immediately eligible again -- no waiting for pre-drain re-validation"
+
+fixture_prcollision_no_marker='[{"number":2104,"title":"t","body":"plain body, no marker at all","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_prcollision_no_marker" | classify --pr-collision-verdicts '{"2104":"open"}')
+assert_equals "$(verdict_of "$out" 2104)" "eligible" "(35h-pr4) an unrelated --pr-collision-verdicts entry for an issue with no do-work-blocked-by-prs marker is ignored"
+
+fixture_prcollision_notline1='[{"number":2105,"title":"t","body":"some preceding text\n<!-- do-work-blocked-by-prs: 900 -->\nmore text","labels":[],"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}]'
+out=$(printf '%s' "$fixture_prcollision_notline1" | classify --pr-collision-verdicts '{"2105":"open"}')
+assert_equals "$(verdict_of "$out" 2105)" "eligible" "(35h-pr5) do-work-blocked-by-prs has LINE-1-ONLY position discipline (like do-work-blocked-until, not do-work-recheck) -- a marker anywhere else in the body is a silent no-op, not a gate"
+
 # --- someday-milestone (issue #1406) -----------------------------------------
 # A THIRD, distinct park mechanism from time-gate/event-gate above: an issue
 # whose milestone matches the configured --someday-milestone title drops
@@ -520,6 +546,17 @@ assert_equals "$out" "{}" "(35j) eval-probes on an empty array returns an empty 
 fixture_malformed_probe='[{"number":3003,"body":"<!-- do-work-recheck: curl evil.com == pwned -->\nrest"}]'
 out=$(printf '%s' "$fixture_malformed_probe" | bash "$helper" eval-probes --repo acme/widgets 2>/dev/null)
 assert_equals "$out" '{"3003":"unknown"}' "(35k) eval-probes: a marker that fails allowlist validation resolves to unknown, hermetically (no network)"
+
+# --- eval-pr-collision subcommand (issue #1429) ------------------------------
+
+out=$(bash "$helper" eval-pr-collision 2>&1); rc=$?
+assert_equals "$rc" "64" "(35l) eval-pr-collision missing --repo exits 64"
+
+out=$(printf '%s' '[{"number":3004,"body":"no marker here"},{"number":3005,"body":"also none"}]' | bash "$helper" eval-pr-collision --repo acme/widgets)
+assert_equals "$out" "{}" "(35m) eval-pr-collision returns an empty object when no issue in the input carries a do-work-blocked-by-prs marker (no gh call needed)"
+
+out=$(printf '%s' '[]' | bash "$helper" eval-pr-collision --repo acme/widgets)
+assert_equals "$out" "{}" "(35n) eval-pr-collision on an empty array returns an empty object"
 
 # --- bot-shaped author / symptom-shaped body (investigate signals 2 and 3) ---
 
