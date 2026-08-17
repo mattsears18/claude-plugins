@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.43.1 — 2026-08-17
+
+P2 (closes #1431's AC4). AC1–AC3 shipped inside PR #1428 (the `06c-scope-handling-ui.md` split). This revision finishes AC4: re-measure `00-config-worktree.md` and `01-repo-recovery.md` — both sat inside the token-budget warn band (59,006 and 58,724 bytes respectively, against a 60,000-byte cap and a 57,000-byte warn threshold) — and split each at a genuine structural seam, following the same router/fragment precedent as `#611` / `#994` / `#1233` / `#1428`.
+
+- **`00-config-worktree.md`** (59,006 → 44,991 bytes, 12,009 headroom) split into two new fragments: `00j-c1-path-index.md` carries the "Lightweight C=1 path — what's skipped and what stays" reference index (a deep-link, not a numbered step — not part of the ordered per-session walk), and `00k-repo-root-pin.md` carries step **0.56** (`Pin SHIPYARD_REPO_ROOT to the primary checkout`, #1059) — part of the ordered walk, immediately after step 0.55.
+- **`01-repo-recovery.md`** (58,724 → 49,786 bytes, 7,214 headroom) split into two new fragments: `01f-gh-app-alias-normalization.md` carries the GH App alias-normalization sub-step of step 1.7 (#296), and `01e-verify-config-labels.md` carries step **1.75** (`Verify config-named labels exist in the target repo`, #1359) — both part of the ordered walk.
+- `setup.md`'s routing table gained four rows and the ordered-walk sequence became `00 → 00e → 00f → 00k → 00b → 01 → 01f → 01e → 01b → 01c → 04 → 06 → 06b → 06c → 06e → 07`; every new fragment's header block names its router and neighbours.
+- Every inbound cross-file anchor targeting a moved heading was re-pointed — the C=1-index anchor (`do-work.md`, `01-repo-recovery.md`), the step-0.56 anchor (`00f-session-id-storage.md` ×2, `00d-reread.md`, `00i-staleness-gate.md`), the GH-App-alias-normalization anchor (`do-work-RATIONALE.md`, `04d-investigate-routing.md`), and the step-1.75 anchor (`do-work-RATIONALE.md`, `cleanup-summary.md`). `relative-links-929.test.sh` reports 0 broken links tree-wide.
+- Verified: `setup-phase-file-token-budget.test.sh`, `do-work-phase-file-size.test.sh`, `relative-links-929.test.sh`, `do-work-split.test.sh` all pass.
+
 ### 4.43.0 — 2026-08-17
 
 Minor (closes #1429): ships point 2 of #1426's own acceptance criteria — treat `blocked-by-in-flight-pr` as a requeue signal, not a dead end. #1428 shipped the defer class itself; this revision closes the gap its own body called out: an issue deferred as `blocked-by-in-flight-pr` had no persisted state, so every session re-diagnosed it from scratch until a human noticed the holding PR had merged and manually re-triggered.

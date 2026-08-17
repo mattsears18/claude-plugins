@@ -29,7 +29,7 @@ Three `Read` calls — cheap, and only on the dogfooding-and-stale path. Steps 0
 
 ## Advisory — report a still-missed pre-relocation step, don't silently swallow it ([#1351](https://github.com/mattsears18/shipyard/issues/1351))
 
-Compare the just-`Read` fresh `00-config-worktree.md` against the primary checkout's on-disk copy — still reachable via the `.shipyard-primary-root` stash [step 0.56](./00-config-worktree.md#056-pin-shipyard_repo_root-to-the-primary-checkout-1059) wrote, since the primary checkout itself is untouched by relocation:
+Compare the just-`Read` fresh `00-config-worktree.md` against the primary checkout's on-disk copy — still reachable via the `.shipyard-primary-root` stash [step 0.56](./00k-repo-root-pin.md#056-pin-shipyard_repo_root-to-the-primary-checkout-1059) wrote, since the primary checkout itself is untouched by relocation:
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)

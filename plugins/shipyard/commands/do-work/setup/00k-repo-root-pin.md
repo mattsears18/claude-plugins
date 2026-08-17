@@ -1,0 +1,42 @@
+# /shipyard:do-work — Setup phase · SHIPYARD_REPO_ROOT pin
+
+**Setup sub-phase fragment, loaded from [`00-config-worktree.md`](./00-config-worktree.md)'s step-0.56 pointer — part of the ordered per-session walk, not a conditional deep-link.** Runs immediately after step 0.55's session-id storage completes ([#1431](https://github.com/mattsears18/shipyard/issues/1431), splitting `00-config-worktree.md` at this seam once it crossed the token-budget warn band — same router/fragment precedent as [#611](https://github.com/mattsears18/shipyard/issues/611) / [#994](https://github.com/mattsears18/shipyard/issues/994) / [#1233](https://github.com/mattsears18/shipyard/issues/1233)). Router: [`setup.md`](../setup.md). Sidebar: [`dont.md`](../dont.md). Prev: [`00f-session-id-storage.md`](./00f-session-id-storage.md) (step 0.55). Next: back to [`00-config-worktree.md`](./00-config-worktree.md#06-re-read-stale-spec-files-1191) for step 0.6.
+
+### 0.56 Pin `SHIPYARD_REPO_ROOT` to the primary checkout ([#1059](https://github.com/mattsears18/shipyard/issues/1059))
+
+**Every config read after step 0.5's relocation silently loses the `.shipyard/config.local.json` layer.** `shipyard-config.sh`'s `repo_root()` resolves via `git rev-parse --show-toplevel` from cwd unless `SHIPYARD_REPO_ROOT` overrides it. [Step 0.4](./00-config-worktree.md#04-check-the-repo-level-opt-in-shipyardconfigjson)'s `EFFECTIVE_CONFIG` is unaffected (it runs pre-relocation), but every OTHER config read this session — a fresh `shipyard-config.sh get`, or a helper like `resolve-dispatch-model.sh` / `flake-enforce.sh` — resolves against cwd at call time, which post-relocation is the orchestrator worktree: a fresh `origin/<default-branch>` checkout with no gitignored files. `.shipyard/config.local.json` silently drops out with no warning — and not just for `models.*`: `trust.authors`, `auto_merge.policy`, `concurrency.*`, `cost_tracking.*`, `ci.*`, `flake_registry.*` all revert too.
+
+**Pin it here, reusing step 0.55's fix (#1182)** — `SHIPYARD_PRIMARY_CHECKOUT_ROOT` doesn't survive this call's hermetic boundary; substitute the literal step 0.4 echoed to stderr, worktree-relative:
+
+```bash
+printf '%s\n' "<primary-root literal, 0.4>" > .shipyard-primary-root
+export SHIPYARD_REPO_ROOT="<primary-root literal, 0.4>"
+```
+
+**Every subsequent orchestrator Bash block calling `shipyard-config.sh` (directly or via `resolve-dispatch-model.sh` / `flake-enforce.sh`) should re-derive and export it from the stash** — hermetic Bash-tool calls don't carry shell state forward (see [step 0.3](./00-config-worktree.md#03-claude_plugin_root-re-export-preamble-every-bash-tool-call)):
+
+```bash
+SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
+export SHIPYARD_REPO_ROOT
+```
+
+**Scope: orchestrator session only — never propagate into a dispatched worker.** `SHIPYARD_REPO_ROOT` redirects the whole repo config layer. A worker's own `agent-*` worktree must resolve its own config against its own cwd; inheriting this pin would silently misdirect it. Never add `SHIPYARD_REPO_ROOT` to a dispatch prompt.
+
+**Originally shipped as a phase-1 slice** — the pin at its origin plus the one known-affected consumer ([step 5.8's flake-registry enforcement](04-backlog-divert.md#58-enforce-the-flake-registry-chronic-flake-escalation)). Every other post-relocation call site across `steady-state.md` / `dispatch-rules.md` — including the per-dispatch model resolution — was swept in the same shape shortly after ([#1064](https://github.com/mattsears18/shipyard/issues/1064)), and `scripts/tests/shipyard-repo-root-preamble.test.sh` now mechanically discovers every `*.md` file under `commands/do-work/` and asserts every bash block calling `shipyard-config.sh` / `resolve-dispatch-model.sh` carries the re-export preamble — a *new* call site is covered automatically the moment it's added, with nothing to remember to extend ([#1105](https://github.com/mattsears18/shipyard/issues/1105)).
+
+**Still-live gap this closed only partially — a per-call-site preamble depends on every live orchestrator session actually running it, every single call.** [#1263](https://github.com/mattsears18/shipyard/issues/1263)'s repro reproduced exactly this: a bare `resolve-dispatch-model.sh fix-checks-only` invocation from the orchestrator worktree, with no re-exported pin, silently fell back to the built-in default rather than the repo's configured override — even though the documented dispatch-site call carries the preamble. Documentation compliance and runtime compliance are different guarantees; a passing regression test on the *spec* doesn't prove every live *session* followed it every time. `scripts/resolve-dispatch-model.sh` now resolves the `.shipyard-primary-root` stash **internally** as a second line of defense (its own `ensure_repo_root_pin()`, run at the top of every subcommand): when `SHIPYARD_REPO_ROOT` is unset, it reads the stash file at cwd's git toplevel itself before falling through to `shipyard-config.sh`'s own default resolution — so a caller of this script (documented or not, preamble-following or not) still resolves `models.<mode>` against the pinned primary checkout. This is safe to apply unconditionally: the stash file only ever exists in the orchestrator's own worktree (a plain `>` redirect at pin time above, never `git add`ed), so a dispatched worker's separate `agent-*` worktree structurally can never pick it up — the "never propagate into a dispatched worker" scope boundary holds without the script needing to know which kind of caller it is. **This fix is scoped to `resolve-dispatch-model.sh` only, not `shipyard-config.sh` itself** — a shared config-repo-root helper would be the more DRY location, but `scripts/shipyard-config.sh` is a contested surface with in-flight sibling PRs at the time of #1263's fix, so the fallback lives in the one script the issue's own repro named rather than the file every config read funnels through; a future consolidation is open territory. The per-call-site preamble above is kept as the documented, explicit path (and the regression test still enforces it) — the internal fallback is redundant-by-design belt-and-suspenders, not a replacement for it.
+
+**Drift warning — defense in depth for un-swept call sites.** Fires only when the primary checkout's local layer exists and changes the merged result (re-derived from stash files, not shell vars — #1182):
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+PINNED_ROOT=$(cat .shipyard-primary-root 2>/dev/null)
+if [ -n "$PINNED_ROOT" ] && [ -f "$PINNED_ROOT/.shipyard/config.local.json" ]; then
+  UNPINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$(pwd)" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
+  PINNED_CONFIG=$(SHIPYARD_REPO_ROOT="$PINNED_ROOT" "$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" load 2>/dev/null)
+  if [ "$UNPINNED_CONFIG" != "$PINNED_CONFIG" ]; then
+    echo "warning: .shipyard/config.local.json in the primary checkout changes the effective config (issue #1059). SHIPYARD_REPO_ROOT is pinned for THIS session, but a call site that skips re-exporting it (see above) will still read the un-pinned config. Verify trust/auto-merge/model behavior this session." >&2
+  fi
+fi
+```

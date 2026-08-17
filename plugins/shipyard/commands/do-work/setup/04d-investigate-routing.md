@@ -12,7 +12,7 @@ Fragment of step **4** ([`04-backlog-divert.md`](./04-backlog-divert.md#4-fetch-
 
 Applies only to issues that have already survived the trusted-author gate above (`author.login` in `trusted_authors`) — investigate mode never dispatches against an untrusted author's issue, regardless of which signal matched.
 
-1. **Bot-shaped trusted author** — `author.login` matches `*[bot]` (REST shape) or `app/*` (GraphQL shape) — the same two shapes [`trusted-authors-normalize.sh`](../../../scripts/trusted-authors-normalize.sh) cross-adds for the `trust.authors` allowlist ([GH App alias normalization](./01-repo-recovery.md#gh-app-alias-normalization-issue-296)). Since this issue already passed the trusted-author gate, a bot-shaped login here means a bot the maintainer explicitly trusts (e.g. `app/sentry`) — not an arbitrary bot.
+1. **Bot-shaped trusted author** — `author.login` matches `*[bot]` (REST shape) or `app/*` (GraphQL shape) — the same two shapes [`trusted-authors-normalize.sh`](../../../scripts/trusted-authors-normalize.sh) cross-adds for the `trust.authors` allowlist ([GH App alias normalization](./01f-gh-app-alias-normalization.md#gh-app-alias-normalization-issue-296)). Since this issue already passed the trusted-author gate, a bot-shaped login here means a bot the maintainer explicitly trusts (e.g. `app/sentry`) — not an arbitrary bot.
 2. **Symptom-shaped body** — the body reads as a crash report (a stack trace, a fingerprint, an error string) rather than a fix request. Matched by a regex over common crash/stack-trace markers:
 
    ```bash
