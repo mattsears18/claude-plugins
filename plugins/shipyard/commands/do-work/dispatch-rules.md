@@ -475,7 +475,7 @@ When filling a slot, walk this decision tree:
    **Claimed-paths token-budget-warn augmentation (advisory only, [#1443](https://github.com/mattsears18/shipyard/issues/1443)).** After `claimed_paths` is computed for the candidate (step 6), check each hard/soft path against the warn band [`setup-phase-file-token-budget.test.sh`](../../scripts/tests/setup-phase-file-token-budget.test.sh) already enforces, via that script's own `--warn-check <path>` mode — never re-derive the 60,000-byte cap as a second literal:
 
    ```bash
-   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(git rev-parse --show-toplevel)/plugins/shipyard}"
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
    token_budget_warning=""
    for p in "${claimed_paths[@]}"; do
      result=$("$CLAUDE_PLUGIN_ROOT/scripts/tests/setup-phase-file-token-budget.test.sh" --warn-check "$p")
