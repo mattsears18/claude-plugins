@@ -424,7 +424,21 @@ EOF
 fi
 
 # --- Safety nets (mirrors fix-rebase.md steps 5.5-5.8) ----------------------
-if git -C "$WT_DIR" grep -qnE '^(<{7}|={7}|>{7})( |$)' -- . 2>/dev/null; then
+# Issue #1462: a raw whole-tree `git grep` for the marker pattern
+# false-positives DETERMINISTICALLY on this repo's own clean tree, because
+# `plugins/shipyard/scripts/tests/conflict-marker-scan.test.sh` ships marker-
+# shaped fixture strings as its test data. Shell out to the authoritative
+# scanner instead — it already honors that fixture's `conflict-marker-scan:
+# allow` opt-out directive and is the same script wired into the `conflict
+# markers` CI required check, so a worktree that passes here also passes CI.
+# Fall back to the raw grep ONLY if the scanner binary is somehow missing —
+# a genuine surviving marker must remain fatal either way.
+CONFLICT_SCANNER="$here/conflict-marker-scan.sh"
+if [ -f "$CONFLICT_SCANNER" ]; then
+  if ! ( cd "$WT_DIR" && bash "$CONFLICT_SCANNER" >/dev/null 2>&1 ); then
+    defer "conflict-markers-remain" "conflict markers survived resolution"
+  fi
+elif git -C "$WT_DIR" grep -qnE '^(<{7}|={7}|>{7})( |$)' -- . 2>/dev/null; then
   defer "conflict-markers-remain" "conflict markers survived resolution"
 fi
 

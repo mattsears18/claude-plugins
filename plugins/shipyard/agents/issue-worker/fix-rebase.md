@@ -261,7 +261,7 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
       **If either extraction comes back empty** (the `grep` found no matching added line — an unexpected shape for a resolution that just passed the manifest/CHANGELOG eligibility gates, items 1–4), leave that file's entry out of `$KNOWN_REWRITES` rather than guessing. Step 5.8 then checks that file's full added-line set unexempted, which is the safe direction: it can only make the guard *stricter* on a shape it doesn't recognize, never looser. A stricter-than-necessary bail here is recoverable (a human rebases by hand); a loosened exemption on the wrong lines is not. **This is deliberately distinct from the diff-shape check above** — an empty `manifest_line`/`changelog_line` after a *shape-verified* raw diff is a legitimate "no matching added line found" outcome handled by the safe fallback in this paragraph; a raw diff that doesn't even look like `git diff` output is a *parse-trustworthiness* failure caught earlier, before it can masquerade as that legitimate case.
 
-   After resolving, fall through to step 5 (clean-tree check) and **step 5.5 (the [#436](https://github.com/mattsears18/shipyard/issues/436) conflict-marker assertion) — which is non-negotiable here**: the version-row + CHANGELOG hand-resolution is precisely the "take both, drop the markers" shape that can leave a stray `=======` / `>>>>>>>` line behind. Step 5.5's `git grep` for surviving markers is the safety net that turns a botched re-number into a clean `blocked rebase` instead of a poisoned force-push. Do not skip it.
+   After resolving, fall through to step 5 (clean-tree check) and **step 5.5 (the [#436](https://github.com/mattsears18/shipyard/issues/436) conflict-marker assertion) — which is non-negotiable here**: the version-row + CHANGELOG hand-resolution is precisely the "take both, drop the markers" shape that can leave a stray `=======` / `>>>>>>>` line behind. Step 5.5's scan for surviving markers (via `conflict-marker-scan.sh`, per issue [#1462](https://github.com/mattsears18/shipyard/issues/1462)) is the safety net that turns a botched re-number into a clean `blocked rebase` instead of a poisoned force-push. Do not skip it.
 
 #### 4.7. Lockfile/generated-file regeneration — known-rewrites recording (issue [#1445](https://github.com/mattsears18/shipyard/issues/1445))
 
@@ -306,17 +306,28 @@ The `FILE`-kind (3-field) entry format is documented in full in [`verify-added-l
 
    If the rebase produced zero new commits because the branch was already a fast-forward of default (rare — would mean `mergeStateStatus` was lying), return `noop: not dirty (already fast-forward)`. No push needed.
 
-5.5. **Assert no conflict markers survived the resolution — bail if any remain (issue [#436](https://github.com/mattsears18/shipyard/issues/436)).** A `git status`-clean working tree is NOT sufficient proof that a trivial auto-resolution (step 4) actually removed every conflict marker: a "take both blocks, drop the markers" CHANGELOG concat that leaves a stray `=======` or `>>>>>>> <sha>` line still stages clean and commits clean. Before the force-push, grep the rebased tree for the anchored conflict-marker pattern and refuse to push if any line matches:
+5.5. **Assert no conflict markers survived the resolution — bail if any remain (issue [#436](https://github.com/mattsears18/shipyard/issues/436)).** A `git status`-clean working tree is NOT sufficient proof that a trivial auto-resolution (step 4) actually removed every conflict marker: a "take both blocks, drop the markers" CHANGELOG concat that leaves a stray `=======` or `>>>>>>> <sha>` line still stages clean and commits clean. Before the force-push, run the repo's own conflict-marker scanner against the rebased tree and refuse to push if it reports any marker:
 
    ```bash
-   if git grep -nE '^(<{7}|={7}|>{7})( |$)' -- . ; then
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   # (variables don't survive across Bash tool calls, so this is re-derived here)
+   conflict_scanner="$CLAUDE_PLUGIN_ROOT/scripts/conflict-marker-scan.sh"
+   if [[ -f "$conflict_scanner" ]]; then
+     if ! bash "$conflict_scanner" >/dev/null 2>&1; then
+       git rebase --abort 2>/dev/null || true
+       echo "blocked rebase #<M>: conflict markers remain after resolution — needs manual rebase"
+       exit 0
+     fi
+   elif git grep -nE '^(<{7}|={7}|>{7})( |$)' -- . ; then
      git rebase --abort 2>/dev/null || true
      echo "blocked rebase #<M>: conflict markers remain after resolution — needs manual rebase"
      exit 0
    fi
    ```
 
-   The regex is exactly seven of `<` / `=` / `>` at line start followed by a space or end-of-line — the same pattern the repo's `conflict-marker-scan.sh` CI gate (and the `check-merge-conflict` pre-commit hook) use, so a worker that passes this assertion also passes the CI gate. `git grep` exits 0 (and prints the offending `file:line`) when it finds a match, so the `if` branch fires exactly when a marker survived; bail with `blocked rebase` rather than force-pushing the corruption. This is the worker-side half of issue #436's two-layer defense — the CI gate (`.github/workflows/conflict-markers.yml`) is the repo-side catch-net for any path that bypasses this assertion (a non-shipyard force-push, a manual merge), and this assertion stops a fix-rebase dispatch from being the thing that needs catching.
+   **Shell out to `conflict-marker-scan.sh` rather than re-implementing its pattern (issue [#1462](https://github.com/mattsears18/shipyard/issues/1462)).** A prior version of this step ran a raw, whole-tree `git grep -nE '^(<{7}|={7}|>{7})( |$)' -- .` inline — that pattern **always matches** on `mattsears18/shipyard` itself, because the repo ships `plugins/shipyard/scripts/tests/conflict-marker-scan.test.sh` as a permanent test fixture containing intentional marker-shaped strings. The raw grep has no notion of that fixture's `conflict-marker-scan: allow` opt-out directive, so it false-positived deterministically on a completely clean tree, meaning this step was **never satisfiable on this repo** — a worker following it literally would bail `blocked rebase` on every correct resolution, on a step this file calls "non-negotiable." `conflict-marker-scan.sh` is the authoritative scanner: it's already the CI gate wired into the `conflict markers` required status check, and it already honors the fixture's exemption, so a worktree that passes this assertion also passes CI. The raw-grep fallback only fires if the scanner binary is somehow missing (an older plugin installation) — a genuine surviving marker must remain fatal either way, never silently skipped.
+
+   The scanner exits 0 (clean) or 1 (marker found, with `file:line` on stderr) when run with no arguments from inside the rebased worktree — which is exactly this step's cwd, so no path targeting is needed. This is the worker-side half of issue #436's two-layer defense — the CI gate (`.github/workflows/conflict-markers.yml`) is the repo-side catch-net for any path that bypasses this assertion (a non-shipyard force-push, a manual merge), and this assertion stops a fix-rebase dispatch from being the thing that needs catching.
 
    The original poison-the-main incident was caught only because a *later* manual rebase inherited the markers; the green CI run that merged the corrupted CHANGELOG had no gate that greps for markers. This assertion + the CI gate close that hole from both ends.
 
