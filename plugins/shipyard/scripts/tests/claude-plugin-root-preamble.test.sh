@@ -260,20 +260,23 @@ done
 # (2) The canonical preamble is documented in setup step 0.3, so any
 # reader of the spec can find the rationale for the pattern in one place.
 # Since #611 split setup.md into a thin router + step-cluster sub-files,
-# step 0.3 lives in do-work/setup/00-config-worktree.md.
-SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
-if [[ -f "$SETUP_MD" ]]; then
-  if grep -qF "### 0.3 \`CLAUDE_PLUGIN_ROOT\` re-export preamble" "$SETUP_MD"; then
-    assert_pass "setup.md documents step 0.3 (preamble rationale)"
-  else
-    assert_fail "setup.md documents step 0.3 (preamble rationale)"
-  fi
+# step 0.3 currently lives in do-work/setup/00-config-worktree.md — but the
+# router/fragment pattern is designed to move a step's content to a new
+# fragment once its parent crosses the token-budget cap (issue #1453), so
+# this scans across every setup/*.md fragment for the content rather than
+# hardcoding the one file it happens to live in today (mirrors the fix in
+# shipyard-repo-root-preamble.test.sh check (4)).
+SETUP_DIR="$repo_root/plugins/shipyard/commands/do-work/setup"
+if grep -qFl "### 0.3 \`CLAUDE_PLUGIN_ROOT\` re-export preamble" "$SETUP_DIR"/*.md 2>/dev/null; then
+  assert_pass "setup/*.md documents step 0.3 (preamble rationale)"
+else
+  assert_fail "setup/*.md documents step 0.3 (preamble rationale)"
+fi
 
-  if grep -qF "$EXPECTED_PREAMBLE" "$SETUP_MD"; then
-    assert_pass "setup.md contains the canonical preamble line"
-  else
-    assert_fail "setup.md contains the canonical preamble line"
-  fi
+if grep -qFl "$EXPECTED_PREAMBLE" "$SETUP_DIR"/*.md 2>/dev/null; then
+  assert_pass "setup/*.md contains the canonical preamble line"
+else
+  assert_fail "setup/*.md contains the canonical preamble line"
 fi
 
 # (3) Walk every bash code block in every discovered file, IN FILE ORDER.

@@ -68,6 +68,21 @@ assert_contains() {
   fi
 }
 
+# Scans across every setup/*.md fragment rather than one hardcoded file — a
+# router/fragment split can silently relocate a step's content out of
+# $SETUP_REPO_MD without warning (issue #1453; mirrors the fix in
+# shipyard-repo-root-preamble.test.sh check (4)).
+SETUP_DIR="$repo_root/plugins/shipyard/commands/do-work/setup"
+assert_contains_in_setup() {
+  local needle="$1" label="$2"
+  if grep -qFl -- "$needle" "$SETUP_DIR"/*.md 2>/dev/null; then
+    assert_pass "$label"
+  else
+    assert_fail "$label"
+    printf '    expected to find (in any setup/*.md fragment): %s\n' "$needle"
+  fi
+}
+
 # decide <has_workflow_scope> <workflow_signal> <expected> <label>
 assert_decide() {
   local got
@@ -139,40 +154,40 @@ echo "(B) setup/01-repo-recovery.md — doc contract"
 if [[ -f "$SETUP_REPO_MD" ]]; then
   assert_pass "01-repo-recovery.md exists"
 
-  assert_contains "$SETUP_REPO_MD" 'detect-missing-workflow-scope.sh' \
-    "01-repo-recovery.md invokes the detector script (#818)"
+  assert_contains_in_setup 'detect-missing-workflow-scope.sh' \
+    "setup/*.md invokes the detector script (#818)"
 
-  assert_contains "$SETUP_REPO_MD" 'gh auth refresh -h github.com -s workflow' \
-    "01-repo-recovery.md names the exact remediation command from the issue's acceptance criteria"
+  assert_contains_in_setup 'gh auth refresh -h github.com -s workflow' \
+    "setup/*.md names the exact remediation command from the issue's acceptance criteria"
 
   # The proactive warning must reuse #812's exact LANDED reactive-path token
   # verbatim (no backticks around "workflow" — read from origin/main's landed
   # auto-merge.md, not guessed from the issue body's illustrative prose) so
   # the two halves of the same problem don't diverge into two vocabularies.
-  assert_contains "$SETUP_REPO_MD" 'auto-merge: unavailable — gh token lacks workflow scope' \
-    "01-repo-recovery.md reuses #812's exact landed failure token verbatim (#818 coordination requirement)"
+  assert_contains_in_setup 'auto-merge: unavailable — gh token lacks workflow scope' \
+    "setup/*.md reuses #812's exact landed failure token verbatim (#818 coordination requirement)"
 
-  assert_contains "$SETUP_REPO_MD" '#812' \
-    "01-repo-recovery.md cites #812 as the reactive counterpart"
+  assert_contains_in_setup '#812' \
+    "setup/*.md cites #812 as the reactive counterpart"
 
-  assert_contains "$SETUP_REPO_MD" 'Silent by default' \
-    "01-repo-recovery.md documents the silent-by-default posture"
+  assert_contains_in_setup 'Silent by default' \
+    "setup/*.md documents the silent-by-default posture"
 
-  assert_contains "$SETUP_REPO_MD" 'One-time' \
-    "01-repo-recovery.md documents the one-time-per-session posture"
+  assert_contains_in_setup 'One-time' \
+    "setup/*.md documents the one-time-per-session posture"
 
   # Never attempt to refresh/escalate/modify scopes on the worker's own
   # authority — surfacing the remediation command is the only sanctioned act.
-  assert_contains "$SETUP_REPO_MD" 'Never attempt to refresh, escalate, or modify the token' \
-    "01-repo-recovery.md explicitly forbids self-driving gh auth refresh"
+  assert_contains_in_setup 'Never attempt to refresh, escalate, or modify the token' \
+    "setup/*.md explicitly forbids self-driving gh auth refresh"
 
   # Single source of truth — the two-signal condition must not be
   # re-implemented as prose here (the #716 drift hazard this repo has
   # already been bitten by once for a structurally similar condition).
-  if grep -qE '^\s*(HAS_SCOPE|WORKFLOW_SIGNAL)=' "$SETUP_REPO_MD"; then
-    assert_fail "01-repo-recovery.md must NOT re-derive the two-signal condition inline — call the script"
+  if grep -qEl '^\s*(HAS_SCOPE|WORKFLOW_SIGNAL)=' "$SETUP_DIR"/*.md 2>/dev/null; then
+    assert_fail "no setup/*.md fragment re-derives the two-signal condition inline — call the script"
   else
-    assert_pass "01-repo-recovery.md does not re-derive the two-signal condition inline"
+    assert_pass "no setup/*.md fragment re-derives the two-signal condition inline"
   fi
 else
   assert_fail "01-repo-recovery.md exists (missing at $SETUP_REPO_MD)"

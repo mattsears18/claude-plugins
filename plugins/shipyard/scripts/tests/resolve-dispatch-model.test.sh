@@ -53,6 +53,10 @@
 # Run with:
 #   bash plugins/shipyard/scripts/tests/resolve-dispatch-model.test.sh
 
+# setup-fragment-content-scan: allow-file
+# POOL_FILL_MD targets setup/07-pool-fill.md, the single, not-yet-split
+# fragment that owns the initial-pool-fill dispatch site by design — not
+# generic step content that could drift to an unrelated file (issue #1453).
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

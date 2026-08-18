@@ -40,6 +40,11 @@
 #
 #   bash plugins/shipyard/scripts/tests/refine-origin-label-1055.test.sh
 
+# setup-fragment-content-scan: allow-file
+# This suite regression-tests a SPECIFIC historical migration (#1055) against
+# the exact fragment files it touched — its purpose IS to verify those
+# particular files, not generic step content that happens to live there
+# today (issue #1453).
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

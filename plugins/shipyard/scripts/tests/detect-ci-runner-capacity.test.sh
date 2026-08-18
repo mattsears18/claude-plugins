@@ -109,6 +109,21 @@ assert_contains() {
   fi
 }
 
+# Scans across every setup/*.md fragment rather than one hardcoded file — a
+# router/fragment split can silently relocate a step's content out of
+# $SETUP_MD without warning (issue #1453; mirrors the fix in
+# shipyard-repo-root-preamble.test.sh check (4)).
+SETUP_DIR="$repo_root/plugins/shipyard/commands/do-work/setup"
+assert_contains_in_setup() {
+  local needle="$1" label="$2"
+  if grep -qFl -- "$needle" "$SETUP_DIR"/*.md 2>/dev/null; then
+    assert_pass "$label"
+  else
+    assert_fail "$label"
+    printf '    expected to find (in any setup/*.md fragment): %s\n' "$needle"
+  fi
+}
+
 assert_equals() {
   local label="$1" expected="$2" actual="$3"
   if [[ "$expected" == "$actual" ]]; then
@@ -186,15 +201,15 @@ echo
 echo "(C) setup step 1.36 — detector wiring + narrow clamp"
 if [[ -f "$SETUP_MD" ]]; then
   assert_pass "01-repo-recovery.md exists"
-  assert_contains "$SETUP_MD" "### 1.36 Detect CI executor pool capacity and clamp toward it" \
+  assert_contains_in_setup "### 1.36 Detect CI executor pool capacity and clamp toward it" \
     "step 1.36 heading present"
-  assert_contains "$SETUP_MD" "detect-ci-runner-capacity.sh" \
+  assert_contains_in_setup "detect-ci-runner-capacity.sh" \
     "step 1.36 invokes the detector script"
-  assert_contains "$SETUP_MD" 'issues/1141' \
+  assert_contains_in_setup 'issues/1141' \
     "step 1.36 cites issue #1141"
-  assert_contains "$SETUP_MD" '-z "<--concurrency CLI value, if passed>"' \
+  assert_contains_in_setup '-z "<--concurrency CLI value, if passed>"' \
     "the pool clamp only fires when no explicit --concurrency was passed (mirrors #733)"
-  assert_contains "$SETUP_MD" 'CI_POOL_TOTAL' \
+  assert_contains_in_setup 'CI_POOL_TOTAL' \
     "step 1.36 resolves a pool-total variable"
 else
   assert_fail "01-repo-recovery.md exists (missing at $SETUP_MD)"
@@ -206,9 +221,9 @@ echo
 # ---------------------------------------------------------------------------
 echo "(D) ci_capacity write-through"
 if [[ -f "$SETUP_MD" ]]; then
-  assert_contains "$SETUP_MD" '.ci_capacity = { shape:' \
+  assert_contains_in_setup '.ci_capacity = { shape:' \
     "step 1.5 writes .ci_capacity through via session-state.sh update"
-  assert_contains "$SETUP_MD" 'queued_at_start' \
+  assert_contains_in_setup 'queued_at_start' \
     "ci_capacity write-through carries queued_at_start"
 else
   assert_fail "ci_capacity write-through (setup doc missing)"

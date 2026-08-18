@@ -79,6 +79,21 @@ assert_contains() {
   fi
 }
 
+# Scans across every setup/*.md fragment rather than one hardcoded file — a
+# router/fragment split can silently relocate a step's content out of
+# $SETUP_MD without warning (issue #1453; mirrors the fix in
+# shipyard-repo-root-preamble.test.sh check (4)).
+SETUP_DIR="$repo_root/plugins/shipyard/commands/do-work/setup"
+assert_contains_in_setup() {
+  local needle="$1" label="$2"
+  if grep -qFl -- "$needle" "$SETUP_DIR"/*.md 2>/dev/null; then
+    assert_pass "$label"
+  else
+    assert_fail "$label"
+    printf '    expected to find (in any setup/*.md fragment): %s\n' "$needle"
+  fi
+}
+
 assert_equals() {
   local label="$1" expected="$2" actual="$3"
   if [[ "$expected" == "$actual" ]]; then
@@ -239,16 +254,16 @@ echo
 echo "(E) setup step 1.37 — detector wiring + write-through"
 if [[ -f "$SETUP_MD" ]]; then
   assert_pass "01-repo-recovery.md exists"
-  assert_contains "$SETUP_MD" "### 1.37 Detect CI-cheap-path availability" \
+  assert_contains_in_setup "### 1.37 Detect CI-cheap-path availability" \
     "step 1.37 heading present"
-  assert_contains "$SETUP_MD" "detect-ci-cheap-path.sh" \
+  assert_contains_in_setup "detect-ci-cheap-path.sh" \
     "step 1.37 invokes the detector script"
-  assert_contains "$SETUP_MD" "issues/1157" \
+  assert_contains_in_setup "issues/1157" \
     "step 1.37 cites issue #1157"
-  assert_contains "$SETUP_MD" "CI_CHEAP_GLOBS" \
+  assert_contains_in_setup "CI_CHEAP_GLOBS" \
     "step 1.37 resolves a cheap-globs variable"
   # shellcheck disable=SC2016 # this is a literal-string needle for grep, not a shell expansion
-  assert_contains "$SETUP_MD" 'cheap_ci_globs: \"${CI_CHEAP_GLOBS' \
+  assert_contains_in_setup 'cheap_ci_globs: \"${CI_CHEAP_GLOBS' \
     "step 1.5 write-through carries cheap_ci_globs alongside ci_capacity"
 else
   assert_fail "01-repo-recovery.md exists (missing at $SETUP_MD)"

@@ -52,10 +52,14 @@ if [[ "$repo_root" == "/" ]]; then
   exit 1
 fi
 
-setup_file="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
 cleanup_file="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
 dispatch_file="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 detector_script="$repo_root/plugins/shipyard/scripts/detect-skill-cache-staleness.sh"
+# The three step-0.4 assertions below scan across every setup/*.md fragment
+# rather than hardcoding one file, since a future split could move that
+# step's content elsewhere without warning (issue #1453; mirrors the fix
+# in shipyard-repo-root-preamble.test.sh check (4)).
+setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
 
 pass=0
 fail=0
@@ -102,14 +106,14 @@ check "detect-skill-cache-staleness.sh echoes the resolved skill-cache version u
 grep -q '#1319' "$detector_script"
 check "detect-skill-cache-staleness.sh cites issue #1319" "$?"
 
-grep -q 'SHIPYARD_SKILL_CACHE_STALE' "$setup_file"
-check "00-config-worktree.md computes SHIPYARD_SKILL_CACHE_STALE from the detector script's output" "$?"
+grep -ql 'SHIPYARD_SKILL_CACHE_STALE' "$setup_dir"/*.md 2>/dev/null
+check "setup/*.md computes SHIPYARD_SKILL_CACHE_STALE from the detector script's output" "$?"
 
-grep -q 'detect-skill-cache-staleness.sh' "$setup_file"
-check "00-config-worktree.md step 0.4 calls detect-skill-cache-staleness.sh" "$?"
+grep -ql 'detect-skill-cache-staleness.sh' "$setup_dir"/*.md 2>/dev/null
+check "setup/*.md step 0.4 calls detect-skill-cache-staleness.sh" "$?"
 
-grep -q '#1319' "$setup_file"
-check "00-config-worktree.md cites issue #1319" "$?"
+grep -ql '#1319' "$setup_dir"/*.md 2>/dev/null
+check "setup/*.md cites issue #1319" "$?"
 
 grep -q 'SHIPYARD_SKILL_CACHE_STALE' "$cleanup_file"
 check "cleanup-summary.md re-surfaces SHIPYARD_SKILL_CACHE_STALE" "$?"

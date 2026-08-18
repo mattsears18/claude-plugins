@@ -33,6 +33,11 @@
 #
 #   bash plugins/shipyard/scripts/tests/agent-console-rename-995.test.sh
 
+# setup-fragment-content-scan: allow-file
+# This suite regression-tests a SPECIFIC historical migration (#995) landing
+# in the exact fragment files the migration touched — its purpose IS to
+# verify those particular files, not generic step content that happens to
+# live there today (issue #1453).
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

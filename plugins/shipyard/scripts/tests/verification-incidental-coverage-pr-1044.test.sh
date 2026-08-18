@@ -26,6 +26,11 @@
 #
 #   bash plugins/shipyard/scripts/tests/verification-incidental-coverage-pr-1044.test.sh
 
+# setup-fragment-content-scan: allow-file
+# This suite regression-tests a SPECIFIC historical PR (#1044) against the
+# exact fragment file (06b-scope-carveouts.md) it touched — its purpose IS
+# to verify that particular file, not generic step content that happens to
+# live there today (issue #1453).
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

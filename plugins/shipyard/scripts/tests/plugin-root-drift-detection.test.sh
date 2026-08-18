@@ -56,8 +56,12 @@ if [[ "$repo_root" == "/" ]]; then
   exit 1
 fi
 
-setup_file="$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
 cleanup_file="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
+# The three static assertions below scan across every setup/*.md fragment
+# rather than hardcoding one file, since a future split could move step
+# 0.5's content elsewhere without warning (issue #1453; mirrors the fix in
+# shipyard-repo-root-preamble.test.sh check (4)).
+setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
 
 pass=0
 fail=0
@@ -91,14 +95,14 @@ echo
 
 # --- Static assertions -------------------------------------------------
 
-grep -q '\.shipyard-plugin-root-version' "$setup_file"
-check "00-config-worktree.md step 0.5 writes .shipyard-plugin-root-version" "$?"
+grep -ql '\.shipyard-plugin-root-version' "$setup_dir"/*.md 2>/dev/null
+check "setup/*.md step 0.5 writes .shipyard-plugin-root-version" "$?"
 
-grep -q 'SHIPYARD_PLUGIN_ROOT_VERSION' "$setup_file"
-check "00-config-worktree.md resolves SHIPYARD_PLUGIN_ROOT_VERSION from plugin.json" "$?"
+grep -ql 'SHIPYARD_PLUGIN_ROOT_VERSION' "$setup_dir"/*.md 2>/dev/null
+check "setup/*.md resolves SHIPYARD_PLUGIN_ROOT_VERSION from plugin.json" "$?"
 
-grep -q '#1304' "$setup_file"
-check "00-config-worktree.md cites issue #1304" "$?"
+grep -ql '#1304' "$setup_dir"/*.md 2>/dev/null
+check "setup/*.md cites issue #1304" "$?"
 
 grep -q 'SHIPYARD_PLUGIN_ROOT_DRIFT' "$cleanup_file"
 check "cleanup-summary.md computes SHIPYARD_PLUGIN_ROOT_DRIFT" "$?"
