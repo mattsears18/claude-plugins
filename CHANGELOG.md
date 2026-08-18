@@ -4,6 +4,18 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.45.1 — 2026-08-18
+
+P0 follow-up to 4.45.0. That release deleted `scripts/assert-worktree-cwd.sh` but left **two live invocations of it** in `shipyard:worker-preamble`'s always-loaded `SKILL.md` — the step-0 cwd fail-fast and the mid-session cwd anchor both still ran `bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-cwd.sh"`. Every dispatched worker executes step 0 before anything else, so each one would have hit `No such file or directory` on its first command. Nothing caught it: the anchor-link checker only validates markdown links (these were fenced shell), and no test asserts that a command a spec tells a worker to run actually exists.
+
+- **Both call sites now use the three plain `git rev-parse` calls** already carried by [`assert-worktree-cwd-fallback.md`](plugins/shipyard/skills/worker-preamble/assert-worktree-cwd-fallback.md), comparing `--git-dir` against `--git-common-dir` directly. The verdict vocabulary changes from the script's `worktree`/`primary`/`error` stdout tokens to the comparison itself; the `blocked:` return strings are unchanged.
+- **That fragment is no longer described as a fallback.** Its header said "load this only when `scripts/assert-worktree-cwd.sh` genuinely can't be located or run" — there is no script now, so it is the canonical form, and it notes that Claude Code enforces the same rule itself (a command whose working directory resolves to the main checkout is blocked before it runs), making this check a self-confirmation rather than the only thing preventing a wrong-repo write.
+- **The fragment-index row** in `SKILL.md` is rewritten to match, and the two "**If the script can't be located**" escape-hatch paragraphs are deleted along with the script they escaped to.
+
+`SKILL.md` drops to 64,249 bytes (ceiling 66,000).
+
+**Process note.** A deletion pass must grep for *invocations*, not only for markdown links — a fenced `bash <path>` block referencing a deleted script is invisible to the link checker and to every existing suite. Worth a mechanical gate; filed as follow-up rather than bolted on here.
+
 ### 4.45.0 — 2026-08-18
 
 **Harness convergence — first cut.** Claude Code v2.1.234 now owns worktree provisioning, cwd pinning, and containment enforcement outright, and exposes `isolation: worktree` as a **subagent frontmatter field**. Shipyard had been reimplementing all of it: a dispatch-side PreToolUse hook, two file-scope guards, a cwd assertion script, and a 228-line reverse-engineered study of the harness's own command-shape refusal. Every one of those is now a strictly weaker copy of a guarantee the platform makes natively, so they are deleted rather than maintained. Net **−1,831 lines** (2,225 deleted / 394 added across 79 files), with no loss of enforced behavior — the guarantees moved from shipyard's code into the harness's.
