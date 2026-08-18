@@ -517,18 +517,11 @@ fi
 # would flag the documentation of the rule as a violation of it. The exemption
 # is a single named path, and its existence is asserted below — a rename or
 # deletion must not silently widen the hole into "no file is scanned".
-BRACE_DOC_EXEMPT="plugins/shipyard/commands/do-work/bash-refusal-triggers.md"
 
 PLUGIN_ROOT_DIR="$repo_root/plugins/shipyard"
-if [[ -f "$repo_root/$BRACE_DOC_EXEMPT" ]]; then
-  assert_pass "brace-ban exemption target exists ($BRACE_DOC_EXEMPT)"
-else
-  assert_fail "brace-ban exemption target is missing ($BRACE_DOC_EXEMPT) — the exemption below would silently apply to nothing; re-point it or drop it"
-fi
-
 # shellcheck disable=SC2016  # literal search text — must NOT expand
 braced_hits=$(grep -rlF '${CLAUDE_PLUGIN_ROOT}' "$PLUGIN_ROOT_DIR" --include='*.md' 2>/dev/null \
-  | grep -vF "$repo_root/$BRACE_DOC_EXEMPT" | sort)
+  | sort)
 if [[ -z "$braced_hits" ]]; then
   assert_pass "no braced \${CLAUDE_PLUGIN_ROOT} spelling anywhere in the plugin's markdown (issue #1308)"
 else

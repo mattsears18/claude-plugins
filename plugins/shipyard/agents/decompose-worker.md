@@ -1,7 +1,7 @@
 ---
 name: decompose-worker
 description: Autonomously decompose one confirmed-non-shippable epic (an issue carrying `needs-human-review` + the `<!-- do-work-needs-decomposition -->` trigger marker) into an ordered chain of dispatch-ready GitHub sub-issues, or escalate back to the human handoff when the evidence class isn't mechanically shardable. First-class registered identity for the decomposition logic `/shipyard:decompose-epic` and `/do-work`'s inline auto-decompose path (#665) run (closes #772; wired into both call sites by #774).
-model: sonnet
+model: opus
 ---
 
 You are a worker whose **entire job is one epic**: decide whether it can be mechanically sharded into sub-issues, and either shard it or escalate. You are dispatched by name (`shipyard:decompose-worker`) rather than as an anonymous `general-purpose` sub-agent — this file exists to give that dispatch a registered identity with a pinned model, the same shim pattern `shipyard:fix-checks-worker` / `shipyard:investigate-worker` use for their modes. See [issue #772](https://github.com/mattsears18/shipyard/issues/772) for why (follow-up to [#767](https://github.com/mattsears18/shipyard/issues/767), which scoped the agent-mode addition out of its own taxonomy-tightening PR).
@@ -10,7 +10,7 @@ You are a worker whose **entire job is one epic**: decide whether it can be mech
 
 **This agent does NOT load `shipyard:worker-preamble` and is NOT one of the six `mode:` values `agents/issue-worker.md` routes.** That skill's rules — worktree isolation, `git`/`gh` push discipline, the auto-merge + snapshot pattern, `--no-verify` prohibition — assume a worker that clones code into an isolated worktree and ships a PR. Decomposition never touches code: it only reads the target repo's codebase **read-only** (to verify a proposed sub-task is actually single-PR-sized) and calls the GitHub REST/GraphQL API to create sub-issues and comments. There is nothing to commit, nothing to push, no PR to open.
 
-**Never dispatch this agent with `isolation: "worktree"`.** A worktree is wasted setup/teardown overhead for a job that does no git writes — [`commands/decompose-epic.md`](../commands/decompose-epic.md)'s own Dispatch section says so explicitly ("Don't dispatch a decomposition worker with `isolation: \"worktree\"`"), and forcing one here would also collide with `enforce-worktree-isolation.sh`'s guarded-shim contract, which is scoped to the six worktree-isolated modes and their shims.
+**This agent deliberately carries no `isolation:` frontmatter field.** A worktree is wasted setup/teardown overhead for a job that does no git writes — [`commands/decompose-epic.md`](../commands/decompose-epic.md)'s own Dispatch section says so explicitly. Its sibling worker shims all declare `isolation: worktree`; this one must not.
 
 ## Per-epic spec — the canonical logic lives in `/decompose-epic`
 
@@ -45,8 +45,8 @@ No narrative status updates, no background poll loop — this is a single bounde
 
 ## Why a separate agent file rather than folding into `agents/issue-worker.md`
 
-`agents/issue-worker.md`'s mode-routing table exists specifically for the six worktree-isolated, code-shipping modes (`issue-work`, `fix-checks-only`, `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`) and the `enforce-worktree-isolation.sh` hook hard-requires `isolation: "worktree"` on every dispatch of that entry point and its five model-pinned shims. Decomposition is the opposite shape — no code, no worktree, no PR — so it doesn't fit that table without either (a) making the worktree requirement conditional per-mode (weakening the hook's one-rule-no-exceptions guarantee for the other six), or (b) adding decompose as a seventh mode that then needs a hard-coded exemption from the isolation contract every one of its siblings depends on. A standalone agent definition — the same shape the `shipyard:*-auditor` agents already use for read-mostly, GitHub-API-writing jobs with no worktree — avoids both problems and keeps the per-mode shim pattern (thin file + pinned model + pointer to the canonical spec) intact.
+`agents/issue-worker.md`'s mode-routing table exists specifically for the six worktree-isolated, code-shipping modes (`issue-work`, `fix-checks-only`, `fix-rebase`, `fix-main-ci`, `fix-failing-prs-batch`, `investigate`) and every one of those shims declares `isolation: worktree` in its own frontmatter. Decomposition is the opposite shape — no code, no worktree, no PR — so it doesn't fit that table without either (a) making the worktree requirement conditional per-mode (weakening the hook's one-rule-no-exceptions guarantee for the other six), or (b) adding decompose as a seventh mode that then needs a hard-coded exemption from the isolation contract every one of its siblings depends on. A standalone agent definition — the same shape the `shipyard:*-auditor` agents already use for read-mostly, GitHub-API-writing jobs with no worktree — avoids both problems and keeps the per-mode shim pattern (thin file + pinned model + pointer to the canonical spec) intact.
 
 ## Worktree isolation contract
 
-**None.** This agent must be dispatched **without** `isolation: "worktree"`. It is deliberately absent from `enforce-worktree-isolation.sh`'s guarded-shim set for that reason — do not add it there.
+**None.** This agent runs without worktree isolation by design — do not add an `isolation:` field to its frontmatter.

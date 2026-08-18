@@ -52,7 +52,7 @@ dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 config_schema_path="$repo_root/plugins/shipyard/schemas/shipyard.config.schema.json"
 worker_return_schema_path="$repo_root/plugins/shipyard/schemas/worker-return.schema.json"
-enforce_isolation_hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
+agents_dir="$repo_root/plugins/shipyard/agents"
 rationale_path="$repo_root/plugins/shipyard/commands/do-work-RATIONALE.md"
 
 pass=0
@@ -280,17 +280,17 @@ assert_contains "$workflow_readme_path" "made this the SOLE dispatch substrate" 
   "README declares the current (fully-migrated, pre-#825) status"
 
 echo
-echo "== (J) enforce-worktree-isolation.sh — guarded-set unaffected by the substrate migration"
+echo "== (J) isolation: worktree frontmatter — unaffected by the substrate migration"
 
-# The workflow substrate is an ADDITIVE dispatch mechanism — it doesn't touch
-# the Agent-tool isolation contract. Every shim this hook guards must still be
-# guarded; #789 must not have quietly narrowed the guarded set while adding
-# workflow-substrate wiring.
+# Claude Code provisions and cwd-pins the worktree from the agent definition's
+# own `isolation: worktree` frontmatter, and enforces containment itself. The
+# workflow substrate is an ADDITIVE dispatch mechanism — it must not have
+# quietly dropped that declaration from any shim.
 for shim in "shipyard:fix-checks-worker" "shipyard:fix-rebase-worker" \
             "shipyard:fix-main-ci-worker" "shipyard:fix-pr-batch-worker" \
             "shipyard:investigate-worker" "shipyard:spike-worker" "shipyard:issue-worker"; do
-  assert_contains "$enforce_isolation_hook_path" "$shim" \
-    "enforce-worktree-isolation.sh still guards ${shim} (unaffected by the #789 substrate wiring)"
+  assert_contains "$agents_dir/${shim#shipyard:}.md" "isolation: worktree" \
+    "${shim} declares isolation: worktree in its frontmatter"
 done
 
 echo

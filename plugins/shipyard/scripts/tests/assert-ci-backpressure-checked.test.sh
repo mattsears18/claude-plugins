@@ -37,7 +37,6 @@ fi
 CHECKER="$repo_root/plugins/shipyard/scripts/assert-ci-backpressure-checked.sh"
 STEADY_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 INVARIANT_LINE_MD="$repo_root/plugins/shipyard/commands/do-work/invariant-line.md"
-HOOK_SH="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 
 pass=0
 fail=0
@@ -185,8 +184,6 @@ assert_contains "$STEADY_STATE_MD" "last_backpressure_check" \
   "steady-state.md documents the persisted evidence-marker write"
 assert_contains "$INVARIANT_LINE_MD" "assert-ci-backpressure-checked.sh" \
   "invariant-line.md's ci_backpressure entry references the mechanical gate"
-assert_contains "$HOOK_SH" "1414" \
-  "enforce-worktree-isolation.sh documents the issue #1414 extension"
 echo
 
 # ---------------------------------------------------------------------------

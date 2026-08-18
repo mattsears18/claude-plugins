@@ -4,7 +4,7 @@
 # Run with:
 #   bash plugins/shipyard/hooks/tests/hooks-json.test.sh
 #
-# Each hook *script* (enforce-worktree-isolation.sh, enforce-edit-scope.sh,
+# Each hook *script* (guard-primary-checkout.sh, refuse-escape-symlink-commit.sh,
 # refuse-escape-symlink-commit.sh, report-plugin-error.sh) has its own unit
 # test under this directory. This suite tests the *wiring* in hooks.json that
 # actually arms those scripts — closing the ghost-coverage gap from #406: the
@@ -17,8 +17,7 @@
 #      non-empty (after resolving the ${CLAUDE_PLUGIN_ROOT} prefix to the
 #      plugin root).
 #   3. The three load-bearing safety hooks each appear registered:
-#        - enforce-worktree-isolation
-#        - enforce-edit-scope
+#        - guard-primary-checkout
 #        - refuse-escape-symlink-commit
 
 set -u
@@ -116,25 +115,24 @@ if [[ "$resolved_any" == "0" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-echo "== The three load-bearing safety hooks are each registered"
+echo "== The load-bearing safety hooks are each registered"
 # -----------------------------------------------------------------------------
 # A dropped entry for any of these silently disables a worker-safety gate.
 
-for safety in enforce-worktree-isolation enforce-edit-scope refuse-escape-symlink-commit; do
+for safety in guard-primary-checkout refuse-escape-symlink-commit refuse-broad-process-kill refuse-credential-mint; do
   if printf '%s\n' "$commands" | grep -q "/${safety}\.sh\""; then
     ok "safety hook registered: ${safety}.sh"
   else
     no "safety hook NOT registered in hooks.json: ${safety}.sh"
   fi
 done
-
 # -----------------------------------------------------------------------------
 echo "== guard-primary-checkout.sh is registered under BOTH mutating matchers (#741)"
 # -----------------------------------------------------------------------------
-# A hook that exists on disk but isn't wired into hooks.json is indistinguishable
-# from no hook at all (#741's own root cause). Assert per-matcher registration
-# rather than the loose "registered somewhere" check above, since a hook wired
-# to only one of its two intended matchers is a silent half-guard.
+# This hook is NOT redundant with Claude Code's own worktree isolation: the
+# harness's four checks only apply while a session is already isolated in a
+# worktree. This hook is what covers a session running directly in the primary
+# checkout, which is the #482 collision it was written for.
 
 for matcher in "Bash" "Edit|Write|MultiEdit|NotebookEdit"; do
   matcher_commands=$(jq -r --arg m "$matcher" '
@@ -164,18 +162,22 @@ else
 fi
 
 # The Bash matcher already carried refuse-escape-symlink-commit.sh — assert
-# it's still there alongside the new hook (hooks compose; the fix must
-# append, not replace).
+# The Bash matcher carries three refusal hooks — assert they all compose
+# (hooks append, they don't replace).
 bash_commands=$(jq -r '
   [ .hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[].command ] | .[]
 ' "$hooks_json")
-if printf '%s\n' "$bash_commands" | grep -q '/refuse-escape-symlink-commit\.sh"' \
-  && printf '%s\n' "$bash_commands" | grep -q '/guard-primary-checkout\.sh"'; then
-  ok "Bash matcher composes refuse-escape-symlink-commit.sh AND guard-primary-checkout.sh (appended, not replaced)"
+bash_ok=1
+for bh in refuse-escape-symlink-commit refuse-broad-process-kill refuse-credential-mint; do
+  if ! printf '%s\n' "$bash_commands" | grep -q "/${bh}\.sh\""; then
+    bash_ok=0
+  fi
+done
+if [[ $bash_ok -eq 1 ]]; then
+  ok "Bash matcher composes all three refusal hooks (appended, not replaced)"
 else
-  no "Bash matcher lost an existing hook when guard-primary-checkout.sh was wired in"
+  no "Bash matcher lost one of its three refusal hooks"
 fi
-
 # -----------------------------------------------------------------------------
 echo "== Summary"
 # -----------------------------------------------------------------------------

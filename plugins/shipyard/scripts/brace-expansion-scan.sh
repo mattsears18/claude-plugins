@@ -19,7 +19,8 @@
 # sweep of the remaining decorative occurrences across ~80 other variable
 # names, and this scanner is its CI enforcement.
 #
-# See `commands/do-work/bash-refusal-triggers.md` for the controlled
+# See https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation
+# for the harness's own documentation of this refusal (the controlled
 # experiment that isolated the trigger and for the convention itself.
 #
 # WHAT IS FLAGGED — the closing-brace form only:
@@ -270,7 +271,7 @@ if [[ "$found" -eq 1 ]]; then
   echo "Write the expansion unbraced — \"\$VAR/path\", never \"\${VAR}/path\". Bash terminates an" >&2
   echo "unbraced name at the first non-identifier character, so the braces buy nothing." >&2
   echo "Modifier forms (\${VAR:-default}, \${#arr[@]}, \${VAR%.md}) are never flagged." >&2
-  echo "See plugins/shipyard/commands/do-work/bash-refusal-triggers.md for the convention." >&2
+  echo "See https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation for the convention." >&2
   exit 1
 fi
 

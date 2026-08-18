@@ -321,7 +321,7 @@ echo
 # ---------------------------------------------------------------------------
 # (K) drain.md — the "Worktree-safe polling pattern" section exists, points
 #     at this script as the preferred path, states the loop-can't-be-inline
-#     rule, cross-references dont.md and bash-refusal-triggers.md, and
+#     rule, cross-references dont.md and the harness isolation docs, and
 #     explicitly rejects an out-of-worktree scratch location.
 # ---------------------------------------------------------------------------
 echo "(K) drain.md — worktree-safe polling pattern section"
@@ -333,8 +333,8 @@ if [[ -f "$DRAIN_MD" ]]; then
     "$(cat "$DRAIN_MD")" "watch-pr-terminal.sh"
   assert_contains_line "drain.md cross-references dont.md's compound-block rule" \
     "$(cat "$DRAIN_MD")" "dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277"
-  assert_contains_line "drain.md cross-references bash-refusal-triggers.md" \
-    "$(cat "$DRAIN_MD")" "bash-refusal-triggers.md"
+  assert_contains_line "drain.md cross-references the harness command-shape docs" \
+    "$(cat "$DRAIN_MD")" "code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation"
   assert_contains_line "drain.md states the worktree-local scratch convention (not the job/session temp dir)" \
     "$(cat "$DRAIN_MD")" ".shipyard-scratch-"
 

@@ -37,9 +37,6 @@
       "plugins/shipyard/skills/**/*.md"
     ]
   },
-  "models": {
-    "issue_work": "claude-sonnet-5"
-  },
   "version_coordination": {
     "enabled": true,
     "manifest_path": "plugins/shipyard/.claude-plugin/plugin.json",

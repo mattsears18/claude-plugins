@@ -160,13 +160,13 @@ DEFAULTS_JQ='{
     "enabled": false
   },
   "models": {
-    "issue_work": "claude-sonnet-5",
-    "fix_checks_only": "claude-haiku-4-5",
-    "fix_rebase": "claude-sonnet-5",
-    "fix_main_ci": "claude-sonnet-5",
-    "fix_failing_prs_batch": "claude-sonnet-5",
-    "investigate": "claude-sonnet-5",
-    "verify": "claude-opus-4-8"
+    "issue_work": "claude-opus-5",
+    "fix_checks_only": "claude-opus-5",
+    "fix_rebase": "claude-opus-5",
+    "fix_main_ci": "claude-opus-5",
+    "fix_failing_prs_batch": "claude-opus-5",
+    "investigate": "claude-opus-5",
+    "verify": "claude-opus-5"
   },
   "triage": {
     "auto_close": "confident-only",

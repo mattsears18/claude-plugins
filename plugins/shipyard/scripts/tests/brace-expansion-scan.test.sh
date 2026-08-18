@@ -330,23 +330,6 @@ else
   bad "discovery run walked only $real_blocks fenced bash blocks — below the 300 floor; the fence matcher may have broken (#1312)"
 fi
 
-# (16) The convention doc still documents the trigger this scanner enforces,
-# and no longer carries the pre-#1311 "Not yet enforced" deferral.
-triggers_doc="$repo_root/plugins/shipyard/commands/do-work/bash-refusal-triggers.md"
-if [[ -f "$triggers_doc" ]]; then
-  if grep -qF -- 'Not yet enforced' "$triggers_doc"; then
-    bad "bash-refusal-triggers.md still carries the pre-#1311 'Not yet enforced' note — #1311 completed the sweep, so it should be gone"
-  else
-    ok "bash-refusal-triggers.md no longer carries the 'Not yet enforced' note (#1311 completed the sweep)"
-  fi
-  if grep -qF -- 'brace-expansion-scan.sh' "$triggers_doc"; then
-    ok "bash-refusal-triggers.md names brace-expansion-scan.sh as the enforcement"
-  else
-    bad "bash-refusal-triggers.md does not name brace-expansion-scan.sh as the enforcement"
-  fi
-else
-  bad "bash-refusal-triggers.md is missing (expected at $triggers_doc)"
-fi
 
 echo
 echo "  ${pass} passed, ${fail} failed"

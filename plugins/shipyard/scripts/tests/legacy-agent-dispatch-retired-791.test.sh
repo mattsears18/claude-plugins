@@ -94,7 +94,6 @@ steady_state="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 pool_fill="$repo_root/plugins/shipyard/commands/do-work/setup/07-pool-fill.md"
 workflow_js="$repo_root/plugins/shipyard/workflows/do-work-dispatch.workflow.js"
 workflow_readme="$repo_root/plugins/shipyard/workflows/README.md"
-hook="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 preamble="$repo_root/plugins/shipyard/skills/worker-preamble/SKILL.md"
 
 MODES=(issue-work fix-checks-only fix-rebase fix-main-ci fix-failing-prs-batch investigate spike)
@@ -246,99 +245,34 @@ assert_contains "$steady_state" "\`Workflow\` tool call" \
 
 # ==========================================================================
 echo
-echo "== (D) the worktree-isolation guarantee is still MECHANICALLY enforced"
-# ==========================================================================
-run_hook() {
-  printf '%s' "$1" | bash "$hook" >/dev/null 2>&1
-  printf '%s' "$?"
-}
+echo "== (D) the worktree-isolation guarantee is carried by agent frontmatter"
+echo "        (Claude Code provisions, cwd-pins, and enforces containment itself)"
 
-# A Workflow dispatch of the do-work substrate with NO worktreePath must block.
-payload_missing=$(python3 -c "
-import json
-print(json.dumps({
-    'tool_name': 'Workflow',
-    'tool_input': {
-        'workflow': '/plugins/shipyard/workflows/do-work-dispatch.workflow.js',
-        'args': {'repo': 'o/r', 'issues': [{'number': 1, 'mode': 'issue-work'}]},
-    },
-}))")
-assert_eq "$(run_hook "$payload_missing")" "2" \
-  "Workflow dispatch with a work unit missing worktreePath is BLOCKED"
-
-# An empty-string worktreePath is just as unpinned — also blocked.
-payload_empty=$(python3 -c "
-import json
-print(json.dumps({
-    'tool_name': 'Workflow',
-    'tool_input': {
-        'workflow': '/plugins/shipyard/workflows/do-work-dispatch.workflow.js',
-        'args': {'repo': 'o/r', 'issues': [{'number': 1, 'mode': 'issue-work', 'worktreePath': ''}]},
-    },
-}))")
-assert_eq "$(run_hook "$payload_empty")" "2" \
-  "Workflow dispatch with an EMPTY worktreePath is BLOCKED"
-
-# The correct shape passes through, for every mode.
-for mode in "${MODES[@]}"; do
-  payload_ok=$(python3 -c "
-import json
-print(json.dumps({
-    'tool_name': 'Workflow',
-    'tool_input': {
-        'workflow': '/plugins/shipyard/workflows/do-work-dispatch.workflow.js',
-        'args': {'repo': 'o/r', 'issues': [{'mode': '$mode', 'worktreePath': '/tmp/wt/agent-workflow-1'}]},
-    },
-}))")
-  assert_eq "$(run_hook "$payload_ok")" "0" \
-    "Workflow dispatch of ${mode} WITH worktreePath is allowed"
+# The former enforce-worktree-isolation.sh PreToolUse hook is gone: Claude Code
+# reads `isolation: worktree` from the agent definition and enforces the four
+# containment checks for the subagent and everything it spawns. Note the hook
+# was only ever wired to the `Agent` matcher in hooks.json, so its Workflow
+# branch was never live in production — it was exercised only here.
+agents_dir="$repo_root/plugins/shipyard/agents"
+# bash 3.2 (macOS default) has no associative arrays — use plain pairs.
+for pair in \
+  "issue-work:issue-worker" \
+  "fix-checks-only:fix-checks-worker" \
+  "fix-rebase:fix-rebase-worker" \
+  "fix-main-ci:fix-main-ci-worker" \
+  "fix-failing-prs-batch:fix-pr-batch-worker" \
+  "investigate:investigate-worker" \
+  "spike:spike-worker"; do
+  mode="${pair%%:*}"
+  shim="${pair##*:}"
+  if grep -q "^isolation: worktree$" "$agents_dir/$shim.md"; then
+    assert_pass "mode $mode -> $shim.md declares isolation: worktree"
+  else
+    assert_fail "mode $mode -> $shim.md is MISSING isolation: worktree"
+  fi
 done
 
-# A mixed batch where only one unit is unisolated must still block.
-payload_mixed=$(python3 -c "
-import json
-print(json.dumps({
-    'tool_name': 'Workflow',
-    'tool_input': {
-        'workflow': '/plugins/shipyard/workflows/do-work-dispatch.workflow.js',
-        'args': {'issues': [
-            {'mode': 'issue-work', 'worktreePath': '/tmp/wt/a'},
-            {'mode': 'fix-rebase'},
-        ]},
-    },
-}))")
-assert_eq "$(run_hook "$payload_mixed")" "2" \
-  "a batch with ONE unisolated unit is blocked (not just an all-or-nothing check)"
 
-# Some OTHER workflow is none of this hook's business.
-payload_other=$(python3 -c "
-import json
-print(json.dumps({
-    'tool_name': 'Workflow',
-    'tool_input': {'workflow': '/some/other.workflow.js', 'args': {'issues': [{'mode': 'x'}]}},
-}))")
-assert_eq "$(run_hook "$payload_other")" "0" \
-  "an unrelated Workflow call passes through untouched"
-
-# Malformed input fails OPEN — a hook crash would block every dispatch.
-assert_eq "$(run_hook 'not-json-at-all')" "0" "malformed payload fails open"
-assert_eq "$(run_hook '{"tool_name":"Workflow"}')" "0" "Workflow call with no tool_input fails open"
-
-# The Agent shape is still guarded for the agents that legitimately use it.
-payload_verify=$(python3 -c "
-import json
-print(json.dumps({'tool_name': 'Agent',
-                  'tool_input': {'subagent_type': 'shipyard:verify-worker', 'prompt': 'x'}}))")
-assert_eq "$(run_hook "$payload_verify")" "2" \
-  "Agent dispatch of shipyard:verify-worker without isolation is still BLOCKED"
-
-assert_contains "$hook" "shipyard:verify-worker" \
-  "hook still guards shipyard:verify-worker on the Agent shape"
-assert_not_contains "$hook" "shipyard:decompose-worker" \
-  "hook still refuses to guard shipyard:decompose-worker (must never be isolated)"
-
-# ==========================================================================
-echo
 echo "== (E) a pre-provisioned worktree is reaped when the dispatch never happens"
 # ==========================================================================
 # New failure mode introduced by #791: the orchestrator now creates the worktree

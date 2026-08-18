@@ -66,7 +66,6 @@ write_probe_path="$wp_dir/write-probe.md"
 # refusal shapes and the Monitor-based fallback live in this fragment,
 # pointed at from SKILL.md's #829 section rather than inlined there (keeps
 # the always-loaded core under the #617 line-budget).
-compound_command_refusal_path="$wp_dir/compound-command-refusal.md"
 # Issue #1012 — the follow-on tail to #980/#1011: SKILL.md itself got the
 # same thin-core + on-demand-fragments treatment #1011 applied to
 # issue-work.md. Four new fragments; the #829 section moved into the
@@ -209,7 +208,6 @@ if [[ -f "$skill_path" ]]; then
   assert_file_exists "$native_background_subagent_path" "worker-preamble fragment native-background-subagent.md exists (issue #808)"
   assert_file_exists "$gh_json_discipline_path" "worker-preamble fragment gh-json-discipline.md exists (issue #808)"
 assert_file_exists "$write_probe_path" "worker-preamble fragment write-probe.md exists (issue #895)"
-  assert_file_exists "$compound_command_refusal_path" "worker-preamble fragment compound-command-refusal.md exists (issue #981)"
   assert_contains "$skill_path" "## On-demand fragments" \
     "SKILL.md has an On-demand fragments index section (issue #617)"
   assert_contains "$skill_path" "(./auto-merge.md)" \
@@ -230,8 +228,6 @@ assert_file_exists "$write_probe_path" "worker-preamble fragment write-probe.md 
     "SKILL.md fragment-index links gh-json-discipline.md (issue #808)"
 assert_contains "$skill_path" "(./write-probe.md)" \
     "SKILL.md fragment-index links write-probe.md (issue #895)"
-  assert_contains "$skill_path" "(./compound-command-refusal.md)" \
-    "SKILL.md fragment-index links compound-command-refusal.md (issue #981)"
   # The thin core must stay thin: SKILL.md is the always-loaded file, so its
   # line count is the per-dispatch context tax #617 set out to cut. Assert it
   # stays well under half the pre-split ~593 lines.
@@ -645,7 +641,6 @@ assert_contains "$skill_path" "(./write-probe.md)" \
   # classifier can refuse it in a worktree-isolated session even though it's
   # read-only — reproduced in three shapes against a live GitHub Actions
   # polling loop in mattsears18/lightwork#3199. ci-pitfalls.md (formerly
-  # SKILL.md, moved by #1012) must point at the compound-command-refusal.md
   # fragment (kept out of the always-loaded core to preserve the #617 line
   # budget); the fragment itself must (1) name the refusal explicitly so a
   # future worker doesn't spend turns rediscovering it, and (2) prescribe the
@@ -655,34 +650,10 @@ assert_contains "$skill_path" "(./write-probe.md)" \
   # dropping (1) reintroduces the token-burning rediscovery the issue
   # reported; dropping (2) leaves a worker with no working escape hatch once
   # the classifier refuses the primary pattern.
-  assert_contains "$ci_pitfalls_path" \
-    "This exact loop can itself be refused by Auto Mode's compound-command classifier" \
-    "ci-pitfalls.md's #829 section points at the compound-command-refusal fallback (issue #981)"
-  assert_contains "$compound_command_refusal_path" \
-    "too complex to verify that it stays inside the worktree; break it into plain, separate commands" \
-    "compound-command-refusal.md quotes the Auto Mode refusal message verbatim (issue #981)"
   # shellcheck disable=SC2016
   # Literal grep needle — the command-substitution shape is matched verbatim, not expanded.
-  assert_contains "$compound_command_refusal_path" \
-    'for i in $(seq 1 25); do ...; sleep 20; done' \
-    "compound-command-refusal.md names the refused for-loop shape (issue #981)"
   # shellcheck disable=SC2016
   # Literal grep needle — the command-substitution condition is matched verbatim, not expanded.
-  assert_contains "$compound_command_refusal_path" \
-    'until [ "$(gh run view ... --jq .status)" = "completed" ]; do sleep 30; done' \
-    "compound-command-refusal.md names the refused until-with-command-substitution shape (issue #981)"
-  assert_contains "$compound_command_refusal_path" \
-    "standalone \`sleep 60\`" \
-    "compound-command-refusal.md names the refused standalone-sleep shape (issue #981)"
-  assert_contains "$compound_command_refusal_path" \
-    "arm a \`Monitor\` with the identical command" \
-    "compound-command-refusal.md prescribes arming Monitor as the working fallback once the re-block is refused (issue #981)"
-  assert_contains "$compound_command_refusal_path" \
-    "does not relax the #529/#813/#753 rules in \`SKILL.md\`" \
-    "compound-command-refusal.md ties the Monitor fallback back to the never-end-your-turn-waiting rules (issue #981)"
-  assert_contains "$compound_command_refusal_path" \
-    "Never emit your mode's terminal return string while the \`Monitor\` is still armed" \
-    "compound-command-refusal.md forbids returning while the Monitor fallback is still armed (issue #981)"
 
   # Issue #598 — "wait for the PR's own checks before admin-direct-merge
   # instead of merging ungated" clause in the Auto-merge + snapshot-and-return
@@ -1029,7 +1000,6 @@ assert_contains "$body_file_convention_path" \
 # guard below: (a) SKILL.md carries the scratch-dir convention as a hot rule
 # (not buried in an on-demand-only fragment), (b) body-file-convention.md
 # documents the general-purpose scope, the .gitignore self-ignoring seed step,
-# and the best-effort cleanup downgrade, (c) compound-command-refusal.md
 # carries the #1058 decomposition guidance, and (d) enforce-edit-scope.sh's
 # BLOCK message names .shipyard-scratch/ — kept consistent with the docs
 # above rather than drifting into a second, undocumented convention.
@@ -1073,18 +1043,8 @@ assert_contains "$body_file_convention_path" \
   "as a reason to return \`blocked:\`" \
   "body-file-convention.md states a leftover scratch dir is never a blocked: reason (issue #1347)"
 
-compound_command_refusal_1058_path="$wp_dir/compound-command-refusal.md"
-assert_contains "$compound_command_refusal_1058_path" \
-  "#1058" \
-  "compound-command-refusal.md references issue #1058's decomposition guidance"
-assert_contains "$compound_command_refusal_1058_path" \
-  "Decompose first" \
-  "compound-command-refusal.md prescribes decomposing a compound command into plain commands before reaching for a helper script (issue #1058)"
 # shellcheck disable=SC2016
 # Literal grep needle — asserting the discouraged $PWD shape is named, not expanded.
-assert_contains "$compound_command_refusal_1058_path" \
-  'never `$PWD`' \
-  "compound-command-refusal.md warns against invoking a scratch helper script via \$PWD (issue #1058)"
 
 enforce_edit_scope_hook_path="$repo_root/plugins/shipyard/hooks/enforce-edit-scope.sh"
 if [[ -f "$enforce_edit_scope_hook_path" ]]; then

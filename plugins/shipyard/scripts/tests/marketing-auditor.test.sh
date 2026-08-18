@@ -76,7 +76,7 @@ assert_contains() {
 echo "marketing-auditor regression tests (issue #695)"
 echo
 
-# (1) Agent file must exist with proper YAML frontmatter and model: sonnet.
+# (1) Agent file must exist with proper YAML frontmatter and model: opus.
 assert_file_exists "$agent_path" "marketing-auditor agent file exists"
 
 if [[ -f "$agent_path" ]]; then
@@ -84,8 +84,8 @@ if [[ -f "$agent_path" ]]; then
     "agent frontmatter declares name: marketing-auditor"
   assert_contains "$agent_path" "description:" \
     "agent frontmatter has a description field"
-  assert_contains "$agent_path" "model: sonnet" \
-    "agent frontmatter pins model: sonnet"
+  assert_contains "$agent_path" "model: opus" \
+    "agent frontmatter pins model: opus"
 
   # The audit label wires the auditor into the per-dimension issue tracker
   # filter. Missing this means filed issues aren't discoverable via

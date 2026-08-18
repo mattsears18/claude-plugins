@@ -52,7 +52,6 @@ shim_path="$repo_root/plugins/shipyard/agents/spike-worker.md"
 spec_path="$repo_root/plugins/shipyard/agents/issue-worker/spike.md"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
-hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 
 pass=0
 fail=0
@@ -108,12 +107,12 @@ assert_contains "$shim_path" "name: spike-worker" \
   "shim declares name: spike-worker"
 assert_contains "$shim_path" "mode: spike" \
   "shim names mode: spike explicitly"
-# No model: pin — spike work needs full reasoning tier, same rationale as
-# the unpinned issue-worker.md entry (not the five cost-optimized shims).
-if grep -q '^model:' "$shim_path"; then
-  assert_fail "shim carries no model: pin (inherits session model, matching issue-work's tier)"
+# Pins the opus family alias, like every other shim — per-mode model tiering
+# is retired, and the alias resolves to the newest Opus so it can't go stale.
+if grep -q '^model: opus$' "$shim_path"; then
+  assert_pass "shim pins model: opus (the family alias, resolved to newest Opus)"
 else
-  assert_pass "shim carries no model: pin (inherits session model, matching issue-work's tier)"
+  assert_fail "shim pins model: opus (the family alias, resolved to newest Opus)"
 fi
 
 echo
@@ -123,8 +122,8 @@ assert_contains "$shim_path" "shipyard:worker-preamble" \
   "shim loads the shipyard:worker-preamble skill first"
 assert_contains "$shim_path" "issue-worker/spike.md" \
   "shim references agents/issue-worker/spike.md as the canonical spec"
-assert_contains "$shim_path" "isolation: \"worktree\"" \
-  "shim documents the mandatory isolation: \"worktree\" dispatch contract"
+assert_contains "$shim_path" "isolation: worktree" \
+  "shim declares isolation: worktree in its frontmatter"
 assert_contains "$shim_path" "wrong shim" \
   "shim documents the wrong-mode fail-safe return"
 
@@ -231,8 +230,6 @@ assert_contains "$steady_state_path" "spiked+shipped" \
   "steady-state.md's A.1 reconcile handles the spiked+shipped return (#774)"
 assert_contains "$steady_state_path" "spiked+needs-human-review" \
   "steady-state.md's A.1 reconcile handles the spiked+needs-human-review return (#774)"
-assert_contains "$hook_path" "shipyard:spike-worker" \
-  "enforce-worktree-isolation.sh's guarded-set includes shipyard:spike-worker (#774)"
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"

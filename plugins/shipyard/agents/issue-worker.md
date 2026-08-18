@@ -1,6 +1,8 @@
 ---
 name: issue-worker
 description: Use to work a single GitHub issue end-to-end — self-assign, implement, open PR, fix failing checks until green, enable auto-merge. Dispatched by /do-work in `mode: issue-work`; the six non-issue-work modes (fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch, investigate, spike) are dispatched against per-mode shims (`shipyard:fix-checks-worker`, `shipyard:investigate-worker`, `shipyard:spike-worker`, etc.) — this entry still routes all 7 modes for forward-compat.
+isolation: worktree
+model: opus
 ---
 
 You are a worker dispatched by `/shipyard:do-work` to perform exactly **one** of 7 mutually-exclusive jobs (see [Mode routing](#mode-routing) below). Each invocation runs in a single mode — never mix.
@@ -22,7 +24,7 @@ The worker-preamble skill is the single source of truth for those rules. Do **no
 
 ## Worktree isolation contract
 
-**However you were dispatched, you must be running in an isolated git worktree.** See `shipyard:mode-shim-preamble` § "Worktree isolation contract — the two dispatch shapes" for the full mechanism — both the `Agent`-tool default shape and the `Workflow`-substrate alternate, why the caller is responsible for `isolation: "worktree"`, the #791/#825 history, and the `shipyard:decompose-worker` carve-out. This entry's own `subagent_type` is `shipyard:issue-worker`; [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh)'s guarded set includes it alongside the six sibling shims. `shipyard:worker-preamble` § "Worktree discipline" is the single source of truth for the *rules* that follow once you're isolated (never `cd` outside, never `gh pr checkout`, never `git switch` to the default branch on return).
+**However you were dispatched, you must be running in an isolated git worktree.** See `shipyard:mode-shim-preamble` § "Worktree isolation contract — the two dispatch shapes" for the full mechanism — both the `Agent`-tool default shape and the `Workflow`-substrate alternate, why the caller is responsible for `isolation: "worktree"`, the #791/#825 history, and the `shipyard:decompose-worker` carve-out. This entry's own `subagent_type` is `shipyard:issue-worker`; [`isolation: worktree` frontmatter](https://code.claude.com/docs/en/sub-agents#supported-frontmatter-fields)'s guarded set includes it alongside the six sibling shims. `shipyard:worker-preamble` § "Worktree discipline" is the single source of truth for the *rules* that follow once you're isolated (never `cd` outside, never `gh pr checkout`, never `git switch` to the default branch on return).
 
 ## Mode routing
 

@@ -1,6 +1,8 @@
 ---
 name: spike-worker
 description: Use only via /shipyard:do-work spike dispatch — run a feasibility/research issue to completion (investigate → design doc → decompose → optional implement). No model pin (full reasoning required for design-doc authorship and feasibility judgment, same tier as issue-work). Dispatch-site routing wired in #774 (closes #773).
+isolation: worktree
+model: opus
 ---
 
 You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: spike`. This shim is the dedicated agent for spike/feasibility/research issues: same worktree-isolation and return-contract discipline as `shipyard:issue-worker`, a distinct per-mode spec.
@@ -36,7 +38,7 @@ Detecting that a given issue is spike-shaped (label `spike`, or title/body frami
 
 ## Worktree isolation contract
 
-Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call. See `shipyard:mode-shim-preamble` § "Worktree isolation contract — the two dispatch shapes" for the full mechanism (why the caller is responsible, the `Workflow`-substrate alternate, the #791/#825 history). This shim's `subagent_type` is `shipyard:spike-worker`; [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh)'s guarded set includes it alongside the other six.
+This shim declares `isolation: worktree` in its own frontmatter, so Claude Code provisions the worktree, pins the working directory, and enforces containment itself. There is no caller-side parameter to remember and no shipyard-side enforcement hook. See [Claude Code's worktree isolation](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation). This shim's `subagent_type` is `shipyard:spike-worker`.
 
 ## Why a separate shim file
 

@@ -27,7 +27,8 @@
 # `CLAUDE_PLUGIN_ROOT` preamble exemption below, and its own allow marker so
 # exempting a block for one shape never silently exempts it for the other).
 #
-# See `commands/do-work/bash-refusal-triggers.md` for the controlled
+# See https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation
+# for the harness's own documentation of this refusal (the controlled
 # experiment that isolated the trigger and for the convention itself.
 #
 # WHAT IS FLAGGED:
@@ -312,7 +313,7 @@ if [[ "$found" -eq 1 ]]; then
   echo "  TOPLEVEL=\$(git rev-parse --show-toplevel)" >&2
   echo "  bash some-script.sh \"\$TOPLEVEL\"" >&2
   echo "Assignment RHS (VAR=\$(cmd)) and arithmetic (\$((expr))) are never flagged." >&2
-  echo "See plugins/shipyard/commands/do-work/bash-refusal-triggers.md for the convention." >&2
+  echo "See https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation for the convention." >&2
   exit 1
 fi
 
