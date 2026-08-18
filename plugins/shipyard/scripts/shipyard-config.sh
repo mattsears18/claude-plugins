@@ -198,7 +198,8 @@ DEFAULTS_JQ='{
     "manifest_version_jq": ".version",
     "changelog_path": "",
     "serialize_drain_rebase": true,
-    "append_only_paths": []
+    "append_only_paths": [],
+    "generated_paths": []
   },
   "ci": {
     "skip_drain_rebase": false,

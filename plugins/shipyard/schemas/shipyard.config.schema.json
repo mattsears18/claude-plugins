@@ -284,6 +284,26 @@
           "default": [],
           "description": "Paths (relative to repo root) of append-only docs whose fix-rebase conflicts are resolved deterministically, independent of `enabled` (issue #1309). fix-rebase.md §4.6 recognizes each listed path the same way it recognizes `manifest_path`/`changelog_path` — a conflicted file set consisting ONLY of these paths (plus, when coordination is also enabled, the manifest/changelog rows) resolves instead of bailing. Per-file resolution: regenerate the conflict in diff3 style and, IF every hunk's common-ancestor section is empty (neither side touched pre-existing shared content — both sides purely appended), concatenate both sides and drop the markers; if any hunk's ancestor section is non-empty (a real shared-content edit), bail unchanged. Default `[]` (no paths recognized — the pre-#1309 all-or-nothing behavior is unchanged until a repo opts a path in). This repo's own value is `[\"plugins/shipyard/commands/do-work-RATIONALE.md\"]` — the documented convention for recording a decision, so its conflicts are almost always two independently-appended sections."
         },
+        "generated_paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "command"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path (relative to repo root) of a generated/derived file whose content is a pure function of the tree — a content-hash manifest, a lockfile, a generated type or directory module."
+              },
+              "command": {
+                "type": "string",
+                "description": "The exact command (run from repo root inside the rebased worktree) that regenerates `path` from current source. Must be deterministic and side-effect-free beyond writing `path`."
+              }
+            }
+          },
+          "default": [],
+          "description": "Config-declared generated files whose fix-rebase conflicts are resolved by RE-RUNNING the declared `command`, never by hand-merging (issue #1445). fix-rebase.md step 4's lockfile-and-generated-files bullet recognizes each listed `path` the same way the four canonical lockfiles are already recognized; when the regeneration succeeds, the worker records a whole-file exemption in the known-rewrites file so step 5.8's line-survival guard doesn't misread the fresh regenerated content as corruption of the PR's originally-committed content. Deliberately an explicit per-path allowlist, not a glob or a filename heuristic — a repo maintainer opts a path in and states exactly how to regenerate it, so a file the worker merely hand-edits (rather than regenerates) is never silently exempted just because its name looks generated. Default `[]` (no paths recognized — pre-#1445 behavior unchanged until a repo opts a path in). Independent of `enabled`, mirroring `append_only_paths`."
+        },
         "_comment": { "type": "string" }
       }
     },

@@ -360,6 +360,108 @@ else
   bad "rtk-proxy-style corruption (actually-corrupted tree): expected exit 2 + INDETERMINATE:..., got exit $status: $out"
 fi
 
+# ── (14)-(17): whole-file known-rewrites exemption (issue #1445) — the
+# per-LINE exemption above (9)-(11) cannot express "this file was
+# regenerated, potentially every added line differs" — a content-hash
+# manifest or generated module has no fixed, enumerable "the one line that
+# changed." A `<path>\tFILE\t<reason>` (3-field) entry exempts the WHOLE
+# named path from the added-line comparison. A fresh, isolated fixture repo
+# is used so these tests can't perturb the branches/expectations above. ────
+
+repo2="$work/repo2"
+mkdir -p "$repo2"
+git -C "$repo2" init -q -b main
+git -C "$repo2" config user.email "test@example.com"
+git -C "$repo2" config user.name "Test"
+
+printf 'shared-base\n' > "$repo2/shared.txt"
+git -C "$repo2" add shared.txt
+git -C "$repo2" commit -q -m base
+base2_sha="$(git -C "$repo2" rev-parse HEAD)"
+
+# feature: adds a whole new generated-looking file (gen.json) AND a genuine,
+# non-generated added line to shared.txt — the second gives every scenario
+# below a real line that must still be checked normally alongside the
+# whole-file-exempted gen.json.
+git -C "$repo2" checkout -q -b feature2
+printf '{"hash":"AAA"}\n' > "$repo2/gen.json"
+printf 'shared-base\nfeature-line\n' > "$repo2/shared.txt"
+git -C "$repo2" add gen.json shared.txt
+git -C "$repo2" commit -q -m feature
+feature2_sha="$(git -C "$repo2" rev-parse HEAD)"
+
+# main: advances independently, never touches gen.json or shared.txt.
+git -C "$repo2" checkout -q main
+printf 'main-advanced\n' > "$repo2/other.txt"
+git -C "$repo2" add other.txt
+git -C "$repo2" commit -q -m "main advanced"
+
+known_rewrites2="$work/known-rewrites-2.tsv"
+printf 'gen.json\tFILE\tregenerated via node scripts/generate-gen.mjs\n' > "$known_rewrites2"
+
+# ── (14) gen.json regenerated with COMPLETELY different content (simulating
+# a real regeneration run), FILE-exempted; shared.txt's real added line
+# genuinely survived. Must pass clean despite gen.json sharing not one byte
+# with what the PR's commit originally added. ──────────────────────────────
+git -C "$repo2" checkout -q -b rebased-regenerated-clean main
+printf '{"hash":"ZZZ","completely":"different"}\n' > "$repo2/gen.json"
+printf 'shared-base\nfeature-line\n' > "$repo2/shared.txt"
+git -C "$repo2" add gen.json shared.txt
+git -C "$repo2" commit -q -m "rebased: gen.json regenerated, shared.txt intact"
+
+out="$(cd "$repo2" && bash "$script" "$base2_sha" "$feature2_sha" "$known_rewrites2" 2>&1)"
+status=$?
+if [[ $status -eq 0 && "$out" == OK:* ]]; then
+  ok "whole-file exemption: fully-regenerated gen.json exempted, exit 0 OK (shared.txt's real added line still verified present)"
+else
+  bad "whole-file exemption: expected exit 0 + OK, got exit $status: $out"
+fi
+
+# ── (15) Without the FILE exemption, that exact same regenerated tree must
+# read as corrupted — confirms (14) passed BECAUSE of the exemption, not
+# because the guard is somehow blind to gen.json already. ──────────────────
+out="$(cd "$repo2" && bash "$script" "$base2_sha" "$feature2_sha" 2>&1)"
+status=$?
+if [[ $status -eq 1 && "$out" == CORRUPTED:*gen.json* ]]; then
+  ok "whole-file exemption baseline: same regenerated tree WITHOUT the exemption is correctly flagged CORRUPTED on gen.json"
+else
+  bad "whole-file exemption baseline: expected exit 1 + CORRUPTED:...gen.json..., got exit $status: $out"
+fi
+
+# ── (16) The whole-file exemption for gen.json must NOT mask a genuine
+# corruption of shared.txt's own added line in the same rebase — proving the
+# exemption is scoped to exactly the named path, never a blanket loosening
+# of the whole comparison. ──────────────────────────────────────────────────
+git -C "$repo2" checkout -q -b rebased-regenerated-other-corrupted main
+printf '{"hash":"ZZZ"}\n' > "$repo2/gen.json"
+printf 'shared-base\n' > "$repo2/shared.txt"   # feature-line dropped: real corruption
+git -C "$repo2" add gen.json shared.txt
+git -C "$repo2" commit -q -m "rebased: gen.json regenerated (fine), shared.txt corrupted (feature-line missing)"
+
+out="$(cd "$repo2" && bash "$script" "$base2_sha" "$feature2_sha" "$known_rewrites2" 2>&1)"
+status=$?
+if [[ $status -eq 1 && "$out" == CORRUPTED:*shared.txt* && "$out" != *gen.json* ]]; then
+  ok "whole-file exemption does not mask corruption in a DIFFERENT file: exit 1, CORRUPTED names shared.txt only"
+else
+  bad "whole-file exemption over-masked corruption: expected exit 1 + CORRUPTED:...shared.txt... (no gen.json), got exit $status: $out"
+fi
+
+# ── (17) The existence check still applies to a FILE-exempted path: if
+# gen.json is deleted entirely from the post-rebase tree, the exemption must
+# NOT suppress the "kept/added file vanished" corruption signal. ───────────
+git -C "$repo2" checkout -q -b rebased-regenerated-deleted main
+printf 'shared-base\nfeature-line\n' > "$repo2/shared.txt"
+git -C "$repo2" add shared.txt
+git -C "$repo2" commit -q -m "rebased: gen.json deleted entirely, shared.txt intact"
+
+out="$(cd "$repo2" && bash "$script" "$base2_sha" "$feature2_sha" "$known_rewrites2" 2>&1)"
+status=$?
+if [[ $status -eq 1 && "$out" == *"gen.json(missing)"* ]]; then
+  ok "whole-file exemption does not bypass the file-existence check: exit 1, gen.json(missing) still flagged"
+else
+  bad "whole-file exemption incorrectly bypassed existence check: expected exit 1 + gen.json(missing), got exit $status: $out"
+fi
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

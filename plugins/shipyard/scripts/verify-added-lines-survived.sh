@@ -50,23 +50,47 @@
 # PRE-rebase head (e.g. `origin/$HEAD_REF`, untouched until the force-push);
 # <merge-base-ref> is typically `git merge-base <head-ref> <base-ref>`.
 #
-# [known-rewrites-file] (optional, issue #1215): a narrow, explicit exemption
-# for lines the CALLER already knows it deliberately rewrote — e.g.
-# fix-rebase.md's §4.6 version-coordination carve-out, which intentionally
-# renumbers a version-coordinated manifest's `.version` row and the PR's own
-# CHANGELOG heading as part of a sanctioned, deterministic conflict
-# resolution. Without this file, those two lines would ALWAYS read as
-# "corrupted" (they are, by construction, no longer verbatim-present) even
-# though the caller can prove exactly why. Format: TSV, one entry per line,
-# `<path>\t<exact-added-line-text>`. Each entry names one specific line — not
-# a whole file — that is exempted from the survival check for that path. This
-# is deliberately narrower than exempting the whole file: every OTHER line
-# the PR added to that same file (e.g. a CHANGELOG entry's own body lines,
-# left untouched by the caller's rewrite) is still checked normally, so real
-# corruption elsewhere in a coordinated file is still caught. A path/line
-# pair with no matching entry in ADDED_LINES is a harmless no-op (the caller
-# named something this script never saw as added) — never a way to loosen
-# the check beyond exactly the lines named.
+# [known-rewrites-file] (optional, issue #1215; extended #1445): a narrow,
+# explicit exemption for content the CALLER already knows it deliberately
+# rewrote. Format: TSV, one entry per line, in one of two shapes:
+#
+#   <path>\t<exact-added-line-text>            (2 fields — "line" exemption)
+#   <path>\tFILE\t<free-text reason>           (3 fields — "file" exemption)
+#
+# Line exemption (2 fields, the original #1215 shape): e.g. fix-rebase.md's
+# §4.6 version-coordination carve-out, which intentionally renumbers a
+# version-coordinated manifest's `.version` row and the PR's own CHANGELOG
+# heading as part of a sanctioned, deterministic conflict resolution. Without
+# this, those two lines would ALWAYS read as "corrupted" (they are, by
+# construction, no longer verbatim-present) even though the caller can prove
+# exactly why. Each entry names one specific line — not a whole file — that
+# is exempted from the survival check for that path. This is deliberately
+# narrower than exempting the whole file: every OTHER line the PR added to
+# that same file (e.g. a CHANGELOG entry's own body lines, left untouched by
+# the caller's rewrite) is still checked normally, so real corruption
+# elsewhere in a coordinated file is still caught. A path/line pair with no
+# matching entry in ADDED_LINES is a harmless no-op (the caller named
+# something this script never saw as added) — never a way to loosen the
+# check beyond exactly the lines named.
+#
+# File exemption (3 fields, literal middle field `FILE`, issue #1445): for a
+# file whose content is a pure function of the tree — a content-hash
+# manifest, a lockfile, a generated type/directory module — a rebase
+# conflict on it is correctly resolved by RE-RUNNING THE GENERATOR, not by
+# hand-merging (fix-rebase.md step 4's lockfile-and-generated-files bullet).
+# Regeneration necessarily replaces the PR's originally-added lines with
+# freshly computed ones, which the line-level exemption above cannot express
+# (there's no fixed, enumerable "the one line that changed" — potentially
+# every line did). A `FILE`-kind entry exempts the WHOLE named path from the
+# added-line survival comparison; the third field is a free-text audit
+# reason (e.g. "regenerated via node scripts/generate-x.mjs"), never matched
+# against anything. This is deliberately still a per-PATH allowlist, not a
+# glob or a heuristic: the caller earns the exemption only by having actually
+# run the regeneration for that exact path this rebase, so a file the worker
+# hand-edited is never silently exempted just because its name looks
+# generated. The existence check (a file the PR kept/added must still exist
+# post-rebase) still applies to a FILE-exempted path — only the added-line
+# content comparison is skipped.
 #
 # Exit status:
 #   0 — verified clean: every line <head-ref>'s own commits added (relative
@@ -128,11 +152,25 @@ missing_lines() {
 # empty when no known-rewrites file was given, or when it has no entry for
 # this path. Uses awk's field-length arithmetic (not a naive `cut -f2-`) so
 # an entry whose rewritten line text itself contains a literal tab survives
-# intact rather than being truncated at the first embedded tab.
+# intact rather than being truncated at the first embedded tab. Only
+# considers 2-field (line-exemption) entries — a 3-field FILE-kind entry
+# (see known_file_exempt below) is deliberately excluded here so its
+# free-text reason field is never mistaken for a line to exempt.
 known_rewrites_for() {
   local path="$1"
   [ -n "$KNOWN_REWRITES_FILE" ] || return 0
-  awk -F'\t' -v p="$path" '$1 == p { print substr($0, length($1) + 2) }' "$KNOWN_REWRITES_FILE"
+  awk -F'\t' -v p="$path" 'NF == 2 && $1 == p { print substr($0, length($1) + 2) }' "$KNOWN_REWRITES_FILE"
+}
+
+# Whole-file exemption lookup (issue #1445): true (exit 0) when the
+# known-rewrites file carries a 3-field `<path>\tFILE\t<reason>` entry for
+# path $1 — see the file-header comment above for the full rationale. False
+# (exit 1) when no known-rewrites file was given or it has no FILE-kind
+# entry for this path.
+known_file_exempt() {
+  local path="$1"
+  [ -n "$KNOWN_REWRITES_FILE" ] || return 1
+  awk -F'\t' -v p="$path" 'NF >= 3 && $1 == p && $2 == "FILE" { found=1 } END { exit !found }' "$KNOWN_REWRITES_FILE"
 }
 
 # --- Self-check: prove the comparison mechanism actually works in THIS
@@ -172,6 +210,16 @@ while IFS= read -r f; do
   # PR kept/added it; the rebase shouldn't have removed it).
   if [ ! -f "$f" ]; then
     CORRUPTED="$CORRUPTED $f(missing)"
+    continue
+  fi
+
+  # Whole-file exemption (issue #1445): the caller pre-declared this exact
+  # path as regenerated-not-hand-merged this rebase (see the file-header
+  # comment). Skip the added-line content comparison entirely for it — the
+  # existence check above still applies, only the semantic-content check is
+  # exempted, and only for a path the caller explicitly earned by acting on
+  # it, never by pattern-matching the filename.
+  if known_file_exempt "$f"; then
     continue
   fi
 

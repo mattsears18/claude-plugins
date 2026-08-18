@@ -71,11 +71,24 @@ This is intentionally a **light-touch** mode. You are NOT fixing failing tests. 
 
    **Design note — this gate is deliberately all-or-nothing, not per-file (issue [#1309](https://github.com/mattsears18/shipyard/issues/1309)).** If ANY conflicted file in the set is non-trivial, `git rebase --abort` and bail — even when other conflicted files in the same rebase (a `.version` row, a CHANGELOG entry, an append-only doc) are themselves mechanically resolvable. This was considered and kept, not incidental: `fix-rebase` runs during the drain phase, where the goal is keeping the merge train moving without spending review attention on a semantic judgment call, and a partial rebase (some files resolved, one left mid-conflict) has no clean recovery — either the whole rebase completes or it doesn't happen at all. Preserving "abort leaves the branch and PR exactly as they were" is worth more than resolving the trivial subset of a rebase that's going to need a human either way. The fix for the gap this documents (§4.6's manifest/CHANGELOG carve-out bailing over an *unrelated* trivial file, e.g. an append-only doc, rather than just the genuinely non-trivial one) is to widen what the all-or-nothing gate recognizes as trivial — see §4.6 below — not to make the gate itself partial. **When you do bail, name every file you found genuinely non-trivial, not just the first one encountered** — the return message in step 7 should distinguish "these files would have resolved trivially" from "this file is why I bailed," since that split is the most useful part of the return for the human who inherits the PR.
 
+   **One-time known-rewrites scratch-file initialization, before resolving anything (issue [#1445](https://github.com/mattsears18/shipyard/issues/1445)).** Two of the trivial-resolution recipes below — §4.6 item 5 (the version-coordinated manifest/CHANGELOG carve-out) and §4.7 (lockfile/generated-file regeneration) — record entries in the SAME `.shipyard-scratch/vc-known-rewrites.tsv` file, and both can fire in the same rebase (e.g. a manifest conflict alongside an unrelated lockfile conflict). Initialize it exactly once, here, before any per-file resolution begins, so neither recipe risks truncating entries the other already wrote:
+
+   ```bash
+   WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+   mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
+   printf '*\n' > "$WORKTREE_PATH/.shipyard-scratch/.gitignore"  # self-ignoring (worker-preamble § "Scratch directory")
+   : > "$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"  # the ONE truncation point per dispatch — every recipe below only ever appends
+   ```
+
    - **Trivial conflicts that auto-resolve:** additive-only conflicts in shared docs / config where both sides only appended content and the merge can be reconstructed by concatenating both blocks. The canonical examples (any of these is fair game):
      - `CHANGELOG.md` — both sides added entries at the top. Take both: newer entry first (yours), then theirs, then the rest of the file. If both touched the same version's entry block, that's a non-trivial conflict — bail.
      - Append-only docs like `CLAUDE.md`, `README.md`, `E2E_TESTS.md`, `CONTRIBUTING.md` — both sides added new bullets/sections to the end (or to a non-overlapping section). Concat both, drop the conflict markers, no semantic merging required. **When the conflicted path is listed in `version_coordination.append_only_paths` (config-declared, issue [#1309](https://github.com/mattsears18/shipyard/issues/1309)), use the mechanical procedure in [§4.6 below](#46-version-coordinated-manifest--changelog-re-number--trivial-resolution-issue-466) instead of judgment** — it composes correctly with the manifest/changelog carve-out when both kinds of file conflict in the same rebase, which the free-form version of this bullet doesn't.
      - `ci.yml` shard matrix appends — both sides added an entry to an array literal. Concat the array entries, dedupe, no reordering.
-     - Lockfiles (`package-lock.json` / `pnpm-lock.yaml` / `Cargo.lock` / `go.sum`) when the conflict is on dependency entries that both sides touched independently — **DO NOT manually resolve.** Instead re-run the package manager (`pnpm install` / `npm install` / `cargo update` / `go mod tidy`) inside the rebased worktree so the lockfile is regenerated against the rebased `package.json` / `Cargo.toml` / `go.mod`. If the regeneration succeeds and the result is committable, that counts as trivial; if the regeneration itself errors (incompatible peer deps, version pinning conflict, etc.) bail.
+     - **Lockfiles and other config-declared generated files** — content that is a pure function of the tree, never hand-merged. Two recognized sub-cases:
+       - The four canonical lockfiles (`package-lock.json` / `pnpm-lock.yaml` / `Cargo.lock` / `go.sum`) when the conflict is on dependency entries that both sides touched independently — **DO NOT manually resolve.** Instead re-run the package manager (`pnpm install` / `npm install` / `cargo update` / `go mod tidy`) inside the rebased worktree so the lockfile is regenerated against the rebased `package.json` / `Cargo.toml` / `go.mod`.
+       - A path listed in `version_coordination.generated_paths` (config-declared, issue [#1445](https://github.com/mattsears18/shipyard/issues/1445)) — e.g. a content-hash manifest, a generated type/directory module — when it conflicts: re-run that path's declared regeneration command instead of hand-merging.
+
+       In both sub-cases: if the regeneration succeeds and the result is committable, that counts as trivial — but **before falling through to step 5, record a whole-file known-rewrites exemption per [§4.7 below](#47-lockfilegenerated-file-regeneration--known-rewrites-recording-issue-1445)**, since the regenerated content by construction no longer matches what the PR's own commit(s) originally added and step 5.8's line-survival guard would otherwise misread it as corruption. If the regeneration itself errors (incompatible peer deps, version pinning conflict, the declared command exits non-zero, etc.), bail.
      - **Version-coordinated manifest `.version` row + CHANGELOG top-of-file entry — see [§4.6 below](#46-version-coordinated-manifest--changelog-re-number--trivial-resolution-issue-466).** On a repo with `version_coordination.enabled`, the manifest version row (e.g. `plugin.json` `.version`) would otherwise read as a "both sides edited the same JSON key with different values" conflict — which the non-trivial rules below bail on. But when that row is *coordination-managed*, the resolution is **deterministic** (take main's version, bump at the PR's release level — major/minor/patch — to the next free slot, re-number this PR's CHANGELOG heading to that slot, place newest-first), not a semantic judgment about which side is correct. §4.6 carves this exact case out of the bail rule. The carve-out is **narrow**: it applies only when *every* conflicted hunk is on the manifest `.version` row or the CHANGELOG top-of-file insert — any conflict touching source/spec content beyond those two falls back to the bail rule below.
 
    - **Non-trivial conflicts — bail immediately:** anything where the merge requires semantic judgment about which side's change is correct or how they should compose. Examples:
@@ -187,11 +200,12 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
       ```bash
       WORKTREE_PATH="$(git rev-parse --show-toplevel)"
-      mkdir -p "$WORKTREE_PATH/.shipyard-scratch"
-      printf '*\n' > "$WORKTREE_PATH/.shipyard-scratch/.gitignore"  # self-ignoring (worker-preamble § "Scratch directory")
 
+      # The scratch dir + file were already created and truncated exactly
+      # once, by step 4's own top-of-loop initialization above — this recipe
+      # only ever APPENDS, never re-truncates (so it composes safely with
+      # §4.7's lockfile/generated-file entries when both fire in one rebase).
       KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"
-      : > "$KNOWN_REWRITES"
 
       # Capture each raw diff into a variable BEFORE parsing it (issue #1333)
       # — a `git diff`-rewriting shell proxy some environments run (e.g. the
@@ -248,6 +262,40 @@ This is the one structured exception to step 4's "both sides edited the same JSO
       **If either extraction comes back empty** (the `grep` found no matching added line — an unexpected shape for a resolution that just passed the manifest/CHANGELOG eligibility gates, items 1–4), leave that file's entry out of `$KNOWN_REWRITES` rather than guessing. Step 5.8 then checks that file's full added-line set unexempted, which is the safe direction: it can only make the guard *stricter* on a shape it doesn't recognize, never looser. A stricter-than-necessary bail here is recoverable (a human rebases by hand); a loosened exemption on the wrong lines is not. **This is deliberately distinct from the diff-shape check above** — an empty `manifest_line`/`changelog_line` after a *shape-verified* raw diff is a legitimate "no matching added line found" outcome handled by the safe fallback in this paragraph; a raw diff that doesn't even look like `git diff` output is a *parse-trustworthiness* failure caught earlier, before it can masquerade as that legitimate case.
 
    After resolving, fall through to step 5 (clean-tree check) and **step 5.5 (the [#436](https://github.com/mattsears18/shipyard/issues/436) conflict-marker assertion) — which is non-negotiable here**: the version-row + CHANGELOG hand-resolution is precisely the "take both, drop the markers" shape that can leave a stray `=======` / `>>>>>>>` line behind. Step 5.5's `git grep` for surviving markers is the safety net that turns a botched re-number into a clean `blocked rebase` instead of a poisoned force-push. Do not skip it.
+
+#### 4.7. Lockfile/generated-file regeneration — known-rewrites recording (issue [#1445](https://github.com/mattsears18/shipyard/issues/1445))
+
+Step 4's lockfile-and-generated-files bullet correctly tells the worker to resolve a conflict on a regenerable file by **re-running its generator**, not by hand-merging — a content-hash manifest, a lockfile, or a generated type/directory module has no meaningful hand-merge in the first place. But regeneration necessarily replaces the file's content with a freshly computed value that, by construction, no longer matches what the PR's own commit(s) originally added. Left unrecorded, step 5.8's line-survival guard (issue [#983](https://github.com/mattsears18/shipyard/issues/983)) misreads that sanctioned regeneration as corruption and bails **every single time** a rebase touches a regenerated file — the sanctioned remedy deterministically trips the guard it should have sailed through, discarding a correct rebase. This is the whole-file counterpart to §4.6 item 5's per-line recording — a regenerated content-hash manifest has no fixed, enumerable "the one line that changed" the way a version row does (potentially every line differs), so a per-line exemption can't express it; a whole-file exemption can.
+
+**Two recognized triggers, both resolved the same way once regeneration succeeds:**
+
+1. **One of the four canonical lockfiles** (`package-lock.json` / `pnpm-lock.yaml` / `Cargo.lock` / `go.sum`) — the regeneration command is the package manager invocation named in step 4's bullet (`pnpm install` / `npm install` / `cargo update` / `go mod tidy`).
+2. **A path listed in `version_coordination.generated_paths`** (config-declared, independent of `version_coordination.enabled` — mirrors `append_only_paths`'s independence). Read the config (re-derive `CLAUDE_PLUGIN_ROOT` first — variables don't survive across Bash tool calls):
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+   vc_generated_paths=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get version_coordination.generated_paths 2>/dev/null || echo "[]")
+   ```
+
+   `vc_generated_paths` is a JSON array of `{"path": "...", "command": "..."}` objects. A conflicted file matches trigger 2 only when its path is byte-for-byte present as some entry's `.path` — look it up with `printf '%s' "$vc_generated_paths" | jq -r --arg f "$f" '.[] | select(.path == $f) | .command'`; empty output means no match, fall through to normal non-trivial handling for that file. **This is deliberately a per-path allowlist, never a glob or a filename heuristic** (e.g. matching on `*.generated.*` or `*-lock.*`) — a repo maintainer opts a path in explicitly and states exactly how to regenerate it. A file that merely *looks* generated (by name) but isn't listed is treated as an ordinary file, subject to the normal trivial/non-trivial classification — this is the load-bearing property that keeps a worker from ever mistaking a file it actually hand-edited for one it regenerated, since the config declaration and the regeneration action are two independent, both-required conditions, not a name-pattern guess.
+
+**For each conflicted path resolved via either trigger:** run the regeneration command inside the rebased worktree, `git add` the result if it succeeds and is committable (bail per step 4's non-trivial rule if the command errors), then record a whole-file known-rewrites entry — appending to the SAME scratch file this step's top-of-loop initialization created (never re-truncating; see the note there and in §4.6 item 5 about the two recipes sharing one file):
+
+```bash
+WORKTREE_PATH="$(git rev-parse --show-toplevel)"
+KNOWN_REWRITES="$WORKTREE_PATH/.shipyard-scratch/vc-known-rewrites.tsv"
+
+# <regenerated_path> is the conflicted path just regenerated (e.g.
+# "package-lock.json", or a generated_paths entry's "path"); <regen_command>
+# is the exact command that was run. The third field is a free-text audit
+# trail only — verify-added-lines-survived.sh never matches against it, only
+# against the literal middle field `FILE`.
+printf '%s\tFILE\tregenerated via %s\n' "<regenerated_path>" "<regen_command>" >> "$KNOWN_REWRITES"
+```
+
+The `FILE`-kind (3-field) entry format is documented in full in [`verify-added-lines-survived.sh`](../../scripts/verify-added-lines-survived.sh)'s own header comment. It exempts the WHOLE named path from step 5.8's added-line comparison — but **not** from step 5.8's file-existence check: if the regenerated file is later missing from the tree entirely, step 5.8 still flags it `(missing)`, exactly as for any other file. Every other touched file in the same PR — including a lockfile that DIDN'T conflict, or one resolved by some other means — is still checked normally; the exemption is scoped to exactly the path(s) actually regenerated this rebase, never a blanket loosening.
+
+**No change is needed at step 5.8's own invocation for this to take effect** — it already looks for `.shipyard-scratch/vc-known-rewrites.tsv` unconditionally and passes it through when present (see below), regardless of which recipe (§4.6 item 5, this section, or both) populated it.
 
 5. **Verify the working tree is clean after resolution.** Every conflict was either auto-resolvable or you bailed in step 4. If you got here with `git status` showing nothing staged/unstaged but the rebase didn't complete, something is off — bail with `blocked rebase #<M>: rebase ended in inconsistent state`.
 
@@ -333,11 +381,12 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
    MERGE_BASE=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH")
 
-   # If §4.6 fired this dispatch and recorded a known-rewrites file (item 5
-   # of its resolution recipe), pass it as the third argument so the two
-   # specific lines it deliberately rewrote are narrowly exempted — every
-   # other line either coordinated file added is still checked normally.
-   # When §4.6 never fired (or its extraction came back empty), no such file
+   # If §4.6 item 5 and/or §4.7 fired this dispatch and recorded a
+   # known-rewrites file, pass it as the third argument so the specific
+   # lines (§4.6) and/or whole files (§4.7) they deliberately rewrote are
+   # narrowly exempted — every other line, and every other file, is still
+   # checked normally. When neither §4.6 nor §4.7 fired (or §4.6's
+   # extraction came back empty and §4.7 never triggered), no such file
    # exists and this call is byte-for-byte the pre-#1215 unconditional check.
    WORKTREE_PATH="$(git rev-parse --show-toplevel)"
    KNOWN_REWRITES=""
@@ -358,9 +407,13 @@ This is the one structured exception to step 4's "both sides edited the same JSO
 
    **Why exact-line matching, not a semantic diff.** The check deliberately doesn't try to understand the file's structure or meaning — that would require per-file domain knowledge, which is exactly what this guard must NOT hard-code. Exact verbatim survival of every added line is a cheap, universal, false-positive-resistant proxy: legitimate further edits from other trivial-conflict resolution (step 4) still leave the PR's own added lines intact, because those lines were never in conflict in the first place. A false positive here (an added line legitimately reworded by a later, unrelated commit already on the PR branch before this rebase) is rare and cheap to recover from — one `blocked rebase` and a human eyeballs the diff; a false negative (silent corruption slipping through) is the failure mode from #983, with no error signal at all and a real functional regression landing behind a green CI run.
 
-   **Why this runs unconditionally, for every touched file, regardless of path — with exactly one narrow, per-line exception ([#1215](https://github.com/mattsears18/shipyard/issues/1215)).** Unlike step 4.6's manifest/CHANGELOG carve-out, this guard makes no attempt to classify a *file* as "safe" up front — a file this PR modified only lightly can be just as vulnerable to a mismatched-context splice as a file it changed heavily, and pre-selecting "files worth checking" would reintroduce the exact per-file judgment this guard exists to avoid. The cost of checking every touched file is a handful of cheap `git diff` / `sort` / `comm` calls — far below the cost of a silent regression landing on `main`.
+   **Why this runs unconditionally, for every touched file, regardless of path — with exactly two narrow exceptions: a per-line exception ([#1215](https://github.com/mattsears18/shipyard/issues/1215)) and a per-file exception ([#1445](https://github.com/mattsears18/shipyard/issues/1445)).** Unlike step 4.6's manifest/CHANGELOG carve-out, this guard makes no attempt to classify a *file* as "safe" up front — a file this PR modified only lightly can be just as vulnerable to a mismatched-context splice as a file it changed heavily, and pre-selecting "files worth checking" would reintroduce the exact per-file judgment this guard exists to avoid. The cost of checking every touched file is a handful of cheap `git diff` / `sort` / `comm` calls — far below the cost of a silent regression landing on `main`.
 
-   The one exception is item 5 of step 4.6's resolution recipe: when that carve-out fires, it *by construction* rewrites the manifest `.version` row and the CHANGELOG's own top-of-file heading away from what the PR's commits originally added — a deliberate, sanctioned edit, not corruption, but indistinguishable from corruption to a guard that only ever compares "was this exact line added, is it still here verbatim." Rather than weakening this guard to skip `vc_manifest`/`vc_changelog` wholesale (which would blind it to real corruption elsewhere in either file — e.g. an untouched CHANGELOG body line silently mangled by the same rebase), step 4.6 item 5 records the *exact two lines* it is about to rewrite, and this step passes that record to `verify-added-lines-survived.sh` as an optional third argument. The script only ever exempts the specific line text named — every other line either coordinated file's PR commits added is still required to survive verbatim, exactly as before. When step 4.6 never fired (the common non-coordination-carve-out path, or a plain clean rebase with no conflicts at all), no known-rewrites file exists and this call is byte-for-byte the original unconditional, file-blind check — the exception only ever narrows the guard for the one call site that both introduces the rewrite and can prove exactly what it rewrote.
+   The first exception is item 5 of step 4.6's resolution recipe: when that carve-out fires, it *by construction* rewrites the manifest `.version` row and the CHANGELOG's own top-of-file heading away from what the PR's commits originally added — a deliberate, sanctioned edit, not corruption, but indistinguishable from corruption to a guard that only ever compares "was this exact line added, is it still here verbatim." Rather than weakening this guard to skip `vc_manifest`/`vc_changelog` wholesale (which would blind it to real corruption elsewhere in either file — e.g. an untouched CHANGELOG body line silently mangled by the same rebase), step 4.6 item 5 records the *exact two lines* it is about to rewrite, and this step passes that record to `verify-added-lines-survived.sh` as an optional third argument. The script only ever exempts the specific line text named — every other line either coordinated file's PR commits added is still required to survive verbatim, exactly as before.
+
+   The second exception is §4.7's lockfile/generated-file regeneration recording: a file resolved by re-running its generator has, by construction, content that's a pure function of the tree — there is no fixed, enumerable "the one line that changed" the way the version row has, so a per-line exemption can't express it. §4.7 records a whole-file (`FILE`-kind) entry instead, exempting the named path's added-line comparison entirely while leaving its existence check (and every other touched file's full comparison) unchanged. This is still narrowly scoped, not a loosening of the guard's default-deny posture: the exemption is earned per-path, per-rebase, only for a path the worker actually regenerated this dispatch — never granted by filename pattern, and never for a file the worker resolved by hand-editing instead.
+
+   When neither step 4.6 item 5 nor §4.7 fired (the common non-coordination, non-generated-file path, or a plain clean rebase with no conflicts at all), no known-rewrites file exists and this call is byte-for-byte the original unconditional, file-blind check — both exceptions only ever narrow the guard for the specific call site that both introduces the rewrite and can prove exactly what it rewrote.
 
 6. **Push the rebased branch.** This is a fast-forward-incompatible operation (rebase rewrites commit SHAs), so a force push with lease is required. You're in detached HEAD (per step 1), so push `HEAD` explicitly to the remote branch ref rather than relying on an upstream:
    ```bash
