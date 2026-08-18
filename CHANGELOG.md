@@ -4,6 +4,16 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.44.4 — 2026-08-18
+
+P2 (closes #1455). `setup/00e-pre-relocation-sweeps.md` named its three step-0.45 sweeps (`worktree-reap.sh reap-orphan-orchestrators` / `sweep-stale-agents` / `triage-orphan-branches`) by subcommand only, with no flags — the orchestrator had to guess each call's required flags from prose, and the three subcommands don't share a flag vocabulary (`triage-orphan-branches` alone also requires `--repo` and `--default-branch`), so a wrong guess cost one refused tool call per sweep, every session.
+
+- **`00e-pre-relocation-sweeps.md`** now gives all three sweeps as complete, copy-pasteable `Bash` invocations with every required flag spelled out, matching how `classify-backlog.sh` and `next-available-version.sh` are already documented in `04-backlog-divert.md` and `dispatch-rules.md`.
+- **`scripts/worktree-reap.sh`'s `usage()` help block** gained a `triage-orphan-branches` entry (previously undocumented there, unlike its `reap-orphan-orchestrators`/`sweep-stale-agents` siblings) that explicitly cross-references and distinguishes it from the similarly-named `reap-orphan-branches` (issue #326, a different subcommand) — the ambiguity the issue's repro hit when it went looking for a resolution in the script's own header.
+- **`do-work-RATIONALE.md`** gained a new "00e literal invocations" section covering why the invocations were restated in `00e` rather than only relying on the existing deep-link sub-files, and why `triage-orphan-branches`'s extra required flags are inherent to what it does, not an inconsistency to normalize away.
+- The flag-vocabulary-consistency and per-subcommand `--help` hardening directions from the issue's suggested fix were checked and found already substantially addressed by prior work (issue #1400 — every subcommand already responds to `-h`/`--help`, and `triage-orphan-branches` already accepts-and-ignores `--session-id` for CLI symmetry) — no further script surface changes were needed there.
+- Verified: `worktree-reap.test.sh` (267 assertions), `shellcheck` on the modified script, the anchor-link/relative-link/fence-balance/setup-fragment-content-scan/setup-phase-file-token-budget guards, and the full local suite (167 `*.test.sh` files) all pass.
+
 ### 4.44.3 — 2026-08-18
 
 P2 (closes #1453). Tests under `plugins/shipyard/scripts/tests/` hardcode spec-file paths the router/fragment pattern (`#611` / `#994` / `#1233`, most recently `#1447`) is explicitly designed to move — every time a `setup/*.md` file is split, a suite that hardcodes one of those paths can break in CI, after push, with no local warning. PR #1447's fix-checks pass re-pointed `shipyard-repo-root-preamble.test.sh` check (4) at a live scan across `setup/*.md`; this closes the gap the issue named — a scanner that catches the anti-pattern before push, plus fixing every genuine hit it found across the tree.

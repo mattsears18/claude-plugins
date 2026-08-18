@@ -25,6 +25,42 @@ Run, in this exact order, all still resolving `CLAUDE_PLUGIN_ROOT` via the **pre
 6. **[Step 3b](01c-label-recovery-refine.md#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions)** — the stale agent-worktree reap, via `worktree-reap.sh sweep-stale-agents` ([#1355](https://github.com/mattsears18/shipyard/issues/1355)), with the `.in_flight` exclude-set safely readable per the ordering above (the helper reads it internally from the session-state file — issue #1147). Synchronous, same rationale.
 7. **[Step 3c](01c-label-recovery-refine.md#3c-orphan-worktree-triage)** — the orphan `do-work/*` branch triage, via `worktree-reap.sh triage-orphan-branches` ([#1365](https://github.com/mattsears18/shipyard/issues/1365)). Synchronous, same rationale.
 
+**Literal invocations for steps 5/6/7 ([#1455](https://github.com/mattsears18/shipyard/issues/1455)).** The three sweeps above do not share a flag vocabulary — deriving each call from prose alone costs one refused tool call per mismatch, every session. Below is the complete, copy-pasteable form for each, matching how [`classify-backlog.sh`](04-backlog-divert.md#4-fetch--rank-the-backlog) and [`next-available-version.sh`](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) are documented elsewhere in this corpus. `worktree-reap.sh`'s own top-level `usage()` block (`-h`/`--help` on any subcommand) is the normative source if these drift — see [RATIONALE → 00e literal invocations](../../do-work-RATIONALE.md#00e-literal-invocations-issue-1455) for why the sub-file deep-links ([`01d-orphan-orchestrator-worktree-reap.md`](01d-orphan-orchestrator-worktree-reap.md), [`01c-label-recovery-refine.md`'s §3b](01c-label-recovery-refine.md#3b-reap-stale-agent-worktrees-from-dead-claude-code-sessions)/[§3c](01c-label-recovery-refine.md#3c-orphan-worktree-triage)) already carried this exact form and this step is the one that was missing it.
+
+Resolve `<repo-root>` once, as its own plain `Bash` call, and reuse the literal path it returns for all three sweeps below (shell variables don't survive across separate `Bash` tool calls):
+
+```bash
+git rev-parse --show-toplevel
+```
+
+`<owner/repo>`, `<default-branch>`, and the session id are already known by this point — `<owner/repo>`/`<default-branch>` from [step 1](01-repo-recovery.md#1-resolve-repo--user) above, and `<session-id>` as the current Claude Code session identifier (no file lookup needed, per the note above this list).
+
+**Step 5 — `reap-orphan-orchestrators`.** Requires `--repo-root` and `--session-id`; `--phase` is optional (defaults to `setup-1.6.5`, shown explicitly here for traceability):
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators \
+  --repo-root <repo-root> --session-id "<session-id>" --phase "setup-1.6.5"
+```
+
+**Step 6 — `sweep-stale-agents`.** Requires `--repo-root` and `--session-id`; `--max-per-session`/`--warn-threshold` are optional and best-effort-default from `shipyard-config.sh` when omitted:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" sweep-stale-agents \
+  --repo-root <repo-root> --session-id "<session-id>"
+```
+
+**Step 7 — `triage-orphan-branches`.** Requires `--repo-root`, `--repo`, AND `--default-branch` — this is the one sweep with a different required-flag set from its two siblings above (it needs the default branch to diff each candidate worktree against, and `--repo` to open/query PRs — neither sibling sweep does either). `--session-id` is accepted-and-ignored here for CLI symmetry (issue #1400) but is NOT required — omit it or pass it, either is fine:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
+"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" triage-orphan-branches \
+  --repo-root <repo-root> --repo <owner/repo> --default-branch <default-branch>
+```
+
+Print each sweep's own output as documented at its linked step above (step 5's `summary: reaped=<R>`; step 6's `summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>`; step 7's `failed-pr:`/`stale-assign:` lines plus its trailing `summary: salvaged=<S> abandoned=<A> stale_assigns=<SA>`).
+
 **Steps 1.35 and 1.37 do NOT move.** Neither gates session-state init (both are independent advisory warnings with no downstream dependency), and neither performs a cross-worktree git operation, so both stay in their documented post-relocation position and run as part of the normal serial `01-repo-recovery.md` flow.
 
 **What this step does NOT change.** [Step 1.7](01-repo-recovery.md#17-resolve-trusted-author-allowlist) (trusted-author allowlist) still runs post-relocation, unaffected — it has no worktree dependency. The post-relocation background group ([00b's step 0.7](00b-parallelization-cache.md#background-bash-group-fire-and-forget-from-step-07)) still fires, now carrying only 1.6 + 3a. `cleanup-summary.md`'s `wait $SETUP_BACKGROUND_PID` is unaffected — the background group still exists, just does less work than before.

@@ -770,6 +770,34 @@ sweep-stale-agents      — Issue #1355. Single-call replacement for the
                           that last line exactly as setup-3b's spec always
                           did.
 
+triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
+                          replacement for the setup-3c sweep's own per-branch
+                          state machine — PR creation, auto-merge arming,
+                          the several tracked counters, and the issue #303
+                          stale self-assign sweep — which used to live as a
+                          `for wt_dir in $(find ...)` loop directly in the
+                          orchestrator's own Bash tool call. Reachable at ANY
+                          point in setup, pre- or post-relocation, for the
+                          same reason reap-orphan-orchestrators / sweep-
+                          stale-agents above are: one script call, no loop
+                          shape in the CALLER's own command text. NOT the
+                          same subcommand as reap-orphan-branches above
+                          (issue #326, deletes orphaned worktree-agent-*
+                          BRANCH REFS with no live worktree) — the two names
+                          are easy to conflate; this one triages `do-work/*`
+                          issue-branch WORKTREES left over from a prior
+                          session (salvage-by-pushing-and-opening-a-PR vs.
+                          abandon-and-remove, per worktree), a materially
+                          different job (issue #1455). Requires --repo-root,
+                          --repo, AND --default-branch (the extra pair its
+                          siblings don't need — this sweep alone opens/
+                          queries PRs and diffs each candidate against the
+                          default branch); --session-id is accepted-and-
+                          ignored for CLI symmetry (issue #1400) but is NOT
+                          required. See triage_orphan_branches()'s own
+                          docstring immediately above its definition for the
+                          full per-row state table and output contract.
+
 reap-session-worktrees  — Issue #509. Targeted reap of THIS session's agent
                           worktrees by explicit agent-id, run as the FIRST
                           pass at end-of-session cleanup before the generic
