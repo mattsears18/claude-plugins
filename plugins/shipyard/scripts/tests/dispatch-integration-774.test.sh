@@ -51,7 +51,6 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 issue_worker_path="$repo_root/plugins/shipyard/agents/issue-worker.md"
-hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
 steady_state_path="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 # 06-scope-preflight.md was further split into 06/06b/06c (issue #994) once it
@@ -110,7 +109,7 @@ assert_not_contains() {
   fi
 }
 
-for f in "$issue_worker_path" "$hook_path" "$dispatch_rules_path" "$steady_state_path" \
+for f in "$issue_worker_path" "$dispatch_rules_path" "$steady_state_path" \
          "$scope_preflight_router_path" "$decompose_epic_path" "$spike_worker_path" "$decompose_worker_path" \
          "$mode_shim_preamble_path"; do
   assert_file_exists "$f" "$(basename "$f") exists"
@@ -139,12 +138,7 @@ assert_contains "$mode_shim_preamble_path" "not an eighth row" \
   "mode-shim-preamble skill is explicit that decompose-worker does NOT get a mapping-table row"
 
 echo
-echo "== (B) hooks/enforce-worktree-isolation.sh — spike-worker guarded, decompose-worker NOT"
 
-assert_contains "$hook_path" "shipyard:spike-worker" \
-  "guarded case statement includes shipyard:spike-worker"
-assert_not_contains "$hook_path" "shipyard:decompose-worker" \
-  "hook never names shipyard:decompose-worker (must not be guarded)"
 
 echo
 echo "== (C) dispatch-rules.md — spike routing table row"
@@ -222,8 +216,8 @@ assert_contains "$spike_worker_path" "dispatch-rules.md" \
 echo
 echo "== (J) decompose-worker.md — still documents the no-worktree contract unchanged by #774"
 
-assert_contains "$decompose_worker_path" "Never dispatch this agent with" \
-  "decompose-worker.md still forbids worktree isolation for this agent"
+assert_contains "$decompose_worker_path" "deliberately carries no \`isolation:\` frontmatter field" \
+  "decompose-worker.md still documents its worktree-isolation exemption"
 assert_contains "$decompose_worker_path" "out of scope" \
   "decompose-worker.md still scopes out a mode-routing-table row for itself"
 

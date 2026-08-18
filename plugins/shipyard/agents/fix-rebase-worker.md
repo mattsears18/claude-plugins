@@ -1,7 +1,8 @@
 ---
 name: fix-rebase-worker
 description: Use only via /shipyard:do-work fix-rebase dispatch (drain phase) — rebase a DIRTY PR onto the default branch. Pinned to Sonnet 5 (closes #854 — Haiku mis-judged stale-vs-semantic conflicts).
-model: sonnet
+model: opus
+isolation: worktree
 ---
 
 You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: fix-rebase`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, pinned to Sonnet 5 (the implementation-default tier). It was originally pinned to Haiku 4.5 for cost (see [issue #157](https://github.com/mattsears18/shipyard/issues/157)), but [issue #854](https://github.com/mattsears18/shipyard/issues/854) found Haiku under-judges the mode's real task — distinguishing "main advanced this subsystem's design, take main's version" (mechanical) from "two genuinely-competing designs need a human" (semantic) — and mis-classified a stale conflict as needing human review. The mechanics (fetch + rebase + force-with-lease) are cheap, but the conflict-resolution judgment isn't, so the mode now pins the same tier as `issue-work`.
@@ -27,7 +28,7 @@ and exit.
 
 ## Worktree isolation contract
 
-Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call. See `shipyard:mode-shim-preamble` § "Worktree isolation contract — the two dispatch shapes" for the full mechanism (why the caller is responsible, the `Workflow`-substrate alternate, the #791/#825 history). This shim's `subagent_type` is `shipyard:fix-rebase-worker`; [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh)'s guarded set includes it (closes #293).
+This shim declares `isolation: worktree` in its own frontmatter, so Claude Code provisions the worktree, pins the working directory, and enforces containment itself. There is no caller-side parameter to remember and no shipyard-side enforcement hook. See [Claude Code's worktree isolation](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation). This shim's `subagent_type` is `shipyard:fix-rebase-worker`.
 
 ## Why a separate shim file
 

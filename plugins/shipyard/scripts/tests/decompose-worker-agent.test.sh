@@ -24,7 +24,6 @@
 #       agent is architecturally different from the six worktree-isolated
 #       issue-worker modes (it never touches code, only the GitHub API), so
 #       it must NOT be dispatched with isolation: "worktree" and must NOT be
-#       added to enforce-worktree-isolation.sh's guarded shim set.
 #   (4) It documents the decompose/escalated/blocked return contract that
 #       matches commands/decompose-epic.md's Worker prompt template.
 #   (5) It explicitly scopes out orchestrator dispatch-wiring (tracked
@@ -53,7 +52,6 @@ fi
 
 agent_path="$repo_root/plugins/shipyard/agents/decompose-worker.md"
 decompose_epic_path="$repo_root/plugins/shipyard/commands/decompose-epic.md"
-isolation_hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 
 pass=0
 fail=0
@@ -116,9 +114,9 @@ if [[ -f "$agent_path" ]]; then
 
   # (3) NO-worktree-isolation contract — the architecturally load-bearing
   # difference from the six issue-worker modes.
-  assert_contains "$agent_path" 'isolation: "worktree"' \
-    "agent file discusses the isolation: \"worktree\" parameter"
-  assert_contains "$agent_path" "Never dispatch this agent with" \
+  assert_contains "$agent_path" "isolation: worktree" \
+    "agent file discusses the isolation: worktree frontmatter field"
+  assert_contains "$agent_path" "deliberately carries no \`isolation:\` frontmatter field" \
     "agent file explicitly forbids worktree isolation for this agent"
   assert_contains "$agent_path" "Worktree isolation contract" \
     "agent file has an explicit Worktree isolation contract section"
@@ -156,14 +154,18 @@ if [[ -f "$decompose_epic_path" ]]; then
     "decompose-epic.md documents the no-worktree-isolation dispatch shape this agent mirrors"
 fi
 
-# (7) This agent must NOT be added to enforce-worktree-isolation.sh's guarded
-# shim set — it is deliberately exempt (no code writes, no worktree needed).
-# If a future change adds it there, that's a contradiction with this agent's
-# own documented contract and should fail loudly rather than silently drift.
-assert_file_exists "$isolation_hook_path" "hooks/enforce-worktree-isolation.sh exists"
-if [[ -f "$isolation_hook_path" ]]; then
-  assert_not_contains "$isolation_hook_path" "shipyard:decompose-worker" \
-    "enforce-worktree-isolation.sh does NOT guard shipyard:decompose-worker (it is a no-worktree agent by design)"
+# This agent is deliberately exempt from worktree isolation (no code writes,
+# no worktree needed), so it must NOT carry the frontmatter field its sibling
+# worker shims all declare. A future change adding it would contradict this
+# agent's own documented contract, so fail loudly rather than drift silently.
+if grep -q "^isolation: worktree$" "$agent_path"; then
+  printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+    "decompose-worker.md must NOT declare isolation: worktree in frontmatter (deliberately exempt)"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+    "decompose-worker.md does NOT declare isolation: worktree in frontmatter (deliberately exempt)"
+  pass=$((pass+1))
 fi
 
 echo

@@ -1,7 +1,8 @@
 ---
 name: investigate-worker
 description: Use only via /shipyard:do-work investigate dispatch — work an untriaged / Sentry-authored issue end-to-end (investigate → rewrite → disposition: fix / needs-human-review / auto-close). Pinned to Sonnet 5 for cost (closes #514).
-model: sonnet
+model: opus
+isolation: worktree
 ---
 
 You are a worker dispatched by `/shipyard:do-work` to run **exactly one mode** — `mode: investigate`. This shim is a model-pinning variant of `shipyard:issue-worker`: same per-mode spec, mid-tier model. See [issue #514](https://github.com/mattsears18/shipyard/issues/514) for the rationale.
@@ -27,7 +28,7 @@ and exit.
 
 ## Worktree isolation contract
 
-Every dispatch of this shim must be invoked with `isolation: "worktree"` on the `Agent` tool call. See `shipyard:mode-shim-preamble` § "Worktree isolation contract — the two dispatch shapes" for the full mechanism (why the caller is responsible, the `Workflow`-substrate alternate, the #791/#825 history). This shim's `subagent_type` is `shipyard:investigate-worker`; [`enforce-worktree-isolation.sh`](../hooks/enforce-worktree-isolation.sh)'s guarded set includes it (extended for this shim in #514).
+This shim declares `isolation: worktree` in its own frontmatter, so Claude Code provisions the worktree, pins the working directory, and enforces containment itself. There is no caller-side parameter to remember and no shipyard-side enforcement hook. See [Claude Code's worktree isolation](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation). This shim's `subagent_type` is `shipyard:investigate-worker`.
 
 ## Why a separate shim file
 

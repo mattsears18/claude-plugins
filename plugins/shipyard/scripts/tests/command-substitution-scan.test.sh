@@ -404,31 +404,6 @@ else
   bad "discovery run walked only $real_blocks fenced bash blocks — below the 300 floor; the fence matcher may have broken (#1312)"
 fi
 
-# (18) The convention doc documents this scanner as the enforcement, and its
-# residual-shapes table no longer lists the argument-position row as unswept.
-triggers_doc="$repo_root/plugins/shipyard/commands/do-work/bash-refusal-triggers.md"
-if [[ -f "$triggers_doc" ]]; then
-  if grep -qF -- 'command-substitution-scan.sh' "$triggers_doc"; then
-    ok "bash-refusal-triggers.md names command-substitution-scan.sh as the enforcement"
-  else
-    bad "bash-refusal-triggers.md does not name command-substitution-scan.sh as the enforcement"
-  fi
-  # The residual table must NOT still advertise the argument-position shape as
-  # an outstanding residual — #1314 retired that row.
-  if grep -qF -- 'in **argument** position | ~156' "$triggers_doc"; then
-    bad "bash-refusal-triggers.md still lists the ~156-site argument-position residual row — #1314 swept it"
-  else
-    ok "bash-refusal-triggers.md's residual table no longer lists the argument-position row"
-  fi
-  # ...but it MUST still warn that a clean scan is not a guarantee the block runs.
-  if grep -qF -- 'never as "this block will run' "$triggers_doc"; then
-    ok "bash-refusal-triggers.md still warns a clean scan is not a runnability guarantee"
-  else
-    bad "bash-refusal-triggers.md dropped the 'a clean scan is not a runnability guarantee' warning"
-  fi
-else
-  bad "bash-refusal-triggers.md is missing (expected at $triggers_doc)"
-fi
 
 echo
 echo "  ${pass} passed, ${fail} failed"

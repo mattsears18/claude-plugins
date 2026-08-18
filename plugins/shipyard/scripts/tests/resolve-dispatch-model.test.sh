@@ -217,8 +217,8 @@ assert_equals "$(resolve_in "$tmp_root" "$tmp_home" issue-work)" "sonnet" \
 assert_equals "$(resolve_in "$tmp_root" "$tmp_home" fix-checks-only)" "opus" \
   "repo config can raise a mode's tier too (fix_checks_only=claude-opus-4-8 => 'opus')"
 # An unset mode falls through to the built-in default, not to the sibling's value.
-assert_equals "$(resolve_in "$tmp_root" "$tmp_home" fix-rebase)" "sonnet" \
-  "a mode absent from the repo config falls back to the built-in default ('sonnet' as of #854)"
+assert_equals "$(resolve_in "$tmp_root" "$tmp_home" fix-rebase)" "opus" \
+  "a mode absent from the repo config falls back to the built-in default ('opus' — every mode defaults to Opus 5)"
 
 # Local layer wins over repo layer.
 mkdir -p "$tmp_root/.shipyard"
@@ -305,14 +305,15 @@ for pair in "${shim_pairs[@]}"; do
     "built-in models.${mode} ($default_model) matches $shim_file frontmatter ($frontmatter_model)"
 done
 
-# issue-work pins no frontmatter model (it inherits the session model), and its
-# built-in default is the Sonnet 5 implementation tier (#784) — the cheap,
-# 1M-context agent-runner that shipyard defaults implementation to. The Opus
-# 4.8 reasoning tier is reserved for the verify gate, not implementation.
+# Every mode's built-in default is Opus 5. The former tiering (Sonnet 5 for
+# implementation, Haiku for fix-checks, Opus 4.8 reserved for the verify gate)
+# is retired: pinning older, cheaper tiers was a cost optimization that stopped
+# paying — #1383 measured Haiku returning false-green fix-checks results — and
+# the family alias keeps the pin from going stale across model generations.
 issue_work_default=$(SHIPYARD_REPO_ROOT="$defaults_root" SHIPYARD_HOME="$defaults_home" \
   bash "$CONFIG_HELPER" get models.issue_work 2>/dev/null)
-assert_equals "$(map "$issue_work_default")" "sonnet" \
-  "built-in models.issue_work ($issue_work_default) resolves to the sonnet tier (Sonnet 5 implementation default, #784)"
+assert_equals "$(map "$issue_work_default")" "opus" \
+  "built-in models.issue_work ($issue_work_default) resolves to the opus tier"
 
 # The verify gate pins the Opus 4.8 reasoning tier — the strong, harder-to-fool
 # model reserved for the highest-stakes judgment in the loop (#784). Its

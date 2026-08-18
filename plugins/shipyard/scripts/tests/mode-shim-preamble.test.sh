@@ -36,7 +36,6 @@ fi
 
 skill_path="$repo_root/plugins/shipyard/skills/mode-shim-preamble/SKILL.md"
 agents_dir="$repo_root/plugins/shipyard/agents"
-hook_path="$repo_root/plugins/shipyard/hooks/enforce-worktree-isolation.sh"
 
 pass=0
 fail=0
@@ -88,13 +87,13 @@ echo
 # --- The 7 mode-shim agent files this refactor touches. ---
 # Format: "<file>:<expected frontmatter name>:<expected model, or empty for none>"
 shims=(
-  "issue-worker.md:issue-worker:"
-  "fix-checks-worker.md:fix-checks-worker:haiku"
-  "fix-main-ci-worker.md:fix-main-ci-worker:sonnet"
-  "fix-pr-batch-worker.md:fix-pr-batch-worker:sonnet"
-  "fix-rebase-worker.md:fix-rebase-worker:sonnet"
-  "investigate-worker.md:investigate-worker:sonnet"
-  "spike-worker.md:spike-worker:"
+  "issue-worker.md:issue-worker:opus"
+  "fix-checks-worker.md:fix-checks-worker:opus"
+  "fix-main-ci-worker.md:fix-main-ci-worker:opus"
+  "fix-pr-batch-worker.md:fix-pr-batch-worker:opus"
+  "fix-rebase-worker.md:fix-rebase-worker:opus"
+  "investigate-worker.md:investigate-worker:opus"
+  "spike-worker.md:spike-worker:opus"
 )
 
 # (1) The skill file itself exists with proper frontmatter and documents the
@@ -106,12 +105,12 @@ if [[ -f "$skill_path" ]]; then
     "skill frontmatter declares name: mode-shim-preamble"
   assert_contains "$skill_path" "description:" \
     "skill frontmatter has a description field"
-  assert_contains "$skill_path" "Worktree isolation contract — the two dispatch shapes" \
-    "skill documents the two-dispatch-shape worktree isolation contract"
+  assert_contains "$skill_path" "Worktree isolation — declared, not policed" \
+    "skill documents that isolation comes from agent frontmatter"
   assert_contains "$skill_path" "Shared worker-preamble bullets" \
     "skill documents the shared worker-preamble bullet list"
-  assert_contains "$skill_path" "Mode → shim → model mapping" \
-    "skill documents the mode-to-shim-to-model mapping table"
+  assert_contains "$skill_path" "Mode → shim mapping" \
+    "skill documents the mode-to-shim mapping table"
   assert_contains "$skill_path" "shipyard:worker-preamble" \
     "skill cross-references worker-preamble"
   assert_contains "$skill_path" "shipyard:decompose-worker" \
@@ -173,7 +172,7 @@ for entry in "${shims[@]}"; do
   # IS genuinely per-file, so the skill's generic paragraph doesn't erase
   # which shim is which).
   assert_contains "$path" "shipyard:$expected_name" \
-    "$file's own Worktree isolation contract section names shipyard:$expected_name"
+    "$file names its own subagent_type shipyard:$expected_name"
 done
 
 echo
@@ -189,18 +188,16 @@ assert_contains "$router_path" "issue-worker/spike.md" \
 
 echo
 
-# (3) hooks/enforce-worktree-isolation.sh's guarded set still names all 7
-# shims — this refactor must not have touched the hook, and the skill's own
-# documentation of the contract must not drift from what the hook actually
-# guards.
-assert_file_exists "$hook_path" "enforce-worktree-isolation.sh exists"
-if [[ -f "$hook_path" ]]; then
-  for entry in "${shims[@]}"; do
-    IFS=':' read -r file expected_name expected_model <<< "$entry"
-    assert_contains "$hook_path" "shipyard:$expected_name" \
-      "enforce-worktree-isolation.sh guards shipyard:$expected_name"
-  done
-fi
+# (3) Every shim declares isolation: worktree in its own frontmatter. Claude
+# Code reads that field and provisions, cwd-pins, and contains the subagent
+# itself — this replaced the former enforce-worktree-isolation.sh PreToolUse
+# hook, whose whole premise (agent frontmatter has no isolation field, so the
+# caller must pass it) stopped being true.
+for entry in "${shims[@]}"; do
+  IFS=':' read -r file expected_name expected_model <<< "$entry"
+  assert_contains "$agents_dir/$file" "isolation: worktree" \
+    "$file declares isolation: worktree in frontmatter"
+done
 
 echo
 if (( fail > 0 )); then
