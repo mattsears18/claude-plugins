@@ -332,6 +332,11 @@ STEADY_STATE_MD="$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
 SETUP_WORKTREE_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01c-label-recovery-refine.md"
 SETUP_REPO_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md"
 INVESTIGATE_MD="$repo_root/plugins/shipyard/agents/issue-worker/investigate.md"
+# The check (H) negative assertion below scans across every setup/*.md
+# fragment rather than hardcoding $SETUP_REPO_MD alone, since a future split
+# could move step 1.3's content elsewhere without warning (issue #1453;
+# mirrors the fix in shipyard-repo-root-preamble.test.sh check (4)).
+SETUP_DIR="$repo_root/plugins/shipyard/commands/do-work/setup"
 
 for site in "$FIX_MAIN_CI_MD" "$FIX_PR_BATCH_MD" "$INLINE_TRIVIAL_MD" "$DRAIN_MD" \
             "$STEADY_STATE_MD" "$SETUP_WORKTREE_MD" "$SETUP_REPO_MD" "$INVESTIGATE_MD"; do
@@ -409,10 +414,10 @@ echo
 echo "(H) #720 — setup no longer re-implements the condition inline"
 # The tell-tale signals of a local reimplementation: reading the raw REST fields
 # and re-deriving the verdict from them, rather than calling the script.
-if grep -qE '^\s*(allow_auto_merge|viewer_admin|required_checks_count)=' "$SETUP_REPO_MD"; then
-  assert_fail "01-repo-recovery.md must NOT re-derive the condition from raw signals (#720) — call the script"
+if grep -qEl '^\s*(allow_auto_merge|viewer_admin|required_checks_count)=' "$SETUP_DIR"/*.md 2>/dev/null; then
+  assert_fail "no setup/*.md fragment re-derives the condition from raw signals (#720) — call the script"
 else
-  assert_pass "01-repo-recovery.md does not re-derive the condition from raw signals (#720)"
+  assert_pass "no setup/*.md fragment re-derives the condition from raw signals (#720)"
 fi
 echo
 

@@ -64,8 +64,13 @@ if [[ "$repo_root" == "/" ]]; then
 fi
 
 # #611 split setup.md into a thin router + step-cluster sub-files; step 1.3
-# (the #465 admin-direct-merge detector) lives in setup/01-repo-recovery.md.
+# (the #465 admin-direct-merge detector) currently lives in
+# setup/01-repo-recovery.md. The two content checks below scan across every
+# setup/*.md fragment rather than hardcoding that one file, since a future
+# split could move step 1.3's content elsewhere without warning (issue
+# #1453; mirrors the fix in shipyard-repo-root-preamble.test.sh check (4)).
 SETUP_MD="$repo_root/plugins/shipyard/commands/do-work/setup/01-repo-recovery.md"
+SETUP_DIR="$repo_root/plugins/shipyard/commands/do-work/setup"
 
 pass=0
 fail=0
@@ -150,17 +155,18 @@ fi
 if [[ -f "$SETUP_MD" ]]; then
   assert_pass "setup/01-repo-recovery.md exists"
 
-  if grep -qF 'detect-ungated-admin-direct-merge.sh' "$SETUP_MD"; then
+  if grep -qFl 'detect-ungated-admin-direct-merge.sh' "$SETUP_DIR"/*.md 2>/dev/null; then
     assert_pass "setup §1.3 delegates the required-checks read to the detector (#720)"
   else
     assert_fail "setup §1.3 delegates the required-checks read to the detector (#720)"
   fi
 
-  # No fourth copy: setup must not re-introduce its own inline re-derivation.
-  if grep -qE '^\s*required_checks_count=' "$SETUP_MD"; then
-    assert_fail "setup §1.3 must NOT re-inline its own required-checks derivation (#720)"
+  # No fourth copy: no setup/*.md fragment may re-introduce its own inline
+  # re-derivation.
+  if grep -qEl '^\s*required_checks_count=' "$SETUP_DIR"/*.md 2>/dev/null; then
+    assert_fail "no setup/*.md fragment re-inlines its own required-checks derivation (#720)"
   else
-    assert_pass "setup §1.3 does not re-inline its own required-checks derivation (#720)"
+    assert_pass "no setup/*.md fragment re-inlines its own required-checks derivation (#720)"
   fi
 else
   assert_fail "setup/01-repo-recovery.md exists (missing at $SETUP_MD)"

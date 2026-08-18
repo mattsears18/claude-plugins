@@ -21,6 +21,12 @@
 #
 #   bash plugins/shipyard/scripts/tests/heal-stale-primary-checkout.test.sh
 
+# setup-fragment-content-scan: allow-file
+# This suite's checks against $router verify the 00-config-worktree.md
+# POINTER wiring to its own purpose-built fragment (00i-staleness-gate.md,
+# created specifically to house step 0.41) — router-pointer-correctness and
+# a fragment's own canonical content, not generic step content that could
+# drift to an unrelated file on a future split (issue #1453).
 set -u
 
 GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'

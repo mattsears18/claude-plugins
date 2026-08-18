@@ -65,6 +65,11 @@
 # Pure bash + jq. Run with:
 #   bash plugins/shipyard/scripts/tests/legacy-agent-dispatch-retired-791.test.sh
 
+# setup-fragment-content-scan: allow-file
+# This suite regression-tests a SPECIFIC historical migration (#791, the
+# Workflow-substrate dispatch retirement) against the exact files that
+# migration touched — its purpose IS to verify those particular files, not
+# generic step content that happens to live there today (issue #1453).
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

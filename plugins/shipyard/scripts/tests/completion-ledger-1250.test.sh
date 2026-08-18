@@ -39,6 +39,11 @@
 # Pure bash, no external dependencies. Run with:
 #   bash plugins/shipyard/scripts/tests/completion-ledger-1250.test.sh
 
+# setup-fragment-content-scan: allow-file
+# ledger_path targets 04f-completion-ledger.md, the fragment #1250 created
+# specifically to house the completion ledger — its canonical, purpose-built
+# home, not generic step content that could drift elsewhere on an unrelated
+# split (issue #1453).
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

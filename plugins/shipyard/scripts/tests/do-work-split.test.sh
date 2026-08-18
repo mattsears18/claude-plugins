@@ -22,6 +22,11 @@
 #
 # Pure bash, no external dependencies.
 
+# setup-fragment-content-scan: allow-file
+# This suite's whole purpose is asserting the router table's split structure
+# itself — which fragment lives where and in what order — so naming
+# fragment files directly is the point, not the anti-pattern issue #1453
+# guards against.
 set -u
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
