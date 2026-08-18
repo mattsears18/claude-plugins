@@ -60,28 +60,20 @@ The three rules above assume your working directory **is** the isolated worktree
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 ```
 
-Then run the guard as one plain `Bash` call:
+Then run the three plain `git rev-parse` calls in [`assert-worktree-cwd-fallback.md`](./assert-worktree-cwd-fallback.md) § "Step-0 form" and compare their output yourself. Claude Code also enforces this rule itself — a command whose working directory resolves to the main checkout is blocked before it runs — so a mispin surfaces at your *first* command rather than silently at your final `git commit`.
 
-```bash
-bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-cwd.sh"
-```
-
-Read what it printed on stdout (full diagnostics, including `toplevel=<TOPLEVEL>`, are on stderr):
-
-- **`worktree` (exit 0)** — this cwd is a correctly-isolated linked worktree. No-op; proceed with the dispatch normally.
-- **`primary` (exit 1)** — this cwd is a primary checkout, NOT an isolated worktree — the dispatch-isolation cwd override is wrong. Read `toplevel=<TOPLEVEL>` off the stderr diagnostic, stop here, and return, verbatim (substituting your actual `TOPLEVEL`):
+- **git-dir ≠ git-common-dir** — this cwd is a correctly-isolated linked worktree. No-op; proceed with the dispatch normally.
+- **git-dir == git-common-dir** — this cwd is a primary checkout, NOT an isolated worktree — the dispatch-isolation cwd override is wrong. Read `TOPLEVEL` from the `git rev-parse --show-toplevel` call, stop here, and return, verbatim (substituting your actual `TOPLEVEL`):
 
   > `blocked: dispatch-isolation cwd override is wrong — my cwd (<TOPLEVEL>) is a PRIMARY checkout, not an isolated worktree. An isolation: "worktree" dispatch was pinned to the primary checkout root (see #486). Every git-mutating command here would target the user's primary checkout and the enforce-worktree hook will block my final commit. Failing fast at step 0 instead of burning the full run. Re-dispatch required.`
 
-- **`error` (exit 2)** — the script couldn't resolve *any* git working tree from this cwd, a stranger failure than a mispin. Treat this as blocked too, using the script's stderr diagnostic in place of `<TOPLEVEL>`:
+- **neither call resolves** — no git working tree from this cwd at all, a stranger failure than a mispin. Treat this as blocked too:
 
   > `blocked: dispatch-isolation cwd override is wrong — my cwd does not resolve to any git working tree at all (see #486). Re-dispatch required.`
 
-**If the script can't be located** (an installed plugin predating [#826](https://github.com/mattsears18/shipyard/issues/826), the `CLAUDE_PLUGIN_ROOT` resolution above comes back empty, or the resolution command itself was refused by the harness's Auto Mode classifier — issue [#965](https://github.com/mattsears18/shipyard/issues/965)), fall back to the pre-#826 three-plain-calls form — see [`assert-worktree-cwd-fallback.md`](./assert-worktree-cwd-fallback.md) for the step-0 form of that fallback (and the decomposed `CLAUDE_PLUGIN_ROOT` resolution alongside it).
-
 **Return `blocked:`, not `reaped:`.** The mispin is a deterministic property of *this* dispatch's cwd — re-running the identical dispatch could land the same wrong cwd, so it is not the retryable-infrastructure-noise case `reaped:` is reserved for. `blocked:` is correct: the orchestrator's reconcile classifies it as a refuse and applies `needs-human-review` (per [#521](https://github.com/mattsears18/shipyard/issues/521)), surfacing the harness-level misroute for a human (or a future harness fix) rather than silently re-enqueueing a dispatch that may misfire the same way. **This guard runs in every worker mode** — the catastrophic-wasted-run failure mode is identical whether the dispatch was issue-work, fix-checks-only, fix-rebase, fix-main-ci, or fix-failing-prs-batch, so it lives in the shared preamble rather than per-mode.
 
-**When NOT to fire.** A correctly-pinned dispatch (cwd under `.claude/worktrees/agent-*` or `orchestrator-*`) has git-dir ≠ git-common-dir and sails through — the guard is a no-op on the normal path, one cheap script invocation. Running outside any orchestrated session (a human invoking a worker spec by hand in the primary checkout for testing) would trip it, which is correct: a worker spec is not meant to mutate the primary checkout.
+**When NOT to fire.** A correctly-pinned dispatch (cwd under `.claude/worktrees/agent-*` or `orchestrator-*`) has git-dir ≠ git-common-dir and sails through — the guard is a no-op on the normal path. Running outside any orchestrated session (a human invoking a worker spec by hand in the primary checkout for testing) would trip it, which is correct: a worker spec is not meant to mutate the primary checkout.
 
 **Passing this check confirms your cwd is correct — it does NOT confirm `Edit`/`Write` will actually succeed there.** A separate, harness-level write guard can reject every `Edit`/`Write` call from a `Workflow`-substrate-dispatched worker even when the cwd fail-fast above passes cleanly ([#895](https://github.com/mattsears18/shipyard/issues/895)) — load [`write-probe.md`](./write-probe.md) immediately after this check passes to catch that class of failure before doing any other work.
 
@@ -101,17 +93,11 @@ That output is your `WORKTREE_PATH`. Re-verify it hasn't drifted using the same 
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 ```
 
-Then, using the literal `WORKTREE_PATH` value from the first call in place of `$WORKTREE_PATH` (not a live shell variable):
+Then, using the literal `WORKTREE_PATH` value from the first call in place of `$WORKTREE_PATH` (not a live shell variable), run the `-C`-anchored form in [`assert-worktree-cwd-fallback.md`](./assert-worktree-cwd-fallback.md) § "Mid-session form".
 
-```bash
-bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-worktree-cwd.sh" "$WORKTREE_PATH"
-```
-
-Read the stdout verdict exactly as in step-0. **`worktree` (exit 0)** — the anchor holds, proceed below. **`primary` or `error` (exit 1 / 2)** — your cwd anchor has drifted mid-session (or `WORKTREE_PATH` came back empty) — stop and return, verbatim:
+Compare the two paths exactly as in step-0. **git-dir ≠ git-common-dir** — the anchor holds, proceed below. **Equal, or neither resolves** — your cwd anchor has drifted mid-session (or `WORKTREE_PATH` came back empty) — stop and return, verbatim:
 
 > `blocked: cwd anchor drifted mid-session — my cwd is no longer the isolated worktree immediately before a mutating command (see #748). Refusing to run it against a possibly-wrong git context.`
-
-**If the script can't be located**, fall back to the pre-#826 form — see [`assert-worktree-cwd-fallback.md`](./assert-worktree-cwd-fallback.md) for the mid-session (`-C "$WORKTREE_PATH"`-anchored) form of that fallback.
 
 If the anchor holds — proceed, anchoring explicitly rather than relying on ambient cwd:
 
@@ -233,7 +219,7 @@ The rarely-hit reference material lives in fragments in this directory (`plugins
 | [`ci-pitfalls.md`](./ci-pitfalls.md) | An absence-assertion that observed nothing is not a pass; A `git diff`-rewriting shell proxy may be active; Heartbeat emission around long-running commands; A foreground call the harness auto-backgrounds past 600s; Mirror new string constants into locale / parity files; Pin the default branch in git-using test fixtures; GitHub push-protection blocking a synthetic test-fixture secret | **Verifying a CI result** (any "assert nothing failed" check — see the [`assert-ci-green.sh`](../../scripts/assert-ci-green.sh) helper), parsing `git diff` output, running long silent commands (CI babysitting, full local suites), adding user-facing strings, authoring git-using shell fixtures, or adding secret-shaped fixtures. | any mode that verifies CI or parses `git diff` (vacuous-pass guard); fix-checks-only / fix-main-ci / fix-failing-prs-batch (heartbeat, 600s re-block); any mode authoring strings / git fixtures / secret fixtures |
 | [`git-stash-prohibition.md`](./git-stash-prohibition.md) | Never `git stash` — mechanism + the one safe unavoidable-stash procedure | You are actually about to run `git stash` for some reason — rare, since the core rule (you have your own worktree + branch) is the correct default. | Any mode, whenever stashing is genuinely being considered |
 | [`process-kill-detail.md`](./process-kill-detail.md) | Never run a broad process kill — the repro + a cheap CI-executor host-detection check | You're weighing whether a broad `pkill`/`killall` is safe, or want the concrete repro behind the prohibition. Mechanically enforced regardless by the `refuse-broad-process-kill.sh` hook. | Any mode doing local process cleanup on a host that might also run self-hosted CI |
-| [`assert-worktree-cwd-fallback.md`](./assert-worktree-cwd-fallback.md) | The pre-#826 three-plain-calls fallback for both the step-0 and mid-session cwd checks, when `scripts/assert-worktree-cwd.sh` can't be located or run | The script genuinely can't be found (old plugin install) or its resolution command was refused by Auto Mode's classifier ([#965](https://github.com/mattsears18/shipyard/issues/965)). The common path — the script runs fine — never needs this. | Any mode, on the rare occasion the primary script-based check is unavailable |
+| [`assert-worktree-cwd-fallback.md`](./assert-worktree-cwd-fallback.md) | The three-plain-calls git-dir/git-common-dir comparison used by both the step-0 and mid-session cwd checks | Both of those sections reference it directly — it carries the exact call shapes so the always-loaded core doesn't duplicate them twice. | Any mode |
 | [`stop-background-processes.md`](./stop-background-processes.md) | Stop background processes before returning — the full per-tool-family stop mechanism | You spawned a `Monitor` sub-task, a backgrounded `Bash` call, or a `TaskCreate` sub-Agent this session and need the exact stop call before returning. No-op (skip) if you spawned none of those. | Any mode that used a Monitor / backgrounded Bash / sub-Agent |
 | [`commit-hygiene.md`](./commit-hygiene.md) | Pre-commit hygiene — escape symlinks; Final commit subject — Conventional Commits compliant, even on a single-commit PR | You created the `node_modules → ../../../node_modules` bootstrap symlink and must keep it out of a commit; OR you used a scratch/`wip:` commit anywhere on your branch and are about to `git push` / `gh pr create` — a single-commit PR squash-merges under the commit subject, not the PR title, so the final subject must be Conventional-Commits-compliant on its own. | Any mode that ran the `node-bootstrap.md` symlink remediation; any mode that used a `wip:` commit before opening a PR |
 | [`classifier-denial.md`](./classifier-denial.md) | After a classifier denial | Auto Mode (or another harness-side classifier) denies a tool call. Fires only on a denial — most dispatches never load it. | Any mode, whenever a denial occurs |
