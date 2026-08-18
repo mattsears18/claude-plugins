@@ -25,7 +25,7 @@ export CLAUDE_PLUGIN_ROOT
 - **[Step 3d.2](01c-label-recovery-refine.md#3-ensure-label-exists--recover-from-prior-session)** — five sub-sweeps in sequence: legacy `blocked:agent` migration (re-pointed per [#521](https://github.com/mattsears18/shipyard/issues/521) — dependency-wait → no label, else → `needs-human-review`), `blocked:agent-soft` next-session sweep, and three new legacy-label migration sweeps ([#537](https://github.com/mattsears18/shipyard/issues/537)) for `needs-design` → `needs-human-review`, `needs-decomposition`/`tracking` → `needs-human-review` + decomposition marker, and `blocked:agent-hard` → same refuse/dependency-wait discriminator as sub-sweep b. (Sub-sweep a, the `blocked:agent-hard` referential clear, was deleted in [#521](https://github.com/mattsears18/shipyard/issues/521).) Per-issue blocker-state lookups (sub-sweeps b and f) read through the [`blocker_state` cache](#08-blocker_state-cache-default-on). **Skipped under `--fast`** (the initial label counts still run for advisory reporting — see step 3d.2's `--fast` note).
 - **[Step 4.5a](04-backlog-divert.md#45-divert-checks-main-ci--pr-pileup)** — main CI status (`gh run list --branch <default-branch> --limit 60`). **Skipped under `--fast`** — `main_ci.status` left as `"unknown"`.
 - **[Step 4.5b](04-backlog-divert.md#45-divert-checks-main-ci--pr-pileup)** — all-authors failing-PR count. **Skipped under `--fast`** — `failing_pr_count_all` left as `0`.
-- **[Step 5](04-backlog-divert.md#5-snapshot-failing-prs)** — `@me` failing-PR snapshot.
+- **[Step 5](04j-failing-pr-snapshot.md#5-snapshot-failing-prs)** — `@me` failing-PR snapshot.
 
 #### Background bash group (fire-and-forget from step 0.7)
 
