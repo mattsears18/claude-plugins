@@ -1,10 +1,10 @@
 # /shipyard:do-work — Step 5.75: Seed inherited draft PRs (cross-session draft-PR recovery)
 
-Deep-linked from [`04-backlog-divert.md`](./04-backlog-divert.md#575-seed-inherited-draft-prs-draft-pr-recovery) — read this file only when you reach that pointer, not as part of the ordered per-session walk.
+Deep-linked from [`04-backlog-divert.md`](./04j-failing-pr-snapshot.md#575-seed-inherited-draft-prs-draft-pr-recovery) — read this file only when you reach that pointer, not as part of the ordered per-session walk.
 
 ## Why this exists
 
-Closes [#1069](https://github.com/mattsears18/shipyard/issues/1069) — a draft PR is invisible to every existing sweep. [Step 5's failed-PR scan](./04-backlog-divert.md#5-snapshot-failing-prs) keys on a red check rollup; [step 5.7's inherited-DIRTY seed](./04-backlog-divert.md#57-seed-inherited-dirty-prs-into-session_prs-cross-session-drain-hand-off) keys on `mergeStateStatus == "DIRTY"`. A draft PR is typically neither: on any repo whose CI guards jobs with a `draft != true` condition (a common cost optimization), every check reads `SKIPPED` — not red — and `mergeStateStatus` reads `CLEAN`. Nothing in the session ever looks at it. The concrete repro (`mattsears18/lightwork#3465`) sat stranded 2 days holding a P1 fix that needed nothing but `gh pr ready` — the orchestrator only caught it by inspecting the open-PR list by hand.
+Closes [#1069](https://github.com/mattsears18/shipyard/issues/1069) — a draft PR is invisible to every existing sweep. [Step 5's failed-PR scan](./04j-failing-pr-snapshot.md#5-snapshot-failing-prs) keys on a red check rollup; [step 5.7's inherited-DIRTY seed](./04j-failing-pr-snapshot.md#57-seed-inherited-dirty-prs-into-session_prs-cross-session-drain-hand-off) keys on `mergeStateStatus == "DIRTY"`. A draft PR is typically neither: on any repo whose CI guards jobs with a `draft != true` condition (a common cost optimization), every check reads `SKIPPED` — not red — and `mergeStateStatus` reads `CLEAN`. Nothing in the session ever looks at it. The concrete repro (`mattsears18/lightwork#3465`) sat stranded 2 days holding a P1 fix that needed nothing but `gh pr ready` — the orchestrator only caught it by inspecting the open-PR list by hand.
 
 ## What this step does
 
