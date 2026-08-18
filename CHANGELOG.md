@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.44.6 — 2026-08-18
+
+P2 (closes #1456). A prior session filed this issue after measuring ~28% of its spend (~465k tokens across three `fix-rebase` dispatches plus one wasted `fix-checks-only` dispatch) going to version-row rebase collisions, and proposed four directions for a cheaper mechanism — verified the measurement against the session's own PR/commit history and confirmed the figures, but found the proposed fix (direction 2: resolve the coordinated manifest/CHANGELOG conflict in-process instead of dispatching a worker) had already shipped as [#1380](https://github.com/mattsears18/shipyard/pull/1380) three days before the measuring session ran, and that the issue's other two implementable directions (1 and 3, both changes to the release convention) had already been evaluated and rejected in [#1381](https://github.com/mattsears18/shipyard/issues/1381)'s spike.
+
+- **`do-work-RATIONALE.md`** — added an addendum to the existing "Why no structural follow-up to #1380's in-process DIRTY resolver" section recording #1456's independent re-discovery, why its four directions collapse onto the same four #1377/#1380/#1381 already worked through, and the most plausible (not certain) explanation for why the measuring session still paid the pre-#1380 cost despite `main`'s tip being well past the version #1380 landed at: dogfooding staleness — the same class of bug [#1386](https://github.com/mattsears18/shipyard/issues/1386)/[#1387](https://github.com/mattsears18/shipyard/pull/1387)'s step-0.41 staleness gate (which landed the same day as the measuring session) exists to close.
+- No code or spec behavior change — this is a documentation-only disposition. `scripts/resolve-manifest-only-dirty.sh` and its two DIRTY-handling call sites are unchanged.
+- Verified: the full local suite (167 `*.test.sh` files), and the anchor-link / CHANGELOG-monotonicity / conflict-marker guards.
+
 ### 4.44.5 — 2026-08-18
 
 P2 (closes #1454). `detect-ci-runner-capacity.sh` (the CI-runner-capacity detector consumed by setup step 1.36's `$EFFECTIVE_CONCURRENCY` clamp, #1141/#1156) took a positional `<owner/repo>` with no validation on the live-detection path — every sibling `--decide*` mode already guarded its arity. A session filed this from a real mis-invocation: `detect-ci-runner-capacity.sh run --repo mattsears18/shipyard` (the `--repo`-flag style used by every neighbouring setup helper) silently took the literal token `"run"` as the repo, ignored `--repo` and its value entirely, and still printed a confident, well-formed `hosted` verdict at exit 0.
