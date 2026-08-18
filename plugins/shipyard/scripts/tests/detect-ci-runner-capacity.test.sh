@@ -179,6 +179,7 @@ if [[ -f "$DETECTOR" ]]; then
     assert_fail "no-args invocation exits non-zero with a usage message (got exit 0)"
   fi
   assert_contains /tmp/detect-ci-runner-capacity-usage.$$ "usage:" "usage message printed to stderr on missing <owner/repo>"
+  assert_equals "no-args invocation exits with EX_USAGE (64)" "64" "$rc"
   rm -f /tmp/detect-ci-runner-capacity-usage.$$
 
   bash "$DETECTOR" --decide 1 2 >/dev/null 2>/tmp/detect-ci-runner-capacity-decide-usage.$$
@@ -189,8 +190,161 @@ if [[ -f "$DETECTOR" ]]; then
     assert_fail "--decide with wrong arg count exits non-zero (got exit 0)"
   fi
   rm -f /tmp/detect-ci-runner-capacity-decide-usage.$$
+
+  # --- Issue #1454 (1): reject an unknown leading token instead of silently
+  #     treating it as the repo. This is the exact repro from the issue: a
+  #     caller invoked the script in the `--repo`-flag style used by every
+  #     sibling helper (`classify-backlog.sh run --repo <owner/repo>`), but
+  #     this script takes a bare positional -- the leading token "run" used
+  #     to be silently accepted as the repo, `--repo` and its value ignored
+  #     entirely, and the script still printed a confident, well-formed
+  #     `hosted` verdict at exit 0.
+  rc=0
+  bash "$DETECTOR" run --repo mattsears18/shipyard >/tmp/detect-ci-runner-capacity-badinvoke.$$ 2>&1 || rc=$?
+  assert_equals "issue #1454 repro ('run --repo owner/repo') now exits EX_USAGE (64), not 0" "64" "$rc"
+  if grep -qF "hosted" /tmp/detect-ci-runner-capacity-badinvoke.$$; then
+    assert_fail "issue #1454 repro must NOT print a 'hosted' verdict for the bogus token"
+  else
+    assert_pass "issue #1454 repro must NOT print a 'hosted' verdict for the bogus token"
+  fi
+  assert_contains /tmp/detect-ci-runner-capacity-badinvoke.$$ "usage:" \
+    "issue #1454 repro prints the usage block instead of a fabricated verdict"
+  rm -f /tmp/detect-ci-runner-capacity-badinvoke.$$
+
+  # --- Issue #1454 (1), continued: any extra positional after a well-formed
+  #     <owner/repo> is rejected too, not just the flag-shaped case above.
+  bash "$DETECTOR" mattsears18/shipyard extra-token >/dev/null 2>/tmp/detect-ci-runner-capacity-extra.$$
+  rc=$?
+  assert_equals "an extra positional after <owner/repo> exits EX_USAGE (64)" "64" "$rc"
+  rm -f /tmp/detect-ci-runner-capacity-extra.$$
+
+  # --- Issue #1454 (1), continued: an unrecognized flag-shaped leading token
+  #     (not one of --decide/--decide-backpressure/--decide-resume/--repo)
+  #     is rejected rather than silently treated as a positional.
+  bash "$DETECTOR" --bogus-flag >/dev/null 2>/tmp/detect-ci-runner-capacity-badflag.$$
+  rc=$?
+  assert_equals "an unrecognized leading flag exits EX_USAGE (64)" "64" "$rc"
+  rm -f /tmp/detect-ci-runner-capacity-badflag.$$
+
+  # --- Issue #1454 (2): validate the positional's <owner/repo> SHAPE before
+  #     ever using it -- a bare token with no '/' cannot be a real repo.
+  for bad_repo in notarepo "a/b/c" "a/" "/b"; do
+    bash "$DETECTOR" "$bad_repo" >/dev/null 2>/tmp/detect-ci-runner-capacity-shape.$$
+    rc=$?
+    assert_equals "malformed <owner/repo> shape '$bad_repo' exits EX_USAGE (64)" "64" "$rc"
+    rm -f /tmp/detect-ci-runner-capacity-shape.$$
+  done
+
+  # --- Issue #1454 (optional): the --repo <owner/repo> alias. --repo with no
+  #     value is a usage error; the positional form must keep working
+  #     unchanged (call sites depend on it -- setup/01-repo-recovery.md's
+  #     step 1.36 passes a bare positional, never --repo).
+  bash "$DETECTOR" --repo >/dev/null 2>/tmp/detect-ci-runner-capacity-repo-noval.$$
+  rc=$?
+  assert_equals "--repo with no value exits EX_USAGE (64)" "64" "$rc"
+  rm -f /tmp/detect-ci-runner-capacity-repo-noval.$$
 else
   assert_fail "live-path usage handling (detector missing)"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (P) Issue #1454 (3) — distinguish "no self-hosted runners" (hosted) from
+#     "could not query runners" (unknown). `gh api` writes a well-formed JSON
+#     error envelope to STDOUT on a non-2xx response and exits non-zero; the
+#     pre-#1454 code never checked the exit status, and jq's `.runners |
+#     length` on a body with no such key silently evaluates to 0 (`null |
+#     length` is 0) -- indistinguishable from a genuine, successful
+#     zero-runner read. A `gh` stub reproduces exactly that response shape
+#     (verified against the real `gh api repos/<bogus>/actions/runners`
+#     output during this fix) without requiring live network access or a
+#     real repo.
+# ---------------------------------------------------------------------------
+echo "(P) live-path — API error body must yield 'unknown', never a spurious 'hosted'"
+if [[ -f "$DETECTOR" ]]; then
+  mock_dir="$(mktemp -d)"
+
+  # (P.1) gh api exits non-zero with a non-empty 404-shaped JSON error body
+  # on stdout -- the exact shape `gh api` itself produces.
+  cat > "$mock_dir/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+  printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+  exit 1
+fi
+exit 1
+MOCKEOF
+  chmod +x "$mock_dir/gh"
+
+  got="$(PATH="$mock_dir:$PATH" bash "$DETECTOR" someowner/somerepo 2>/tmp/detect-ci-runner-capacity-404.$$)"
+  rc=$?
+  assert_equals "a 404-shaped gh api error body yields 'unknown', never 'hosted'" "unknown" "$got"
+  if [[ "$rc" -eq 0 ]]; then
+    assert_pass "the 'unknown' verdict for an API error still exits 0 (advisory read, not a hard failure)"
+  else
+    assert_fail "the 'unknown' verdict for an API error still exits 0 (advisory read, not a hard failure) (got exit $rc)"
+  fi
+  assert_contains /tmp/detect-ci-runner-capacity-404.$$ "treating as unknown" \
+    "diagnostic explains why a 404-shaped body was treated as unknown"
+  rm -f /tmp/detect-ci-runner-capacity-404.$$
+
+  # (P.2) Defense in depth: gh api exits 0 but the body has no '.runners'
+  # array at all (an unexpected response shape). Must still be 'unknown',
+  # not silently parsed as zero runners.
+  cat > "$mock_dir/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+  printf '{"unexpected":"shape"}'
+  exit 0
+fi
+exit 1
+MOCKEOF
+  chmod +x "$mock_dir/gh"
+
+  got="$(PATH="$mock_dir:$PATH" bash "$DETECTOR" someowner/somerepo 2>/dev/null)"
+  assert_equals "a 200 response with no '.runners' array yields 'unknown', never 'hosted'" "unknown" "$got"
+
+  # (P.3) The genuinely-empty-body case (e.g. a network failure) still
+  # degrades to 'unknown' as before this fix.
+  cat > "$mock_dir/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+  exit 1
+fi
+exit 1
+MOCKEOF
+  chmod +x "$mock_dir/gh"
+
+  got="$(PATH="$mock_dir:$PATH" bash "$DETECTOR" someowner/somerepo 2>/dev/null)"
+  assert_equals "a genuinely empty gh api response still yields 'unknown'" "unknown" "$got"
+
+  # (P.4) The success path is untouched: a real '.runners' array is still
+  # parsed and decided normally through this same code path.
+  cat > "$mock_dir/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+  printf '{"total_count":0,"runners":[]}'
+  exit 0
+fi
+if [[ "${1:-}" == "run" ]]; then
+  printf '[]'
+  exit 0
+fi
+exit 1
+MOCKEOF
+  chmod +x "$mock_dir/gh"
+
+  got="$(PATH="$mock_dir:$PATH" bash "$DETECTOR" someowner/somerepo 2>/dev/null)"
+  assert_equals "a genuine empty '.runners' array still correctly yields 'hosted'" "hosted" "$got"
+
+  # (P.5) The --repo alias reaches the identical live-detection code path as
+  # the positional form (same mocked backend, same verdict).
+  got="$(PATH="$mock_dir:$PATH" bash "$DETECTOR" --repo someowner/somerepo 2>/dev/null)"
+  assert_equals "--repo <owner/repo> alias reaches the same live-detection path as the positional form" "hosted" "$got"
+
+  rm -rf "$mock_dir"
+else
+  assert_fail "API-error-yields-unknown regression test (detector missing)"
 fi
 echo
 
