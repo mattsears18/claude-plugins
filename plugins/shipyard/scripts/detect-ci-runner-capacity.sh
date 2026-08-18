@@ -19,13 +19,23 @@
 #
 # Usage — live detection (the normal path):
 #   bash detect-ci-runner-capacity.sh <owner/repo>
+#   bash detect-ci-runner-capacity.sh --repo <owner/repo>   (alias; #1454)
 #     -> prints one of, on stdout (single line):
 #          hosted
 #          self-hosted pool_total=<N> pool_idle=<M> queued=<Q>
 #          unknown
-#        diagnostics on stderr. ALWAYS exits 0 — this is an advisory read,
-#        never a hard failure. An unreadable signal degrades to `unknown`;
-#        it never blocks or fails the caller's setup flow.
+#        diagnostics on stderr. Exits 0 whenever the invocation itself was
+#        well-formed — this is an advisory read, never a hard failure once
+#        it's actually running: an unreadable signal (bad permissions, a
+#        nonexistent repo, a transient API error) degrades to `unknown`, it
+#        never blocks or fails the caller's setup flow. A malformed
+#        INVOCATION — a missing/unrecognized argument, or an <owner/repo>
+#        that doesn't have exactly one '/' — is a distinct failure: it exits
+#        64 (EX_USAGE) with a `usage:` message on stderr and prints nothing
+#        on stdout, rather than silently treating an unexpected token as the
+#        repo and reporting a plausible-looking verdict for it (issue
+#        #1454 — a caller that passed `run --repo owner/name` used to get
+#        `hosted` back for the nonexistent repo "run").
 #
 #   `hosted`       => no self-hosted runners are registered for this repo.
 #                     GitHub-hosted runners are elastic, not a fixed-pool
@@ -38,9 +48,19 @@
 #   `unknown`      => the runner-pool signal could not be read at all. The
 #                     most common cause is that the `gh` token lacks repo
 #                     ADMIN on `repos/{owner}/{repo}/actions/runners` (that
-#                     endpoint 404s/403s for anything less). Callers MUST NOT
-#                     clamp on `unknown` — an unreadable signal is not
-#                     evidence of a small pool, only evidence we couldn't look.
+#                     endpoint 404s/403s for anything less); a nonexistent
+#                     repo hits the same 404 path. Callers MUST NOT clamp on
+#                     `unknown` — an unreadable signal is not evidence of a
+#                     small pool, only evidence we couldn't look. `unknown`
+#                     is distinguished from `hosted` by checking BOTH `gh
+#                     api`'s own exit status AND that the response body
+#                     actually carries a `.runners` array — `gh api` writes
+#                     its JSON error envelope (e.g. `{"message":"Not
+#                     Found",...}`) to stdout on a non-2xx response, and jq's
+#                     `.runners | length` on a body with no such key
+#                     evaluates to 0 (`null | length` is 0), which used to be
+#                     indistinguishable from a genuine zero-runner read
+#                     (issue #1454).
 #
 # Usage — pure decision (hermetic, for tests and for callers that already
 # hold the three runner-count signals):
@@ -211,6 +231,23 @@ decide_resume() {
     'BEGIN { print (q > p * m) ? "held" : "resume" }'
 }
 
+# usage — print the full usage block to stderr and exit with the standard
+# EX_USAGE code (64, per sysexits.h and this script family's own convention
+# — see e.g. classify-backlog.sh, audit-schedule.sh). Every invocation-shape
+# error in the live-detection positional path below routes through here
+# (issue #1454) — previously only the empty-repo case printed usage, and
+# nothing rejected an unexpected leading token or extra positional, so a
+# mis-invocation like `detect-ci-runner-capacity.sh run --repo owner/name`
+# silently took "run" as the repo instead of erroring.
+usage() {
+  echo "usage: $0 <owner/repo>" >&2
+  echo "       $0 --repo <owner/repo>" >&2
+  echo "       $0 --decide <RUNNER_COUNT> <ONLINE_COUNT> <BUSY_COUNT>" >&2
+  echo "       $0 --decide-backpressure <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>" >&2
+  echo "       $0 --decide-resume <POOL_TOTAL> <QUEUED> <MULTIPLIER>" >&2
+  exit 64
+}
+
 main() {
   if [ "${1:-}" = "--decide" ]; then
     if [ "$#" -ne 4 ]; then
@@ -239,23 +276,86 @@ main() {
     exit 0
   fi
 
-  local repo="${1:-}"
-  if [ -z "$repo" ]; then
-    echo "usage: $0 <owner/repo>" >&2
-    echo "       $0 --decide <RUNNER_COUNT> <ONLINE_COUNT> <BUSY_COUNT>" >&2
-    echo "       $0 --decide-backpressure <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>" >&2
-    echo "       $0 --decide-resume <POOL_TOTAL> <QUEUED> <MULTIPLIER>" >&2
-    exit 1
+  # Live-detection positional path — the only unguarded shape before #1454.
+  # Reject (a) a missing repo, (b) an unrecognized leading flag-shaped token
+  # (anything starting with '-' that isn't one of the three modes above or
+  # the --repo alias), and (c) more positionals than a single <owner/repo>
+  # (or --repo's own arg) supplies. All route to `usage` (exit 64) rather
+  # than silently treating the first token as the repo.
+  local repo=""
+  case "${1:-}" in
+    "")
+      usage
+      ;;
+    --repo)
+      if [ "$#" -ne 2 ] || [ -z "${2:-}" ]; then
+        echo "detect-ci-runner-capacity: --repo requires exactly one <owner/repo> value" >&2
+        usage
+      fi
+      repo="$2"
+      ;;
+    -*)
+      echo "detect-ci-runner-capacity: unrecognized flag '$1'" >&2
+      usage
+      ;;
+    *)
+      if [ "$#" -ne 1 ]; then
+        echo "detect-ci-runner-capacity: unexpected extra argument(s) after '$1' -- did you mean --repo $1 ...?" >&2
+        usage
+      fi
+      repo="$1"
+      ;;
+  esac
+
+  # Validate the positional's SHAPE before ever using it — a bare token with
+  # no '/' (e.g. the 'run' in the #1454 repro), a leading/trailing slash, or
+  # more than one slash cannot be a real <owner/repo> and must never reach
+  # `gh api`.
+  case "$repo" in
+    */*/*|*/|/*)
+      echo "detect-ci-runner-capacity: '$repo' does not look like <owner/repo>" >&2
+      usage
+      ;;
+    *[!A-Za-z0-9._/-]*)
+      echo "detect-ci-runner-capacity: '$repo' contains characters not valid in a GitHub owner/repo" >&2
+      usage
+      ;;
+    */*)
+      : # exactly one slash, both sides non-empty, allowed charset -- OK
+      ;;
+    *)
+      echo "detect-ci-runner-capacity: '$repo' does not look like <owner/repo> (missing '/')" >&2
+      usage
+      ;;
+  esac
+
+  local runners_json runner_count online_count busy_count queued decision api_rc
+
+  # Requires repo ADMIN — fails closed for anything less. That's fine: this
+  # is an advisory read, and `unknown` is the correct, safe response to "I
+  # couldn't check." Capture the exit status explicitly (issue #1454 —
+  # this previously wasn't checked at all): `gh api` writes a well-formed
+  # JSON error envelope (e.g. `{"message":"Not Found",...}`) to STDOUT on a
+  # non-2xx response, so the pre-existing `[ -z "$runners_json" ]` empty-body
+  # check never caught it, and jq's `.runners | length` on that body
+  # silently evaluates to 0 (`null | length` is 0 in jq) -- indistinguishable
+  # from "a real, successful read that found zero self-hosted runners". A
+  # nonexistent repo and a genuinely-hosted repo both fell through to the
+  # same confident `hosted` verdict.
+  runners_json="$(gh api "repos/${repo}/actions/runners" 2>/dev/null)"
+  api_rc=$?
+  if [ "$api_rc" -ne 0 ] || [ -z "$runners_json" ]; then
+    echo "detect-ci-runner-capacity: could not read repos/${repo}/actions/runners (needs repo admin, the repo may not exist, or a transient API error) -- treating as unknown" >&2
+    printf 'unknown\n'
+    exit 0
   fi
 
-  local runners_json runner_count online_count busy_count queued decision
-
-  # Requires repo ADMIN — fails closed (empty body) for anything less. That's
-  # fine: this is an advisory read, and `unknown` is the correct, safe
-  # response to "I couldn't check."
-  runners_json="$(gh api "repos/${repo}/actions/runners" 2>/dev/null)"
-  if [ -z "$runners_json" ]; then
-    echo "detect-ci-runner-capacity: could not read repos/${repo}/actions/runners (needs repo admin, or a transient API error) -- treating as unknown" >&2
+  # Defense in depth alongside the exit-code check above: require the body
+  # to actually carry a `.runners` array before trusting anything parsed
+  # from it, so a future response shape that returns 0 with an unexpected
+  # body still can't masquerade as a successful zero-runner read.
+  if ! printf '%s' "$runners_json" | jq -e 'has("runners") and (.runners | type == "array")' >/dev/null 2>&1; then
+    echo "detect-ci-runner-capacity: repos/${repo}/actions/runners response had no '.runners' array (malformed or error body) -- treating as unknown" >&2
     printf 'unknown\n'
     exit 0
   fi

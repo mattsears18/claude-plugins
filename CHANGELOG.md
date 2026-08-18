@@ -4,6 +4,17 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.44.5 — 2026-08-18
+
+P2 (closes #1454). `detect-ci-runner-capacity.sh` (the CI-runner-capacity detector consumed by setup step 1.36's `$EFFECTIVE_CONCURRENCY` clamp, #1141/#1156) took a positional `<owner/repo>` with no validation on the live-detection path — every sibling `--decide*` mode already guarded its arity. A session filed this from a real mis-invocation: `detect-ci-runner-capacity.sh run --repo mattsears18/shipyard` (the `--repo`-flag style used by every neighbouring setup helper) silently took the literal token `"run"` as the repo, ignored `--repo` and its value entirely, and still printed a confident, well-formed `hosted` verdict at exit 0.
+
+- **Reject a malformed invocation instead of guessing.** An unrecognized leading flag, more than one positional, or a missing `<owner/repo>` now prints the usage block and exits 64 (`EX_USAGE`, matching this script family's convention) rather than silently treating the first token as the repo.
+- **Validate the `<owner/repo>` shape** before it ever reaches `gh api` — exactly one `/`, non-empty owner and repo-name segments, and only GitHub-valid characters. A bare token like `"run"` is now rejected at the argument-parsing stage.
+- **The actual bug, not just the invocation nit: distinguish "no self-hosted runners" from "could not query runners."** `gh api` writes a well-formed JSON error envelope (`{"message":"Not Found",...}`) to stdout on a non-2xx response and exits non-zero — the script never checked that exit status, and jq's `.runners | length` on a body with no `.runners` key silently evaluates to `0` (`null | length` is `0` in jq), indistinguishable from a genuine, successful zero-runner read. A nonexistent repo and a genuinely-hosted repo produced the identical `hosted` verdict. Fixed by checking `gh api`'s exit status AND requiring the response body to actually carry a `.runners` array before trusting anything parsed from it; either failure now degrades to `unknown`, the pre-existing safe-failure value callers already know never to clamp on.
+- **Optional `--repo <owner/repo>` alias added**, matching every neighbouring setup helper's invocation style (the inconsistency that produced the original mis-invocation) — the bare positional form keeps working unchanged; `setup/01-repo-recovery.md` step 1.36's own call site already uses it and needed no change.
+- `detect-ci-runner-capacity.test.sh` gains regression coverage for the exact repro (bogus leading token, extra positional, malformed shape, `--repo` with no value — all exit 64 with no network reached) plus a `gh`-stub-backed suite proving a 404-shaped error body, a 200 response with no `.runners` array, and a genuinely empty response all now correctly yield `unknown`, while a real empty `.runners` array and the `--repo` alias both still correctly yield `hosted`.
+- Verified: `detect-ci-runner-capacity.test.sh` (104 assertions) and the full local suite pass; `shellcheck` clean.
+
 ### 4.44.4 — 2026-08-18
 
 P2 (closes #1455). `setup/00e-pre-relocation-sweeps.md` named its three step-0.45 sweeps (`worktree-reap.sh reap-orphan-orchestrators` / `sweep-stale-agents` / `triage-orphan-branches`) by subcommand only, with no flags — the orchestrator had to guess each call's required flags from prose, and the three subcommands don't share a flag vocabulary (`triage-orphan-branches` alone also requires `--repo` and `--default-branch`), so a wrong guess cost one refused tool call per sweep, every session.
