@@ -36,6 +36,10 @@ INVESTIGATE_CANDIDATE_NUMBERS=$(echo "$fetched_issues_json" | jq --arg re "$SYMP
 
 The executable implementation is [`backlog-filter.sh`](../../../scripts/backlog-filter.sh)'s `is_investigate_signal` — that script is the single source of truth for the classification/routing decision, and the snippet above documents what it does rather than being a second copy to run.
 
+### Overlap with the spike-shape detector — this route wins ([#1475](https://github.com/mattsears18/shipyard/issues/1475))
+
+`investigate` is also a title prefix recognized by [`spike-shape-detect.sh`](../../../scripts/spike-shape-detect.sh), the dispatch-site detector that routes a candidate to `mode: spike`. **This route wins whenever it fires, and it wins structurally rather than by a tiebreak rule:** the divert above happens here, at step 4, and *removes* the issue from the survivor list, so a matched issue never reaches the `ready_issues` dispatch site where the spike check runs. An `investigate(x):`-titled issue that does reach that check is one this route already declined — its body isn't symptom-shaped and its author isn't bot-shaped — so it correctly routes to `mode: spike`. The two detectors read different fields on purpose: this one keys off **body and author** (a machine-filed crash report needing triage), the spike one off the **title** (a human framing an open question). Full reasoning in [`dispatch-rules.md`'s spike-shape detection block](../dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c).
+
 ## Config-gated routing (unchanged config surface, generalized behavior)
 
 ```bash
