@@ -116,9 +116,19 @@ decide() {
 # mattsears18/shipyard shape: [deletion, non_fast_forward, pull_request]).
 # Including `pull_request` here would over-gate that shape and falsely SKIP the
 # protective wait — reintroducing the exact bug this file exists to prevent.
+#
+# The returned value is a real COUNT on BOTH paths (issue #1488). It used to be
+# a count on the classic path but a bare boolean sentinel (`1`) on the ruleset
+# path, printed under one count-shaped `required_checks=` label in either case —
+# so this repo, whose `main` ruleset requires five contexts, reported
+# `required_checks=1`. `decide()` only ever compares this against 0, so the
+# verdict was always right; the DIAGNOSTIC under-reported, on a surface CLAUDE.md
+# designates as the single executable source of truth a human reads during an
+# incident. The `rules/branches/{branch}` response already carries every required
+# context by name, so the true count costs no extra API call.
 # ---------------------------------------------------------------------------
 read_required_checks() {
-  local repo="$1" branch="$2" count ruleset_gated
+  local repo="$1" branch="$2" count rules ruleset_count ruleset_gated
 
   count="$(gh api "repos/${repo}/branches/${branch}/protection/required_status_checks/contexts" \
     --jq 'length' 2>/dev/null)"
@@ -127,9 +137,34 @@ read_required_checks() {
   esac
 
   if [ "$count" -eq 0 ]; then
-    ruleset_gated="$(gh api "repos/${repo}/rules/branches/${branch}" \
-      --jq '[.[].type] | contains(["required_status_checks"]) | tostring' 2>/dev/null || echo false)"
-    [ "$ruleset_gated" = "true" ] && count=1
+    # ONE fetch of the branch's effective rules; both reads below run against
+    # this local copy, so the true-count read adds no second API call.
+    rules="$(gh api "repos/${repo}/rules/branches/${branch}" 2>/dev/null)"
+
+    # True count first. Same jq path detect-mutually-blocking-prs.sh's
+    # read_required_check_names() already uses against this endpoint. `unique`
+    # because two rulesets applying to the same branch can each require the
+    # same context, and a human reads this as "how many distinct checks gate
+    # main", not "how many rules mention one".
+    ruleset_count="$(printf '%s' "$rules" | jq '
+      [.[] | select(.type == "required_status_checks")
+           | .parameters.required_status_checks[]?.context] | unique | length' 2>/dev/null)"
+    case "$ruleset_count" in
+      ''|*[!0-9]*) ruleset_count=0 ;;
+    esac
+
+    if [ "$ruleset_count" -gt 0 ]; then
+      count="$ruleset_count"
+    else
+      # Boolean-sentinel floor, preserved verbatim from the pre-#1488 shape: a
+      # `required_status_checks` rule whose context list is absent, empty, or
+      # unreadable still resolves to 1. `decide()` only ever compares against 0,
+      # so keeping the floor leaves the gated/ungated verdict byte-for-byte
+      # unchanged — #1488 fixes the printed diagnostic, never the gate.
+      ruleset_gated="$(printf '%s' "$rules" \
+        | jq -r '[.[].type] | contains(["required_status_checks"]) | tostring' 2>/dev/null || echo false)"
+      [ "$ruleset_gated" = "true" ] && count=1
+    fi
   fi
 
   printf '%s' "$count"
