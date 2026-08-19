@@ -1403,6 +1403,133 @@ assert_contains "$schema1294" \
   'orchestrator_only_skills' \
   "schema defines scope.orchestrator_only_skills (#1294)"
 
+# (23d) Detector 1 narrowed — the blanket `.github/workflows/` defer was built
+#       on a false premise (issue #1481).
+#
+# #346 shipped Detector 1 as an UNCONDITIONAL match: any issue body containing
+# the literal fragment `.github/workflows/` was deferred whole, on the stated
+# ground that workers' hard rules "all forbid .github/workflows/
+# modifications". That premise is false — the three rules it cited are (a) a
+# suggested-fix scope-creep guard, (b) an untrusted-comment out-of-scope gate,
+# and (c) an anti-CI-gaming rule conditioned on "to make a check pass". A whole
+# worker mode (fix-main-ci) edits workflow files routinely, and #812/#818's
+# workflow-scope machinery only exists because workers DO open workflow-touching
+# PRs.
+#
+# Field evidence (mattsears18/lightwork session 8079ffb9-a428-4906-9619-
+# 14944e0881c3, 2026-08-19): 6 of 19 dispatchable issues matched the string
+# test; the operator overrode the detector and 8 of 8 workflow-touching issues
+# shipped and merged, with zero worker hard-rule bails and zero classifier
+# denials on workflow grounds.
+#
+# The fix is #1481's option 3 — a four-way framing test copying Detector 2's
+# deliverable-vs-mention guard shape (#591) but INVERTING its in-doubt tiebreak.
+# Options 1 (consult the step-1.35 workflow-scope signal) and 2 (a
+# scope.workflow_edits_allowed knob defaulting false) were declined for reasons
+# the RATIONALE records.
+#
+# This block pins BOTH DIRECTIONS with the issue's own repro shapes as
+# fixtures, plus the removal of the false-premise sentence so it cannot regress.
+setup_path1481="$setup_path"   # concat of router + setup/ sub-files (#611)
+rationale_path1481="$rationale_path"
+
+# --- Fixtures: the two repro shapes from #1481 -------------------------------
+# A. The deliverable shape (lightwork #4302 / #4307). Must NOT fire.
+FIXTURE_DELIVERABLE_1481='fix(ci): rewrite the on: triggers across the six workflow files
+
+## Acceptance criteria
+- Every file under .github/workflows/ uses the same on: pull_request shape.
+- Both .github/workflows/metadata-push-ios.yml and metadata-push-android.yml are updated.'
+
+# B. The incidental scope-creep shape (issue-work.md step 2 guard). Must fire.
+FIXTURE_INCIDENTAL_1481='fix(api): null-deref in the session refresh handler
+
+## Suggested fix
+Guard the null in src/session.ts, and while you are in there add a new
+.github/workflows/lint.yml job so this class of bug gets caught in CI.'
+
+# Both fixtures satisfy the ENTRY condition — i.e. the pre-#1481 unconditional
+# match would have deferred both. This is what makes them a both-direction pair.
+for fixture_var_1481 in FIXTURE_DELIVERABLE_1481 FIXTURE_INCIDENTAL_1481; do
+  if printf '%s' "${!fixture_var_1481}" | grep -qF '.github/workflows/'; then
+    pass=$((pass+1))
+    printf '  %sPASS%s  #1481 %s satisfies Detector 1 entry condition (pre-#1481 match would have fired)\n' \
+      "$GREEN" "$RESET" "$fixture_var_1481"
+  else
+    fail=$((fail+1))
+    printf '  %sFAIL%s  #1481 %s does not contain .github/workflows/ — it is not a valid Detector 1 fixture\n' \
+      "$RED" "$RESET" "$fixture_var_1481"
+  fi
+done
+
+# Direction A (must NOT fire): the deliverable fixture carries neither firing
+# case's mechanical signal — no CI-gating purpose (case 1), no suggested-fix
+# scope-creep framing (case 2).
+if printf '%s' "$FIXTURE_DELIVERABLE_1481" \
+    | grep -qiE 'suggested (fix|approach)|make the check pass|skip the|disable the|bypass|relax the gate'; then
+  fail=$((fail+1))
+  printf '  %sFAIL%s  #1481 deliverable fixture matches a Detector 1 firing signal — it must not fire\n' "$RED" "$RESET"
+else
+  pass=$((pass+1))
+  printf '  %sPASS%s  #1481 deliverable fixture matches no Detector 1 firing signal (must not fire)\n' "$GREEN" "$RESET"
+fi
+
+# Direction B (must still fire): the incidental fixture carries case 2's
+# suggested-fix scope-creep framing.
+if printf '%s' "$FIXTURE_INCIDENTAL_1481" | grep -qiE 'suggested (fix|approach)'; then
+  pass=$((pass+1))
+  printf '  %sPASS%s  #1481 incidental fixture matches Detector 1 case-2 scope-creep framing (must still fire)\n' "$GREEN" "$RESET"
+else
+  fail=$((fail+1))
+  printf '  %sFAIL%s  #1481 incidental fixture no longer matches case-2 scope-creep framing\n' "$RED" "$RESET"
+fi
+
+# --- Spec surface: the four-way framing test ---------------------------------
+assert_contains "$setup_path1481" \
+  'CI-gating framing (FIRE)' \
+  "setup.md Detector 1 documents case 1 CI-gating framing as FIRE (#1481)"
+assert_contains "$setup_path1481" \
+  'Incidental scope-creep framing (FIRE)' \
+  "setup.md Detector 1 documents case 2 incidental scope-creep as FIRE (#1481)"
+assert_contains "$setup_path1481" \
+  'Deliverable framing (DO NOT FIRE)' \
+  "setup.md Detector 1 documents case 3 deliverable framing as DO NOT FIRE (#1481)"
+assert_contains "$setup_path1481" \
+  'Pure meta-mention (DO NOT FIRE)' \
+  "setup.md Detector 1 documents case 4 pure meta-mention as DO NOT FIRE (#1481)"
+assert_contains "$setup_path1481" \
+  'entry condition, not its firing condition' \
+  "setup.md Detector 1 separates entry condition from firing condition (#1481)"
+assert_contains "$setup_path1481" \
+  'When in doubt, do NOT fire' \
+  "setup.md Detector 1 inverts Detector 2's in-doubt asymmetry (#1481)"
+
+# --- Spec surface: the two explicit non-reasons ------------------------------
+assert_contains "$setup_path1481" \
+  'it is the wrong lever, not a missing one' \
+  "setup.md Detector 1 declines option 1 and forbids adding a workflow-scope probe (#1481)"
+assert_contains "$setup_path1481" \
+  'The harness auto-mode classifier' \
+  "setup.md Detector 1 names the classifier as an explicit non-reason to fire (#1481)"
+
+# --- The false premise must be gone and must not come back -------------------
+assert_not_contains "$setup_path1481" \
+  'a worker dispatched against such an issue produces a branch' \
+  "setup.md no longer claims a workflow-touching worker cannot open a PR (#1481)"
+
+assert_contains "$setup_path1481" \
+  'issues/1481' \
+  "setup.md cites issue #1481 as the source of the Detector 1 narrowing"
+assert_contains "$rationale_path1481" \
+  'Detector 1 narrowed' \
+  "RATIONALE has a Detector 1 narrowing section (#1481)"
+assert_contains "$rationale_path1481" \
+  'issues/1481' \
+  "RATIONALE cites issue #1481 as the source of the Detector 1 narrowing"
+assert_contains "$rationale_path1481" \
+  '8 of 8 workflow-touching issues shipped and merged' \
+  "RATIONALE records the measured field evidence behind the narrowing (#1481)"
+
 # (24) Batch-dispatch version pre-allocation via a session-local version_cursor
 #      (issue #437).
 #
