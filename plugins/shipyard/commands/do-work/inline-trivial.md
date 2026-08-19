@@ -1,5 +1,9 @@
 # /shipyard:do-work — Inline trivial issues (skip worker dispatch)
 
+<!-- spec-skill-reference-scan: allow shipyard:no-inline shipyard:inline-eligible -->
+<!-- Both are GitHub LABEL names in the `shipyard:` label namespace, not plugin
+     assets — human overrides for the fast path documented below (#1468). -->
+
 A dispatch-time fast path that lets the orchestrator handle very small issues **inline** — open the file, make the edit, commit, push, create the PR, arm auto-merge — without paying the ~13k-token cost of dispatching a full `shipyard:issue-worker` agent. Reads from [`shipyard.config.json`](../../../../CLAUDE.md#configuration-shipyardconfigjson--layered-overrides) under the `inline_trivial` key; default OFF.
 
 Loaded on demand from [`steady-state.md`](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c)'s step 3a (the `ready_issues` branch's eligibility check). The thin entry [`commands/do-work.md`](../do-work.md) stays in context across every phase for the hot [orchestrator-state struct list](../do-work.md#orchestrator-state); this file owns only the inline-eligibility heuristic and the inline-execution mechanics.

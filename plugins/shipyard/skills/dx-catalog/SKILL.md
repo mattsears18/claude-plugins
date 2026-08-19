@@ -321,6 +321,7 @@ grep -iE '^#+ +(install|quickstart|getting started|setup|usage)' README.md READM
 
 **Detect:**
 
+<!-- spec-script-reference-scan: allow -->
 ```bash
 ls CONTRIBUTING.md CONTRIBUTING.rst docs/CONTRIBUTING.md .github/CONTRIBUTING.md 2>/dev/null
 ```
@@ -378,6 +379,7 @@ has_example=$(ls .env.example .env.sample .env.template 2>/dev/null)
 
 **Detect:**
 
+<!-- spec-script-reference-scan: allow -->
 ```bash
 ls .github/PULL_REQUEST_TEMPLATE.md .github/pull_request_template.md \
    .github/PULL_REQUEST_TEMPLATE/*.md 2>/dev/null
@@ -700,6 +702,7 @@ fi
 
 **Detect:**
 
+<!-- spec-script-reference-scan: allow -->
 ```bash
 ls CLAUDE.md .claude/CLAUDE.md 2>/dev/null
 ```

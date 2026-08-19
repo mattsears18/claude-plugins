@@ -1,5 +1,9 @@
 # /shipyard:do-work — Dispatch rules
 
+<!-- spec-skill-reference-scan: allow shipyard:no-inline -->
+<!-- A GitHub LABEL name in the `shipyard:` label namespace, not a plugin asset
+     — the inline-trivial fast path's human override (#1468). -->
+
 The dispatch decision tree consulted by the [steady-state loop](./steady-state.md)'s [step C](./steady-state.md#c-dispatch-a-replacement-if-work-remains--mandatory-action) and the [setup phase](./setup.md)'s [step 7 initial pool fill](./setup/07-pool-fill.md#7-initial-pool-fill). This is a **reference block** — consulted when filling a slot, not executed top-to-bottom every turn — so it lives in its own file to keep the steady-state hot path under the single-file `Read` limit ([#616](https://github.com/mattsears18/shipyard/issues/616), part of the umbrella split [#613](https://github.com/mattsears18/shipyard/issues/613); mirrors the [setup.md thin-router split #611](./setup.md)). The thin entry [`commands/do-work.md`](../do-work.md) owns the hot [orchestrator-state struct list](../do-work.md#orchestrator-state) (the cold long-tail lives in [`orchestrator-state-reference.md`](./orchestrator-state-reference.md)); this file owns the per-mode dispatch routing (`subagent_type` + model), the collision-tier rules, the prompt templates, the author-trust dispatch gate, and the next-available-version computation. Sidebar: [`dont.md`](./dont.md).
 
 ## Dispatch rules (used by step 7 and step C)
