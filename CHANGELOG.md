@@ -4,6 +4,21 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.47.0 — 2026-08-18
+
+**Harness convergence — Tier 2: worktree reaping.** Claude Code runs its own periodic sweep that removes subagent and background-session worktrees past `cleanupPeriodDays`, skips any still holding work (changed/untracked files, unpushed commits), holds a `git worktree lock` for each running agent, and — the decisive guarantee — **releases the lock of a session whose process has exited** (v2.1.210). That last one is precisely what shipyard's PID-liveness and `/proc`-ancestry machinery existed to work around. Net **−1,927 lines** across 18 files.
+
+- **Four sweeping subcommands deleted** — `sweep-stale-agents`, `reap-orphan-orchestrators`, `reap-session-worktrees`, `sweep-tombstones`. `worktree-reap.sh` drops 4,312 → 3,448 lines; its suite 3,514 → 2,584.
+- **Two orchestrator setup steps deleted** — step 1.6.5 (orphan orchestrator-worktree reap, and its whole `01d-orphan-orchestrator-worktree-reap.md` file) and step 3b (the scheduled stale agent-worktree reap). `00e-pre-relocation-sweeps.md` is rewritten around the one sweep that remains: the orphan `do-work/*` **branch** triage, which the harness never touches because its sweep removes directories, never refs. `cleanup-summary.md`'s step 3.0 targeted pass goes the same way; its generic sweep (step 3.1) is retained for prompt same-session reclamation, since a shipped worker commits and so escapes the harness's no-changes auto-clean.
+
+**Four surfaces were re-examined mid-execution and deliberately KEPT.** The reversals are the more useful record:
+
+- **`reap-stale` + `classify-all` (651 lines) — cut, then restored.** [`disk-space-guard.md`](plugins/shipyard/commands/do-work/disk-space-guard.md) reuses `reap-stale` as its **mid-session** reclamation valve, fired under live disk pressure. Deleting it would have left the guard able to detect a full disk but not reclaim anything until the harness's *periodic* sweep eventually ran. The scheduled session-start pass (step 3b) is gone; the on-demand mechanism is not. Caught by a dangling-subcommand scan, not by the test suite — no suite asserts that a subcommand a spec invokes still exists.
+- **`classify-lock` + its PID/ancestry helpers (436 lines).** The *gate* preventing removal of a worktree a live peer owns. Every other cut here makes shipyard **stop removing things** (worst case: worktrees linger until the harness sweep). Removing this gate makes it remove things **less carefully** — worst case is destroyed work. Different risk class, so it earns the ablation the audit prescribes rather than a docs-reading.
+- **`crash-recovery-reap.sh` (1,090 with its test).** Header marks it load-bearing; its invariant is "never reap before inspecting," because a worker can stop mid-flight with a correct, uncommitted diff on disk. It *recovers* work rather than merely removing worktrees.
+- **`session-end-reap.sh` + its SessionEnd hook (277).** Its v1 scope is stale `worktree-agent-*` **branch refs**, not directories — zero overlap with the harness sweep, which never touches git refs. The audit's first draft was simply wrong about what this script does, and now says so.
+
+The audit doc records all four reversals alongside the rule they produced: **cut the machinery that stops doing something; keep the machinery that stops something bad from happening, until you have evidence.**
 ### 4.46.0 — 2026-08-18
 
 Closes the two extensions 4.45.2 deliberately left out of its slice, completing the executable-by-proxy reference family (closes #1468). A spec here is run, not just read — an agent reads a fenced block and executes it verbatim, and loads a skill by the name a spec writes down — so a dangling *fragment* path and an unregistered *skill name* fail at runtime exactly the way the dangling script path in 4.45.0 did. Each class got its baseline measured on the live corpus **before** its floor was wired, per the issue, rather than guessed at.

@@ -101,17 +101,22 @@ Replaced by: `isolation: worktree` added to all 8 worker/verifier agent definiti
 
 **Finding turned up while executing the cut:** `enforce-worktree-isolation.sh` was wired in `hooks.json` under the **`Agent` matcher only**. Roughly half the script — its `Workflow`-substrate branch, which blocked a work unit carrying no `worktreePath` — could therefore never fire in production; it was exercised solely by `legacy-agent-dispatch-retired-791.test.sh` calling the script directly. That is a worked example of the failure mode this audit is about: a guard with its own test suite, cited across several spec files as a live guarantee, that the harness never actually invoked. **A test that calls a hook directly proves nothing about whether the hook is wired.**
 
-### Tier 2 — worktree reaping (next PR; 115 references need rewiring)
+### Tier 2 — worktree reaping (shipped 4.46.0)
+
+Four of the surfaces the first draft of this table marked **CUT** were re-examined during execution and **kept** — one of them only after the cut had already been made and a dangling-subcommand scan caught the dependency. Recording both the verdicts and the reversals, because the reversals are the more useful record:
 
 | Surface | Lines | Verdict |
 |---|---|---|
-| `scripts/worktree-reap.sh` | 4,311 | **CUT** → replace with a ~20-line merged-branch reaper |
-| `scripts/tests/worktree-reap.test.sh` | 3,513 | **CUT** |
-| `scripts/crash-recovery-reap.sh` + test | 1,090 | **CUT** — harness sweep releases dead-session locks (§1.4) |
-| `scripts/{pre-dispatch,drain-pre-dispatch,shipped-immediate}-branch-reap.sh` + tests | 1,435 | **THIN** — branch deletion is still shipyard's; worktree removal is not |
-| `hooks/reap-on-session-end.sh` + test | 105 | **CUT** — periodic sweep (§1.4) |
-| `setup/01d-orphan-orchestrator-worktree-reap.md` | 13.1K | **CUT** |
-| `commands/do-work/disk-space-guard.md` | — | **THIN** — sweep bounds accumulation |
+| `worktree-reap.sh` sweeping subcommands — `sweep-stale-agents`, `reap-orphan-orchestrators`, `reap-session-worktrees`, `sweep-tombstones` | 662 | **CUT** — the harness's periodic sweep removes subagent and background-session worktrees and releases the locks of exited sessions (§1.4) |
+| `reap-stale` + `classify-all` | 651 | **CUT, then RESTORED.** `disk-space-guard.md` reuses `reap-stale` as its *mid-session* reclamation valve under live disk pressure. Deleting it leaves the guard able to detect a full disk but not reclaim. The *scheduled* session-start pass (step 3b) is what the harness supersedes; the on-demand mechanism is not. **Found by a dangling-subcommand scan, not by the 164-suite run** — the same blind spot as [#1467](https://github.com/mattsears18/shipyard/issues/1467). |
+| their test sections in `worktree-reap.test.sh` | 930 | **CUT** |
+| setup steps 1.6.5 + 3b, `01d-orphan-orchestrator-worktree-reap.md`, `cleanup-summary.md` step 3.0 | ~200 | **CUT** — the orchestrator no longer runs sweeps the platform runs for it |
+| `classify-lock` + its PID/ancestry helpers | 436 | **KEPT — needs ablation, not argument.** This is the *gate* that prevents removing a worktree a live peer owns. Every other cut here makes shipyard *stop removing things* (worst case: worktrees linger a little longer until the harness sweep). Removing this gate would make shipyard remove things *less carefully* — worst case is destroyed work. Different risk class, different evidence bar. |
+| `crash-recovery-reap.sh` + test | 1,090 | **KEPT.** Its header marks it load-bearing crash recovery, and its invariant is "never reap before inspecting" — a worker can stop mid-flight with a correct, uncommitted diff on disk. It *recovers* work, not merely removes worktrees; the harness sweep skips such worktrees but does not surface them. |
+| `session-end-reap.sh` + `hooks/reap-on-session-end.sh` | 277 | **KEPT.** v1 scope is stale `worktree-agent-*` **branch refs**, not worktree directories. The harness sweep removes directories and never touches git refs, so there is no overlap at all — the first draft of this table was simply wrong about what this script does. |
+| `{pre-dispatch,drain-pre-dispatch,shipped-immediate}-branch-reap.sh` | 947 | **KEPT** — branch deletion, plus they consume `classify-lock` |
+
+**The line that actually matters, generalized:** *cut the machinery that stops doing something; keep the machinery that stops something bad from happening, until you have evidence.* Three of the four keeps above are on that side of the line.
 
 ### Tier 3 — model-capability scar tissue (needs ablation evidence, not argument)
 

@@ -1119,9 +1119,9 @@ assert_contains "$setup_path" \
 # to carry the find-based loop (and the #335 citation) inline, in TWO
 # copies — the bg-cleanup-group loop and the standalone "3b. Reap stale
 # agent worktrees" documentation block. #1355 replaced BOTH inline copies
-# with single-call invocations of `worktree-reap.sh`'s `sweep-stale-agents`
-# / `reap-orphan-orchestrators` subcommands (see 01c-label-recovery-refine.md
-# / 01d-orphan-orchestrator-worktree-reap.md), so the loop text — and the
+# with single-call invocations of `worktree-reap.sh` subcommands, and the
+# harness-convergence Tier-2 cut then deleted those subcommands outright,
+# so the loop text — and the
 # #335 citation that explained it — legitimately no longer appears in
 # setup_path. The zsh-nomatch-safety PROPERTY moved with the loop into
 # `worktree-reap.sh`'s internals; asserting for it in setup_path after the
@@ -1130,10 +1130,15 @@ assert_contains "$setup_path" \
 # bare glob) still backs every agent-* enumeration inside worktree-reap.sh,
 # the #335 citation is still attached to it there, and setup_path itself
 # never regresses back to inlining the bare-glob hazard.
-worktree_reap_sh_path="$repo_root/plugins/shipyard/scripts/worktree-reap.sh"
-assert_contains "$worktree_reap_sh_path" \
-  '#335' \
-  "worktree-reap.sh still cites issue #335 next to its find-based (not bare-glob) agent-* enumeration"
+# The agent-* enumeration itself is GONE as of the harness-convergence Tier-2
+# cut: every sweeping subcommand that walked `.git/worktrees/agent-*`
+# (classify-all / reap-stale / sweep-stale-agents / reap-orphan-orchestrators /
+# reap-session-worktrees) was deleted, because Claude Code's own periodic sweep
+# now removes subagent and background-session worktrees and releases the locks
+# of exited sessions. With no enumeration left anywhere in worktree-reap.sh,
+# there is no zsh-nomatch hazard to guard THERE — so the textual assertions on
+# that file are retired. The setup.md guard below survives and still matters:
+# it stops the bare-glob loop from being re-inlined into the spec.
 # The bare-glob form must never reappear in setup.md's own text — the
 # regression guard against re-introducing the zsh hazard inline, even
 # though the loop itself now lives one layer down in worktree-reap.sh.
@@ -1148,11 +1153,6 @@ assert_not_contains "$setup_path" \
 # empty output" cases for the FUNCTIONAL half of this same property —
 # this assertion is the textual half (the idiom itself never regresses to
 # a bare glob).
-assert_count_at_least_across \
-  "-maxdepth 1 -type d -name 'agent-*'" \
-  2 \
-  "worktree-reap.sh's hardened find-based agent-* enumeration appears at least twice (#335)" \
-  "$worktree_reap_sh_path"
 
 # (22) Auto-merge outcome categorization handles silent direct-merge case
 #      (issue #340).
