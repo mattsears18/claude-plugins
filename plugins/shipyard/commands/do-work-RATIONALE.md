@@ -1841,4 +1841,55 @@ These are not curiosities. They are the evidence that the guard is a **judgment 
 
 **What ships instead of a gate.** The thing that was missing was never a scanner — it was a *correct, stated rule an author can apply*, plus removal of the incorrect one already in the tree. Three prose sites asserted the disproven network-substitution model and are corrected in this same change: [`compound-block-scan.sh`](../scripts/compound-block-scan.sh)'s header, [`dont.md`'s post-relocation section](./do-work/dont.md), and [`setup/04-backlog-divert.md`'s step-4 callout](./do-work/setup/04-backlog-divert.md). The authoring rule they now carry — **never let an unresolvable expansion be the whole word; give it a literal suffix, or substitute the literal outright** — is strictly more actionable than "substitute every value as a literal," because it explains *why* the stash-read pattern used throughout the spec is safe and *which* uses of it are not.
 
-**What was NOT audited to conclusion, stated so it isn't assumed.** Whether any *live* post-relocation, run-verbatim block in the corpus is currently refused under the measured predicate was **sampled, not exhaustively audited**. The sampled `inline-trivial.md` findings turned out to be `if`/`case` constructs already forbidden by `dont.md`'s existing rule, so no new live refusal was confirmed — but absence of evidence across a 152-finding prototype output is not evidence of absence. That exhaustive audit is filed as a follow-up rather than folded into this change.
+**What was NOT audited to conclusion, stated so it isn't assumed.** Whether any *live* post-relocation, run-verbatim block in the corpus is currently refused under the measured predicate was **sampled, not exhaustively audited**. The sampled `inline-trivial.md` findings turned out to be `if`/`case` constructs already forbidden by `dont.md`'s existing rule, so no new live refusal was confirmed — but absence of evidence across a 152-finding prototype output is not evidence of absence. That exhaustive audit is filed as a follow-up rather than folded into this change. **That follow-up is [#1476](https://github.com/mattsears18/shipyard/issues/1476) and it ran — see the next section. Its headline result contradicts the sampled conclusion: bucket 4 was NOT empty.**
+
+### The #1476 exhaustive audit: bucket 4 was not empty (33 live refusals, 24 fixed)
+
+Issue [#1476](https://github.com/mattsears18/shipyard/issues/1476) is the exhaustive pass the section above deferred. It classified **every one of the 152 findings**, not a sample, into the four buckets the issue defines. This section records the method, the tally, and the residual — so this is never re-audited from scratch.
+
+**Reproducing the 152 first.** The prototype had to be reconstructed before it could be audited, and the reconstruction matters because it bounds what the number means. #1474's prototype is exactly: inside a ```` ```bash ```` fence, split each line on **whitespace**, and flag a token whose entire content is `"$VAR"`, `$VAR`, or `"$(cmd)"`. That definition reproduces the per-file split byte-for-byte (36 / 0 / 21 / 18 / 3 / 74 = 152) at `df5b0b0`, the tree #1474 measured against, and **the identical 152 at the tree this audit ran against** — the two intervening merges ([#1477](https://github.com/mattsears18/shipyard/issues/1477) and [#1478](https://github.com/mattsears18/shipyard/issues/1478), the latter editing `dispatch-rules.md` directly) changed no counted finding. The issue's table was re-measured, not assumed.
+
+**The classification rule, stated so the tally is reproducible.** Applied per *finding*, in this precedence order:
+
+1. **Pre-relocation** — the fenced block runs before setup step 0.5's `EnterWorktree`, so the guard is not active.
+2. **Illustrative** — the block is never executed verbatim as one `Bash` call: it is shell-function-body pseudo-code calling undefined helpers, or the surrounding prose explicitly instructs the orchestrator to *substitute the literal values* before issuing it.
+3. **Already covered** — the finding sits inside a `for`/`while`/`if`/`case` construct or a pipeline. `dont.md`'s existing post-relocation rule already forbids that construct, and its mandated remedy (decompose in place, or extract to a script) rewrites the whole construct, this word included. No *new* action.
+4. **Genuine live refusal** — a plain, independent statement in a post-relocation block that runs verbatim, carrying a bare whole-word unresolvable expansion.
+
+The bucket-3 boundary is the one judgment call worth naming: a finding in an already-forbidden construct's **body** is bucket 3, not bucket 4, because the construct's own documented fix necessarily rewrites it. A finding in a plain statement that merely *sits in the same block as* such a construct is bucket 4 — decomposing the construct leaves it untouched. `setup/00-config-worktree.md`'s post-relocation staleness assertion is the worked example: its `git fetch origin "$DEFAULT_BRANCH" --quiet` was bucket 4 while the `if [ -n "$ORCH_WT_BEHIND" ] …` guard three lines down was bucket 3.
+
+**The tally.**
+
+| Bucket | Findings | |
+|---|---:|---|
+| 1 — pre-relocation | 29 | all in `setup/00-config-worktree.md` (steps 0.3 / 0.4 / 0.5-pre), including both `<!-- compound-block-scan: allow -->`-marked blocks |
+| 2 — illustrative pseudo-code | 21 | `steady-state.md`'s #530 phantom-notification skeleton, and the four #1274 verify-the-reap blocks whose prose already mandates literal substitution |
+| 3 — already covered by `dont.md` | 69 | inside a `for`/`while`/`if`/`case` construct or a pipeline |
+| 4 — **genuine live refusal** | **33** | plain post-relocation statements, run verbatim |
+| **Total** | **152** | |
+
+Per file: `steady-state.md` 0/16/42/16, `setup/00-config-worktree.md` 29/0/4/3, `dispatch-rules.md` 0/5/7/9, `drain.md` 0/0/13/5, `inline-trivial.md` 0/0/3/0, `setup/04-backlog-divert.md` 0/0/0/0.
+
+**24 of the 33 are fixed in this change**, by the measured-correct spelling — substituting the literal, in the `<placeholder>` convention the same files already use for `<owner/repo>` / `<session-id>` / `<headRefName>` / `<default-branch>`:
+
+- `setup/00-config-worktree.md` (3) — the reuse-an-existing-worktree refresh (which, unlike its pre-`EnterWorktree` sibling four lines up, runs *after* isolation) and the post-relocation staleness assertion.
+- `dispatch-rules.md` (9) — `pre-dispatch-branch-reap.sh --head-ref`, `next-available-version.sh compute`'s three coordination arguments, all three `Workflow`-substrate `git worktree add` calls, the denial-path `git worktree remove`, and `session-state.sh record-denial --session-id`.
+- `drain.md` (5) — `drain-pre-dispatch-branch-reap.sh --head-ref` and `resolve-manifest-only-dirty.sh resolve`'s four arguments.
+- `steady-state.md` (7) — both `inspect-unpushed` calls, `session-state.sh record-stall`'s three, the A.0.5 `harness_status` guard, and the CI-cheap-path `--match` call (split into its own plain command).
+
+**A second, independent defect the same audit surfaced, worth recording because it makes the fix unambiguously correct rather than merely guard-compliant.** Almost every bucket-4 finding referenced a shell variable assigned in a **different** `Bash` tool call — `$head_ref` from the failed-PR scan, `$vc_manifest` from the config-read block, `$worktree_path` from the reap result. Shell variables do not survive between `Bash` tool calls ([#354](https://github.com/mattsears18/shipyard/issues/354), [#322](https://github.com/mattsears18/shipyard/issues/322)), so those words were **already empty at runtime**, independent of the guard. Substituting the literal fixes the refusal and the empty-argument bug in the same edit; there is no version of these call sites where reading the variable was going to work.
+
+**The 9 residual bucket-4 findings, named precisely.** All need *decomposition*, not substitution — a different edit class, and all in load-bearing reconcile paths, so they are deliberately not rushed into this change:
+
+- `steady-state.md` A.0 / A.1 session-id derive preamble, three copies (6 findings) — `--repo-root "$REPO_ROOT"` plus the `[ -z "$SESSION_ID" ] && SESSION_ID=$(cat …)` fallback chain. Fixing it means splitting the two-path derive into separate plain calls with a prose branch, then threading the resolved literal through every downstream `--session-id` use in the same blocks.
+- `steady-state.md` step-B reap `[ -z "$STABLE_DIR" ] && STABLE_DIR=$(awk … <(…))` (1 finding) — the same two-path-fallback shape.
+- `drain.md` and `steady-state.md`'s `backlog-filter.sh summary --me "$ME_LOGIN"` (2 findings) — this is `dont.md`'s own worked REFUSED example, but fixing only `--me` leaves the block still refused: the same command's `<<< "$FRESH_FETCH_JSON"` herestring operand is a bare whole word too (and is invisible to the prototype, see below), so the two must be fixed together.
+
+**Two structural blind spots in #1474's prototype, quantified.** The 152 is a **floor, not a ceiling** — whitespace tokenization cannot see two whole-word expansion classes the measured rule covers:
+
+- **Trailing punctuation glued onto the token** — `--default-branch "$DEFAULT_BRANCH")` at the end of an assignment RHS tokenizes as `"$DEFAULT_BRANCH")`, which matches nothing. **26 additional candidates** across the six files.
+- **Modifier and array expansions** — `"${STABLE_DIR:-/}"`, `"${RESUMED_PR_ARG[@]}"`, `"${slot_kind:-unknown}"`. Whole words, single unresolvable expansions, never matched by the `"$VAR"` pattern. **15 additional candidates**.
+
+Neither class is inside #1476's scope (which is the 152), and neither is confirmed refused — the modifier case in particular has never been measured, and `dont.md`'s own caution against extrapolating an unmeasured boundary applies with full force. **Do not fix them on the strength of this paragraph.** They are recorded here so the next reader knows the 152 was never the whole corpus.
+
+**What this audit does NOT change: the build-nothing decision stands.** Nothing found here reopens the scanner question. If anything it strengthens the five-point reasoning above — the audit's own reproduction of the prototype has two structural blind spots, needed a hand-maintained pre-relocation block list, and needed per-finding judgment about construct membership. Every one of those is exactly the annotation burden point 3 predicted. Per #1476's own instruction, re-proposing the gate requires re-running #1474's experiment first.

@@ -246,8 +246,10 @@ Both failure modes leave the worktree path unreusable for the remainder of the s
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 inspect_out=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" inspect-unpushed \
-  --worktree-path "$worktree_path" --default-branch "$DEFAULT_BRANCH")
+  --worktree-path "<worktree_path>" --default-branch "<default-branch>")
 ```
+
+**Bracketed values throughout this file are substituted literals, never `"$var"` reads** — a bare whole-word expansion is refused post-relocation ([`dont.md`](./dont.md), [#1476](https://github.com/mattsears18/shipyard/issues/1476)).
 
 Parse line 1 of `$inspect_out` (`ahead_count=<N> dirty_count=<N> verdict=<clean|resume-worthy>`) for `ahead_count` and `dirty_count`:
 
@@ -262,7 +264,7 @@ Parse line 1 of `$inspect_out` (`ahead_count=<N> dirty_count=<N> verdict=<clean|
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    inspect_out=$("$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" inspect-unpushed \
-     --worktree-path "$worktree_path" --default-branch "$DEFAULT_BRANCH" --fetch)
+     --worktree-path "<worktree_path>" --default-branch "<default-branch>" --fetch)
    # When version_coordination is enabled, also read the manifest's current
    # on-disk version so the resume message states it rather than guessing.
    gh pr list --repo <owner/repo> --state open --head "do-work/issue-<N>" \
@@ -425,7 +427,7 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     # path's own step 4, since a resume returns early and never reaches
     # this block. Distinguish trigger and outcome:
     stalled_trigger="non-terminal-return"
-    [ "$harness_status" = "failed" ] && stalled_trigger="harness-failed"
+    [ "<harness_status>" = "failed" ] && stalled_trigger="harness-failed"
     if [ -n "${recovered_pr:-}" ]; then
       stalled_outcome="handed-back"
     else
@@ -445,9 +447,9 @@ Parse `crash_result` — either `terminal=true` (clean terminal return; nothing 
     RESUMED_PR_ARG=()
     [ -n "${recovered_pr:-}" ] && RESUMED_PR_ARG=(--resumed-pr "$recovered_pr")
     bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-stall \
-      --session-id "$session_id" --expected-repo "<owner/repo>" \
+      --session-id "<session-id>" --expected-repo "<owner/repo>" \
       --target "#${slot_issue:-unknown}" --mode "${slot_kind:-unknown}" \
-      --trigger "$stalled_trigger" --outcome "$stalled_outcome" \
+      --trigger "<stalled_trigger>" --outcome "<stalled_outcome>" \
       "${RESUMED_PR_ARG[@]}" \
       2>/tmp/do-work-record-stall-err.log \
       || { printf '[session-state] record-stall denied or failed: '; cat /tmp/do-work-record-stall-err.log; session_state_degraded_since="${session_state_degraded_since:-$DEGRADED_TS}"; }
@@ -1236,14 +1238,15 @@ export CLAUDE_PLUGIN_ROOT
 cheap_globs=$("$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" read --session-id "<session-id>" --path ".ci_capacity.cheap_ci_globs" 2>/dev/null)
 
 # For each candidate <N> in ready_issues, in existing priority order:
-candidate_text="<issue title>\n<issue body>"
-candidate_paths=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --extract-paths "$candidate_text")
-verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --match "$candidate_paths" "${cheap_globs:-}")
-# verdict = "match" -> this candidate's mentioned file paths are ALL covered
-# by the repo's paths-ignore glob list; it is CI-cheap. Stop scanning and
-# dispatch THIS candidate for the freed slot (normal dispatch mechanics
-# unchanged — same Agent-tool / Workflow-substrate call the "Job found"
-# branch below would use for any other pick).
+bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --extract-paths "<issue title>\n<issue body>"
+```
+
+Call that output `<candidate_paths>`, then match it as its own plain call (#1476):
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
+bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-cheap-path.sh" --match "<candidate_paths>" "<cheap_globs>"
 ```
 
 **Never bias on zero evidence.** `--match` (per [`detect-ci-cheap-path.sh`](../../scripts/detect-ci-cheap-path.sh)) always returns `no-match` when either input is empty — a candidate whose title/body mentions no file path at all is never assumed cheap, and a repo with an empty glob list never matches anything. This mirrors the [inline-trivial](./inline-trivial.md) fast path's own conservative posture: the heuristic only fires on a positive, extractable signal, never a guess.
