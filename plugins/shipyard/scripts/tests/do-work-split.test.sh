@@ -3109,10 +3109,10 @@ assert_contains "$steady_state_path" \
   'issues/1193' \
   "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=<k>' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=0' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3160,10 +3160,10 @@ assert_contains "$steady_state_path" \
   'issues/1194' \
   "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=<k>' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=0' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3514,10 +3514,10 @@ assert_contains "$invariant_line_path" \
   'A missing `version_cursor=` token entirely is a contract violation' \
   "invariant-line.md treats a missing version_cursor= token as a contract violation (#1417)"
 assert_contains "$steady_state_path" \
-  'version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=<k>' \
+  'version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line documents the version_cursor token in the dispatch format (#1417)"
 assert_contains "$steady_state_path" \
-  'version_cursor=<X.Y.Z|"unset"|n/a> · dispatched_this_turn=0' \
+  'version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line documents the version_cursor token in the idle-proof format (#1417)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3803,6 +3803,101 @@ else
   pass=$((pass+1))
   printf '%sPASS%s  do-work.md no longer describes #1448 as an unwired follow-up\n' "$GREEN" "$RESET"
 fi
+
+# ---------------------------------------------------------------------------
+# Issue #1486 — orchestrator spec-drift signal.
+#
+# A long dogfooding session executes the spec copy frozen into its
+# orchestrator worktree at setup step 0.5, which can drift arbitrarily far
+# behind origin/<default-branch> while the session itself ships releases
+# into those very files. #1486 ships a SIGNAL for that drift and explicitly
+# keeps the pin: nothing may refresh, reset, or re-read the worktree
+# mid-session. These assertions guard both halves — that the signal exists
+# on every surface (step D measurement, step E token, end-of-session line),
+# and that the prohibition against auto-refreshing is stated.
+# ---------------------------------------------------------------------------
+
+# steady-state.md: step D's measurement sub-step.
+assert_contains "$steady_state_path" \
+  'Orchestrator spec-drift measurement' \
+  "steady-state.md step D carries the spec-drift measurement sub-step (#1486)"
+assert_contains "$steady_state_path" \
+  'issues/1486' \
+  "steady-state.md cites issue #1486 as the source of the spec-drift measurement"
+assert_contains "$steady_state_path" \
+  'it runs five sub-steps' \
+  "steady-state.md step D's sub-step count reflects the added spec-drift sub-step (#1486)"
+assert_contains "$steady_state_path" \
+  'MUST NOT refresh, re-read, or reset the worktree' \
+  "steady-state.md's spec-drift sub-step forbids refreshing the orchestrator worktree (#1486)"
+assert_contains "$steady_state_path" \
+  'not a refresh trigger' \
+  "steady-state.md states the spec-drift check is not itself a refresh trigger (#1486)"
+assert_contains "$steady_state_path" \
+  'refresh_zero_delta_streak' \
+  "steady-state.md's spec-drift sub-step names the streak it must not feed (#1486)"
+
+# invariant-line.md + steady-state.md: the spec_drift token.
+assert_contains "$invariant_line_path" \
+  'spec_drift=<N|"unknown"|n/a>' \
+  "invariant-line.md documents the spec_drift token shape (#1486)"
+assert_contains "$invariant_line_path" \
+  'issues/1486' \
+  "invariant-line.md cites issue #1486 as the source of the spec_drift token"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$invariant_line_path" \
+  'A missing `spec_drift=` token entirely is a contract violation' \
+  "invariant-line.md treats a missing spec_drift= token as a contract violation (#1486)"
+assert_contains "$steady_state_path" \
+  'spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
+  "steady-state.md step E invariant line documents the spec_drift token in the dispatch format (#1486)"
+assert_contains "$steady_state_path" \
+  'spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
+  "steady-state.md step E invariant line documents the spec_drift token in the idle-proof format (#1486)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$steady_state_path" \
+  '`version_cursor=`, `spec_drift=`' \
+  "steady-state.md's token-presence self-check enumerates spec_drift= among the mandatory tokens (#1486)"
+
+# setup/00-config-worktree.md: step 0.5 seeds the cache from #1167's count.
+assert_contains "$setup_path" \
+  'SHIPYARD_SPEC_DRIFT' \
+  "00-config-worktree.md registers the SHIPYARD_SPEC_DRIFT session-local variable (#1486)"
+assert_contains "$setup_path" \
+  'issues/1486' \
+  "00-config-worktree.md cites issue #1486 for the spec-drift seed"
+
+# cleanup-summary.md: the end-of-session advisory line.
+assert_contains "$cleanup_path" \
+  'Spec drift (#1486):' \
+  "cleanup-summary.md renders a Spec drift advisory line (#1486)"
+assert_contains "$cleanup_path" \
+  'SPEC_DRIFT_END' \
+  "cleanup-summary.md's step 8.7 captures the re-measured end-of-session drift (#1486)"
+assert_contains "$cleanup_path" \
+  'shipped by THIS session, and did not apply to it' \
+  "cleanup-summary.md names the session's own spec-touching PRs in the drift line (#1486)"
+
+# dont.md: the prohibition against a drift-triggered mid-session refresh.
+assert_contains "$dont_path" \
+  'measure the drift and report it' \
+  "dont.md forbids a mid-session refresh/reset/re-read of the orchestrator worktree (#1486)"
+assert_contains "$dont_path" \
+  'issues/1486' \
+  "dont.md cites issue #1486 for the no-mid-session-refresh rule"
+
+# RATIONALE.md: the design writeup, including the declined third item.
+assert_contains "$rationale_path" \
+  'orchestrator spec-drift' \
+  "RATIONALE.md carries the #1486 spec-drift writeup"
+assert_contains "$rationale_path" \
+  'declined as vacuous' \
+  "RATIONALE.md records why the CLAUDE_PLUGIN_ROOT consistency assertion was declined (#1486)"
+assert_contains "$rationale_path" \
+  'issues/1486' \
+  "RATIONALE.md cites issue #1486"
 
 echo
 if (( fail > 0 )); then
