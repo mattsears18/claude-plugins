@@ -145,6 +145,7 @@ each surprise that WAS filed as an issue, link it here too: "— see #NNN".>
 
 ### 6.5. Diff against the last committed doc
 
+<!-- spec-script-reference-scan: allow -->
 ```bash
 # Does a prior comprehension doc exist at HEAD?
 git cat-file -e HEAD:docs/COMPREHENSION.md 2>/dev/null && echo exists || echo none

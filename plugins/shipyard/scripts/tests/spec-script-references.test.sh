@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
-# Test: the dangling-spec-script-reference gate (issue #1467).
+# Test: the dangling-spec-reference gate (issues #1467, #1468).
+#
+# Two reference classes share one fence traversal and one allow directive:
+# SCRIPTS (#1467 — must exist AND carry the git exec bit) and MARKDOWN
+# FRAGMENTS (#1468 — must exist; a fragment is read, never executed). The
+# fragment cases are grouped under their own banner below and carry their own
+# independent anti-vacuity floor, because a fragment matcher that silently
+# stopped matching would sail past both of the script class's floors.
 #
 # Background: PR #1465 deleted `plugins/shipyard/scripts/assert-worktree-cwd.sh`
 # and left two live invocations of it in `shipyard:worker-preamble`'s
@@ -46,7 +53,7 @@ GREEN=$'\033[32m'; RED=$'\033[31m'; RESET=$'\033[0m'
 ok()  { printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" "$1"; pass=$((pass+1)); }
 bad() { printf '  %sFAIL%s  %s\n' "$RED" "$RESET" "$1"; fail=$((fail+1)); }
 
-echo "spec-script-reference gate regression tests (issue #1467)"
+echo "spec-reference gate regression tests — scripts (#1467) + markdown fragments (#1468)"
 echo
 
 # (1) The scanner exists.
@@ -386,6 +393,190 @@ else
   bad "discovery run with zero extracted references exited $ref_rc without the ref-floor error"
 fi
 
+# ---------------------------------------------------------------------------
+# MARKDOWN-FRAGMENT class (issue #1468). Same fence traversal and same allow
+# directive as the script class; different token shape, different resolution
+# table (citing-file-relative as well as plugin-rooted), and existence-only
+# (a fragment is read, never executed, so no mode-bit half).
+# ---------------------------------------------------------------------------
+
+# (F1) Fragments that really exist pass clean, in every rooted spelling. These
+# forms resolve against the plugin root regardless of where the citing file
+# sits, so they can be scanned from a scratch fixture like the script cases
+# above; the citing-file-relative forms (F3/F4) need real repo paths and use a
+# synthetic repo instead.
+frag_clean_md="$work/frag-clean.md"
+cat > "$frag_clean_md" <<'FIXTURE'
+```bash
+git show origin/main:plugins/shipyard/commands/do-work/dont.md
+cat "$CLAUDE_PLUGIN_ROOT/commands/do-work/drain.md"
+cat "${CLAUDE_PLUGIN_ROOT}/commands/do-work/steady-state.md"
+cat "$PRIMARY_ROOT/plugins/shipyard/commands/do-work/setup.md"
+```
+FIXTURE
+if ( cd "$repo_root" && bash "$scanner" "$frag_clean_md" ) >/dev/null 2>&1; then
+  ok "scanner exits 0 on fragment references that exist (all rooted spellings)"
+else
+  out="$( cd "$repo_root" && bash "$scanner" "$frag_clean_md" 2>&1 )"
+  bad "scanner FALSE-POSITIVED on real fragment references: $out"
+fi
+
+# (F2) PLANTED VIOLATION — the #1467 shape, one file-type over: a spec still
+# telling a worker to read a fragment that no longer exists.
+frag_dangling_md="$work/frag-dangling.md"
+cat > "$frag_dangling_md" <<'FIXTURE'
+```bash
+cat "$CLAUDE_PLUGIN_ROOT/skills/worker-preamble/no-such-fragment-anywhere.md"
+```
+FIXTURE
+if ( cd "$repo_root" && bash "$scanner" "$frag_dangling_md" ) >/dev/null 2>&1; then
+  bad "scanner FAILED to flag a dangling fragment reference — exited 0"
+else
+  out="$( cd "$repo_root" && bash "$scanner" "$frag_dangling_md" 2>&1 )"
+  if [[ "$out" == *"dangling-fragment-reference"* && "$out" == *"no-such-fragment-anywhere.md"* ]]; then
+    ok "scanner flags a dangling fragment reference and names it"
+  else
+    bad "scanner exited non-zero but did not name the dangling fragment — output: $out"
+  fi
+fi
+
+# (F3/F4) Citing-file-relative resolution — the half that genuinely differs
+# from the script class, and the dual-root rule that follows from it. Both need
+# the citing file to sit at a REAL repo path, so they run against a synthetic
+# repo (same pattern as the exec-bit and anti-vacuity cases below) rather than
+# by writing fixtures into the live tree.
+frag_repo="$work/fragrepo"
+_mkrepo "$frag_repo"
+mkdir -p "$frag_repo/plugins/shipyard/commands/do-work/setup" \
+         "$frag_repo/plugins/shipyard/skills/worker-preamble"
+printf '# dont\n'   > "$frag_repo/plugins/shipyard/commands/do-work/dont.md"
+printf '# router\n' > "$frag_repo/plugins/shipyard/commands/do-work.md"
+printf '# divert\n' > "$frag_repo/plugins/shipyard/commands/do-work/setup/04-backlog-divert.md"
+printf '# skill\n'  > "$frag_repo/plugins/shipyard/skills/worker-preamble/SKILL.md"
+
+# Explicitly-relative: `./x.md` and `../x.md` resolve against the CITING file's
+# own directory, never against $CLAUDE_PLUGIN_ROOT.
+# shellcheck disable=SC2016  # fixture text emitted literally, not an expansion
+printf '```bash\ncat ./dont.md\ncat ../do-work.md\n```\n' \
+  > "$frag_repo/plugins/shipyard/commands/do-work/rel.md"
+( cd "$frag_repo" && git add -A ) >/dev/null 2>&1
+if ( cd "$frag_repo" && bash ./scanner.sh plugins/shipyard/commands/do-work/rel.md ) >/dev/null 2>&1; then
+  ok "scanner resolves ./ and ../ fragments against the CITING file's directory"
+else
+  out="$( cd "$frag_repo" && bash ./scanner.sh plugins/shipyard/commands/do-work/rel.md 2>&1 )"
+  bad "citing-file-relative resolution FALSE-POSITIVED: $out"
+fi
+
+# PAIRED NEGATIVE: the same shape pointing at a sibling that does NOT exist is
+# still flagged, so the assertion above can't be passing merely because
+# relative tokens are silently skipped.
+# shellcheck disable=SC2016  # fixture text emitted literally, not an expansion
+printf '```bash\ncat ./no-such-sibling-anywhere.md\n```\n' \
+  > "$frag_repo/plugins/shipyard/commands/do-work/relbad.md"
+( cd "$frag_repo" && git add -A ) >/dev/null 2>&1
+if ( cd "$frag_repo" && bash ./scanner.sh plugins/shipyard/commands/do-work/relbad.md ) >/dev/null 2>&1; then
+  bad "a ./ fragment pointing at a nonexistent sibling was NOT flagged"
+else
+  ok "a ./ fragment pointing at a nonexistent sibling is flagged"
+fi
+
+# Dual-root: a BARE relative fragment is accepted when it resolves against
+# EITHER the citing file's directory or the plugin root. Both roots occur live
+# in the real corpus, so one line here is plugin-rooted and the other
+# citing-rooted, from the same citing file.
+{
+  printf '```bash\n'
+  printf '# plugin-rooted: skills/... does not exist under commands/do-work/\n'
+  printf 'cat skills/worker-preamble/SKILL.md\n'
+  printf '# citing-rooted: setup/ is a real subdirectory of commands/do-work/\n'
+  printf 'cat setup/04-backlog-divert.md\n'
+  printf '```\n'
+} > "$frag_repo/plugins/shipyard/commands/do-work/dual.md"
+( cd "$frag_repo" && git add -A ) >/dev/null 2>&1
+if ( cd "$frag_repo" && bash ./scanner.sh plugins/shipyard/commands/do-work/dual.md ) >/dev/null 2>&1; then
+  ok "a bare relative fragment resolves against either the citing dir or the plugin root"
+else
+  out="$( cd "$frag_repo" && bash ./scanner.sh plugins/shipyard/commands/do-work/dual.md 2>&1 )"
+  bad "the dual-root rule FALSE-POSITIVED: $out"
+fi
+
+# shellcheck disable=SC2016  # fixture text emitted literally, not an expansion
+printf '```bash\ncat skills/worker-preamble/no-such-fragment-anywhere.md\n```\n' \
+  > "$frag_repo/plugins/shipyard/commands/do-work/dualbad.md"
+( cd "$frag_repo" && git add -A ) >/dev/null 2>&1
+dual_bad_out="$( cd "$frag_repo" && bash ./scanner.sh plugins/shipyard/commands/do-work/dualbad.md 2>&1 )"
+dual_bad_rc=$?
+if [[ "$dual_bad_rc" -eq 1 && "$dual_bad_out" == *"neither is tracked"* ]]; then
+  ok "a bare relative fragment resolving under NEITHER root is flagged, naming both candidates"
+else
+  bad "expected a both-candidates finding; got rc=$dual_bad_rc output: $dual_bad_out"
+fi
+
+# (F5) Skipped by design, each forced by a live false positive found while
+# establishing #1468's baseline. Every line here would be a finding if the
+# corresponding boundary guard broke.
+frag_skip_md="$work/frag-skip.md"
+cat > "$frag_skip_md" <<'FIXTURE'
+```bash
+# A bare FILENAME is prose in a fenced comment — see investigate.md § step 4b,
+# and 04d-investigate-routing.md's own table. Neither names a directory.
+Body="$WORKTREE_PATH/.shipyard-scratch/pr-body.md"
+Alt="${SCRATCH_ROOT}/.shipyard-scratch/issue-body.md"
+cat "$CLAUDE_PLUGIN_ROOT/skills/worker-preamble/<fragment>.md"
+ls plugins/shipyard/commands/do-work/*.md
+cat ../../../../../../../../escapes-the-repo.md
+```
+FIXTURE
+if ( cd "$repo_root" && bash "$scanner" "$frag_skip_md" ) >/dev/null 2>&1; then
+  ok "scanner skips bare filenames, foreign-variable roots, placeholders, globs, and repo escapes"
+else
+  out="$( cd "$repo_root" && bash "$scanner" "$frag_skip_md" 2>&1 )"
+  bad "a documented fragment-class skip FALSE-POSITIVED: $out"
+fi
+
+# (F6) Prose and non-bash fences are ignored for fragments too — this corpus
+# links fragment paths constantly, and anchor-links-866.test.sh owns those.
+frag_prose_md="$work/frag-prose.md"
+cat > "$frag_prose_md" <<'FIXTURE'
+See [`no-such-fragment-anywhere.md`](./no-such-fragment-anywhere.md) and the
+table row for `plugins/shipyard/commands/do-work/also-not-real.md`.
+
+```text
+cat "$CLAUDE_PLUGIN_ROOT/commands/not-real-either.md"
+```
+FIXTURE
+if ( cd "$repo_root" && bash "$scanner" "$frag_prose_md" ) >/dev/null 2>&1; then
+  ok "scanner ignores fragment paths in prose, tables, and non-bash fences"
+else
+  out="$( cd "$repo_root" && bash "$scanner" "$frag_prose_md" 2>&1 )"
+  bad "scanner FALSE-POSITIVED on a fragment path outside a bash fence: $out"
+fi
+
+# (F7) The allow directive covers the fragment class too — one directive, one
+# fence traversal, both classes. Paired with a later un-directived block so it
+# can't be mistaken for a file-level opt-out.
+frag_allow_md="$work/frag-allow.md"
+cat > "$frag_allow_md" <<'FIXTURE'
+<!-- spec-script-reference-scan: allow -->
+```bash
+ls CONTRIBUTING.md docs/CONTRIBUTING.md .github/CONTRIBUTING.md 2>/dev/null
+```
+
+```bash
+cat "$CLAUDE_PLUGIN_ROOT/commands/still-flagged-fragment.md"
+```
+FIXTURE
+if ( cd "$repo_root" && bash "$scanner" "$frag_allow_md" ) >/dev/null 2>&1; then
+  bad "the allow directive leaked past its own block for the fragment class"
+else
+  out="$( cd "$repo_root" && bash "$scanner" "$frag_allow_md" 2>&1 )"
+  if [[ "$out" == *"still-flagged-fragment.md"* && "$out" != *"CONTRIBUTING.md"* ]]; then
+    ok "the allow directive exempts fragments in exactly one block"
+  else
+    bad "fragment-class allow-directive scoping is wrong — output: $out"
+  fi
+fi
+
 # (15) A nonexistent path argument errors with exit 2, never a silent pass.
 if ( cd "$repo_root" && bash "$scanner" "$work/does-not-exist.md" ) >/dev/null 2>&1; then
   bad "scanner should error (not silently pass) on a nonexistent file"
@@ -428,9 +619,11 @@ fi
 # maintainer measured with the prototype, modulo fence-matcher strictness) so
 # ordinary spec churn never trips them.
 real_blocks="$(printf '%s\n' "$real_out" | sed -n 's/.*, \([0-9][0-9]*\) fenced bash block(s).*/\1/p' | tail -1)"
-real_refs="$(printf '%s\n' "$real_out" | sed -n 's/.*, \([0-9][0-9]*\) script reference(s) checked.*/\1/p' | tail -1)"
+real_refs="$(printf '%s\n' "$real_out" | sed -n 's/.*, \([0-9][0-9]*\) script reference(s).*/\1/p' | tail -1)"
+real_frags="$(printf '%s\n' "$real_out" | sed -n 's/.*+ \([0-9][0-9]*\) fragment reference(s).*/\1/p' | tail -1)"
 [[ -n "$real_blocks" ]] || real_blocks=0
 [[ -n "$real_refs" ]] || real_refs=0
+[[ -n "$real_frags" ]] || real_frags=0
 if [[ "$real_blocks" -ge 300 ]]; then
   ok "discovery run walked $real_blocks fenced bash blocks (floor 300; 601 observed at #1467)"
 else
@@ -440,6 +633,14 @@ if [[ "$real_refs" -ge 150 ]]; then
   ok "discovery run checked $real_refs script references (floor 150; 267 observed at #1467)"
 else
   bad "discovery run checked only $real_refs script references — below the 150 floor (#1312)"
+fi
+# Third floor, independent of the other two (#1468): a fragment matcher that
+# silently stopped matching would sail past BOTH the block floor and the script
+# floor, which is the exact shape #1467 added its second floor to catch.
+if [[ "$real_frags" -ge 5 ]]; then
+  ok "discovery run checked $real_frags fragment references (floor 5; 8 observed at #1468)"
+else
+  bad "discovery run checked only $real_frags fragment references — below the 5 floor (#1468)"
 fi
 
 echo

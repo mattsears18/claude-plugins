@@ -49,6 +49,7 @@ shipyard is a generic plugin and **must not** hardcode any one project's brand r
 
 **Detect and read repo brand docs, and treat them as binding constraints on every suggestion you file.** Look for, in this order:
 
+<!-- spec-script-reference-scan: allow -->
 ```bash
 ls docs/brand/ 2>/dev/null
 cat BRAND.md docs/BRAND.md 2>/dev/null
