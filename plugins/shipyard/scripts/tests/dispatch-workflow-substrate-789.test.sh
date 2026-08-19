@@ -207,8 +207,8 @@ for mode in "fix-checks-only" "fix-rebase" "fix-main-ci" "fix-failing-prs-batch"
     "dispatch-rules.md's substrate section shows an args.issues[] example for ${mode}"
 done
 
-# shellcheck disable=SC2016  # literal needle — must NOT expand $WORKTREE_PATH
-assert_contains "$dispatch_rules_path" 'git worktree add "$WORKTREE_PATH" -B "<headRefName>"' \
+# Substituted literal placeholder, not a shell expansion (#1476).
+assert_contains "$dispatch_rules_path" 'git worktree add "<WORKTREE_PATH>" -B "<headRefName>"' \
   "dispatch-rules.md documents the existing-branch worktree pre-provisioning for fix-checks-only/fix-rebase"
 assert_contains "$dispatch_rules_path" "resolve-dispatch-model.sh <mode>" \
   "dispatch-rules.md documents mode-parameterized model resolution (preserves per-mode pins)"

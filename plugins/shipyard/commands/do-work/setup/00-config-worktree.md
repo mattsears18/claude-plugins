@@ -257,13 +257,14 @@ git fetch origin "$DEFAULT_BRANCH"
 - `EnterWorktree` with `name: "orchestrator-<session-id>"`.
 - The tool's default `worktree.baseRef` setting (`fresh`) branches from `origin/<default-branch>` — the same tip-of-default-branch starting point the raw-git form below targets, so no extra configuration is needed for the common case.
 
-**Reusing an existing worktree** (a prior session already created `.claude/worktrees/orchestrator-<session-id>` under this exact session id — the resume/retry case): `EnterWorktree` with `path: ".claude/worktrees/orchestrator-<session-id>"` — the tool's documented path-entry form for switching into a worktree that already exists, rather than creating a second one. `EnterWorktree` only relocates the session into the directory; it does not refresh stale content, so immediately after entering, still fetch and hard-reset to origin's tip exactly as the fallback form below does:
+**Reusing an existing worktree** (a prior session already created `.claude/worktrees/orchestrator-<session-id>` under this exact session id — the resume/retry case): `EnterWorktree` with `path: ".claude/worktrees/orchestrator-<session-id>"` — the tool's documented path-entry form for switching into a worktree that already exists, rather than creating a second one. `EnterWorktree` only relocates the session into the directory; it does not refresh stale content, so immediately after entering, still fetch and hard-reset to origin's tip exactly as the fallback form below does.
+
+**These three commands run POST-relocation, so `<default-branch>` is the resolved literal — never a `"$DEFAULT_BRANCH"` variable read ([#1476](https://github.com/mattsears18/shipyard/issues/1476)).** Unlike the new-worktree block above (which runs *before* `EnterWorktree`, where the guard is inactive), this refresh runs after the session is isolated, and a bare whole-word `"$DEFAULT_BRANCH"` is refused there per [`dont.md`'s corrected rule](../dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word). Substitute the value the `gh repo view` call above already printed:
 
 ```bash
-DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-git fetch origin "$DEFAULT_BRANCH"
-git checkout "$DEFAULT_BRANCH"
-git reset --hard "origin/$DEFAULT_BRANCH"
+git fetch origin <default-branch>
+git checkout <default-branch>
+git reset --hard origin/<default-branch>
 ```
 
 Both `EnterWorktree` forms resolve to the same path, `.claude/worktrees/orchestrator-<session-id>`, so every downstream consumer that keys off that path is unaffected by which mechanism created it — `session-identity.sh derive-session-id`'s newest-by-mtime `orchestrator-*` glob ([#513](https://github.com/mattsears18/shipyard/issues/513)), the *step-1.6.5 orphan-orchestrator sweep (removed — the harness reaps worktrees)* ([#280](https://github.com/mattsears18/shipyard/issues/280)), the [`.shipyard-session-id` stash convention](00f-session-id-storage.md#055-session-id-storage-per-worktree-not-tmp) ([#365](https://github.com/mattsears18/shipyard/issues/365)), and [cleanup-summary's step-6 reap](../cleanup-summary.md#end-of-session-cleanup) of the orchestrator's own worktree all still resolve correctly.
@@ -343,14 +344,15 @@ Close the `step_0_5_worktree` timing window:
 
 **Post-relocation staleness assertion ([#1167](https://github.com/mattsears18/shipyard/issues/1167)).** The orchestrator worktree's `baseRef: fresh` setting should branch from `origin/<default-branch>`'s tip, but a session against a repo carrying a `WorktreeCreate` hook found the resulting worktree far behind, with no warning — the orchestrator triaged against stale state. Assert the base explicitly instead of trusting tool semantics silently:
 
+`<default-branch>` here is the **resolved literal**, substituted by the orchestrator — not a `"$DEFAULT_BRANCH"` variable read ([#1476](https://github.com/mattsears18/shipyard/issues/1476)). This block is post-relocation, and `git fetch origin "$DEFAULT_BRANCH"` carries a bare whole-word expansion, which is refused per [`dont.md`'s corrected rule](../dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word):
+
 ```bash
-DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
-ORCH_WT_BEHIND=$(git rev-list --count "HEAD..origin/$DEFAULT_BRANCH" 2>/dev/null)
+git fetch origin <default-branch> --quiet 2>/dev/null || true
+ORCH_WT_BEHIND=$(git rev-list --count "HEAD..origin/<default-branch>" 2>/dev/null)
 if [ -n "$ORCH_WT_BEHIND" ] && [ "$ORCH_WT_BEHIND" -gt 0 ] 2>/dev/null; then
   cat <<EOF >&2
-warning: the orchestrator worktree is $ORCH_WT_BEHIND commit(s) behind origin/$DEFAULT_BRANCH (issue #1167).
-  Remedy: git fetch origin "$DEFAULT_BRANCH" && git reset --hard "origin/$DEFAULT_BRANCH"
+warning: the orchestrator worktree is $ORCH_WT_BEHIND commit(s) behind origin/<default-branch> (issue #1167).
+  Remedy: git fetch origin <default-branch> && git reset --hard origin/<default-branch>
 EOF
 fi
 ```

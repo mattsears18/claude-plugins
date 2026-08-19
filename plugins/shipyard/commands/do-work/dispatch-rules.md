@@ -193,13 +193,13 @@ When filling a slot, walk this decision tree:
 
    **Why it's safe to reap.** The lock holds *our orchestrator's* PID, so `classify-lock` short-circuits it to `self-ancestor` — the originating worker's return was already reconciled at [step A](./steady-state.md#a-reconcile-the-return) by the time this dispatch runs, so its worktree is logically done. See [RATIONALE → Pre-dispatch head-branch reap failure mode](../do-work-RATIONALE.md#dispatch-rules--pre-dispatch-head-branch-reap-failure-mode-368) for how this parallels the other self-ancestor reap sites.
 
-   **Extracted to [`scripts/pre-dispatch-branch-reap.sh`](../../scripts/pre-dispatch-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop wrapping several `gh`/git-adjacent calls with internal pipes — exactly the two shapes the worktree-isolation guard refuses post-relocation. This is precisely the block #1277's worker deferred as needing "a dedicated review/test pass" rather than a rushed edit — the script's own header comment restates, verbatim, the two hard prohibitions that govern it (#832's in-flight-before-classify-lock ordering, #836's never-infer-from-branch-name-alone rule) and every classification branch is preserved exactly as it read here before extraction. `$head_ref` is the PR's headRefName (already known from the failed-PR scan's snapshot — no extra `gh` round-trip needed):
+   **Extracted to [`scripts/pre-dispatch-branch-reap.sh`](../../scripts/pre-dispatch-branch-reap.sh) (issue #1289) — the block below is a translation, not a rewrite.** The inline form was a `for wt_dir in $(find ...)` loop wrapping several `gh`/git-adjacent calls with internal pipes — exactly the two shapes the worktree-isolation guard refuses post-relocation. This is precisely the block #1277's worker deferred as needing "a dedicated review/test pass" rather than a rushed edit — the script's own header comment restates, verbatim, the two hard prohibitions that govern it (#832's in-flight-before-classify-lock ordering, #836's never-infer-from-branch-name-alone rule) and every classification branch is preserved exactly as it read here before extraction. `<headRefName>` is the PR's head branch — **substituted as a literal, never read from a `"$head_ref"` variable** ([#1476](https://github.com/mattsears18/shipyard/issues/1476)): it is already known from the failed-PR scan's snapshot (no extra `gh` round-trip needed), and a bare whole-word `"$head_ref"` is refused post-relocation per [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word) — as well as being empty in practice, since a shell variable set in an earlier `Bash` call does not survive into this one:
 
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
    reap_result=$("$CLAUDE_PLUGIN_ROOT/scripts/pre-dispatch-branch-reap.sh" reap \
-     --head-ref "$head_ref" --session-id "<session-id>" --phase "steady-state-pre-dispatch")
+     --head-ref "<headRefName>" --session-id "<session-id>" --phase "steady-state-pre-dispatch")
    ```
 
    Parse `reap_result` — either `reaped=false` (no matching worktree found, nothing further to do) or `reaped=true worktree_path=<path> worktree_name=<name> classification=<local_classification> lock_pid=<pid>`. On `reaped=true`, hold onto the four values for the separate verify call immediately below.
@@ -372,15 +372,14 @@ When filling a slot, walk this decision tree:
      --cursor-file .shipyard-version-cursor >/dev/null 2>&1
    ```
 
-   Then compute the slot:
+   Then compute the slot. **`<vc_manifest>` / `<vc_version_jq>` / `<default-branch>` are substituted literals, not `"$vc_manifest"`-style variable reads ([#1476](https://github.com/mattsears18/shipyard/issues/1476)).** The two `vc_*` values came from the config-read block above — a *separate* `Bash` tool call, so those shell variables are already empty here — and a bare whole-word expansion is refused post-relocation per [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word). The orchestrator holds all three values and pastes them in, exactly as the neighbouring `reseed-if-idle` call already does for `<owner/repo>` and `<session_prs>`:
 
    ```bash
    CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
    export CLAUDE_PLUGIN_ROOT
-   default_branch=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
    version_result=$("$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" compute \
-     --repo <owner/repo> --manifest "$vc_manifest" --version-jq "$vc_version_jq" \
-     --default-branch "$default_branch" --issue <N> \
+     --repo <owner/repo> --manifest "<vc_manifest>" --version-jq "<vc_version_jq>" \
+     --default-branch <default-branch> --issue <N> \
      --session-prs "<session_prs, space or comma separated>" \
      --cursor-file .shipyard-version-cursor)
    ```
@@ -554,36 +553,29 @@ No worktree pre-provisioning step is needed under this shape — unlike the `Wor
 
 **[#895](https://github.com/mattsears18/shipyard/issues/895) found this shape has no working orchestrator-isolation state — not just the one #825 tested.** **If you deliberately choose this shape anyway, every dispatched worker must run the [write-capability probe](../../skills/worker-preamble/write-probe.md) immediately after its step-0 cwd check** so a non-functional session fails fast (`blocked:`) instead of burning a full dispatch discovering the block at its first real `Edit`/`Write` call. See [RATIONALE → Workflow-substrate write-guard failure modes](../do-work-RATIONALE.md#dispatch-rules--workflow-substrate-write-guard-failure-modes-895) for both failure modes found (silent redirect to the orchestrator's own worktree; the disallowed Bash-write workaround).
 
-1. **Pre-provision the isolated worktree yourself — the `Workflow` tool's `agent()` primitive has no isolation option.** As of the current Dynamic Workflows docs (code.claude.com/docs/en/workflows), `agent()` documents no worktree/isolation/sandboxing option — a Dynamic Workflow script has no filesystem/shell access of its own ("Agents read, write, and run commands. The script coordinates the agents") and nothing in its documented `agent(prompt, opts)` option surface (`label`/`model`/`schema`) closes that gap. (The `Agent` tool's `isolation: "worktree"` parameter — the default shape's mechanism, see above — has the harness auto-provision and cwd-pin the worktree; nothing in the workflow runtime replaces it, which is exactly the gap [#825](https://github.com/mattsears18/shipyard/issues/825) found the harness cannot close for `Edit`/`Write` calls even when this step is followed correctly.) The orchestrator session — unlike the workflow script — still has full shell access at this point, so it closes the *worktree-location* half of the gap itself, the same way the harness would have; it does not close the write-guard half #825 found. **This step is not optional**: [`isolation: worktree` frontmatter](https://code.claude.com/docs/en/sub-agents#supported-frontmatter-fields) hard-fails a `Workflow` dispatch of this script carrying a work unit with no `worktreePath`, and the script's own prompt builders emit a `CALLER BUG` instruction telling the worker to return `blocked` rather than operate from an unpinned cwd. **The exact invocation depends on the mode's branch shape:**
+1. **Pre-provision the isolated worktree yourself — the `Workflow` tool's `agent()` primitive has no isolation option.** As of the current Dynamic Workflows docs (code.claude.com/docs/en/workflows), `agent()` documents no worktree/isolation/sandboxing option — a Dynamic Workflow script has no filesystem/shell access of its own ("Agents read, write, and run commands. The script coordinates the agents") and nothing in its documented `agent(prompt, opts)` option surface (`label`/`model`/`schema`) closes that gap. (The `Agent` tool's `isolation: "worktree"` parameter — the default shape's mechanism, see above — has the harness auto-provision and cwd-pin the worktree; nothing in the workflow runtime replaces it, which is exactly the gap [#825](https://github.com/mattsears18/shipyard/issues/825) found the harness cannot close for `Edit`/`Write` calls even when this step is followed correctly.) The orchestrator session — unlike the workflow script — still has full shell access at this point, so it closes the *worktree-location* half of the gap itself, the same way the harness would have; it does not close the write-guard half #825 found. **This step is not optional**: [`isolation: worktree` frontmatter](https://code.claude.com/docs/en/sub-agents#supported-frontmatter-fields) hard-fails a `Workflow` dispatch of this script carrying a work unit with no `worktreePath`, and the script's own prompt builders emit a `CALLER BUG` instruction telling the worker to return `blocked` rather than operate from an unpinned cwd.
+
+   **`<WORKTREE_PATH>` and `<default-branch>` below are substituted literals, not shell variables ([#1476](https://github.com/mattsears18/shipyard/issues/1476)).** These blocks run post-relocation, where `git worktree add "$WORKTREE_PATH" …` is refused for carrying a bare whole-word expansion (see [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word)). Compose the path yourself before issuing the command — run `git rev-parse --show-toplevel` as its own plain call, then form `<WORKTREE_PATH>` = `<that toplevel>/.claude/worktrees/agent-workflow-<unix-timestamp>` — and paste the result in. This is the same literal you then put on the work unit's `worktreePath` field in the payloads below, so there is exactly one value and no variable to lose between calls.
+
+   **The exact invocation depends on the mode's branch shape:**
 
    - **`issue-work` / `investigate` / `spike`** — fresh branch off default:
 
      ```bash
-     WORKTREE_STAMP=$(date +%s)
-     WORKTREE_ID="agent-workflow-$WORKTREE_STAMP-$$"
-     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
-     DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-     git worktree add "$WORKTREE_PATH" -b "do-work/issue-<N>" "origin/$DEFAULT_BRANCH"
+     git worktree add "<WORKTREE_PATH>" -b "do-work/issue-<N>" origin/<default-branch>
      ```
 
    - **`fix-checks-only` / `fix-rebase`** — checked out directly onto the **existing** PR branch being fixed/rebased, not a fresh branch off default. This makes `fix-checks-only.md`'s own Setup step (`git fetch origin "$HEAD_REF" && git switch "$HEAD_REF"`) a no-op safety net rather than required additional setup:
 
      ```bash
-     WORKTREE_STAMP=$(date +%s)
-     WORKTREE_ID="agent-workflow-$WORKTREE_STAMP-$$"
-     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
-     git worktree add "$WORKTREE_PATH" -B "<headRefName>" "origin/<headRefName>"
+     git worktree add "<WORKTREE_PATH>" -B "<headRefName>" "origin/<headRefName>"
      ```
 
    - **`fix-main-ci` / `fix-failing-prs-batch`** — synthetic-divert branch naming, same fresh-off-default shape as issue-work:
 
      ```bash
-     WORKTREE_STAMP=$(date +%s)
-     WORKTREE_ID="agent-workflow-$WORKTREE_STAMP-$$"
-     WORKTREE_PATH="$(git rev-parse --show-toplevel)/.claude/worktrees/$WORKTREE_ID"
-     DEFAULT_BRANCH=$(gh repo view <owner/repo> --json defaultBranchRef -q .defaultBranchRef.name)
-     git worktree add "$WORKTREE_PATH" -b "<synthetic-divert-branch>" "origin/$DEFAULT_BRANCH"
      # <synthetic-divert-branch> = do-work/fix-main-ci-<short-sha> or do-work/fix-pr-pileup-<short-timestamp>
+     git worktree add "<WORKTREE_PATH>" -b "<synthetic-divert-branch>" origin/<default-branch>
      ```
 
    This is the exact worktree convention every other mode already uses (`.claude/worktrees/agent-<id>`), so the existing per-completion reap (step B / A.0.5 / A.1's post-`shipped` reap) and the drain-phase pre-dispatch reap apply to it unmodified — they key off the path shape and the branch name, not off which tool created the worktree.
@@ -735,10 +727,12 @@ This is **not** a worker return. No agent ran and **no completion notification i
 
 ```bash
 cd "${STABLE_DIR:-/}"   # cwd-anchor-before-reap invariant (#497) — never reap from inside the doomed dir
-git worktree remove --force "$WORKTREE_PATH" 2>/dev/null || true
+git worktree remove --force "<WORKTREE_PATH>" 2>/dev/null || true
 git branch -D "<branch>" 2>/dev/null || true
 git worktree prune 2>/dev/null || true
 ```
+
+`<WORKTREE_PATH>` is the same substituted literal used at `git worktree add` time above — not a `"$WORKTREE_PATH"` variable read, which is refused post-relocation for being a bare whole-word expansion ([#1476](https://github.com/mattsears18/shipyard/issues/1476)).
 
 Fire-and-forget, exactly like the other reap blocks. The same cleanup applies to any other pre-dispatch abort between `git worktree add` and an accepted `Workflow` call.
 
@@ -759,7 +753,7 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 DEGRADED_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 bash "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" record-denial \
-  --session-id "$session_id" --expected-repo "<owner/repo>" \
+  --session-id "<session-id>" --expected-repo "<owner/repo>" \
   --target "<#N|#M|main|pr-pileup>" --mode "<mode>" \
   --denial-text "<verbatim first line of the harness denial>" \
   --attempt "<1|2>" --outcome "<reframed|handed-back|shipped-after-reframe>" \

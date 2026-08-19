@@ -421,9 +421,11 @@ assert_not_contains "$steady_state_path" \
 assert_contains "$steady_state_path" \
   'scripts/worktree-reap.sh" inspect-unpushed \' \
   "A.0.5 invokes worktree-reap.sh inspect-unpushed (#1316)"
-# shellcheck disable=SC2016  # literal needle — must NOT expand $worktree_path / $DEFAULT_BRANCH
+# Substituted literals, not shell variables (#1476) — a bare whole-word
+# expansion is refused post-relocation, so the placeholder form is the
+# spelling that has to be asserted here.
 assert_contains "$steady_state_path" \
-  '--worktree-path "$worktree_path" --default-branch "$DEFAULT_BRANCH" --fetch' \
+  '--worktree-path "<worktree_path>" --default-branch "<default-branch>" --fetch' \
   "A.0.5 resume-path step 2 calls inspect-unpushed --fetch (#1316)"
 
 # 3) The Recovery semantics section's documentation of crash-recovery-

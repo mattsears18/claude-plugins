@@ -200,17 +200,17 @@ for mode in "${MODES[@]}"; do
 done
 
 # The three distinct worktree shapes must all still be documented.
-# The literal WORKTREE_PATH token is the needle, not an expansion.
+# Substituted literal placeholder, not a shell expansion (#1476).
 # shellcheck disable=SC2016
-assert_contains "$dispatch_rules" 'git worktree add "$WORKTREE_PATH" -b "do-work/issue-<N>"' \
+assert_contains "$dispatch_rules" 'git worktree add "<WORKTREE_PATH>" -b "do-work/issue-<N>"' \
   "fresh-branch-off-default worktree shape (issue-work / investigate / spike)"
-# The literal WORKTREE_PATH token is the needle, not an expansion.
+# Substituted literal placeholder, not a shell expansion (#1476).
 # shellcheck disable=SC2016
-assert_contains "$dispatch_rules" 'git worktree add "$WORKTREE_PATH" -B "<headRefName>"' \
+assert_contains "$dispatch_rules" 'git worktree add "<WORKTREE_PATH>" -B "<headRefName>"' \
   "existing-PR-branch worktree shape (fix-checks-only / fix-rebase)"
-# The literal WORKTREE_PATH token is the needle, not an expansion.
+# Substituted literal placeholder, not a shell expansion (#1476).
 # shellcheck disable=SC2016
-assert_contains "$dispatch_rules" 'git worktree add "$WORKTREE_PATH" -b "<synthetic-divert-branch>"' \
+assert_contains "$dispatch_rules" 'git worktree add "<WORKTREE_PATH>" -b "<synthetic-divert-branch>"' \
   "synthetic-divert worktree shape (fix-main-ci / fix-failing-prs-batch)"
 
 # A real builder per mode (not the defensive placeholder).
@@ -280,9 +280,9 @@ echo "== (E) a pre-provisioned worktree is reaped when the dispatch never happen
 # directory + branch with no .in_flight slot — which no other reap path finds.
 assert_contains "$dispatch_rules" "Reap the pre-provisioned worktree on a denial" \
   "dispatch-rules.md's denial branch reaps the orphaned worktree"
-# The literal WORKTREE_PATH token is the needle, not an expansion.
+# Substituted literal placeholder, not a shell expansion (#1476).
 # shellcheck disable=SC2016
-assert_contains "$dispatch_rules" 'git worktree remove --force "$WORKTREE_PATH"' \
+assert_contains "$dispatch_rules" 'git worktree remove --force "<WORKTREE_PATH>"' \
   "dispatch-rules.md shows the orphaned-worktree reap command"
 assert_contains "$steady_state" "reap the worktree you pre-provisioned" \
   "steady-state.md step C's denial branch reaps the orphaned worktree"
