@@ -93,7 +93,9 @@ The orchestrator's rule list — load-bearing prohibitions across every phase. T
 
 **This is the controlled experiment the four prior sweeps ([#1308](https://github.com/mattsears18/shipyard/issues/1308) / [#1311](https://github.com/mattsears18/shipyard/issues/1311) / [#1314](https://github.com/mattsears18/shipyard/issues/1314) / [#1352](https://github.com/mattsears18/shipyard/issues/1352)) each skipped.** Each of those correctly identified *a* refused shape, shipped a real sweep, and still left `setup/04-backlog-divert.md`'s step-4 classify block and `setup/00-config-worktree.md`'s step-0.5 stash block refused — because every one of them was hunting a *token*, and the actual trigger is not a token. Run in a live isolated worktree, one variable at a time, each command repeated 2–3× (see [RATIONALE → The #1471 command-shape experiment](../do-work-RATIONALE.md#the-1471-command-shape-experiment) for the full observation table):
 
-**The guard refuses a block that REFERENCES a shell variable whose value it cannot statically resolve.** The most reliable instance is a variable assigned from a *network* command substitution. The decisive pair — everything held byte-identical except one argument:
+> **Superseded in part by [#1474](https://github.com/mattsears18/shipyard/issues/1474) — read [the corrected rule](#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word) below before acting on this subsection.** #1471's framing (an unresolvable *variable reference*, most reliably one assigned from a *network* command substitution) is measurably wrong on both halves: there is no local-vs-network split, and it is not about variables. Everything #1471 recorded as *refused* really is refused — the worked examples below stand — but the stated *cause* does not, and building on it is how this gets re-guessed a sixth time.
+
+**The guard refuses a block that REFERENCES a shell variable whose value it cannot statically resolve.** #1471 believed the most reliable instance was a variable assigned from a *network* command substitution — [#1474 measured that to be false](#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word). The decisive pair — everything held byte-identical except one argument:
 
 ```
 bash <plugin-root>/scripts/classify-backlog.sh run … --me mattsears18 …      → RUNS
@@ -120,14 +122,36 @@ CLAUDE_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/shipyard"    → RU
 
 Quoting is the whole difference; it holds across both `export VAR=…` and split `VAR=…` + `export VAR` forms, and across single-line and multi-line rendering. [`compound-block-scan.sh`](../../scripts/compound-block-scan.sh) now flags it as a third shape alongside the loop and pipe checks — not [`command-substitution-scan.sh`](../../scripts/command-substitution-scan.sh), whose strict assignment-RHS carve-out deliberately sanctions a `$(` sitting immediately after an `=`.
 
-**Also measured, secondary:** shell special parameters (`$?`, `$$`) and unset variables refuse when they form a path-shaped word (`echo $?`, `echo rc=$?`, `echo $UNSET`, `echo "$UNSET/foo"`) but pass inside a `label=value`-shaped word (`echo "rc=$?"`, `echo "x=$?"`). A set environment variable resolves fine (`echo $HOME` runs).
+**Also measured, secondary:** shell special parameters (`$?`, `$$`) and unset variables refuse when they form a path-shaped word (`echo $?`, `echo rc=$?`, `echo $UNSET`, `echo "$UNSET/foo"`) but pass inside a `label=value`-shaped word (`echo "rc=$?"`, `echo "x=$?"`). A set environment variable resolves fine (`echo $HOME` runs). **#1474 re-derived this as the same single rule, one notch more general** — the axis is *whole-word vs. literal-adjacent*, not *path-shaped vs. `label=value`-shaped*.
 
 **Two cautions for whoever reads this next.**
 
 1. **The guard is deterministic.** Every command above was re-run 2–3× with no verdict flip. An earlier session hypothesised non-determinism after seeing the same script accepted then refused ~40 minutes apart — that pair differed in more than one way (an argument value *and* a trailing `; echo rc=$?` construct), and the apparent instability disappears once one variable is toggled at a time. Do not build a fix on the premise that this guard is flaky.
 2. **The refusal message's trailing "`without the redirect`" is a canned suffix, not a diagnosis.** It appears verbatim on commands containing no redirect at all (`echo $?`). Reading it as a hint sends you after the wrong variable.
 
-**The still-open question**, stated so it isn't silently re-guessed: *exactly* which command substitutions the guard can statically resolve is not established. `$(cat <file-in-worktree>)` and `$(git rev-parse …)` behave as resolvable in assignment position; `$(gh api …)` does not. That boundary is undocumented harness behavior and the fix above does not depend on it — substituting literals sidesteps the question entirely. Don't extrapolate a rule from it without re-running the experiment.
+**#1471's still-open question — now closed by [#1474](https://github.com/mattsears18/shipyard/issues/1474).** #1471 left it unresolved which command substitutions the guard can statically resolve, noting that `$(cat <file-in-worktree>)` and `$(git rev-parse …)` "behave as resolvable" while `$(gh api …)` does not, and warning against extrapolating a rule without re-running the experiment. #1474 re-ran it: **the answer is none of them, and the apparent difference was the use position, not the substitution.**
+
+#### The corrected rule (#1474): never let an unresolvable expansion be the whole word
+
+**A command is refused when it contains a word whose ENTIRE content is a single unresolvable expansion** — `"$VAR"` or `"$(cmd)"`. That is the whole predicate. Full observation table in [RATIONALE → The #1474 resolvability-boundary measurement](../do-work-RATIONALE.md#the-1474-resolvability-boundary-measurement--and-why-no-does-this-block-run-gate-was-built).
+
+- **"Unresolvable" means every command substitution**, without exception — `$(pwd)`, `$(date)`, `$(cat <file-in-worktree>)`, `$(git rev-parse --show-toplevel)`, `$(gh api …)`, and `$(curl …)` all behave identically. There is no local-vs-network split, and the guard never reads a file to resolve a value.
+- **"Resolvable" means** assigned from a literal earlier in the same block (transitively), or present in the process environment (`echo "$HOME"` runs bare).
+- **It is not about variables.** `echo "$(pwd)"` is refused as a single statement with no variable in sight.
+- **Any adjacent literal text in the same word rescues it** — `"$VAR/foo"`, `"prefix-$VAR"`, `"value=$VAR"`, `"$VAR-suffix"` all RUN. (One measured exception: a lone trailing `.` does *not* rescue it — `"$VAR."` is refused.)
+- **Position is irrelevant.** A bare `"$VAR"` refuses as a script path, a flag value, a positional argument, a second word, or inside a `[ -z "$VAR" ]` test. The intuition that only path-shaped positions matter is backwards: the *path-suffixed* use is the safe one.
+
+**What this means when you author a post-relocation block.** The two-statement stash read (`CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` + `export CLAUDE_PLUGIN_ROOT`) is fine and stays fine — it contains no bare whole-word expansion. What breaks a block is the *use*:
+
+```
+bash "$CLAUDE_PLUGIN_ROOT/scripts/some-script.sh" --flag    → RUNS    (literal suffix)
+git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD         → REFUSED (bare whole word)
+[ -z "$SOME_VAR" ] && SOME_VAR="unknown"                    → REFUSED (bare whole word in the test)
+```
+
+So the rule to apply is narrower and more actionable than "substitute every value as a literal": **give the expansion a literal suffix, or substitute the literal outright.** Where neither is possible — a `git -C <root>` or a `[ -z … ]` guard genuinely needs the bare value — substitute the literal, or split the statement into a separate plain call whose value you already hold.
+
+**No CI gate enforces this, deliberately.** #1474 measured the rule, prototyped it against `compound-block-scan.sh`'s six curated files, got **152 findings** dominated by pre-relocation blocks and illustrative pseudo-code, and concluded that distinguishing genuine refusals requires knowing per-block whether it runs post-relocation *and* whether it is executed verbatim — neither of which the markdown expresses. See [RATIONALE → The #1474 scanner decision](../do-work-RATIONALE.md#the-1474-scanner-decision-build-nothing) for the full reasoning. **Do not re-propose that scanner without re-running the experiment first** — five attempts have now been made on this guard, and four of them shipped a fix built on a model that had not been measured.
 
 **The rule, stated once:** a post-relocation ```` ```bash ```` block may contain any number of **plain, independent statements** — sequential `VAR=$(cmd)` assignments, `export`s, `echo`s, and simple `[ cond ] && action` one-liners are all exercised constantly throughout this spec with no reported refusal. What gets refused is a **single command** whose own structure the guard can't cheaply verify stays inside the worktree:
 
