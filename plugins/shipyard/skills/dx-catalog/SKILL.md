@@ -490,6 +490,7 @@ ls LICENSE LICENSE.md LICENSE.txt LICENCE LICENCE.md COPYING 2>/dev/null
 
 **Detect:**
 
+<!-- spec-script-reference-scan: allow -->
 ```bash
 [ -d .devcontainer ] || [ -f scripts/setup.sh ] || [ -f bin/setup ] || [ -f Makefile ] || [ -f Justfile ]
 ```
