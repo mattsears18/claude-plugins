@@ -62,6 +62,15 @@
 #          the caller decides what an empty result means)
 #       64 bad usage (missing required flag, unknown flag)
 #
+#   resolve-session-id [--repo-root <path>]
+#     Issue #1479 — `derive-session-id` plus its `.shipyard-session-id`
+#     fallback and the #548 loud-empty diagnostic, collapsed into a single
+#     call so the orchestrator's reconcile-path blocks stop carrying the
+#     `--repo-root "$REPO_ROOT"` / `[ -z "$SESSION_ID" ]` words the
+#     worktree-isolation Bash guard refuses. `--repo-root` is OPTIONAL here
+#     (defaults to `git rev-parse --show-toplevel`). Same stdout/exit
+#     contract as `derive-session-id`. See the function docstring.
+#
 #   find-orphan-orchestrators --repo-root <path> --current-session-id <id>
 #     Issue #280 — companion to step 1.6's orphan session-file sweep, but
 #     for the orchestrator worktrees themselves. If a prior /do-work
@@ -146,6 +155,7 @@ usage() {
 Usage:
   session-identity.sh detect-orchestrator-pid [<comm-name>]
   session-identity.sh derive-session-id --repo-root <path>
+  session-identity.sh resolve-session-id [--repo-root <path>]
   session-identity.sh find-orphan-orchestrators --repo-root <path> \
                                                 --current-session-id <id> \
                                                 [--emit-resolved-id]
@@ -166,6 +176,17 @@ derive-session-id       — Issue #513. Prints THIS session's id by reading
                           even when prior crashed sessions left orphan
                           orchestrator worktrees behind. Empty stdout (exit 0)
                           when no candidate carries a readable stash.
+
+resolve-session-id      — Issue #1479. derive-session-id PLUS its
+                          `<repo-root>/.shipyard-session-id` fallback and
+                          the #548 loud-empty stderr diagnostic, in one
+                          call — so a caller needs no `--repo-root
+                          "$REPO_ROOT"` argument and no `[ -z
+                          "$SESSION_ID" ]` fallback test, both of which
+                          the worktree-isolation Bash guard refuses.
+                          --repo-root is OPTIONAL (defaults to `git
+                          rev-parse --show-toplevel`). Empty stdout (exit
+                          0) when neither path yields an id.
 
 find-orphan-orchestrators — Emits one path per line for each orphan
                           orchestrator worktree under
@@ -302,6 +323,95 @@ derive_session_id() {
   done
 
   [ -n "$newest_id" ] && printf '%s\n' "$newest_id"
+  return 0
+}
+
+# Issue #1479 — one-call session-id resolution for the orchestrator's
+# reconcile-path preamble blocks (steady-state.md's A.0 required preamble,
+# the A.1 return-record write, and both A.1 cost-comment blocks). Those
+# blocks used to spell the two-path derive inline:
+#
+#   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+#   SESSION_ID=$(... derive-session-id --repo-root "$REPO_ROOT" 2>/dev/null)
+#   [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+#
+# which carries two words whose ENTIRE content is a single unresolvable
+# expansion — `"$REPO_ROOT"` as the `--repo-root` value, and `"$SESSION_ID"`
+# inside the `[ -z … ]` test. Both are refused verbatim by the
+# worktree-isolation Bash guard; see do-work/dont.md's corrected rule
+# (#1474) and the #1476 audit that named these six words as residual
+# bucket-4 findings. Collapsing the sequence into one subcommand removes
+# both at every call site at once — the call site becomes a single plain
+# `"$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" resolve-session-id`,
+# whose only expansion carries a literal path suffix and therefore runs.
+#
+# Semantics are exactly the ones the inline form had:
+#   1. derive_session_id against <repo-root> (newest orchestrator-* stash);
+#   2. on empty, read <repo-root>/.shipyard-session-id directly;
+#   3. still empty → empty stdout plus the loud `[session-id-derive] empty`
+#      stderr line each caller's own `if [ -z "$SESSION_ID" ]` guard used
+#      to print (#548). Emitting it here is what lets those guards go away.
+#
+# `--repo-root` is OPTIONAL here (it is REQUIRED for derive-session-id):
+# it defaults to `git rev-parse --show-toplevel`, which is precisely what
+# every inline caller passed. A caller that already holds the root can
+# still pass it explicitly and stay cwd-independent.
+#
+# Stdout: the session id, whitespace-trimmed; empty when neither path
+#   yields one. Exit 0 either way — the caller decides what empty means,
+#   same contract as derive-session-id. Exit 64 on bad usage.
+resolve_session_id() {
+  local repo_root=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root="${2:-}"
+        shift 2
+        ;;
+      --repo-root=*)
+        repo_root="${1#--repo-root=}"
+        shift
+        ;;
+      --)
+        shift
+        ;;
+      -*)
+        echo "resolve-session-id: unknown flag: $1" >&2
+        return 64
+        ;;
+      *)
+        echo "resolve-session-id: unexpected positional arg: $1" >&2
+        return 64
+        ;;
+    esac
+  done
+
+  if [ -z "$repo_root" ]; then
+    repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+  fi
+
+  if [ -z "$repo_root" ]; then
+    echo "[session-id-derive] empty — no repo root resolved (cwd is not a git working tree); check for a #477 cwd-leak" >&2
+    return 0
+  fi
+
+  local id=""
+  id="$(derive_session_id --repo-root "$repo_root" 2>/dev/null)"
+
+  # Fallback: the primary checkout's own stash. Trimmed the same way
+  # derive_session_id trims a worktree stash, so a stray trailing newline
+  # can never turn into a malformed --session-id argument downstream.
+  if [ -z "$id" ]; then
+    id="$(tr -d '[:space:]' < "$repo_root/.shipyard-session-id" 2>/dev/null)"
+  fi
+
+  if [ -z "$id" ]; then
+    echo "[session-id-derive] empty — neither the newest orchestrator-* stash nor $repo_root/.shipyard-session-id yielded a session id; check for a #477 cwd-leak (orchestrator cwd may be inside an agent-* worktree)" >&2
+    return 0
+  fi
+
+  printf '%s\n' "$id"
   return 0
 }
 
@@ -523,6 +633,15 @@ main() {
       # See the derive_session_id function's docstring for the algorithm.
       shift
       derive_session_id "$@"
+      ;;
+    resolve-session-id)
+      # Issue #1479 — derive-session-id plus its `.shipyard-session-id`
+      # fallback and the #548 loud-empty diagnostic, in ONE call, so the
+      # orchestrator's reconcile-path blocks carry no bare `"$REPO_ROOT"` /
+      # `[ -z "$SESSION_ID" ]` word for the worktree-isolation guard to
+      # refuse. See the resolve_session_id docstring.
+      shift
+      resolve_session_id "$@"
       ;;
     find-orphan-orchestrators)
       # Issue #280 — enumerate orphan `orchestrator-*` worktrees from

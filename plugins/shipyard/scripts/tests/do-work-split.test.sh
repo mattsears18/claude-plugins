@@ -3192,9 +3192,22 @@ assert_contains "$steady_state_path" \
 # shellcheck disable=SC2016
 # Dollar-sign variable refs here are literal characters inside a fenced bash
 # code block quoted in the markdown, not something this test script expands.
+# Issue #1479 narrowed this needle: the `--me` VALUE is now a substituted
+# literal, not `"$ME_LOGIN"` (a bare whole-word expansion the
+# worktree-isolation guard refuses — do-work/dont.md's #1474 corrected rule).
+# What #1246 actually guards is that the executable `summary` subcommand is
+# invoked at all, which the shortened needle still pins; the companion
+# assertion below pins the #1479 shape so the refused spelling can't return.
 assert_contains "$steady_state_path" \
-  '"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
+  '"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me ' \
   "steady-state.md step C stamps the invariant-line tokens via the executable backlog-filter.sh summary subcommand, not prose alone (#1246)"
+# shellcheck disable=SC2016
+assert_not_contains "$steady_state_path" \
+  'summary --me "$ME_LOGIN"' \
+  "steady-state.md step C does not reintroduce the refused bare --me \"\$ME_LOGIN\" expansion (#1479)"
+assert_contains "$steady_state_path" \
+  '< .shipyard-fetched-issues.json' \
+  "steady-state.md step C feeds the summary payload by file redirection, not a herestring (#1479)"
 assert_contains "$steady_state_path" \
   'issues/1246' \
   "steady-state.md step C cites issue #1246 as the source of the mechanical stamping code"
@@ -3206,9 +3219,18 @@ assert_contains "$drain_path" \
 # shellcheck disable=SC2016
 # Dollar-sign variable refs here are literal characters inside a fenced bash
 # code block quoted in the markdown, not something this test script expands.
+# Needle narrowed by #1479 for the same reason as the steady-state.md pair
+# above — see that comment.
 assert_contains "$drain_path" \
-  '"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN"' \
+  '"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me ' \
   "drain.md termination-assertion step 4 stamps the invariant-line tokens via the executable backlog-filter.sh summary subcommand, not prose alone (#1246)"
+# shellcheck disable=SC2016
+assert_not_contains "$drain_path" \
+  'summary --me "$ME_LOGIN"' \
+  "drain.md termination-assertion step 4 does not reintroduce the refused bare --me \"\$ME_LOGIN\" expansion (#1479)"
+assert_contains "$drain_path" \
+  '< .shipyard-fetched-issues.json' \
+  "drain.md termination-assertion step 4 feeds the summary payload by file redirection, not a herestring (#1479)"
 assert_contains "$drain_path" \
   'issues/1246' \
   "drain.md termination-assertion step 4 cites issue #1246 as the source of the mechanical stamping code"

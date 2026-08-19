@@ -151,6 +151,12 @@ repo_root="$(git rev-parse --show-toplevel)"
 # marker, so steady-state.md is now clean on its own merits like the other
 # three files, with no exemption left in place.
 #
+# d-tail-merge-sweeps.md added by issue #1479, which split steady-state.md's
+# D-tail section out verbatim to get back under the 245760-byte phase-file
+# cap. Its blocks were already scanned (and clean) as part of steady-state.md
+# before the move — listing the fragment keeps that coverage rather than
+# silently losing it to the relocation.
+#
 # setup/00-config-worktree.md added by issue #1471. This is the file the
 # Scope note above names as the archetypal mixed pre/post-relocation case,
 # and it is admitted here on exactly the terms that note sets out: its two
@@ -169,6 +175,7 @@ FILES=(
   "$repo_root/plugins/shipyard/commands/do-work/drain.md"
   "$repo_root/plugins/shipyard/commands/do-work/inline-trivial.md"
   "$repo_root/plugins/shipyard/commands/do-work/steady-state.md"
+  "$repo_root/plugins/shipyard/commands/do-work/d-tail-merge-sweeps.md"
 )
 
 if [[ $# -gt 0 ]]; then
