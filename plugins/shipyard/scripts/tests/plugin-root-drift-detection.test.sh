@@ -98,8 +98,18 @@ echo
 grep -ql '\.shipyard-plugin-root-version' "$setup_dir"/*.md 2>/dev/null
 check "setup/*.md step 0.5 writes .shipyard-plugin-root-version" "$?"
 
-grep -ql 'SHIPYARD_PLUGIN_ROOT_VERSION' "$setup_dir"/*.md 2>/dev/null
-check "setup/*.md resolves SHIPYARD_PLUGIN_ROOT_VERSION from plugin.json" "$?"
+# Assert the MECHANISM, not a shell variable name (issue #1471). This check
+# previously grepped for the literal `SHIPYARD_PLUGIN_ROOT_VERSION`, the name
+# step 0.5 used to assign the resolved version to before writing the stash.
+# #1471 measured that block refused verbatim by the worktree-isolation guard
+# and re-rendered it to substitute the plugin-root literal, which removed the
+# intermediate variable entirely — the version is now read straight out of
+# plugin.json and written to the stash with the `Write` tool. The drift
+# signal this suite guards is unchanged; only the spelling was. Keying the
+# assertion to the plugin.json read keeps it pinned to what actually has to
+# hold, and survives the next re-rendering of the same block.
+grep -ql '\.claude-plugin/plugin\.json' "$setup_dir"/*.md 2>/dev/null
+check "setup/*.md resolves the plugin version from .claude-plugin/plugin.json" "$?"
 
 grep -ql '#1304' "$setup_dir"/*.md 2>/dev/null
 check "setup/*.md cites issue #1304" "$?"

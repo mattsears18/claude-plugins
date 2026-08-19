@@ -36,12 +36,13 @@ Semantics:
 
 **Spell the variable UNBRACED at every invocation site — `"$CLAUDE_PLUGIN_ROOT/scripts/foo.sh"`, never the braced `"${VAR}/..."` form ([#1308](https://github.com/mattsears18/shipyard/issues/1308)).** A braced expansion is refused outright by the worktree-isolation guard in any isolated session, and **the braces are the trigger** — not statement count, loop/pipe shape, block length, or command position. **[Claude Code's command-shape check](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation) owns the full rule**, the experiment isolating it, and the companion `$(cmd)`-in-argument-position trigger. Enforced by [`claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) checks (3b)/(3c).
 
-**This compound preamble is PRE-RELOCATION ONLY** ([#1181](https://github.com/mattsears18/shipyard/issues/1181)) — steps 0.3, 0.4, and the pre-`EnterWorktree` timing bracket atop [step 0.5](#05-move-into-the-orchestrators-worktree) are the only orchestrator blocks that still carry it, since those run before isolation. The identical one-liner is **refused** post-isolation, for the precise reason #1308 isolated: a `${VAR:-default}` modifier expansion has no unbraced spelling, so this one preamble cannot be de-braced the way every invocation site above was — hence the stash below. **Every other orchestrator-phase block** — step 0.5's post-relocation resolution onward, here and in `steady-state.md` / `drain.md` / `cleanup-summary.md` / `inline-trivial.md` / `dispatch-rules.md` / the rest of `setup/` — instead reads the `.shipyard-plugin-root` stash step 0.5 writes, via `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null); export CLAUDE_PLUGIN_ROOT`. Worker-side files (`agents/issue-worker/*.md`, `skills/worker-preamble/*.md`) keep the compound form unconditionally — a dispatched worker's own `agent-*` worktree has no such stash, and gets the resolved literal via its dispatch prompt instead ([#965](https://github.com/mattsears18/shipyard/issues/965)). Regression-guarded by [`scripts/tests/claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) (accepts either form per file scope). **This callout was scoped to the `CLAUDE_PLUGIN_ROOT` preamble specifically — see [`dont.md`'s general post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) ([#1277](https://github.com/mattsears18/shipyard/issues/1277)) for the same "decompose, don't re-run the compound form" principle applied to every OTHER post-relocation multi-statement block (loops, pipes, `if`/`case` wrappers), plus the decompose-vs-extract-to-a-script decision rule and the regression scanner.**
+**This compound preamble is PRE-RELOCATION ONLY** ([#1181](https://github.com/mattsears18/shipyard/issues/1181)) — steps 0.3, 0.4, and the pre-`EnterWorktree` timing bracket atop [step 0.5](#05-move-into-the-orchestrators-worktree) are the only orchestrator blocks that still carry it, since those run before isolation. The identical one-liner is **refused** post-isolation, for the precise reason #1308 isolated: a `${VAR:-default}` modifier expansion has no unbraced spelling, so this one preamble cannot be de-braced the way every invocation site above was — hence the stash below. **Every other orchestrator-phase block** — here and in `steady-state.md` / `drain.md` / `cleanup-summary.md` / `inline-trivial.md` / `dispatch-rules.md` / the rest of `setup/` — instead reads the `.shipyard-plugin-root` stash step 0.5 writes, via `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null); export CLAUDE_PLUGIN_ROOT`. That two-statement stash read is measured to RUN post-relocation and is NOT the shape [#1471](https://github.com/mattsears18/shipyard/issues/1471) found refused — see [`dont.md`'s post-relocation section](../dont.md). **Step 0.5's own read-back is the one exception**: it substitutes the resolved literal directly rather than reading the stash into a variable, because the block it feeds went on to reference several variables the guard cannot resolve, and #1471's fix removed the variables rather than the statements. Worker-side files (`agents/issue-worker/*.md`, `skills/worker-preamble/*.md`) keep the compound form unconditionally — a dispatched worker's own `agent-*` worktree has no such stash, and gets the resolved literal via its dispatch prompt instead ([#965](https://github.com/mattsears18/shipyard/issues/965)). Regression-guarded by [`scripts/tests/claude-plugin-root-preamble.test.sh`](../../../scripts/tests/claude-plugin-root-preamble.test.sh) (accepts either form per file scope). **This callout was scoped to the `CLAUDE_PLUGIN_ROOT` preamble specifically — see [`dont.md`'s general post-relocation compound-block rule](../dont.md#post-relocation-bash-blocks-must-be-plain-single-purpose-commands-1277) ([#1277](https://github.com/mattsears18/shipyard/issues/1277)) for the same "decompose, don't re-run the compound form" principle applied to every OTHER post-relocation multi-statement block (loops, pipes, `if`/`case` wrappers), plus the decompose-vs-extract-to-a-script decision rule and the regression scanner.**
 
 ### 0.4 Check the repo-level opt-in (`shipyard.config.json`)
 
 **Run this BEFORE the worktree relocation.** The check is a single `shipyard-config.sh exists` call against the user's primary checkout — read-only, no writes, so the worktree-isolation rule doesn't apply yet.
 
+<!-- compound-block-scan: allow -->
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 # Echo the resolved value once (#681): it's load-bearing for the whole session
@@ -273,6 +274,7 @@ Both `EnterWorktree` forms resolve to the same path, `.claude/worktrees/orchestr
 
 **Last-resort fallback — raw `git worktree add`, for environments where `EnterWorktree` is genuinely unavailable, or where the fragment's recovery above also failed.** Not every invocation shape has the tool (e.g. an older Claude Code build, or a harness variant that only exposes `Bash`). This form satisfies `Bash`'s cwd but, per the rationale above, does **not** register isolation with the harness — on a background-job session, expect `Edit`/`Write` calls to be refused after using this path:
 
+<!-- compound-block-scan: allow -->
 ```bash
 # Run this once from the user's primary checkout (the only write to .git/worktrees/ that the primary will see this session)
 SY_TOPLEVEL="$(git rev-parse --show-toplevel)"
@@ -313,30 +315,28 @@ Stash it, then finish by reading it back (hermetic across calls):
 printf '%s\n' "<resolved CLAUDE_PLUGIN_ROOT literal>" > .shipyard-plugin-root
 ```
 
+**The read-back is FOUR plain commands with the literal substituted — never one variable-carrying block ([#1471](https://github.com/mattsears18/shipyard/issues/1471)).** This used to be a single twelve-statement block that read the stash back into `$CLAUDE_PLUGIN_ROOT` and then referenced that variable (plus two conditionally-reassigned `$SHIPYARD_PLUGIN_ROOT_*` values) throughout. That shape is **refused verbatim** by the worktree-isolation guard — measured reproducibly, in an isolated worktree; see [`dont.md`'s post-relocation section](../dont.md) for the controlled experiment and [#1471](https://github.com/mattsears18/shipyard/issues/1471) for the finding. You resolved the literal yourself two commands ago, so there is nothing to read back into a variable: substitute it. Each command below runs verified-clean on its own.
+
+Commit sha (#907) — naturally the ORCHESTRATOR WORKTREE's own `plugins/shipyard`, superseding step 0.4's pre-relocation resolution against the primary checkout. An empty result or non-zero exit degrades to `unknown`; never fatal:
+
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-# Re-echo the resolved value + commit sha (#907) — naturally the
-# ORCHESTRATOR WORKTREE's own plugins/shipyard, superseding step 0.4's
-# pre-relocation resolution against the primary checkout.
-echo "resolved CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT (post-relocation)" >&2
-SHIPYARD_PLUGIN_ROOT_SHA=$(git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD 2>/dev/null)
-[ -z "$SHIPYARD_PLUGIN_ROOT_SHA" ] && SHIPYARD_PLUGIN_ROOT_SHA="unknown"
-echo "resolved CLAUDE_PLUGIN_ROOT commit=$SHIPYARD_PLUGIN_ROOT_SHA (post-relocation)" >&2
-# Stash the resolved plugin's own VERSION too (#1304) — the mid-session
-# drift signal end-of-session cleanup compares against a fresh re-resolution.
-# A consumer install (layer 2) can be silently updated by the harness's own
-# plugin manager mid-session, splitting "which spec the worker reads" from
-# "which scripts/*.sh it invokes" (both keyed off this same stale stash) with
-# no warning anywhere. Never fatal — an unreadable plugin.json degrades to
-# "unknown", same posture as SHIPYARD_PLUGIN_ROOT_SHA above.
-SHIPYARD_PLUGIN_ROOT_VERSION=$(jq -r '.version // empty' "$CLAUDE_PLUGIN_ROOT/.claude-plugin/plugin.json" 2>/dev/null)
-[ -z "$SHIPYARD_PLUGIN_ROOT_VERSION" ] && SHIPYARD_PLUGIN_ROOT_VERSION="unknown"
-printf '%s\n' "$SHIPYARD_PLUGIN_ROOT_VERSION" > .shipyard-plugin-root-version
-echo "resolved CLAUDE_PLUGIN_ROOT version=$SHIPYARD_PLUGIN_ROOT_VERSION (post-relocation)" >&2
-# Close the step_0_5_worktree timing window.
-"$CLAUDE_PLUGIN_ROOT/scripts/setup-timing.sh" end \
-  --session-id "<session-id>" --phase step_0_5_worktree 2>/dev/null || true
+git -C "<resolved CLAUDE_PLUGIN_ROOT literal>" rev-parse --short HEAD
+```
+
+The resolved plugin's own VERSION (#1304) — the mid-session drift signal end-of-session cleanup compares against a fresh re-resolution. A consumer install (layer 2) can be silently updated by the harness's own plugin manager mid-session, splitting "which spec the worker reads" from "which `scripts/*.sh` it invokes" (both keyed off this same stale stash) with no warning anywhere. Never fatal — an unreadable `plugin.json` degrades to `unknown`, same posture as the sha above:
+
+```bash
+jq -r '.version // empty' "<resolved CLAUDE_PLUGIN_ROOT literal>/.claude-plugin/plugin.json"
+```
+
+Stash that version with the **`Write` tool** to `.shipyard-plugin-root-version` in the orchestrator worktree root — a single line holding the value the call above printed, or `unknown` if it printed nothing. `Write` rather than a `printf` redirect for the same reason step 4 materializes `.shipyard-fetched-issues.json` with `Write`: you already hold the literal, and the tool has no command-shape budget to spend.
+
+Record all three resolved values (root, commit, version) in your own session narration as `resolved CLAUDE_PLUGIN_ROOT=… / commit=… / version=… (post-relocation)` — this used to be three `echo … >&2` statements inside the block, and it is orchestrator-side logging with no side effect, so it does not need to be a shell command at all.
+
+Close the `step_0_5_worktree` timing window:
+
+```bash
+"<resolved CLAUDE_PLUGIN_ROOT literal>/scripts/setup-timing.sh" end --session-id "<session-id>" --phase step_0_5_worktree
 ```
 
 [`00g-redirect-target-refusal.md`](./00g-redirect-target-refusal.md) — redirect-target validation.

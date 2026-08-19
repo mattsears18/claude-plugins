@@ -89,6 +89,46 @@ The orchestrator's rule list — load-bearing prohibitions across every phase. T
 
 > **Read [Claude Code's command-shape check](https://code.claude.com/docs/en/worktrees#how-claude-code-enforces-isolation) first — this section is necessary but NOT sufficient ([#1308](https://github.com/mattsears18/shipyard/issues/1308)).** The shapes below are genuinely refused and the decompose-or-extract guidance stands. But the trigger that actually fires on an *ordinary* helper invocation — one plain command, no loop, no pipe — is **a braced `${VAR}` parameter expansion**, plus `$(cmd)` in argument position. Neither is a compound shape, so neither is caught by the rule below, which is why #1277's fix (and #1182's, #1289's, #1291's) each shipped without stopping the refusals. Spell expansions unbraced and pass command substitution as an assignment; that fragment carries the controlled experiment. **Both** halves are now CI-enforced tree-wide — braces by [`scripts/brace-expansion-scan.sh`](../../scripts/brace-expansion-scan.sh) ([#1311](https://github.com/mattsears18/shipyard/issues/1311)), argument-position substitutions by [`scripts/command-substitution-scan.sh`](../../scripts/command-substitution-scan.sh) ([#1314](https://github.com/mattsears18/shipyard/issues/1314)) — but a clean scan from both still means only "no decorative braces and no argument-position substitutions," never "this block will run": a block carrying a required-modifier `${VAR:-default}` form is still refused and still needs the decompose-or-extract call below.
 
+#### The measured trigger: an unresolvable shell-variable reference — NOT compoundness, NOT line count ([#1471](https://github.com/mattsears18/shipyard/issues/1471))
+
+**This is the controlled experiment the four prior sweeps ([#1308](https://github.com/mattsears18/shipyard/issues/1308) / [#1311](https://github.com/mattsears18/shipyard/issues/1311) / [#1314](https://github.com/mattsears18/shipyard/issues/1314) / [#1352](https://github.com/mattsears18/shipyard/issues/1352)) each skipped.** Each of those correctly identified *a* refused shape, shipped a real sweep, and still left `setup/04-backlog-divert.md`'s step-4 classify block and `setup/00-config-worktree.md`'s step-0.5 stash block refused — because every one of them was hunting a *token*, and the actual trigger is not a token. Run in a live isolated worktree, one variable at a time, each command repeated 2–3× (see [RATIONALE → The #1471 command-shape experiment](../do-work-RATIONALE.md#the-1471-command-shape-experiment) for the full observation table):
+
+**The guard refuses a block that REFERENCES a shell variable whose value it cannot statically resolve.** The most reliable instance is a variable assigned from a *network* command substitution. The decisive pair — everything held byte-identical except one argument:
+
+```
+bash <plugin-root>/scripts/classify-backlog.sh run … --me mattsears18 …      → RUNS
+bash <plugin-root>/scripts/classify-backlog.sh run … --me "$ME_LOGIN" …      → REFUSED
+```
+
+…where the same block's preamble assigns `ME_LOGIN=$(gh api user --jq '.login')` in both cases. Substituting the literal is the entire fix.
+
+**Four things this experiment RULES OUT, each previously believed:**
+
+| Believed trigger | Verdict | Evidence |
+|---|---|---|
+| Line count / multi-statement compoundness | **Not it** | The 5-statement preamble plus `classify-backlog.sh --help` RUNS. The same preamble plus a *one*-flag `run --repo <literal>` RUNS. |
+| Flag/argument count | **Not it** | The full 8-flag `run … --out …` invocation RUNS when every argument is a literal, preamble and all. |
+| Backslash line continuations | **Not it** | The refused block collapsed onto one line is refused identically; the accepted block split across continuations runs identically. |
+| Assignment-RHS `$(cmd)` ([#1352](https://github.com/mattsears18/shipyard/issues/1352)'s stated axis) | **Not it, as a general rule** | `ME=$(pwd)` runs. `CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)` + `export` + use runs. #1352's sweep was still worth having, but its stated cause does not reproduce. |
+
+**One genuinely new, cleanly-isolated syntactic shape** (single variable toggled, 3 refusals vs 4 acceptances) — an **unquoted** command substitution with a literal path suffix glued on:
+
+```
+CLAUDE_PLUGIN_ROOT=$(git rev-parse --show-toplevel)/plugins/shipyard      → REFUSED
+CLAUDE_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/shipyard"    → RUNS
+```
+
+Quoting is the whole difference; it holds across both `export VAR=…` and split `VAR=…` + `export VAR` forms, and across single-line and multi-line rendering. [`compound-block-scan.sh`](../../scripts/compound-block-scan.sh) now flags it as a third shape alongside the loop and pipe checks — not [`command-substitution-scan.sh`](../../scripts/command-substitution-scan.sh), whose strict assignment-RHS carve-out deliberately sanctions a `$(` sitting immediately after an `=`.
+
+**Also measured, secondary:** shell special parameters (`$?`, `$$`) and unset variables refuse when they form a path-shaped word (`echo $?`, `echo rc=$?`, `echo $UNSET`, `echo "$UNSET/foo"`) but pass inside a `label=value`-shaped word (`echo "rc=$?"`, `echo "x=$?"`). A set environment variable resolves fine (`echo $HOME` runs).
+
+**Two cautions for whoever reads this next.**
+
+1. **The guard is deterministic.** Every command above was re-run 2–3× with no verdict flip. An earlier session hypothesised non-determinism after seeing the same script accepted then refused ~40 minutes apart — that pair differed in more than one way (an argument value *and* a trailing `; echo rc=$?` construct), and the apparent instability disappears once one variable is toggled at a time. Do not build a fix on the premise that this guard is flaky.
+2. **The refusal message's trailing "`without the redirect`" is a canned suffix, not a diagnosis.** It appears verbatim on commands containing no redirect at all (`echo $?`). Reading it as a hint sends you after the wrong variable.
+
+**The still-open question**, stated so it isn't silently re-guessed: *exactly* which command substitutions the guard can statically resolve is not established. `$(cat <file-in-worktree>)` and `$(git rev-parse …)` behave as resolvable in assignment position; `$(gh api …)` does not. That boundary is undocumented harness behavior and the fix above does not depend on it — substituting literals sidesteps the question entirely. Don't extrapolate a rule from it without re-running the experiment.
+
 **The rule, stated once:** a post-relocation ```` ```bash ```` block may contain any number of **plain, independent statements** — sequential `VAR=$(cmd)` assignments, `export`s, `echo`s, and simple `[ cond ] && action` one-liners are all exercised constantly throughout this spec with no reported refusal. What gets refused is a **single command** whose own structure the guard can't cheaply verify stays inside the worktree:
 
 - **No `for`/`while` loop wrapping `gh`/`git` calls.** A loop is inherently a black box to the guard — it can't tell how many operations it performs or against what. Two shapes fix this depending on why the loop exists: **decompose** it into the individual per-item plain commands when the item count is small/bounded and known at spec-authoring time (rare in this corpus); **extract it to a script** (see below) when the item count is data-dependent (the common case — looping over `$session_prs`, a `for wt_dir in $(find ...)` sweep, etc.).

@@ -251,16 +251,17 @@ for f in dispatch-rules.md drain.md inline-trivial.md steady-state.md; do
   fi
 done
 
-# (14) Regression: the built-in FILES list now includes all five swept
-# files (setup/04-backlog-divert.md + the four from #1289) — count-based
-# proxy so a future accidental removal from FILES is caught even though the
-# scanner's own output doesn't name which files it scanned.
+# (14) Regression: the built-in FILES list now includes all six swept
+# files (setup/04-backlog-divert.md + the four from #1289 + #1471's
+# setup/00-config-worktree.md) — count-based proxy so a future accidental
+# removal from FILES is caught even though the scanner's own output doesn't
+# name which files it scanned.
 # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
 files_count=$(grep -cE '^\s*"\$repo_root/plugins/shipyard/commands/do-work/' "$scanner" 2>/dev/null || echo 0)
-if [[ "$files_count" -ge 5 ]]; then
-  ok "scanner's built-in FILES array lists at least 5 files (found $files_count)"
+if [[ "$files_count" -ge 6 ]]; then
+  ok "scanner's built-in FILES array lists at least 6 files (found $files_count)"
 else
-  bad "scanner's built-in FILES array lists fewer than 5 files (found $files_count) — #1289's additions may have regressed"
+  bad "scanner's built-in FILES array lists fewer than 6 files (found $files_count) — #1289's or #1471's additions may have regressed"
 fi
 
 # (15) Regression: steady-state.md's formerly-deferred A.0.5 block (issue
@@ -290,6 +291,147 @@ if [[ -f "$crash_recovery_reap_real" ]]; then
   ok "scripts/crash-recovery-reap.sh exists — the #1291 extraction target for A.0.5's crash-recovery reap logic"
 else
   bad "scripts/crash-recovery-reap.sh is missing — #1291's A.0.5 extraction target should exist"
+fi
+
+# (16) Issue #1471's new third shape: an UNQUOTED command substitution with
+# a literal path suffix glued on is flagged. Measured refused in a live
+# isolated worktree, with quoting as the only toggled variable.
+unquoted_suffix_md="$work/unquoted-suffix.md"
+cat > "$unquoted_suffix_md" <<'FIXTURE'
+```bash
+CLAUDE_PLUGIN_ROOT=$(git rev-parse --show-toplevel)/plugins/shipyard
+export CLAUDE_PLUGIN_ROOT
+```
+FIXTURE
+if bash "$scanner" "$unquoted_suffix_md" >/dev/null 2>&1; then
+  bad "scanner FAILED to detect an unquoted command substitution with a glued path suffix (exited 0)"
+else
+  out="$(bash "$scanner" "$unquoted_suffix_md" 2>&1)"
+  if [[ "$out" == *"unquoted-substitution-path-suffix"* ]]; then
+    ok "scanner detects an unquoted command substitution with a glued path suffix (#1471)"
+  else
+    bad "scanner exited non-zero but did not name the unquoted-substitution-path-suffix shape"
+  fi
+fi
+
+# (17) The QUOTED spelling of the exact same line is NOT flagged — this is
+# the measured-correct form and the one the fix writes into the specs. If
+# this ever starts failing, the scanner is telling authors to rewrite a
+# shape that demonstrably runs.
+quoted_suffix_md="$work/quoted-suffix.md"
+cat > "$quoted_suffix_md" <<'FIXTURE'
+```bash
+CLAUDE_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/shipyard"
+export CLAUDE_PLUGIN_ROOT
+```
+FIXTURE
+if bash "$scanner" "$quoted_suffix_md" >/dev/null 2>&1; then
+  ok "scanner does NOT flag the quoted spelling of the same substitution (#1471)"
+else
+  bad "scanner FALSE-POSITIVED on the quoted (measured-correct) substitution spelling"
+fi
+
+# (18) Arithmetic expansion is NOT command substitution and must never be
+# flagged by the new shape, even when a slash follows it — same carve-out
+# command-substitution-scan.sh carries.
+arith_md="$work/arith.md"
+cat > "$arith_md" <<'FIXTURE'
+```bash
+kb=$(( (bytes + 1023) / 1024 ))
+half=$((total / 2))
+```
+FIXTURE
+if bash "$scanner" "$arith_md" >/dev/null 2>&1; then
+  ok "scanner does NOT flag arithmetic expansion containing a slash (#1471)"
+else
+  bad "scanner FALSE-POSITIVED on arithmetic expansion containing a slash"
+fi
+
+# (19) Regression (issue #1471): setup/00-config-worktree.md — newly added
+# to the built-in FILES list — reports clean. Its two genuinely
+# PRE-relocation blocks (step 0.4's opt-in check and step 0.5's raw
+# `git worktree add` fallback, both run from the user's primary checkout
+# before isolation exists) carry explicit allow markers; every other block
+# in the file is post-relocation and must stay clean on its own merits.
+#
+# CONTENT READS BELOW SCAN ACROSS setup/*.md rather than pinning a fragment
+# filename, per scripts/setup-fragment-content-scan.sh (#1453) — a future
+# router/fragment split could relocate either block, and an assertion pinned
+# to today's filename would break in CI with no local warning. Passing the
+# file path to the SCANNER is not a content read and stays file-specific.
+setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
+config_worktree_real="$setup_dir/00-config-worktree.md"
+
+extract_setup_bash_blocks() {
+  awk '
+    /^[[:space:]]*```bash[[:space:]]*$/ { inb = 1; next }
+    /^[[:space:]]*```[[:space:]]*$/     { inb = 0; next }
+    inb { print }
+  ' "$setup_dir"/*.md
+}
+
+if [[ -f "$config_worktree_real" ]]; then
+  if bash "$scanner" "$config_worktree_real" >/dev/null 2>&1; then
+    ok "scanner reports setup/00-config-worktree.md as clean (#1471)"
+  else
+    bad "scanner found a compound shape in setup/00-config-worktree.md — see script output for the offending block"
+  fi
+fi
+
+# Exactly two allow markers across the whole setup/ fragment set — the two
+# pre-relocation blocks #1471 exempted. A third would mean someone reached
+# for an exemption as a shortcut around a real refused shape.
+marker_count=$(grep -hcF -- '<!-- compound-block-scan: allow -->' "$setup_dir"/*.md 2>/dev/null | awk '{t += $1} END {print t + 0}')
+if [[ "$marker_count" -eq 2 ]]; then
+  ok "setup/*.md carries exactly 2 compound-block-scan allow markers — the two pre-relocation blocks (#1471)"
+else
+  bad "setup/*.md carries $marker_count compound-block-scan allow markers (expected 2) — a new exemption must not be added as a shortcut around a real refused shape"
+fi
+
+# (20) Regression (issue #1471): the two blocks the issue reported as
+# refused on live main must no longer reference an unresolvable shell
+# variable inside a fenced bash block, and the literal-substituted
+# replacements must still be present.
+#
+# The negative needle is matched against fenced-block content only: both
+# files legitimately DISCUSS these shapes in prose (04-backlog-divert.md
+# explains why the literal replaced the variable), and a whole-file grep
+# would fail on the documentation of the fix itself.
+
+# No setup block may pass the gh login as a shell variable — this is the
+# single argument whose substitution flipped the measured verdict.
+# shellcheck disable=SC2016  # literal needle — matched verbatim in the spec, not expanded
+if extract_setup_bash_blocks | grep -qF -- '--me "$ME_LOGIN"'; then
+  bad "a setup/*.md fenced block still passes the gh login as a shell variable — the measured refusal trigger (#1471)"
+else
+  ok "no setup/*.md fenced block passes the gh login as a shell variable (#1471)"
+fi
+
+if grep -qlF -- 'bash <plugin-root literal>/scripts/classify-backlog.sh run' "$setup_dir"/*.md 2>/dev/null; then
+  ok "setup/*.md carries the literal-substituted classify invocation (#1471)"
+else
+  bad "setup/*.md no longer carries the literal-substituted classify invocation — #1471's fix may have regressed"
+fi
+
+if grep -qlF -- '<resolved CLAUDE_PLUGIN_ROOT literal>/.claude-plugin/plugin.json' "$setup_dir"/*.md 2>/dev/null; then
+  ok "setup/*.md reads the plugin version via the substituted literal (#1471)"
+else
+  bad "setup/*.md no longer reads the plugin version via a substituted literal — #1471's fix may have regressed"
+fi
+
+# The step-0.5 read-back specifically must not re-read the plugin root into
+# a shell variable. This one assertion CANNOT scan across setup/*.md: the
+# two-statement stash read is the correct, measured-to-run convention for
+# every OTHER post-relocation block, and a corpus-wide scan would flag those
+# legitimate uses. Pinned to the fragment that owns step 0.5, deliberately.
+# setup-fragment-content-scan: allow
+if [[ -f "$config_worktree_real" ]]; then
+  # shellcheck disable=SC2016  # literal needle — matched verbatim in the spec, not expanded
+  if awk '/^[[:space:]]*```bash[[:space:]]*$/ { inb = 1; next } /^[[:space:]]*```[[:space:]]*$/ { inb = 0; next } inb { print }' "$config_worktree_real" | grep -qF -- 'CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root'; then
+    bad "setup/00-config-worktree.md still reads the plugin root back into a shell variable inside a fenced block — the refused step-0.5 shape (#1471)"
+  else
+    ok "setup/00-config-worktree.md substitutes the plugin-root literal in its fenced blocks (#1471)"
+  fi
 fi
 
 echo
