@@ -62,47 +62,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
 
 3. **Reap all agent worktrees from THIS session — classify the lock-holding PID first.** Cleanup can fire while a dispatched agent is still in flight; reaping its worktree would destroy unpushed work. Run the helper [`scripts/worktree-reap.sh classify-lock <lock-file>`](../../scripts/worktree-reap.sh) against each worktree's lock file. It returns one of `no-lock` / `dead` / `self-ancestor` / `peer-alive` / `unknown` (issue #1206 — lock exists but couldn't be parsed; fail closed). Reap on the first three; defer on `peer-alive` AND `unknown`.
 
-   **3.0. Targeted this-session reap FIRST — by explicit agent-id, before the generic sweep ([#509](https://github.com/mattsears18/shipyard/issues/509)).** The generic loop below (step 3.1) iterates *every* `.git/worktrees/agent-*` directory; on a busy checkout with many accumulated cross-session worktrees it can stall before finishing, stranding this session's own shipped worktrees. See [RATIONALE → Targeted-reap-first ordering](../do-work-RATIONALE.md#step-3--targeted-reap-first-ordering-509) for the repro and the full explanation of why the targeted pass runs before the generic sweep.
-
-   The orchestrator already knows its **own** session's agent-ids — the union of [`reconciled_agent_ids`](./orchestrator-state-reference.md) (every agent reconciled by [steady-state.md step A](./steady-state.md#a-reconcile-the-return)) and the live `in_flight.<slot>.agent_id` values — so it can target them directly. Run the targeted pass first via [`scripts/worktree-reap.sh reap-session-worktrees`](../../scripts/worktree-reap.sh):
-
-   ```bash
-   CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-   export CLAUDE_PLUGIN_ROOT
-   REPO_ROOT="$(git rev-parse --show-toplevel)"
-   # Declare our orchestrator PID so classify-lock short-circuits on our own
-   # locks (issue #263) — same rationale as the generic sweep below.
-   export SHIPYARD_ORCHESTRATOR_PID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" detect-orchestrator-pid)
-
-   # Feed this session's agent-ids (one per line) on stdin: the union of
-   # reconciled_agent_ids and every live in_flight slot's agent_id. The helper
-   # de-dupes, resolves each to its agent-<id> worktree, classifies the lock,
-   # reaps on no-lock/dead/self-ancestor (audit phase "cleanup-session-targeted"),
-   # and defers only on peer-alive. Worktrees the steady-state immediate-reap
-   # (#282) already removed mid-session are skipped silently (no line).
-   targeted_reaped=0
-   targeted_deferred=0
-   # Issue #712 — `unreaped:` is emitted when the removal was ATTEMPTED but the
-   # worktree is still on disk afterwards (auto-mode permission denial, dirty
-   # tree carrying unpushed commits, filesystem error). The helper reports the
-   # verified end state rather than its intent, so this counter is never
-   # inflated by a reap that didn't happen.
-   targeted_unreaped=0
-   while IFS= read -r status_line; do
-     case "$status_line" in
-       reaped:*)   targeted_reaped=$((targeted_reaped + 1)) ;;
-       deferred:*) targeted_deferred=$((targeted_deferred + 1)) ;;
-       unreaped:*) targeted_unreaped=$((targeted_unreaped + 1)) ;;
-     esac
-   done < <(
-     printf '%s\n' "${session_agent_ids[@]}" \
-       | "$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-session-worktrees \
-           --repo-root "$REPO_ROOT" \
-           --session-id "<session-id>"
-   )
-   ```
-
-   `session_agent_ids` is the deduplicated list `reconciled_agent_ids ∪ { in_flight.*.agent_id }` from [`orchestrator-state-reference.md`](./orchestrator-state-reference.md). Fold `targeted_reaped` into the `reaped_worktrees` total, `targeted_deferred` into `deferred_live`, and `targeted_unreaped` into the step 5.5 `unreaped_worktrees` advisory ([#712](https://github.com/mattsears18/shipyard/issues/712)) for the summary — the generic sweep below (step 3.1) is now the **straggler** pass: it sweeps anything the targeted pass didn't already reap (cross-session leftovers, and — defensively — any this-session worktree whose id wasn't in `session_agent_ids`). Running it second means a stall in the generic loop no longer strands this session's own work, because that work is already gone.
+   **3.0 removed — the targeted this-session pass is gone ([#509](https://github.com/mattsears18/shipyard/issues/509) retired).** It existed because the generic sweep below could stall on a busy checkout before reaching this session's own worktrees. Claude Code now removes a subagent worktree automatically when the agent finishes without changes, and its periodic sweep reaps the rest once they pass `cleanupPeriodDays` — skipping any that still hold work. The generic sweep below is retained for prompt, same-session reclamation of worktrees that DID change (a shipped worker commits, so its worktree survives the harness's no-changes auto-clean); the targeted duplicate of it is not. See [Claude Code's worktree cleanup](https://code.claude.com/docs/en/worktrees#clean-up-subagent-and-background-session-worktrees).
 
    **3.1. Generic sweep — the straggler + safety-net pass.** Now iterate the remaining `.git/worktrees/agent-*`. The `self-ancestor` case is load-bearing: the Claude Code harness writes the **orchestrator's** PID into every dispatched agent's lock file (lock content is literally `claude agent <agent-id> (pid <orchestrator-pid>)`), so at end-of-session cleanup the lock PID is alive by definition — it's the process running cleanup. A strict liveness check would defer every worktree the orchestrator itself owns (see [issue #138](https://github.com/mattsears18/shipyard/issues/138)). `self-ancestor` means the lock PID is the declared orchestrator PID (via `SHIPYARD_ORCHESTRATOR_PID`, set below from `detect-orchestrator-pid`'s ancestor walk) OR is in our own process ancestor chain — not a peer agent, just the orchestrator about to retire its own worktree. Safe to reap. The env-var declaration was added in [issue #263](https://github.com/mattsears18/shipyard/issues/263) because the ancestor-walk path from #138 mis-classifies whenever an intermediate harness layer returns empty PPID. See [RATIONALE → Liveness check at shutdown](../do-work-RATIONALE.md#end-of-session-cleanup--why-the-orchestrator-worktree-is-reaped-last):
 
@@ -177,7 +137,7 @@ Each dispatched agent created a worktree and a local branch. After auto-merge fi
      # the helper returns: if it's gone, increment.
      #
      # --bypass-return-check (#1237): this is the straggler pass — by
-     # definition it targets worktrees the targeted reap-session-worktrees
+     # definition it targets worktrees the former targeted pass
      # pass above did NOT already reach (cross-session leftovers, and any
      # this-session worktree whose id wasn't in session_agent_ids), so a
      # .returned_agent_ids record is not guaranteed to exist here.

@@ -571,7 +571,7 @@ if [[ -n "$fixture_dir" && -d "$fixture_dir" ]]; then
     echo
     echo '```bash'
     # shellcheck disable=SC2016  # literal fixture text — must NOT expand
-    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators'
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" triage-orphan-branches'
     echo '```'
   } > "$fixture_a"
   preamble_line_a=$(grep -n '^```bash$' "$fixture_a" | sed -n '1p' | cut -d: -f1)
@@ -602,7 +602,7 @@ if [[ -n "$fixture_dir" && -d "$fixture_dir" ]]; then
     echo
     echo '```bash'
     # shellcheck disable=SC2016  # literal fixture text — must NOT expand
-    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators'
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" triage-orphan-branches'
     echo '```'
   } > "$fixture_b"
   offending_line_b=$(grep -n '^```bash$' "$fixture_b" | sed -n '1p' | cut -d: -f1)
@@ -636,7 +636,7 @@ if [[ -n "$fixture_dir" && -d "$fixture_dir" ]]; then
     echo
     echo '```bash'
     # shellcheck disable=SC2016  # literal fixture text — must NOT expand
-    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" reap-orphan-orchestrators'
+    echo '"$CLAUDE_PLUGIN_ROOT/scripts/worktree-reap.sh" triage-orphan-branches'
     echo '```'
   } > "$fixture_c"
   preamble_line_c=$(grep -n '^```bash$' "$fixture_c" | sed -n '1p' | cut -d: -f1)
