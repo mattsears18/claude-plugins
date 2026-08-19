@@ -1716,4 +1716,129 @@ Verified across both `export VAR=…` and split `VAR=…` / `export VAR` forms, 
 
 **Why the fix is "substitute literals" and not another decomposition.** By the time either block runs, the orchestrator already holds every value the block was re-deriving: the plugin root (resolved and stashed moments earlier in step 0.5), the primary root (step 0.56's stash), and the `gh` login (one plain call). The preambles existed to carry those values *across* `Bash` calls, since shell variables do not survive between them — but the orchestrator's own context survives perfectly well, and substituting from it removes the variable references that the guard actually objects to. `SHIPYARD_REPO_ROOT` is the one value a child process genuinely needs in its environment, and a per-command environment prefix (`SHIPYARD_REPO_ROOT=<literal> bash …/classify-backlog.sh run …`) exports it to the child exactly as the old two-statement `export` did, in one plain command.
 
-**Deliberately out of scope for #1471's fix.** The issue's own step 4 — folding a "does this fenced block actually *run* post-relocation" assertion into the `spec-script-reference-scan.sh` family — was left unimplemented and filed as a follow-up. A scanner that could answer that question would have to model the guard's resolvability boundary, which the paragraph above states is not established; building it on a guessed boundary would repeat the #1308/#1311/#1314/#1352 pattern one more time.
+**Deliberately out of scope for #1471's fix.** The issue's own step 4 — folding a "does this fenced block actually *run* post-relocation" assertion into the `spec-script-reference-scan.sh` family — was left unimplemented and filed as a follow-up. A scanner that could answer that question would have to model the guard's resolvability boundary, which the paragraph above states is not established; building it on a guessed boundary would repeat the #1308/#1311/#1314/#1352 pattern one more time. **That follow-up is [#1474](https://github.com/mattsears18/shipyard/issues/1474), and it measured the boundary — see the next section. Several statements in this section are superseded by it**, most importantly the "still genuinely unknown" paragraph's local-vs-network hypothesis (there is no such split) and the framing of the trigger as an unresolvable *variable reference* (it is not about variables at all).
+
+### The #1474 resolvability-boundary measurement — and why no "does this block run" gate was built
+
+Issue [#1474](https://github.com/mattsears18/shipyard/issues/1474) is #1471's deferred step 4, split into a prerequisite and a decision: **first** measure the guard's resolvability boundary experimentally, **then** decide whether a "does this fenced block actually run post-relocation" gate is buildable on the result. The split existed because four prior sweeps (#1308 / #1311 / #1314 / #1352) each shipped a real fix built on a plausible-but-unverified model of the guard, and all four left the two target blocks refused anyway; a fifth model-first attempt was the predictable failure mode. This section records the measurement, then the decision.
+
+**Method.** Identical to #1471's — every command issued as its own `Bash` tool call from inside a live isolated worktree (`.claude/worktrees/agent-*`), one variable toggled at a time, each verdict re-run 2–3×. "RUNS" means the command reached the shell (a non-zero exit from the command *itself* still counts); "REFUSED" means the guard rejected it before execution. No verdict flipped across repeats — **#1471's determinism finding reproduces.**
+
+#### The headline: #1471's "resolvability" framing does not survive isolation
+
+#1471 left open whether the guard could statically resolve *local* command substitutions but not *network* ones, having observed `$(pwd)`, `$(cat <file-in-worktree>)`, and `$(git rev-parse --show-toplevel)` "behaving as resolvable" while `$(gh api …)` did not. **That distinction does not exist.** Holding the use position fixed and varying only the right-hand side:
+
+| Block | Verdict |
+|---|---|
+| `X=$(pwd)` + `echo "$X"` | REFUSED |
+| `X=$(date)` + `echo "$X"` | REFUSED |
+| `X=$(cat <file-in-worktree>)` + `echo "$X"` | REFUSED |
+| `X=$(git rev-parse --show-toplevel)` + `echo "$X"` | REFUSED |
+| `X=$(gh api user --jq '.login')` + `echo "$X"` | REFUSED |
+| `X=$(curl -sS -m 3 https://api.github.com/zen)` + `echo "$X"` | REFUSED |
+
+Every command substitution is equally unresolvable — local, network, file-read, or otherwise. **Open question 1 (is local-vs-network the real discriminator?) is answered NO**; it was an artifact of the use position in the blocks #1471 happened to test. **Open question 2 (does the guard read the referenced file to resolve `$(cat …)`?) is answered NO** — it does not resolve values at all.
+
+What #1471 mistook for RHS resolvability was the *use position*. Same RHS, only the use varies:
+
+| Block | Verdict |
+|---|---|
+| `X=$(gh api user --jq '.login')` + `echo "$X"` | REFUSED |
+| `X=$(gh api user --jq '.login')` + `echo "$X/scripts/compound-block-scan.sh"` | RUNS |
+| `X=$(pwd)` + `echo "$X"` | REFUSED |
+| `X=$(pwd)` + `echo "$X/scripts/compound-block-scan.sh"` | RUNS |
+
+#### The actual predicate
+
+**A command is refused when it contains a word whose ENTIRE content is a single unresolvable expansion.** Not a token, not a shape, not compoundness — a word. "Unresolvable" means the value is not statically knowable; "resolvable" means assigned from a literal earlier in the same block (transitively — `X="a"` + `Y="$X/b"` + `echo "$Y"` RUNS) or present in the process environment (`echo "$HOME"` RUNS bare).
+
+Adding **any** literal text to that same word rescues it:
+
+| Use of an unresolvable `$X` | Verdict |
+|---|---|
+| `echo "$X"` | REFUSED |
+| `echo "$X/foo"` | RUNS |
+| `echo "prefix-$X"` | RUNS |
+| `echo "value=$X"` | RUNS |
+| `echo "[$X]"` | RUNS |
+| `echo "$X-suffix"` | RUNS |
+| `echo "$X."` | **REFUSED** — see "edges" below |
+
+**It is not about variables at all.** A direct command substitution behaves identically, as a *single* statement with no variable in sight:
+
+| Command | Verdict |
+|---|---|
+| `echo "$(pwd)"` | REFUSED |
+| `echo "$(pwd)/foo"` | RUNS |
+
+**Position within the command is irrelevant — word composition is the whole rule.** The offending word may sit anywhere; all of these refuse with an unresolvable `$X`, and all pass with a literal-assigned one:
+
+| Position | Example | Verdict |
+|---|---|---|
+| Script path | `bash "$X"` | REFUSED |
+| Path with literal suffix | `bash "$X/plugins/shipyard/scripts/compound-block-scan.sh" --help` | RUNS |
+| Flag value | `bash stub.sh run --repo <literal> --me "$X"` | REFUSED |
+| Positional argument | `ls "$X"` | REFUSED |
+| Second word | `echo a "$X"` | REFUSED |
+| Inside a `[ … ]` test | `[ -z "$X" ] && X="unknown"` | REFUSED |
+| Consumer other than `echo` | `printf '%s\n' "$X"` | REFUSED |
+
+**Open question 4 (does resolvability matter only in path-shaped positions?) is answered: position does not matter; the composition of the word does** — and the direction is the opposite of the intuitive one. A *path-suffixed* use is the safe form; a *bare* use is the refused one.
+
+**Open question 3 (does conditional reassignment destroy resolvability?) is answered: not on its own.** `X="literal"` + `[ -z "$X" ] && X="unknown"` + `echo "$X/foo"` RUNS. The step-0.5 block's conditional reassignment flipped it only because `[ -z "$X" ]` *itself contains a bare whole-word `"$X"`* — the same rule, not a separate one. Over an unresolvable X, `X=$(pwd)` + `[ -z "$X" ] && X="unknown"` + `echo "$X/foo"` is REFUSED, and the refusal is attributable entirely to the test expression.
+
+#### This re-explains every #1471 observation, including its secondary ones
+
+The decisive triple reproduces exactly. Re-running #1471's blocks against a harmless stub in place of `classify-backlog.sh`:
+
+| Block | Verdict |
+|---|---|
+| Full 5-statement preamble + 8-flag invocation, `--me "$ME_LOGIN"`, CSV vars unassigned | REFUSED |
+| Same, CSV vars replaced by literals, `--me "$ME_LOGIN"` retained | REFUSED |
+| Same, `--me` replaced by a literal login | RUNS |
+
+Under the measured predicate this is not mysterious: `--me "$ME_LOGIN"` is a bare whole-word unresolvable expansion, and the preamble's own uses (`bash "$CLAUDE_PLUGIN_ROOT/scripts/…"`) all carry literal suffixes, which is why the preamble alone was never the problem. The old step-0.5 block was refused for the same reason several times over — `git -C "$CLAUDE_PLUGIN_ROOT"`, `[ -z "$SHIPYARD_PLUGIN_ROOT_SHA" ]`, and `printf '%s\n' "$SHIPYARD_PLUGIN_ROOT_VERSION"` are each a bare whole-word expansion.
+
+**#1471's secondary observation was the same rule, generalized one notch wrong.** It recorded special parameters and unset variables as refusing "when they form a path-shaped word" but passing "inside a `label=value`-shaped word." The real axis is **whole-word vs. literal-adjacent**, not path-shaped vs. label-shaped — `echo "rc=$?"` passes because `rc=` is adjacent literal text, and `echo "$?"` fails because nothing else is in the word.
+
+**A directly useful corollary.** The stash-read pattern the orchestrator spec uses everywhere is safe *provided every use carries a literal suffix* — the two-statement read is not the risk, the bare use is:
+
+| Block (identical two-statement stash-read preamble) | Verdict |
+|---|---|
+| … + `bash "$CLAUDE_PLUGIN_ROOT/plugins/shipyard/scripts/compound-block-scan.sh" --help` | RUNS |
+| … + `git -C "$CLAUDE_PLUGIN_ROOT" rev-parse --short HEAD` | REFUSED |
+
+#### Three tiers of unresolvability, not one
+
+| Tier | Example | Bare word | Literal-adjacent |
+|---|---|---|---|
+| Unset **name** | `$UNSET_VARIABLE_XYZ` | REFUSED | **REFUSED** (`"value=$U"` and `"$U/foo"` both refuse) |
+| Substitution-derived value | `X=$(pwd)`, `$(gh api …)` | REFUSED | RUNS |
+| Special parameter | `$?`, `$$` | REFUSED | RUNS (`"rc=$?"`) |
+
+An unset *name* is strictly worse than a substitution-derived value: literal adjacency does not rescue it. Nothing in the corpus should be referencing an unset name anyway, but the asymmetry is recorded so it isn't mistaken for a measurement error later.
+
+#### Two edges that fit no coherent rule — recorded because they are the reason this is not modelable
+
+1. **`echo "$X."` is REFUSED while `echo "$X-suffix"` RUNS** (both re-tested; deterministic). A single trailing `.` does not count as the rescuing literal text that `-suffix`, `/foo`, `[…]`, and `prefix-` all do. The plausible reading is that `.` is itself a path token, but that is inference, not measurement.
+2. **#1471's unquoted-substitution shape.** `VAR=$(git rev-parse --show-toplevel)/plugins/shipyard` is REFUSED while `VAR="$(git rev-parse --show-toplevel)/plugins/shipyard"` RUNS, even though both carry the same literal suffix. Quoting should be irrelevant to word composition; it is not.
+
+These are not curiosities. They are the evidence that the guard is a **judgment about verifiability, not a static resolver**, and that its edges are undocumented harness behavior which can be retuned without notice.
+
+### The #1474 scanner decision: build nothing
+
+**Decision: do not build a "does this block run" gate — neither folded into `spec-script-reference-scan.sh` nor as a fourth shape in `compound-block-scan.sh`.** Ship the measurement, correct the prose that states a now-disproven model, and stop there. The reasoning, recorded so this is not re-proposed a fifth time:
+
+**1. The narrow rule #1474 proposed as the cheap win is measured FALSE and must not be built.** The issue floated *"no fenced block references a variable assigned from a network command substitution earlier in the same block"* as checkable today and possibly the whole win. It is checkable, and it is wrong: `$(pwd)` and `$(cat …)` refuse identically to `$(gh api …)`. A gate encoding it would pass blocks that are refused and flag blocks that run — worse than no gate, because it would carry CI's authority.
+
+**2. The measured-correct rule is unusable against this corpus.** A prototype implementing the real predicate — flag any word inside a ```` ```bash ```` fence consisting solely of `"$VAR"`, `$VAR`, or `"$(…)"` — was run against `compound-block-scan.sh`'s curated six-file list. It produced **152 findings**: 74 in `steady-state.md`, 36 in `setup/00-config-worktree.md`, 21 in `dispatch-rules.md`, 18 in `drain.md`, 3 in `inline-trivial.md`, 0 in `setup/04-backlog-divert.md` (clean since #1471). Sampling shows the overwhelming majority are not refusals at all: **pre-relocation blocks** where the guard is not active (step 0.4's opt-in check and step 0.5's raw `git worktree add` fallback — both already `<!-- compound-block-scan: allow -->`-marked), and **illustrative pseudo-code** that no orchestrator ever pastes into a single `Bash` call (shell-function bodies such as `reconcile_in_flight_slot_from_ground_truth "$sibling_slot"`, and `if`/`case` skeletons that `dont.md` already forbids post-relocation on other grounds).
+
+**3. The false-positive problem is structural, not a tuning problem.** To be correct, the gate would need to know, per fenced block, (a) whether it runs post-relocation and (b) whether it is executed verbatim as one `Bash` call. **Neither fact is expressed anywhere in the markdown**, and neither is inferable from the block's own text. `compound-block-scan.sh` manages (a) today with a curated FILES list plus two inline allow markers — coarse granularity that works because its three shapes are rare. Here the same approach needs ~150 individual discriminations, and the annotation burden is precisely where the errors would live. Worse, the failure mode is asymmetric in the wrong direction: an *un*annotated genuinely-refused block stays invisible, which is exactly the #1471 failure the gate would exist to prevent.
+
+**4. Inverting the marker does not rescue it.** An opt-in `<!-- runs-verbatim -->` marker gating the check would have a low false-positive rate, but it only protects blocks someone remembered to annotate — and the class that actually broke (a block that quietly accumulated a new variable reference across several unrelated issues, per #1398's re-growth of the step-4 block) is precisely the class nobody re-annotates.
+
+**5. Encoding today's edges into CI makes them load-bearing.** The guard is harness-owned, undocumented, and demonstrably has at least two behaviors (the trailing-`.` case, the unquoted-substitution case) that fit no rule anyone would write down deliberately. A CI gate asserting them turns a harness retune into repo-wide red CI, and — the more expensive risk — ossifies a snapshot of the boundary into a script that future readers will trust over re-measurement. That is the #1308/#1311/#1314/#1352 pattern with a longer half-life.
+
+**What ships instead of a gate.** The thing that was missing was never a scanner — it was a *correct, stated rule an author can apply*, plus removal of the incorrect one already in the tree. Three prose sites asserted the disproven network-substitution model and are corrected in this same change: [`compound-block-scan.sh`](../scripts/compound-block-scan.sh)'s header, [`dont.md`'s post-relocation section](./do-work/dont.md), and [`setup/04-backlog-divert.md`'s step-4 callout](./do-work/setup/04-backlog-divert.md). The authoring rule they now carry — **never let an unresolvable expansion be the whole word; give it a literal suffix, or substitute the literal outright** — is strictly more actionable than "substitute every value as a literal," because it explains *why* the stash-read pattern used throughout the spec is safe and *which* uses of it are not.
+
+**What was NOT audited to conclusion, stated so it isn't assumed.** Whether any *live* post-relocation, run-verbatim block in the corpus is currently refused under the measured predicate was **sampled, not exhaustively audited**. The sampled `inline-trivial.md` findings turned out to be `if`/`case` constructs already forbidden by `dont.md`'s existing rule, so no new live refusal was confirmed — but absence of evidence across a 152-finding prototype output is not evidence of absence. That exhaustive audit is filed as a follow-up rather than folded into this change.

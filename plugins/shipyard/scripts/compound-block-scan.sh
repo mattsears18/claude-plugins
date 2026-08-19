@@ -35,15 +35,40 @@
 #     Quoting is the only difference; it holds across both export forms and
 #     both line renderings.
 #
-# #1471's headline finding is NOT expressible as a shape at all, and is
-# deliberately not attempted here: the guard refuses a block that REFERENCES
-# a shell variable whose value it cannot statically resolve (most reliably
-# one assigned from a network command substitution such as
-# `ME_LOGIN=$(gh api user --jq .login)`). Detecting that mechanically would
-# require modeling the guard's resolvability boundary, which #1471 explicitly
-# left unestablished — see do-work-RATIONALE.md's "The #1471 command-shape
-# experiment" for the full observation table and the still-open question.
-# The spec-side fix is to substitute literals, which sidesteps it entirely.
+# #1471's headline finding is deliberately not attempted here. #1471 stated
+# it as "the guard refuses a block that REFERENCES a shell variable whose
+# value it cannot statically resolve, most reliably one assigned from a
+# NETWORK command substitution" -- issue #1474 then measured the boundary
+# #1471 left unestablished, and BOTH halves of that statement are wrong:
+#
+#   - There is no local-vs-network split. `X=$(pwd)`, `X=$(date)`,
+#     `X=$(cat <file-in-worktree>)`, `X=$(git rev-parse --show-toplevel)`,
+#     `X=$(gh api ...)` and `X=$(curl ...)` all behave IDENTICALLY. The guard
+#     does not resolve command-substitution values at all.
+#   - It is not about variable references either. `echo "$(pwd)"` is refused
+#     as a single statement with no variable in sight.
+#
+# The measured predicate is: a command is refused when it contains a WORD
+# whose ENTIRE content is a single unresolvable expansion (`"$VAR"` or
+# `"$(cmd)"`). Any adjacent literal text in the same word rescues it --
+# `"$VAR/foo"`, `"prefix-$VAR"`, `"value=$VAR"` all RUN. Position is
+# irrelevant (script path, flag value, positional arg, or inside a
+# `[ -z "$VAR" ]` test all refuse alike).
+#
+# #1474 nonetheless decided AGAINST building this into a scanner, and that
+# decision is deliberate rather than pending: a prototype of the exact
+# measured rule produced 152 findings across this scanner's own six curated
+# files, overwhelmingly on pre-relocation blocks (where the guard is inactive)
+# and on illustrative pseudo-code never pasted into a single Bash call.
+# Distinguishing those requires knowing, per fenced block, whether it runs
+# post-relocation AND whether it is executed verbatim -- neither is expressed
+# anywhere in the markdown. See do-work-RATIONALE.md's "The #1474
+# resolvability-boundary measurement" for the full observation table and
+# "The #1474 scanner decision: build nothing" for the five-point reasoning.
+# Do not re-propose this scanner without re-running the experiment first.
+#
+# The spec-side fix is to give every expansion a literal suffix, or to
+# substitute the literal outright, which sidesteps the boundary entirely.
 #
 # This scanner flags exactly those three shapes inside ```bash fenced blocks,
 # in the spirit of `fence-balance-scan.sh` / `conflict-marker-scan.sh`: a
