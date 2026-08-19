@@ -36,7 +36,11 @@
 #   (B) the ruleset fallback is present in setup/01-repo-recovery.md step 1.3;
 #   (C) the ruleset-gating jq decision itself: a ruleset requiring checks or a
 #       PR resolves "gated" (true), while a ruleset with no such rule (or an
-#       empty ruleset) resolves "ungated" (false).
+#       empty ruleset) resolves "ungated" (false);
+#   (D) the ruleset path's printed `required_checks=` diagnostic is a REAL
+#       COUNT, not the old boolean sentinel that under-reported a 5-context
+#       ruleset as 1 (issue #1488) — while every gated/ungated verdict, and the
+#       empty-context-list gating floor, stay unchanged.
 #
 # Run with:
 #   bash plugins/shipyard/scripts/tests/ruleset-aware-required-checks.test.sh
@@ -262,6 +266,112 @@ if command -v jq >/dev/null 2>&1; then
   fi
 else
   printf '  %sSKIP%s  behavioral jq tests (jq not installed)\n' "$GREEN" "$RESET"
+fi
+
+# ---------------------------------------------------------------------------
+# (D) The ruleset path reports a REAL COUNT, not a boolean sentinel (#1488).
+#
+# Before #1488, read_required_checks() set count=1 on the ruleset path as a
+# deliberate boolean sentinel meaning "a required_status_checks rule exists".
+# decide() only ever compares that against 0, so the VERDICT was always right —
+# but the value is printed under the count-shaped `required_checks=` label, so
+# mattsears18/shipyard (whose `main` ruleset requires FIVE contexts) reported
+# `required_checks=1`. CLAUDE.md designates this script as the single executable
+# source of truth a maintainer runs "rather than reasoning about the shape by
+# hand", so an under-reporting diagnostic can send them chasing a phantom
+# ruleset regression during exactly the incident where a misread is expensive —
+# the same misleading-diagnostic failure family as #716.
+#
+# The `rules/branches/{branch}` response already carries every required context
+# by name (`.parameters.required_status_checks[].context`), so the true count
+# costs no extra API call. These cases pin BOTH halves: the diagnostic reports
+# the true count, AND every gated/ungated verdict is unchanged — including the
+# empty-context-list floor, which must still resolve to a gating value rather
+# than flipping to 0 and silently turning a gated repo ungated.
+# ---------------------------------------------------------------------------
+if [[ -f "$DETECTOR" ]]; then
+  assert_contains "$DETECTOR" '.parameters.required_status_checks[]?.context' \
+    "detector reads the ruleset's required contexts by name, for a true count (#1488)"
+fi
+
+if [[ -f "$DETECTOR" ]] && command -v jq >/dev/null 2>&1; then
+  # End-to-end through the real script with `gh` stubbed on PATH: the classic
+  # protection probe 404s (this repo's shape), so the ruleset fallback runs and
+  # the rules endpoint returns whatever payload the case under test supplies.
+  detector_diag() {
+    local rules_json="$1"
+    local stub_dir out
+    stub_dir="$(mktemp -d -t ungated-ruleset-stub.XXXXXX)" || return 1
+    printf '%s' "$rules_json" > "$stub_dir/rules.json"
+    cat > "$stub_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *protection/required_status_checks/contexts*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+  *rules/branches/*)  cat "$UNGATED_STUB_RULES" ;;
+  *viewerPermission*) echo ADMIN ;;
+  *defaultBranchRef*) echo main ;;
+  *allow_auto_merge*) echo true ;;
+  *) exit 1 ;;
+esac
+STUB
+    chmod +x "$stub_dir/gh"
+    out="$(UNGATED_STUB_RULES="$stub_dir/rules.json" PATH="$stub_dir:$PATH" \
+      bash "$DETECTOR" fake/repo 2>&1)"
+    rm -rf "$stub_dir"
+    printf '%s' "$out"
+  }
+
+  # assert_diag <label> <rules-json> <expected-count> <expected-verdict>
+  assert_diag() {
+    local label="$1" rules_json="$2" want_count="$3" want_verdict="$4"
+    local diag got_count
+    diag="$(detector_diag "$rules_json")"
+    got_count="$(printf '%s\n' "$diag" | sed -n 's/.*required_checks=\([0-9][0-9]*\).*/\1/p' | head -1)"
+    if [[ "$got_count" == "$want_count" ]] && printf '%s\n' "$diag" | grep -q "verdict=${want_verdict}"; then
+      assert_pass "$label (required_checks=$got_count, verdict=$want_verdict)"
+    else
+      assert_fail "$label (want required_checks=$want_count + verdict=$want_verdict; got count=[${got_count:-none}])"
+      printf '    diagnostic was: %s\n' "$(printf '%s' "$diag" | tr '\n' ';')"
+    fi
+  }
+
+  # The regression case: this repo's own shape. Pre-#1488 this printed 1.
+  assert_diag "shipyard-shape 5-context ruleset reports the true count, not the old sentinel 1 (#1488)" \
+    '[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request"},
+      {"type":"required_status_checks","parameters":{"required_status_checks":[
+        {"context":"conflict markers"},{"context":"gitleaks"},{"context":"bash test suites"},
+        {"context":"shell tests"},{"context":"shellcheck"}]}}]' \
+    5 gated
+
+  assert_diag "single-context ruleset reports 1 (a genuine count that happens to equal the old sentinel)" \
+    '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"tests"}]}}]' \
+    1 gated
+
+  # Two rulesets can apply to the same branch and require the SAME context. The
+  # number a human reads is distinct gating checks, not rule mentions.
+  assert_diag "duplicate contexts across two rules are counted once" \
+    '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"tests"},{"context":"lint"}]}},
+      {"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"tests"}]}}]' \
+    2 gated
+
+  # Behavior-preservation floor. A required_status_checks rule whose context
+  # list is empty or absent still resolves to a GATING value; dropping the floor
+  # would flip these shapes gated => ungated, which #1488 must not do.
+  assert_diag "required_status_checks rule with an empty context list keeps the gating floor of 1" \
+    '[{"type":"required_status_checks","parameters":{"required_status_checks":[]}}]' \
+    1 gated
+
+  assert_diag "required_status_checks rule with no parameters at all keeps the gating floor of 1" \
+    '[{"type":"required_status_checks"}]' \
+    1 gated
+
+  # Unchanged from #645/#716: a pull_request-only ruleset genuinely gates
+  # nothing on CI, so it must still read 0 and stay ungated.
+  assert_diag "pull_request-only ruleset still reports 0 and stays ungated (#645/#716 preserved)" \
+    '[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"pull_request"}]' \
+    0 ungated
+else
+  printf '  %sSKIP%s  #1488 true-count cases (detector or jq unavailable)\n' "$GREEN" "$RESET"
 fi
 
 echo
