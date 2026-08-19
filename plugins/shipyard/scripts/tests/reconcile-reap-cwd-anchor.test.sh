@@ -165,10 +165,37 @@ assert_count_at_least "$steady_state_path" \
 #    (the porcelain walk prefers the orchestrator-* entry, falls back to the
 #    first `worktree ` entry = primary). The orchestrator-prefer awk pattern
 #    must appear for each anchor.
+#
+#    Issue #1479 relaxed this needle from the full
+#    `p ~ /…orchestrator-/{print p; exit}` clause to just the match
+#    expression. steady-state.md's step-B anchor folded its
+#    `[ -z "$STABLE_DIR" ] && STABLE_DIR=$(awk …)` fallback INTO the single
+#    awk program (that statement's test operand was a bare whole-word
+#    expansion the worktree-isolation guard refuses — see do-work/dont.md's
+#    #1474 corrected rule), so its clause is now spelled
+#    `if(p ~ /…orchestrator-/){print p; found=1; exit}`. The preference this
+#    assertion actually guards — orchestrator-* first — is unchanged and is
+#    exactly what the match expression expresses; the surrounding action
+#    block is incidental syntax. Assertion 6a below pins the folded-in
+#    fallback half that used to be its own statement, so relaxing this
+#    needle loses no coverage.
 assert_count_at_least "$steady_state_path" \
-  'p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}' \
+  'p ~ /\/\.claude\/worktrees\/orchestrator-/' \
   4 \
   "all four anchors prefer the orchestrator-* worktree"
+
+# 6a) Issue #1479 — steady-state.md's step-B anchor must still fall back to
+#     the FIRST `worktree ` entry (= the primary checkout) when no
+#     orchestrator-* entry exists. That fallback used to be a following
+#     `[ -z "$STABLE_DIR" ] && STABLE_DIR=$(awk …)` statement and now lives
+#     inside the same awk program's END block; without it the anchor would
+#     silently degrade to `cd /` on a session with no orchestrator worktree.
+assert_contains "$steady_state_hot_path" \
+  'END{if(!found && first!="")print first}' \
+  "step-B anchor keeps the first-worktree-entry (primary) fallback after #1479 folded it into the awk program"
+assert_contains "$steady_state_hot_path" \
+  'if(first=="")first=p' \
+  "step-B anchor records the first porcelain entry so the fallback has something to emit (#1479)"
 
 # 7) Anchor-before-reap ORDERING per block: in each reap block the cd-anchor
 #    must appear BEFORE that block's `git worktree prune`. We verify by

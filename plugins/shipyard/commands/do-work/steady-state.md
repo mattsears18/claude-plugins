@@ -119,42 +119,29 @@ Extract the `usage` payload from the dispatch tool result — the harness emits 
 
 **Every A.0 bash call MUST be preceded by this preamble in the same Bash tool call** — without it, a reconcile-turn cwd-leak (the harness relocates the orchestrator's cwd into the just-returned agent's `agent-*` worktree) makes session-id derivation read the wrong directory and silently lose token attribution, the `session_prs` append, and the cost comment for the turn. This solves a different problem than the reap blocks' `STABLE_DIR` cwd anchor ([#497](https://github.com/mattsears18/shipyard/issues/497)) — reading the session-id file correctly, not avoiding a doomed-directory delete; the two compose. See [RATIONALE → A.0 preamble mandate](../do-work-RATIONALE.md#a0-preamble-mandate-548) for the full failure chain, repro, and how the defenses compose.
 
+**Run it as its own plain Bash call and read the id off stdout ([#1479](https://github.com/mattsears18/shipyard/issues/1479) — provenance in [RATIONALE → #1479 residual decomposition](../do-work-RATIONALE.md#the-1479-residual-decomposition-the-last-9-bucket-4-findings)).** [`session-identity.sh resolve-session-id`](../../scripts/session-identity.sh) folds the derive, the `.shipyard-session-id` fallback, and #548's loud-empty diagnostic into one call, so this preamble carries no bare whole-word expansion for the guard to refuse:
+
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-# Derive the session id from the NEWEST orchestrator-* worktree's stash.
-# cwd-independent given the explicit --repo-root (immune to the #477 cwd-leak
-# that fires on reconcile turns). See setup.md §0.55 for the full rationale.
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
-  --repo-root "$REPO_ROOT" 2>/dev/null)
-[ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
-# Loud abort when both derive paths return empty — cascading exit-64s from
-# empty --session-id are silently mis-read as success; a loud log line + skip
-# makes the cwd-leak immediately visible in the turn transcript (#548).
-if [ -z "$SESSION_ID" ]; then
-  echo "[session-id-derive] empty — aborting A.0 turn writes; check for #477 cwd-leak (orchestrator cwd may be inside an agent-* worktree)"
-  # Leave tokens_attributed=false; set A05_DISPATCH_TOKENS=0 so A.0.5's
-  # wasted-dispatch accounting sees 0 tokens rather than an unbound variable.
-  A05_DISPATCH_TOKENS=0
-fi
+"$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" resolve-session-id
 ```
 
-Run this preamble block **once per Bash tool call** that contains an A.0 `bump-tokens` invocation — Bash tool calls are hermetic (variables from call N do not survive to call N+1), so each call that needs `SESSION_ID` must re-derive it.
+**Non-empty stdout** → that value is `<session-id>` for the rest of this turn. Substitute it as a **literal** into every `--session-id` argument below, rather than carrying it in a shell variable that wouldn't survive to the next Bash tool call anyway ([#354](https://github.com/mattsears18/shipyard/issues/354)).
+
+**Empty stdout** → both derive paths failed (the script already printed the loud `[session-id-derive] empty …` line on stderr, so the cwd-leak stays visible in the turn transcript). **Abort this turn's A.0 writes** rather than issuing them with an empty `--session-id` — cascading exit-64s from an empty id are silently mis-read as success. Leave `tokens_attributed=false`, and treat `A05_DISPATCH_TOKENS` as `0` so A.0.5's wasted-dispatch accounting sees 0 tokens rather than an unbound variable.
 
 #### Strict path — full input/output/cache breakdown (preferred)
 
 **Pass all four token counts through to `bump-tokens` separately** — never collapse them into `--input <total_tokens>`. Output tokens are priced at 5× input on every Anthropic model the pricing table covers, and `cache_read_input_tokens` are priced at 10% of input. Collapsing the breakdown understates real session cost by 20-50% and makes prompt-cache hit-rate invisible. See [#225](https://github.com/mattsears18/shipyard/issues/225) for the regression that prompted this requirement (the previous spec allowed a "`total_tokens` alone is enough for first-pass attribution" fallback that callers took universally, leaving every per-invocation record with `output: 0` and `cache_*: 0`).
 
-Invoke (after the A.0 required preamble above — `SESSION_ID` is already set):
+Invoke (after the A.0 required preamble above — `<session-id>` is the literal it resolved; skip this call entirely if it came back empty):
 
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-# Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
-if [ -n "$SESSION_ID" ]; then
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" bump-tokens \
-  --session-id "$SESSION_ID" \
+  --session-id <session-id> \
   --issue <N>            `# present for issue-work and fix-checks-only on issue-anchored PRs` \
   --pr <M>               `# present for fix-checks-only, fix-rebase, fix-main-ci, fix-failing-prs-batch (and issue-work after it shipped)` \
   --input <input_tokens> \
@@ -163,7 +150,6 @@ if [ -n "$SESSION_ID" ]; then
   --cache-creation <cache_creation_input_tokens> \
   --mode <mode> --model <model-id> \
   --allow-degraded-init --degraded-init-repo "<owner/repo>"
-fi
 ```
 
 All four `--input` / `--output` / `--cache-read` / `--cache-creation` flags are **required** on the strict path — pass `0` explicitly if the harness reports the field as missing or zero (rare), don't omit the flag. Both `--issue` and `--pr` are optional from the helper's perspective — pass whichever the dispatch surfaced. `bump-tokens` will route the attribution into `.tokens.totals` always, into `.tokens.per_issue[<N>]` if `--issue` is present, and into `.tokens.per_pr[<M>]` if `--pr` is present.
@@ -177,16 +163,13 @@ When the `<usage>` block has `total_tokens` but no breakdown, fall back to the *
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-# Guard: skip if preamble failed to derive SESSION_ID (loud log already emitted above).
-if [ -n "$SESSION_ID" ]; then
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" bump-tokens \
-  --session-id "$SESSION_ID" \
+  --session-id <session-id> \
   --issue <N> --pr <M> \
   --input <total_tokens>          `# total_tokens lands in --input; other token flags MUST be omitted` \
   --mode <mode> --model <model-id> \
   --allow-degraded-init --degraded-init-repo "<owner/repo>" \
   --degraded-total-only
-fi
 ```
 
 `--degraded-total-only` is mutually exclusive with non-zero `--output` / `--cache-read` / `--cache-creation` — passing those alongside is rejected with exit 64. It also requires `--input <total_tokens>` to be **non-zero** ([#320](https://github.com/mattsears18/shipyard/issues/320)): `--input 0` is the orchestrator copy-paste trap (pasting the breakdown-fields default into the degraded path and silently recording $0 across every dispatch in the session), and the helper rejects it with exit 64. The bump lands in `.tokens.totals.input` (and the per-issue / per-PR buckets if scoped); the per-invocation entry is stamped `degraded: true`, and `.tokens.degraded_attribution_count` increments by 1 so the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) can surface a banner.
@@ -544,10 +527,11 @@ Once A.0.6 has run, proceed to A.1.
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
-  --repo-root "$REPO_ROOT" 2>/dev/null)
-[ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+# One-call derive + .shipyard-session-id fallback (#1479). The pre-#1479
+# inline form passed the repo root and then tested the derived id for
+# emptiness; both words were bare whole-word expansions the
+# worktree-isolation guard refuses. See dont.md's #1474 corrected rule.
+SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" resolve-session-id)
 agent_id="${.in_flight[<slot-id>].agent_id}"
 RETURNED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "${SESSION_ID:-unknown}" \
@@ -627,10 +611,8 @@ For **issue work** (`shipped` / `blocked` / `errored`):
   else
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
-  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
-    --repo-root "$REPO_ROOT" 2>/dev/null)
-  [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+  # resolve-session-id folds in the .shipyard-session-id fallback (#1479).
+  SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" resolve-session-id)
   if [ -z "$SESSION_ID" ]; then
     echo "[session-id-derive] empty — skipping A.1 cost-comment post; check for #477 cwd-leak (#548)"
   else
@@ -805,10 +787,8 @@ For **fix-checks work** (`green` / `noop` / `blocked`):
   export CLAUDE_PLUGIN_ROOT
   # Derive the session id cwd-independently (immune to the #477 cwd-leak that
   # fires on reconcile turns — see A.0 required preamble and setup.md §0.55).
-  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-  SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" derive-session-id \
-    --repo-root "$REPO_ROOT" 2>/dev/null)
-  [ -z "$SESSION_ID" ] && SESSION_ID=$(cat "$REPO_ROOT/.shipyard-session-id" 2>/dev/null)
+  # resolve-session-id folds in the .shipyard-session-id fallback (#1479).
+  SESSION_ID=$("$CLAUDE_PLUGIN_ROOT/scripts/session-identity.sh" resolve-session-id)
   if [ -z "$SESSION_ID" ]; then
     echo "[session-id-derive] empty — skipping A.1 cost-comment refresh; check for #477 cwd-leak (#548)"
   else
@@ -992,9 +972,12 @@ completed_agent_id="${.in_flight[<slot-id>].agent_id}"
 # Process substitution, not a pipe — `awk` still reads the porcelain output
 # as a single command's input, but the shape has no bare `|` spanning a
 # shell command boundary (issue #1289, mirrors #1277's decomposition rule).
-STABLE_DIR=$(awk '/^worktree /{p=substr($0,10)} p ~ /\/\.claude\/worktrees\/orchestrator-/{print p; exit}' \
-  <(git worktree list --porcelain 2>/dev/null))
-[ -z "$STABLE_DIR" ] && STABLE_DIR=$(awk '/^worktree /{print substr($0,10); exit}' \
+# The orchestrator-first / first-entry-as-fallback preference lives INSIDE
+# the one awk program rather than in a following two-path fallback
+# statement, whose test operand was a bare whole-word expansion the guard
+# refuses (issue #1479). Same two-path result, same ordering — still BEFORE
+# the cd and the reap, preserving cwd-anchor-before-reap (#497).
+STABLE_DIR=$(awk '/^worktree /{p=substr($0,10); if(first=="")first=p; if(p ~ /\/\.claude\/worktrees\/orchestrator-/){print p; found=1; exit}} END{if(!found && first!="")print first}' \
   <(git worktree list --porcelain 2>/dev/null))
 cd "${STABLE_DIR:-/}" 2>/dev/null || cd /
 PRIMARY_CHECKOUT=$(awk '/^worktree /{print substr($0,10); exit}' \
@@ -1096,27 +1079,42 @@ Step B identifies the worktree by `agent_id` (available in working memory at rel
 
 **Stamp the invariant-line tokens immediately, from this same wide-fetch payload, BEFORE classification runs** ([#1246](https://github.com/mattsears18/shipyard/issues/1246)) — `scripts/backlog-filter.sh summary` is the single-source-of-truth implementation (the same pure-function split as `classify` itself), so this count can never drift from what [step E's invariant line](#e-invariant-line-end-of-every-steady-state-turn) reports. `unfiltered_open_count` ([added in #332](https://github.com/mattsears18/shipyard/issues/332)) is the wide fetch's raw array length; `me_assigned_open` ([added in #1194](https://github.com/mattsears18/shipyard/issues/1194)) narrows that same wide-fetch payload to the count of issues assigned to the gh-authenticated user — the bucket a wrong assignee filter is most likely to erase:
 
+**Substitute the login as a LITERAL and feed the payload by FILE, not a herestring ([#1479](https://github.com/mattsears18/shipyard/issues/1479)).** The old shape passed the login as a bare `--me` variable read and piped the payload in as a `<<<` herestring — *two* bare whole-word expansions in one command, and [`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word) refuses the command on either one alone — fixing only `--me` leaves it refused. Mirror [setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog): read the login as its own plain call, materialize the wide fetch to a file with the `Write` tool, and let each downstream command read that file.
+
+```bash
+gh api user --jq '.login'
+```
+
+```bash
+gh issue list --repo <owner/repo> --state open --limit 200 \
+  --json number,title,labels,assignees,body,author,updatedAt,milestone \
+  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, updatedAt, milestone: (.milestone.title // null)}]'
+```
+
+`Write` that array to `.shipyard-fetched-issues.json` in the orchestrator worktree root — the same scratch path step 4 already uses, overwritten by design on each re-check. (`Write` and `Bash` are different tools, so there's no variable-survival concern between them.) Then summarize, redirecting the result to a second scratch file so the extraction needs neither a pipe nor a herestring:
+
 ```bash
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
-ME_LOGIN=$(gh api user --jq '.login')
-FETCHED_ISSUES_JSON=$(gh issue list --repo <owner/repo> --state open --limit 200 \
-  --json number,title,labels,assignees,body,author,updatedAt,milestone \
-  --jq '[.[] | {number, title, body, labels: [.labels[].name], assignees: [.assignees[].login], author: {login: .author.login}, updatedAt, milestone: (.milestone.title // null)}]')
+"$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me <me-login literal, from the call above> \
+  < .shipyard-fetched-issues.json > .shipyard-backlog-summary.json
+jq -r '"\(.unfiltered_open_count) \(.me_assigned_open)"' .shipyard-backlog-summary.json
+```
 
-SUMMARY=$("$CLAUDE_PLUGIN_ROOT/scripts/backlog-filter.sh" summary --me "$ME_LOGIN" <<< "$FETCHED_ISSUES_JSON")
-# Herestrings, not pipes — same #1289 reason as the SUMMARY line above.
-UNFILTERED_OPEN=$(jq -r '.unfiltered_open_count' <<< "$SUMMARY")
-ME_ASSIGNED_OPEN=$(jq -r '.me_assigned_open' <<< "$SUMMARY")
+Read the two counts off that last line and stamp them as literals (`<session-id>` is the A.0 preamble's resolved literal):
+
+```bash
+CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
+export CLAUDE_PLUGIN_ROOT
 FETCH_TS=$(date -u +%H:%M:%S)
 "$CLAUDE_PLUGIN_ROOT/scripts/session-state.sh" update --session-id "<session-id>" \
-  --set ".unfiltered_open_count = $UNFILTERED_OPEN" \
-  --set ".me_assigned_open = $ME_ASSIGNED_OPEN" \
+  --set ".unfiltered_open_count = <unfiltered_open_count literal>" \
+  --set ".me_assigned_open = <me_assigned_open literal>" \
   --set ".last_fresh_fetch = \"$FETCH_TS\"" \
   --allow-degraded-init --degraded-init-repo "<owner/repo>"
 ```
 
-**Classify by invoking `scripts/backlog-filter.sh classify` — never re-derive it here or hand-roll a shorthand substitute** ([#1194](https://github.com/mattsears18/shipyard/issues/1194), [#1247](https://github.com/mattsears18/shipyard/issues/1247)). This is the same executable classifier [setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) invokes — see that step's "Invocation" block for the exact flags (`--me`, `--trusted-authors`, `--closed-by-healthy-pr`, `--closed-by-open-pr`, `--peer-claimed`, `--investigate-dispatch`, `--respect-assignees`, `--milestones-enabled`, `--milestones-prioritize-dispatch`, `--recheck-probe-enabled`, `--probe-verdicts`); this re-check passes the same values, re-derived or held from setup, against this same `$FETCHED_ISSUES_JSON`. **`--probe-verdicts`** (issue [#1356](https://github.com/mattsears18/shipyard/issues/1356)) is the precomputed `eval-probes` result (re-run against `$FETCHED_ISSUES_JSON` the same way setup.md step 4 runs it, gated the same way on `--recheck-probe-enabled`/`scope.recheck_probe_enabled`) — omitting it doesn't drop any issue's eligibility silently, since `classify`'s own fail-safe default (no entry in the map ⇒ `unknown`) degrades an event-gated issue toward staying dropped, never toward a false admit; but it does mean a mid-session `changed` probe verdict wouldn't bring an event-gated issue's admission forward on this pass, so pass it through when cheaply available. **`--closed-by-open-pr`** (issue [#1389](https://github.com/mattsears18/shipyard/issues/1389)) matters here specifically because this re-check appends **net-new** numbers to `raw_backlog` mid-session, which is exactly when a sibling worker's just-opened PR is most likely to already cover one of them — re-run `backlog-filter.sh closed-by-open-pr` alongside `closed-by-healthy-pr` (both are cheap `gh pr list` calls) rather than reusing setup's stale value, since a PR opened since setup is precisely the coverage this clause exists to see. Omitting it silently readmits every issue whose covering PR has since gone red or `DIRTY` — the #1389 regression, one layer down. The two milestone flags (issue [#1241](https://github.com/mattsears18/shipyard/issues/1241)) matter here specifically because this re-check's whole point is to append **net-new** numbers to `raw_backlog` in the script's own rank order — omitting them would silently rank a mid-session-discovered issue by the flat pre-#1241 order even on a repo that has opted into milestone-ordered dispatch, producing exactly the kind of two-call-sites-disagree drift this file's header paragraph already exists to prevent for every other flag. A hand-rolled shorthand ("drop issues with no assignee" instead of "drop issues assigned to someone other than `@me`") is NOT the same predicate and silently reintroduces #332's exact regression one layer down — that was the actual, committed divergence this file carried before #1247 converged all three call-sites onto the single script (`needs-triage` used to be listed inside this file's own dispatch-gate drop enumeration, directly contradicting setup.md's routing of the same label to `investigate_candidates`; converging on the script meant there was exactly one behavior to disagree with, so the contradiction could not recur — and the label itself has since been retired in [#1120](https://github.com/mattsears18/shipyard/issues/1120)). Diff the script's `eligible` numbers against the union of `in_flight` + `ready_issues` + `raw_backlog` + issues previously closed this session; append net-new numbers to `raw_backlog` in the script's own rank order (no separate sort pass needed). **Also diff the script's `route:investigate` numbers against `investigate_candidates` + `in_flight`** and append any net-new ones there too, in the script's investigate rank order — a mid-session Sentry-filed or bot-authored issue must reach `investigate_candidates` exactly as reliably as an ordinary issue reaches `raw_backlog`, not silently vanish the way a `needs-triage`-labeled issue did under this file's pre-#1247 drop enumeration. The trusted-author drop is non-negotiable here — `raw_backlog` and `investigate_candidates` are both dispatch-feeder queues and a stranger's mid-session issue must never reach either. Skip auto-triage label-stamping and full scope pre-flight here — those run on step D's periodic refresh; the cheap pass just appends raw issue numbers (lazy scope at rule 5 of the dispatch rules). On transient `gh` errors, proceed with the queues as-is — never block dispatch on a refill failure.
+**Classify by invoking `scripts/backlog-filter.sh classify` — never re-derive it here or hand-roll a shorthand substitute** ([#1194](https://github.com/mattsears18/shipyard/issues/1194), [#1247](https://github.com/mattsears18/shipyard/issues/1247)). This is the same executable classifier [setup.md step 4](./setup/04-backlog-divert.md#4-fetch--rank-the-backlog) invokes — see that step's "Invocation" block for the exact flags (`--me`, `--trusted-authors`, `--closed-by-healthy-pr`, `--closed-by-open-pr`, `--peer-claimed`, `--investigate-dispatch`, `--respect-assignees`, `--milestones-enabled`, `--milestones-prioritize-dispatch`, `--recheck-probe-enabled`, `--probe-verdicts`); this re-check passes the same values, re-derived or held from setup, against this same `.shipyard-fetched-issues.json` payload. **`--probe-verdicts`** (issue [#1356](https://github.com/mattsears18/shipyard/issues/1356)) is the precomputed `eval-probes` result (re-run against that same file the same way setup.md step 4 runs it, gated the same way on `--recheck-probe-enabled`/`scope.recheck_probe_enabled`) — omitting it doesn't drop any issue's eligibility silently, since `classify`'s own fail-safe default (no entry in the map ⇒ `unknown`) degrades an event-gated issue toward staying dropped, never toward a false admit; but it does mean a mid-session `changed` probe verdict wouldn't bring an event-gated issue's admission forward on this pass, so pass it through when cheaply available. **`--closed-by-open-pr`** (issue [#1389](https://github.com/mattsears18/shipyard/issues/1389)) matters here specifically because this re-check appends **net-new** numbers to `raw_backlog` mid-session, which is exactly when a sibling worker's just-opened PR is most likely to already cover one of them — re-run `backlog-filter.sh closed-by-open-pr` alongside `closed-by-healthy-pr` (both are cheap `gh pr list` calls) rather than reusing setup's stale value, since a PR opened since setup is precisely the coverage this clause exists to see. Omitting it silently readmits every issue whose covering PR has since gone red or `DIRTY` — the #1389 regression, one layer down. The two milestone flags (issue [#1241](https://github.com/mattsears18/shipyard/issues/1241)) matter here specifically because this re-check's whole point is to append **net-new** numbers to `raw_backlog` in the script's own rank order — omitting them would silently rank a mid-session-discovered issue by the flat pre-#1241 order even on a repo that has opted into milestone-ordered dispatch, producing exactly the kind of two-call-sites-disagree drift this file's header paragraph already exists to prevent for every other flag. A hand-rolled shorthand ("drop issues with no assignee" instead of "drop issues assigned to someone other than `@me`") is NOT the same predicate and silently reintroduces #332's exact regression one layer down — that was the actual, committed divergence this file carried before #1247 converged all three call-sites onto the single script (`needs-triage` used to be listed inside this file's own dispatch-gate drop enumeration, directly contradicting setup.md's routing of the same label to `investigate_candidates`; converging on the script meant there was exactly one behavior to disagree with, so the contradiction could not recur — and the label itself has since been retired in [#1120](https://github.com/mattsears18/shipyard/issues/1120)). Diff the script's `eligible` numbers against the union of `in_flight` + `ready_issues` + `raw_backlog` + issues previously closed this session; append net-new numbers to `raw_backlog` in the script's own rank order (no separate sort pass needed). **Also diff the script's `route:investigate` numbers against `investigate_candidates` + `in_flight`** and append any net-new ones there too, in the script's investigate rank order — a mid-session Sentry-filed or bot-authored issue must reach `investigate_candidates` exactly as reliably as an ordinary issue reaches `raw_backlog`, not silently vanish the way a `needs-triage`-labeled issue did under this file's pre-#1247 drop enumeration. The trusted-author drop is non-negotiable here — `raw_backlog` and `investigate_candidates` are both dispatch-feeder queues and a stranger's mid-session issue must never reach either. Skip auto-triage label-stamping and full scope pre-flight here — those run on step D's periodic refresh; the cheap pass just appends raw issue numbers (lazy scope at rule 5 of the dispatch rules). On transient `gh` errors, proceed with the queues as-is — never block dispatch on a refill failure.
 
 **Soft-blocked in-window filter (per [#300](https://github.com/mattsears18/shipyard/issues/300)).** Step 4's workable filter does NOT exclude `blocked:agent-soft` — by design, so the label doesn't leak across sessions — but within a session, immediately re-dispatching a worker against an issue another worker just bailed soft on would just re-encounter the same ambiguity. The in-memory `session_blocked_soft` map (populated by step A.1's `blocked` handler — `{issue_number → ISO-8601 timestamp of the bail}`) gates this. Before appending any net-new issue to `raw_backlog`, check:
 
@@ -1346,52 +1344,7 @@ See [RATIONALE → Refresh trigger worked example](../do-work-RATIONALE.md#step-
 
 #### D-tail. Own-the-tail merge-completion sweeps (phase c — [#663](https://github.com/mattsears18/shipyard/issues/663))
 
-Phase c of the [#659](https://github.com/mattsears18/shipyard/issues/659) own-the-tail epic adds three behaviors so `/do-work` drives its own PRs to merged **without** a human nudging a stalled tail. All three are **best-effort sweeps** (fire-and-forget; a failed sweep step never aborts the reconcile turn) and run **only on a refresh turn that a `shipped` / `green` / `flake` reconcile triggered** (triggers 1 and 2 in the [refresh trigger rules](#refresh-trigger-rules) above) — i.e. exactly when a PR just landed or a red PR just cleared, which is when a tail can newly stall. They do NOT run on the 5-min time-based fallback (nothing merged, so no dependent went stale) and are **skipped entirely during drain** (drain owns its own merge-train sweeps).
-
-**1. CI auto-heal recap (flake classification + rerun discipline).** The single-PR half of CI auto-heal already lives in the `fix-checks-only` worker's [Infra-flake classification and re-run](../../agents/issue-worker/fix-checks-only.md#infra-flake-classification-and-re-run-load-bearing) ([#654](https://github.com/mattsears18/shipyard/issues/654)) and the orchestrator's [A.1 `flake #<M>` reconcile](#a1-parse-the-return-string). Nothing new is needed here for the *single-PR* flake — the worker classifies (four-signal infra gate + local-gate pass + no deterministic code error), re-runs the failed jobs, and returns `flake #<M>`; the orchestrator watches the re-run's outcome via the next PR-triage tick. This is the **classification-gated, non-speculative** rerun path — it is deliberately NOT gated by `ci.skip_speculative_rerun` (which governs only *blind*, undiagnosed reruns the orchestrator never issues); see [dispatch-rules.md §2c](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) for the full reconciliation. Sub-sweep 3 below extends flake/auto-repair thinking from one PR to a **cross-PR recurring signature**.
-
-**2. Cross-PR dependency-update sweep + BLOCKED-cause classification ([#1435](https://github.com/mattsears18/shipyard/issues/1435)).** When a session PR merges, any *other* open session PR whose branch is now behind that base may sit unmergeable. The sweep runs `gh pr update-branch <M>` (far cheaper than a `fix-rebase` dispatch) to merge the base in. It also classifies `BLOCKED` PRs' causes immediately after merge (rather than waiting 5 minutes) — see the `BLOCKED` bullet below.
-
-For each open `@me` PR in `session_prs` (excluding any already in `in_flight` / `failed_prs` / `rebase_blocked_prs`), snapshot `mergeStateStatus` + the latest-per-name rollup, then:
-
-```bash
-# One batched projection over the session PRs (reuse the drain-phase gh-batch.sh
-# pr-status shape). For each PR classify: BEHIND + healthy → update-branch;
-# DIRTY → dispatch fix-rebase now if the three #1034 conditions hold, else
-# leave for drain's fix-rebase; BLOCKED + zero pending → enqueue fix-checks-only
-# (#1435, mirrors the step-5 discriminator so a session PR gets this classification
-# immediately after a merge-completion event, not only on the next 5-min refresh);
-# anything else → no-op this sweep.
-gh pr view <M> --repo <owner/repo> \
-  --json mergeStateStatus,statusCheckRollup,headRefName \
-  --jq '{merge: .mergeStateStatus,
-         fails: ([.statusCheckRollup | group_by(.name)
-                  | map(sort_by(.completedAt // .startedAt // "") | last) | .[]
-                  | select((.conclusion // .status // "") | test("FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED"))] | length),
-         pending: ([.statusCheckRollup | group_by(.name)
-                  | map(sort_by(.completedAt // .startedAt // "") | last) | .[]
-                  | select(((.conclusion // null) == null) and ((.status // .state // "") | test("PENDING|IN_PROGRESS|QUEUED|EXPECTED")))] | length)}'
-```
-
-- `merge == "BEHIND"` AND `fails == 0` → run `gh pr update-branch <M> --repo <owner/repo>` (merges the base into the head; GitHub re-triggers the PR's checks on the fresh head). This is the shared-fix-unblocks-dependents case. Log `[dep-update] PR #<M> was BEHIND after a sibling merge; ran gh pr update-branch (#663)`.
-- `merge == "DIRTY"` → do **NOT** `update-branch` (it would fail on the conflict). **First, try the in-process resolver — see [drain.md per-poll action 2](./drain.md#end-of-session-drain)'s full description (issue [#1377](https://github.com/mattsears18/shipyard/issues/1377))**: run [`scripts/resolve-manifest-only-dirty.sh`](../../scripts/resolve-manifest-only-dirty.sh) with the same `vc_manifest`/`vc_version_jq`/`vc_changelog` reads used for the next-available-version computation; `resolve_status == 0` means it rebased and force-pushed already — treat exactly like a `rebased #<M>` reconcile (below) and skip the rest of this bullet entirely; `resolve_status != 0` (deferred) falls through to the mid-session dispatch decision unchanged. **Only when the resolver deferred, dispatch a mid-session `fix-rebase` worker now instead of waiting for the drain, when all three [#1034](https://github.com/mattsears18/shipyard/issues/1034) conditions hold** — `<M>` is already confirmed in `session_prs` and DIRTY (this branch's own precondition); no `in_flight` entry already holds `<M>`'s head branch; and a `--concurrency` slot is free. Dispatch it exactly like a drain-phase `fix-rebase` (same worker, same `agents/issue-worker/fix-rebase.md` spec, via the normal step-C dispatch mechanism so it counts against the `--concurrency` cap like any other candidate) — [§4.6](../../agents/issue-worker/fix-rebase.md#46-version-coordinated-manifest--changelog-re-number--trivial-resolution-issue-466)'s trivial-conflict-or-bail policy is what makes dispatching speculatively safe: a conflict confined to the coordinated manifest `.version` + CHANGELOG rows resolves deterministically and the branch re-enters the merge train immediately (restoring the merge ref so CI can actually run, rather than sitting CI-dark for the rest of the session); a wider conflict bails `blocked rebase #<M>: ...` exactly as it would at drain time, and [A.1's `blocked rebase` reconcile](#a1-parse-the-return-string) applies unchanged (`rebase_blocked_prs`, PR comment, no re-dispatch this session). **When any of the three conditions doesn't hold** (a worker already holds the branch, or no slot is free) — leave it. The [drain phase's `D_dirty` → fix-rebase path](./drain.md#drain-protocol) owns it as the backstop; a mid-session DIRTY PR is already re-seeded into `session_prs` by [step D sub-step 2's inherited-DIRTY snapshot](#d-periodic-refresh) either way. See [RATIONALE → Don't dispatch fix-rebase mid-session outside the three conditions](../do-work-RATIONALE.md#dont-dispatch-fix-rebase-mid-session-outside-the-three-conditions-issue-1034) for the session repro that motivated this.
-- **`merge == "BLOCKED"` AND `pending == 0` → dispatch `fix-checks-only` ([#1435](https://github.com/mattsears18/shipyard/issues/1435)).** A `BLOCKED` PR with zero pending checks means CI finished having its say — it's stuck on an explicit failure, not queue latency. Push `<M>` onto `failed_prs` (deduped) so step-C dispatch picks it up as `fix-checks-only` this turn if a slot is free, rather than waiting 5 minutes. Log `[blocked-classify] PR #<M> is BLOCKED with 0 pending (<fails> explicit failures) — enqueuing fix-checks-only`. **`merge == "BLOCKED"` AND `pending > 0`** → genuinely pending; no-op, same as before.
-- Any other `mergeStateStatus` (`CLEAN` / `UNKNOWN` / `HAS_HOOKS`, or `BEHIND` with `fails > 0`) → no-op this sweep.
-
-**Bound the CI-minute cost.** Each `update-branch` re-triggers a full CI run on the updated head, so treat it like any other check-triggering action: skip the update when `ci.skip_drain_rebase == true` (the same "don't burn CI to un-stale a base" stance applies to `update-branch`, which is a cheaper rebase) and count each update against a per-poll ceiling so a large fan-out doesn't fire N simultaneous CI runs. `gh pr update-branch` is fire-and-forget — on any error (conflict raced in, permission denied, PR merged between snapshot and update) log `[dep-update] PR #<M> update-branch failed: <reason>; leaving for drain` and continue. This sweep never dispatches a worker and never blocks the turn.
-
-**3. Recurring-failure-signature auto-repair.** A *single* red PR is handled by the [failed-PR scan → fix-checks dispatch](#d-periodic-refresh) path. But when the **same failure signature** reddens **multiple** PRs, that's a shared root cause (a common dependency bump broke every PR's typecheck; a shared helper regressed; a new lint rule fires repo-wide) — fixing it once on a canonical PR unblocks the whole cohort, and treating each red PR as an independent fix-checks target wastes a dispatch per PR re-solving the same defect. This sub-sweep detects the recurrence and dispatches **one** targeted fix-checks against the canonical PR, surfacing the pattern so the operator sees a systemic cause rather than a scatter of unrelated reds.
-
-Maintain a **session-local** working-memory map (not mirrored to the session-state file, same posture as `main_ci_fix_attempts`):
-
-```
-recurring_failure_signatures = { <signature> → { prs: [<#M>...], canonical_pr: <#M|null>, dispatched: <bool> } }
-```
-
-- **Signature** is the stable cross-PR key: `<workflow-name>|<job-name>|<normalized-first-deterministic-error-line>`, where the error line is the first `error TS####` / lint-rule id / assertion message / compile error from the failing job's log, stripped of PR-specific paths and line numbers so the *same* defect on two PRs produces the *same* key. An **infra-flake signature** (cancelled-required-jobs / webserver-boot-timeout / setup-job-failure / runner-lost — the [#654](https://github.com/mattsears18/shipyard/issues/654) classes) is **excluded** from this map: those are per-PR runner starvation, already handled by the worker's flake rerun + the chronic-flake attempt bound, and are NOT a shared *code* root cause. Only **deterministic code errors** are keyed here.
-- **Recording.** On each failed-PR scan (step D sub-step 2), for every red PR compute its signature from the latest-per-name failing job's log and append `<#M>` to `recurring_failure_signatures[<signature>].prs` (deduped).
-- **Detection + auto-repair.** When a signature's `prs` set reaches **≥ 2 distinct PRs** AND `dispatched == false`, it's a recurring class. Set `canonical_pr` to the lowest-numbered affected PR, dispatch **one** `fix-checks-only` worker against it (via the normal step-C fix-checks dispatch, respecting the `--concurrency` cap and the `ci.*` pre-dispatch gates), set `dispatched = true`, and log `[recurring-failure] signature <sig> hit <N> PRs (<list>); dispatching canonical fix-checks against #<canonical_pr> (#663)`. Do **not** dispatch fix-checks against the *other* affected PRs this turn — the canonical fix, once merged, advances the base; sub-sweep 2's dependency-update sweep then un-stales the siblings and their re-run picks up the shared fix. If the siblings are still red after the canonical fix merges (the fix didn't cover them), the next failed-PR scan re-keys them under a *new* signature (the error moved) or they fall through to normal per-PR fix-checks.
-- **Thrash guard.** `dispatched: true` is one-shot per signature — the map never re-dispatches the same signature, so a canonical fix that doesn't fully resolve the cohort can't loop. Reset a signature's entry (drop it from the map) only when its `prs` all go green (the class cleared). This mirrors `main_ci_fix_attempts`'s converge-on-green discipline: a working fix clears the counter; a genuinely-stuck shared cause surfaces in the [end-of-session summary](./cleanup-summary.md#end-of-session-summary) as a recurring-signature cohort for the next session (or a human) rather than re-dispatching forever.
+**Moved to [`d-tail-merge-sweeps.md`](./d-tail-merge-sweeps.md) ([#1479](https://github.com/mattsears18/shipyard/issues/1479)).** Three best-effort sweeps that drive `/do-work`'s own tail to merged without a human nudge — CI auto-heal recap, the cross-PR dependency-update + `BLOCKED`-cause sweep, and the recurring-failure-signature auto-repair. They run **only** on a refresh turn a `shipped` / `green` / `flake` reconcile triggered (triggers 1 and 2 in the [refresh trigger rules](#refresh-trigger-rules) above), never on the 5-min time-based fallback, and are skipped entirely during drain. Read the fragment now when this turn's refresh was triggered that way; skip it otherwise.
 
 ### E. Invariant line (end of every steady-state turn)
 

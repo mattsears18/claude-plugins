@@ -53,6 +53,18 @@
 #         - candidate without/with empty stash skipped for an older valid one
 #         - agent-* worktrees ignored; stash contents whitespace-trimmed
 #         - bad-usage cases (missing flag, unknown flag)
+#  76-82a) issue #1479 — resolve-session-id collapses the two-path derive
+#         (derive-session-id + the `<repo-root>/.shipyard-session-id`
+#         fallback + #548's loud-empty diagnostic) into ONE call, so the
+#         orchestrator's reconcile blocks carry no `--repo-root
+#         "$REPO_ROOT"` / `[ -z "$SESSION_ID" ]` word for the
+#         worktree-isolation guard to refuse:
+#         - derive path preferred; primary-stash fallback when it's empty
+#         - fallback contents whitespace-trimmed (parity with the derive)
+#         - both empty → empty stdout, exit 0, loud stderr line
+#         - a successful resolve is silent on stderr
+#         - --repo-root is OPTIONAL here (omitting it is not exit 64)
+#         - --repo-root=<value> parity; unknown flag / positional → exit 64
 #
 # Pure bash + `ps`. Run with:
 #   bash plugins/shipyard/scripts/tests/session-identity.test.sh
@@ -572,6 +584,112 @@ assert_exit_code "$?" "64" \
 bash "$helper" derive-session-id --repo-root "$dsi_repo" --bogus 2>/dev/null
 assert_exit_code "$?" "64" \
   "(75a) derive-session-id unknown flag → exit 64"
+
+# ---------------------------------------------------------------------------
+# resolve-session-id (issue #1479)
+#
+# The one-call form of the two-path derive the orchestrator's reconcile
+# blocks used to spell inline. The point of the subcommand is that a caller
+# needs neither `--repo-root "$REPO_ROOT"` nor a `[ -z "$SESSION_ID" ]`
+# fallback test — both are words the worktree-isolation Bash guard refuses
+# (do-work/dont.md's #1474 corrected rule; named as residual bucket-4
+# findings by the #1476 audit). These tests pin the semantics the inline
+# form had, so the collapse is verifiably behaviour-preserving.
+# ---------------------------------------------------------------------------
+
+echo
+echo "resolve-session-id tests (issue #1479)"
+echo
+
+run_resolve() {
+  bash "$helper" resolve-session-id --repo-root "$dsi_repo" 2>/dev/null
+}
+
+# --- (76) derive path wins: newest orchestrator-* stash is returned ---
+reset_dsi_layout
+rm -f "$dsi_repo/.shipyard-session-id"
+make_orch_wt "do-work-old-orphan" "202606100000"
+make_orch_wt "do-work-live" "202606201200"
+result=$(run_resolve)
+assert_equals "$result" "do-work-live" \
+  "(76) resolve-session-id prefers the newest orchestrator-* stash"
+
+# --- (77) fallback path: no orchestrator worktree, primary stash present ---
+reset_dsi_layout
+printf 'do-work-primary-stash\n' > "$dsi_repo/.shipyard-session-id"
+result=$(run_resolve)
+assert_equals "$result" "do-work-primary-stash" \
+  "(77) falls back to <repo-root>/.shipyard-session-id when the derive is empty"
+
+# --- (77a) the derive path OUTRANKS the primary stash when both exist ---
+reset_dsi_layout
+printf 'do-work-primary-stash\n' > "$dsi_repo/.shipyard-session-id"
+make_orch_wt "do-work-live" "202606201200"
+result=$(run_resolve)
+assert_equals "$result" "do-work-live" \
+  "(77a) derive result outranks the primary stash when both are present"
+
+# --- (78) fallback contents are whitespace-trimmed (parity with the derive) ---
+reset_dsi_layout
+printf '  do-work-padded-primary  \n\n' > "$dsi_repo/.shipyard-session-id"
+result=$(run_resolve)
+assert_equals "$result" "do-work-padded-primary" \
+  "(78) primary-stash fallback contents are whitespace-trimmed"
+
+# --- (79) both paths empty → empty stdout, exit 0, loud stderr (#548) ---
+reset_dsi_layout
+rm -f "$dsi_repo/.shipyard-session-id"
+result=$(bash "$helper" resolve-session-id --repo-root "$dsi_repo" 2>/dev/null)
+exit_code=$?
+assert_equals "${result:-EMPTY}" "EMPTY" \
+  "(79) both derive paths empty → empty stdout"
+assert_exit_code "$exit_code" "0" \
+  "(79a) both derive paths empty → exit 0 (caller decides what empty means)"
+stderr_out=$(bash "$helper" resolve-session-id --repo-root "$dsi_repo" 2>&1 >/dev/null)
+case "$stderr_out" in
+  *"[session-id-derive] empty"*)
+    printf '  %sPASS%s  %s\n' "$GREEN" "$RESET" \
+      "(79b) both derive paths empty → loud [session-id-derive] empty line on stderr (#548)"
+    pass=$((pass+1))
+    ;;
+  *)
+    printf '  %sFAIL%s  %s\n' "$RED" "$RESET" \
+      "(79b) both derive paths empty → expected a [session-id-derive] empty stderr line, got: $stderr_out"
+    fail=$((fail+1))
+    ;;
+esac
+
+# --- (80) a successful resolve prints NOTHING on stderr ---
+reset_dsi_layout
+make_orch_wt "do-work-quiet" "202606201200"
+stderr_out=$(bash "$helper" resolve-session-id --repo-root "$dsi_repo" 2>&1 >/dev/null)
+assert_equals "${stderr_out:-EMPTY}" "EMPTY" \
+  "(80) a successful resolve is silent on stderr"
+
+# --- (81) --repo-root is OPTIONAL (unlike derive-session-id, where it is
+# required) — omitting it must NOT be a usage error. It defaults to
+# `git rev-parse --show-toplevel`; from a non-repo cwd that resolves empty,
+# which is the loud-but-exit-0 case, never exit 64. ---
+resolve_nonrepo_dir="$tmpdir/resolve-nonrepo"
+mkdir -p "$resolve_nonrepo_dir"
+( cd "$resolve_nonrepo_dir" && bash "$helper" resolve-session-id >/dev/null 2>&1 )
+assert_exit_code "$?" "0" \
+  "(81) resolve-session-id without --repo-root is NOT a usage error"
+
+# --- (81a) --repo-root=<value> form parity with --repo-root <value> ---
+reset_dsi_layout
+make_orch_wt "do-work-eqform" "202606201200"
+result=$(bash "$helper" resolve-session-id --repo-root="$dsi_repo" 2>/dev/null)
+assert_equals "$result" "do-work-eqform" \
+  "(81a) --repo-root=<value> form matches --repo-root <value>"
+
+# --- (82) bad usage: unknown flag / unexpected positional → exit 64 ---
+bash "$helper" resolve-session-id --repo-root "$dsi_repo" --bogus 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(82) resolve-session-id unknown flag → exit 64"
+bash "$helper" resolve-session-id "$dsi_repo" 2>/dev/null
+assert_exit_code "$?" "64" \
+  "(82a) resolve-session-id unexpected positional arg → exit 64"
 
 echo
 if (( fail > 0 )); then
