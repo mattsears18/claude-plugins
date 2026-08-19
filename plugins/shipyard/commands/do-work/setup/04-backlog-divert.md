@@ -78,38 +78,36 @@ Skip any issue that already carries one or more `P0`/`P1`/`P2` labels — preser
   - `--closed-by-open-pr` → **is this ISSUE already covered?** ([#1389](https://github.com/mattsears18/shipyard/issues/1389)) The wider set, and the reason the clause above must *not* be reused here: health is irrelevant to this question. An issue whose open `@me` PR names it in `closingIssuesReferences` is covered whether that PR is green, red, or `DIRTY` — red ⇒ fix-checks *on the PR*, `DIRTY` ⇒ fix-rebase *on the PR* — so an issue-worker dispatched at it can only bail at `issue-work.md` step 0, after a full worker has read the issue. Emits its own greppable verdict, `reason: "covered-by-open-pr"` plus an `evidence_pointer` naming the covering PR, so [`04f`](./04f-completion-ledger.md#the-bucket-taxonomy) buckets it as *covered, not dropped*.
   - **Neither clause locks an issue behind a closed/abandoned PR** — both query `--state open` only, so [#332](https://github.com/mattsears18/shipyard/issues/332)'s resumable-work case holds by construction.
 
-**Invocation — one plain command ([#1398](https://github.com/mattsears18/shipyard/issues/1398)).** [`scripts/classify-backlog.sh`](../../../scripts/classify-backlog.sh)'s `run` subcommand absorbs the whole input-gathering + classify sequence — the seven config reads (including `backlog.someday_milestone` and `backlog.someday_recheck_days`, issues [#1406](https://github.com/mattsears18/shipyard/issues/1406)/[#1422](https://github.com/mattsears18/shipyard/issues/1422)), both live-network precomputed sets, the conditional probe-verdicts call, and the someday-recheck marker write (below) — so the orchestrator's own call is just script-invocation plus the handful of inputs only the caller can supply (the `$CLAUDE_PLUGIN_ROOT`/`$SHIPYARD_REPO_ROOT` pins, `$ME_LOGIN`, and the repo-scoped CSVs from earlier steps). See [RATIONALE → Step 4 invocation extraction](../../do-work-RATIONALE.md#step-4--invocation-extraction-issue-1398) for why this is a script call rather than an inline block; the script's own header is the normative contract (`--repo`/`--me`/`--trusted-authors`/`--issues-file` required, `--peer-claimed`/`--prioritize-label`/`--out` optional).
+**Invocation — one plain command ([#1398](https://github.com/mattsears18/shipyard/issues/1398)).** [`scripts/classify-backlog.sh`](../../../scripts/classify-backlog.sh)'s `run` subcommand absorbs the whole input-gathering + classify sequence — the seven config reads (including `backlog.someday_milestone` and `backlog.someday_recheck_days`, issues [#1406](https://github.com/mattsears18/shipyard/issues/1406)/[#1422](https://github.com/mattsears18/shipyard/issues/1422)), both live-network precomputed sets, the conditional probe-verdicts call, and the someday-recheck marker write (below) — so the orchestrator's own call is just script-invocation plus the handful of inputs only the caller can supply (the plugin-root/primary-root pins, the `gh` login, and the repo-scoped CSVs from earlier steps — all substituted as **literals**, per [#1471](https://github.com/mattsears18/shipyard/issues/1471); passing them as shell variables is what left this block refused after #1398's extraction landed). See [RATIONALE → Step 4 invocation extraction](../../do-work-RATIONALE.md#step-4--invocation-extraction-issue-1398) for why this is a script call rather than an inline block; the script's own header is the normative contract (`--repo`/`--me`/`--trusted-authors`/`--issues-file` required, `--peer-claimed`/`--prioritize-label`/`--out` optional).
 
 **Someday-recheck marker write (issue [#1422](https://github.com/mattsears18/shipyard/issues/1422), follow-up to #1406) rides inside this same call.** After `classify-backlog.sh run` produces the NDJSON, it pipes that NDJSON into `backlog-filter.sh someday-recheck-write` (best-effort, never fails the whole call) — for every `drop:someday-milestone` line tagged `someday_recheck_action: "first-park"` or `"cheap-reset"`, this writes or refreshes a `<!-- do-work-someday-recheck: YYYY-MM-DD -->` body marker dated `today + backlog.someday_recheck_days` days. A `someday_recheck_action`-free `eligible` line is the ESCALATE case: the issue is NOT dropped this pass — it's a plain candidate in `raw_backlog` for exactly ONE real scope-agent pass, handled by the ordinary [scope pre-flight](06-scope-preflight.md) machinery, with [`06c-scope-handling-ui.md` step 4d](06c-scope-handling-ui.md#handling-each-returned-entry-fires-as-each-background-agent-completes) resetting the someday-recheck clock once that pass's defer conclusion lands. See [RATIONALE → Step 4 someday-recheck marker mechanics](../../do-work-RATIONALE.md#step-4--someday-recheck-marker-mechanics-issue-1422-follow-up-to-1406) for the full four-state contract and why this reuses `do-work-blocked-until`'s marker shape under a distinct name.
 
 `$fetched_issues_json` is the wide-fetch array from the top of this step, held in the orchestrator's own context. Materialize it with the `Write` tool (never a `printf`/heredoc piped into the next command — see [`shipyard:worker-preamble`'s body-file convention](../../../skills/worker-preamble/body-file-convention.md)) to `.shipyard-fetched-issues.json` in the orchestrator worktree root, BEFORE the command sequence below. `Write` and `Bash` are different tools, so there's no variable-survival concern between them.
 
-Then, in **one** `Bash` call (plain sequential statements — no loop/pipe/`if`, so keeping them together avoids re-deriving `$ME_LOGIN` etc. in a second call that could never see them, since variables don't survive between separate `Bash` calls): resolve the pins and `$ME_LOGIN`, then classify — redirecting the classify NDJSON straight to a scratch file via `--out`, so neither this call nor the extractions after it need a pipe:
+Then classify — redirecting the classify NDJSON straight to a scratch file via `--out`, so neither this call nor the extractions after it need a pipe.
+
+**Substitute every value as a LITERAL — do not reference a shell variable here ([#1471](https://github.com/mattsears18/shipyard/issues/1471)).** This block used to open with a five-statement preamble that resolved `$CLAUDE_PLUGIN_ROOT` / `$SHIPYARD_REPO_ROOT` / `$ME_LOGIN` and then passed them through on the command line. That shape is **refused verbatim** by the worktree-isolation guard — measured, reproducibly, in an isolated worktree (see [`dont.md`'s post-relocation section](../dont.md) for the controlled experiment). The trigger is *referencing a shell variable whose value the guard cannot statically resolve*, most reliably one assigned from a network command substitution such as `ME_LOGIN=$(gh api user --jq '.login')`. Holding everything else byte-identical and replacing only `--me "$ME_LOGIN"` with the literal login flips the identical block from refused to running. You already hold all three literals by this point — the plugin root from [step 0.5's stash](./00-config-worktree.md), the primary root from step 0.56, and the login from the plain call below — so substitute them and the block runs as one plain command.
+
+First, read the login as its own plain call (its output is the literal you substitute for `<me-login>` below):
 
 ```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-# Re-derive the SHIPYARD_REPO_ROOT pin from the step-0.56 stash rather than
-# `git rev-parse --show-toplevel` (issue #1059/#1064) — the latter resolves
-# to the orchestrator worktree post-relocation, not the primary checkout
-# shipyard-config.sh needs to read repo-level config from. classify-
-# backlog.sh's own internal shipyard-config.sh calls read this same
-# exported SHIPYARD_REPO_ROOT, not a value passed on its command line.
-SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
-export SHIPYARD_REPO_ROOT
-ME_LOGIN=$(gh api user --jq '.login')
+gh api user --jq '.login'
+```
 
-# $TRUSTED_AUTHORS_CSV is trusted_authors (step 1.7), comma-joined, lowercased.
-# $PEER_CLAIMED_CSV is .peer_sessions.claimed_targets (step 1.65), comma-joined.
-bash "$CLAUDE_PLUGIN_ROOT/scripts/classify-backlog.sh" run \
+Then classify. `SHIPYARD_REPO_ROOT` is passed as a **per-command environment prefix**, not an `export` in a preceding statement — `classify-backlog.sh`'s own internal `shipyard-config.sh` calls read it from the environment (`shipyard-config.sh` § `SHIPYARD_REPO_ROOT`), and a command-prefix assignment exports it to the child process just as the old two-statement `export` did. It must be the **step-0.56 primary-root stash literal**, never `git rev-parse --show-toplevel` (issues #1059/#1064) — the latter resolves to the orchestrator worktree post-relocation, not the primary checkout `shipyard-config.sh` needs to read repo-level config from:
+
+```bash
+SHIPYARD_REPO_ROOT=<primary-root literal> bash <plugin-root literal>/scripts/classify-backlog.sh run \
   --repo <owner/repo> \
-  --me "$ME_LOGIN" \
-  --trusted-authors "$TRUSTED_AUTHORS_CSV" \
+  --me <me-login literal, from the call above> \
+  --trusted-authors "<trusted_authors (step 1.7), comma-joined, lowercased>" \
   --issues-file .shipyard-fetched-issues.json \
-  --peer-claimed "$PEER_CLAIMED_CSV" \
+  --peer-claimed "<.peer_sessions.claimed_targets (step 1.65), comma-joined>" \
   --prioritize-label "<--prioritize-label CLI arg value, or empty string if not passed>" \
   --out .shipyard-classified.ndjson
 ```
+
+The backslash continuations are fine — line structure is **not** what the guard reacts to (the same block collapsed onto one line is refused identically when it carries an unresolvable variable, and runs identically when it doesn't).
 
 Then extract the two ranked lists. `jq` accepts the NDJSON file directly as a positional argument (a literal filename, not a variable — so this is safe as its own call), so neither extraction needs a pipe either:
 

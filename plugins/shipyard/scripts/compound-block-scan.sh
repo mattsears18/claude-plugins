@@ -24,7 +24,28 @@
 #   - a shell pipe (`|`, not `||`) spanning two distinct tool invocations
 #     (`printf ... | some-script`, `git show ... | jq ...`)
 #
-# This scanner flags exactly those two shapes inside ```bash fenced blocks,
+# A THIRD shape was added by issue #1471, which ran a fresh one-variable-at-
+# a-time experiment against a live isolated worktree after four earlier
+# sweeps (#1308 / #1311 / #1314 / #1352) each fixed a different axis and all
+# four still left two mandatory setup blocks refused:
+#
+#   - an UNQUOTED command substitution with a literal path suffix glued on:
+#     `VAR=$(git rev-parse --show-toplevel)/plugins/shipyard` is REFUSED,
+#     while `VAR="$(git rev-parse --show-toplevel)/plugins/shipyard"` RUNS.
+#     Quoting is the only difference; it holds across both export forms and
+#     both line renderings.
+#
+# #1471's headline finding is NOT expressible as a shape at all, and is
+# deliberately not attempted here: the guard refuses a block that REFERENCES
+# a shell variable whose value it cannot statically resolve (most reliably
+# one assigned from a network command substitution such as
+# `ME_LOGIN=$(gh api user --jq .login)`). Detecting that mechanically would
+# require modeling the guard's resolvability boundary, which #1471 explicitly
+# left unestablished — see do-work-RATIONALE.md's "The #1471 command-shape
+# experiment" for the full observation table and the still-open question.
+# The spec-side fix is to substitute literals, which sidesteps it entirely.
+#
+# This scanner flags exactly those three shapes inside ```bash fenced blocks,
 # in the spirit of `fence-balance-scan.sh` / `conflict-marker-scan.sh`: a
 # cheap, deliberately narrow structural check, not a full shell parser.
 #
@@ -104,7 +125,20 @@ repo_root="$(git rev-parse --show-toplevel)"
 # extracted that block to scripts/crash-recovery-reap.sh and removed the
 # marker, so steady-state.md is now clean on its own merits like the other
 # three files, with no exemption left in place.
+#
+# setup/00-config-worktree.md added by issue #1471. This is the file the
+# Scope note above names as the archetypal mixed pre/post-relocation case,
+# and it is admitted here on exactly the terms that note sets out: its two
+# genuinely PRE-relocation blocks (step 0.4's opt-in check, and step 0.5's
+# last-resort raw `git worktree add` fallback, both of which run from the
+# user's primary checkout before isolation exists) carry explicit
+# `<!-- compound-block-scan: allow -->` markers, and every remaining block
+# in the file is post-relocation and verified clean. Admitting the file with
+# two marked exemptions is strictly better than leaving it unscanned: #1471
+# found step 0.5's post-relocation stash read-back refused on live `main`
+# with nothing in CI able to see it, because the whole file was off the list.
 FILES=(
+  "$repo_root/plugins/shipyard/commands/do-work/setup/00-config-worktree.md"
   "$repo_root/plugins/shipyard/commands/do-work/setup/04-backlog-divert.md"
   "$repo_root/plugins/shipyard/commands/do-work/dispatch-rules.md"
   "$repo_root/plugins/shipyard/commands/do-work/drain.md"
@@ -250,6 +284,34 @@ _scan_file() {
               printf "%s:%d: unquoted-pipe — block starting here pipes across a shell command boundary outside any case arm\n", FILE, block_start
               found_any = 1
             }
+          }
+
+          # --- Unquoted command substitution with a glued path suffix ---
+          # Isolated by issue #1471s controlled experiment: an UNQUOTED
+          # command substitution immediately followed by a literal path
+          # suffix is refused, while the identical line with the whole word
+          # quoted runs. Verified across both the combined `export VAR=...`
+          # and the split `VAR=...` plus `export VAR` forms, and across
+          # single-line and multi-line rendering, with quoting as the only
+          # toggled variable:
+          #
+          #   CLAUDE_PLUGIN_ROOT=$(git rev-parse --show-toplevel)/plugins/x    REFUSED
+          #   CLAUDE_PLUGIN_ROOT="$(git rev-parse --show-toplevel)/plugins/x"  RUNS
+          #
+          # This shape is NOT caught by command-substitution-scan.sh: that
+          # scanner treats a substitution sitting immediately after an `=`
+          # as sanctioned assignment-RHS, which this one is. It is also not
+          # a compound shape, so neither the loop nor the pipe check above
+          # sees it — hence a third shape here rather than a fourth scanner.
+          #
+          # strip_quotes() has already removed every quoted span, so any
+          # `$(...)` surviving into `stripped` is unquoted by construction
+          # and the quoted (legal) spelling can never match. The `[^()]`
+          # inner class keeps arithmetic expansion `$((expr))` from
+          # matching, mirroring the same carve-out in command-substitution-scan.sh.
+          if (stripped ~ /\$\([^()]*\)\//) {
+            printf "%s:%d: unquoted-substitution-path-suffix — block starting here glues a literal path suffix onto an UNQUOTED command substitution; quote the whole word (issue #1471)\n", FILE, block_start
+            found_any = 1
           }
         }
         next
