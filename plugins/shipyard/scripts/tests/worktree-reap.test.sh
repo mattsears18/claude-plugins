@@ -73,6 +73,14 @@
 #         successive capped runs demonstrating forward-progress checkpoint
 #         behavior with no separate state file, bad-usage cases,
 #         --max-per-session 0
+# 110-112) issue #1482 — reap-stale's stray-tombstone pass is bounded by
+#         --max-per-session (it was the one unbounded step in a
+#         "bounded and checkpointed" sweep) and reports into the summary
+#         line + exit code (a failed removal used to print a line and then
+#         vanish). Includes the assertions that FALSIFY the issue's filed
+#         "a stale tombstone wedges subsequent passes" diagnosis: a failure
+#         aborts nothing, siblings in the same pass are still swept, and a
+#         later pass drains the backlog completely.
 #
 # Issue #941 — the detect-orchestrator-pid / derive-session-id /
 # find-orphan-orchestrators subcommands (and their test coverage, tests
@@ -1941,7 +1949,7 @@ rs_backdate_nolock aaa
 rs_backdate_nolock bbb
 result=$(run_rs --dry-run)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(97) dry-run summary line"
 [ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && dry_kept=yes || dry_kept=no
 assert_equals "$dry_kept" "yes" \
@@ -1958,7 +1966,7 @@ rs_backdate_nolock aaa
 rs_backdate_nolock bbb
 result=$(run_rs)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=2 deferred=0 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(98) real run summary line"
 [ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && real_kept=yes || real_kept=no
 assert_equals "$real_kept" "no" \
@@ -1984,7 +1992,7 @@ backdate_minutes "$rs_repo/.claude/worktrees/agent-older" 120
 backdate_minutes "$rs_repo/.claude/worktrees/agent-newer" 70
 result=$(run_rs --max-per-session 1)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=1" \
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=1 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(99) cap=1 -> exactly one reaped, one left in remaining"
 [ -d "$rs_repo/.claude/worktrees/agent-older" ] && older_kept=yes || older_kept=no
 assert_equals "$older_kept" "no" \
@@ -2005,7 +2013,7 @@ rs_add_worktree inflight
 rs_backdate_nolock aaa
 result=$(run_rs --exclude-agent-id inflight)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(100) excluded worktree is invisible to the summary entirely"
 [ -d "$rs_repo/.claude/worktrees/agent-inflight" ] && inflight_kept=yes || inflight_kept=no
 assert_equals "$inflight_kept" "yes" \
@@ -2029,7 +2037,7 @@ printf 'claude agent agent-peer (pid %s)\n' "$rs_sibling_pid" \
   > "$rs_repo/.git/worktrees/agent-peer/locked"
 result=$(run_rs --max-per-session 1)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=1 deferred=1 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=1 deferred=1 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(101) peer-alive deferred alongside a cap=1 reap — deferred doesn't eat the cap"
 [ -d "$rs_repo/.claude/worktrees/agent-peer" ] && peer_kept=yes || peer_kept=no
 assert_equals "$peer_kept" "yes" \
@@ -2089,7 +2097,7 @@ rs_backdate_nolock aaa
 rs_backdate_nolock bbb
 result=$(run_rs --max-per-session 0)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=2" \
+assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=2 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(104) --max-per-session 0 -> both worktrees land in remaining, untouched"
 [ -d "$rs_repo/.claude/worktrees/agent-aaa" ] && zero_cap_kept=yes || zero_cap_kept=no
 assert_equals "$zero_cap_kept" "yes" \
@@ -2117,7 +2125,7 @@ reset_rs_layout
 rs_add_worktree fresh
 result=$(run_rs)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=0 deferred=1 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=0 deferred=1 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(105) freshly-created no-lock worktree -> deferred (issue #1147 core repro)"
 [ -d "$rs_repo/.claude/worktrees/agent-fresh" ] && fresh_kept=yes || fresh_kept=no
 assert_equals "$fresh_kept" "yes" \
@@ -2128,7 +2136,7 @@ reset_rs_layout
 rs_add_worktree fresh
 result=$(run_rs --peer-stale-min 0)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(106) fresh no-lock worktree + --peer-stale-min 0 -> reaped (override reaches reap-stale end-to-end)"
 
 # --- (107) mandatory in-flight cross-check, NO --exclude-agent-id passed ---
@@ -2142,7 +2150,7 @@ cat > "$rs_home/sessions/rs-test-session.json" <<'JSON'
 JSON
 result=$(run_rs)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(107) in_flight agent-id excluded automatically with no --exclude-agent-id passed"
 [ -d "$rs_repo/.claude/worktrees/agent-livepeer" ] && livepeer_kept=yes || livepeer_kept=no
 assert_equals "$livepeer_kept" "yes" \
@@ -2163,7 +2171,7 @@ cat > "$rs_home/sessions/rs-test-session.json" <<'JSON'
 JSON
 result=$(run_rs --exclude-agent-id manualexclude)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(108) both the explicit --exclude-agent-id and the auto-derived in_flight id are excluded"
 [ -d "$rs_repo/.claude/worktrees/agent-livepeer" ] && both_livepeer_kept=yes || both_livepeer_kept=no
 [ -d "$rs_repo/.claude/worktrees/agent-manualexclude" ] && both_manual_kept=yes || both_manual_kept=no
@@ -2180,8 +2188,129 @@ rs_backdate_nolock aaa
 # step must not error the whole sweep.
 result=$(run_rs)
 last_line=$(printf '%s\n' "$result" | tail -1)
-assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0" \
+assert_equals "$last_line" "summary: reaped=1 deferred=0 unreaped=0 remaining=0 tombstones_swept=0 tombstones_failed=0 tombstones_remaining=0" \
   "(109) missing session-state file -> auto-derive is a silent no-op, sweep still succeeds"
+
+# ============================================================================
+# Issue #1482 — the stray-tombstone pass is BOUNDED and REPORTED.
+#
+# Two independent defects, both live before this issue:
+#
+#   * Unbounded. The tombstone pass runs BEFORE classification and had no
+#     cap, inside a function whose whole contract is "bounded and
+#     checkpointed." A large tombstone backlog could burn the caller's
+#     entire time budget without a single worktree ever being classified;
+#     because a killed `rm -rf` leaves a partially-deleted tombstone, the
+#     next pass restarted the same unbounded traversal — each timed-out
+#     pass leaving at least as much work as it found.
+#   * Unreported. A failed removal printed `tombstone-sweep-failed:` and
+#     then vanished — sweep_stray_tombstones returned 0 unconditionally,
+#     reap_stale ignored the return, and the `summary:` line carried no
+#     tombstone field. disk-space-guard.md reads that summary via `tail -1`
+#     and echoes it, so the disk guard reported total success over bytes it
+#     had not reclaimed.
+#
+# Note what these tests deliberately establish is NOT true: a failing
+# tombstone does not wedge the pass (110c/111b). #1482's filed diagnosis
+# guessed that it did; the loop `continue`s past each failure and every
+# subsequent directory is still attempted. The real mechanism is the two
+# defects above.
+#
+# Matrix:
+#   110) cap bounds the pass; the remainder is checkpointed, not lost, and
+#        a later pass makes forward progress from it
+#   111) a removal failure lands in the summary line AND yields exit 3,
+#        while every other tombstone in the same pass is still swept
+#   112) a clean pass exits 0; --dry-run reports without touching anything
+# ============================================================================
+
+echo
+echo "worktree-reap.sh tombstone-pass bounding + reporting (issue #1482)"
+echo
+
+# Tombstones are plain directories matching *.reap-dead-* — already renamed
+# aside by fast_worktree_remove, branch freed, registration pruned. They are
+# never registered worktrees, which is why the pass needs no liveness check.
+rs_add_tombstone() {
+  mkdir -p "$rs_repo/.claude/worktrees/agent-$1.reap-dead-9999-$2"
+}
+
+# run_rs discards the exit status (it substitutes stdout); this variant
+# keeps it, which is the whole point of test 111.
+run_rs_status() {
+  SHIPYARD_HOME="$rs_home" bash "$helper" reap-stale \
+    --repo-root "$rs_repo" \
+    --session-id "rs-test-session" \
+    "$@" >/dev/null 2>&1
+  printf '%s\n' "$?"
+}
+
+# --- (110) cap bounds the tombstone pass; the rest is a checkpoint ---
+reset_rs_layout
+rs_add_tombstone t1 1
+rs_add_tombstone t2 2
+rs_add_tombstone t3 3
+result=$(run_rs --max-per-session 2)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=0 tombstones_swept=2 tombstones_failed=0 tombstones_remaining=1" \
+  "(110) --max-per-session bounds the tombstone pass and reports the remainder"
+tomb_left=$(find "$rs_repo/.claude/worktrees" -maxdepth 1 -type d -name '*.reap-dead-*' 2>/dev/null | wc -l | tr -d ' ')
+assert_equals "$tomb_left" "1" \
+  "(110a) the capped-out tombstone is left on disk, untouched"
+# Forward progress: the SAME backlog drains on a later pass, with no
+# separate state file — identical checkpoint semantics to the reap loop's
+# own `remaining` (test 102).
+result=$(run_rs --max-per-session 10)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=0 tombstones_swept=1 tombstones_failed=0 tombstones_remaining=0" \
+  "(110b) a later pass continues the tombstone backlog from where the cap left it"
+tomb_left=$(find "$rs_repo/.claude/worktrees" -maxdepth 1 -type d -name '*.reap-dead-*' 2>/dev/null | wc -l | tr -d ' ')
+assert_equals "$tomb_left" "0" \
+  "(110c) the backlog drains completely — a tombstone never wedges a later pass"
+
+# --- (111) a failed removal is reported in the summary AND in the exit code ---
+# Fixture: a tombstone whose parent is read-only, so the recursive delete
+# cannot unlink the child and the directory survives. Skipped when running
+# as root, for which no directory mode is unwritable.
+reset_rs_layout
+if [ "$(id -u)" != "0" ]; then
+  rs_add_tombstone stuck 4
+  mkdir -p "$rs_repo/.claude/worktrees/agent-stuck.reap-dead-9999-4/child"
+  chmod 500 "$rs_repo/.claude/worktrees/agent-stuck.reap-dead-9999-4"
+  rs_add_tombstone ok 5
+  result=$(run_rs)
+  last_line=$(printf '%s\n' "$result" | tail -1)
+  assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=0 tombstones_swept=1 tombstones_failed=1 tombstones_remaining=0" \
+    "(111) a failed tombstone removal is counted in the summary line, not silently dropped"
+  # The failure must not abort the pass — the sibling tombstone in the same
+  # run is still swept. This is the assertion that falsifies #1482's filed
+  # "stale tombstone wedges the sweep" diagnosis.
+  [ -d "$rs_repo/.claude/worktrees/agent-ok.reap-dead-9999-5" ] && sibling_kept=yes || sibling_kept=no
+  assert_equals "$sibling_kept" "no" \
+    "(111b) a failed tombstone does NOT abort the pass — siblings are still swept"
+  status=$(run_rs_status --max-per-session 10)
+  assert_equals "$status" "3" \
+    "(111c) a partial pass exits 3, not 0 — the caller can see the degrade"
+  chmod 700 "$rs_repo/.claude/worktrees/agent-stuck.reap-dead-9999-4"
+else
+  echo "  (111) skipped — running as root, no directory mode blocks unlink"
+fi
+
+# --- (112) clean pass exits 0; --dry-run reports without removing ---
+reset_rs_layout
+rs_add_tombstone clean 6
+status=$(run_rs_status --max-per-session 10)
+assert_equals "$status" "0" \
+  "(112) a pass with nothing left unreclaimed exits 0"
+reset_rs_layout
+rs_add_tombstone dry 7
+result=$(run_rs --dry-run)
+last_line=$(printf '%s\n' "$result" | tail -1)
+assert_equals "$last_line" "summary: reaped=0 deferred=0 unreaped=0 remaining=0 tombstones_swept=1 tombstones_failed=0 tombstones_remaining=0" \
+  "(112a) --dry-run reports what it would sweep"
+[ -d "$rs_repo/.claude/worktrees/agent-dry.reap-dead-9999-7" ] && dry_tomb_kept=yes || dry_tomb_kept=no
+assert_equals "$dry_tomb_kept" "yes" \
+  "(112b) --dry-run removes no tombstone"
 
 # ============================================================================
 # Issue #1261 — `disk-check` subcommand. Mid-session disk-space

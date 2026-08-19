@@ -288,7 +288,9 @@
 #     Stdout: one `reaped: <name>` / `unreaped: <name>` (issue #712 —
 #       verified end state, not intent) / `deferred: <name>` line per
 #       acted-upon worktree, followed by exactly one summary line:
-#       `summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>`.
+#       `summary: reaped=<R> deferred=<D> unreaped=<U> remaining=<REMAIN>
+#       tombstones_swept=<TS> tombstones_failed=<TF>
+#       tombstones_remaining=<TR>`.
 #       `remaining` is the count left on disk purely because the cap was
 #       reached — the backlog a future session will continue from. As of
 #       issue #1223 it is derived from a fresh on-disk check taken AFTER
@@ -299,12 +301,25 @@
 #     Also runs a self-healing sweep of stranded *.reap-dead-* tombstones
 #     (issue #1223) BEFORE classification, unconditionally — see
 #     sweep_stray_tombstones' docstring; its would-sweep-tombstone: /
-#     tombstone-swept: / tombstone-sweep-failed: lines precede the
-#     reaped:/deferred:/summary: lines above and carry no summary field.
+#     tombstone-swept: / tombstone-sweep-failed: / tombstone-summary:
+#     lines precede the reaped:/deferred:/summary: lines above. As of
+#     issue #1482 that pass is bounded by the same --max-per-session cap
+#     (it used to be the one unbounded step here, able to burn the whole
+#     time budget before a single worktree was even classified) and its
+#     three tallies are carried into the summary line above rather than
+#     being printed and dropped.
 #     --dry-run emits the same lines/summary WITHOUT removing anything or
 #     writing audit-log entries.
 #     Exit codes:
-#       0  sweep succeeded (output is always at least the summary line)
+#       0  sweep completed cleanly (output is always at least the summary
+#          line)
+#       3  issue #1482 — sweep completed but ended PARTIAL: at least one
+#          reap attempt left its worktree on disk (unreaped>0) and/or at
+#          least one tombstone removal failed (tombstones_failed>0). NOT a
+#          crash — the summary line is still emitted and every successful
+#          reap still happened. A capped-out `remaining` /
+#          `tombstones_remaining` is normal operation and does NOT produce
+#          this code.
 #       64 bad usage (missing required flag, malformed flag value)
 #
 #   detect-orchestrator-pid, derive-session-id, find-orphan-orchestrators
@@ -614,8 +629,15 @@ reap-stale                — Issue #836 fix 2. Bounded, checkpointed sweep
                           session file doesn't exist yet or jq isn't on
                           PATH. Emits reaped:/unreaped:/deferred: lines
                           plus one `summary: reaped=<R> deferred=<D>
-                          unreaped=<U> remaining=<REMAIN>` line. --dry-run
-                          skips removes and audit writes.
+                          unreaped=<U> remaining=<REMAIN>
+                          tombstones_swept=<TS> tombstones_failed=<TF>
+                          tombstones_remaining=<TR>` line. --dry-run skips
+                          removes and audit writes. Issue #1482: the
+                          stray-tombstone pass that runs first is bounded
+                          by the same --max-per-session cap and reports
+                          into that summary line; exit 3 (not 0) when the
+                          pass ends partial — unreaped>0 and/or
+                          tombstones_failed>0.
 
 detect-orchestrator-pid, derive-session-id, find-orphan-orchestrators
                         — Issue #941: moved to the sibling script
@@ -641,10 +663,14 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                           stale self-assign sweep — which used to live as a
                           `for wt_dir in $(find ...)` loop directly in the
                           orchestrator's own Bash tool call. Reachable at ANY
-                          point in setup, pre- or post-relocation, for the
-                          same reason reap-orphan-orchestrators / sweep-
-                          stale-agents above are: one script call, no loop
-                          shape in the CALLER's own command text. NOT the
+                          point in setup, pre- or post-relocation, because
+                          it is one script call with no loop shape in the
+                          CALLER's own command text. (The sibling sweeps
+                          this note used to cite for that property —
+                          reap-orphan-orchestrators and sweep-stale-agents
+                          — were deleted by issue #1472; Claude Code's own
+                          periodic worktree sweep supersedes them. This is
+                          now the only pre-relocation sweep.) NOT the
                           same subcommand as reap-orphan-branches above
                           (issue #326, deletes orphaned worktree-agent-*
                           BRANCH REFS with no live worktree) — the two names
@@ -671,8 +697,12 @@ report-unreaped         — Issue #712. Post-sweep verification. Emits one
                           dirs (already pruned; unlink synchronous as of
                           issue #1223, so a lingering one here means a sweep
                           is either mid-flight or its delete partially
-                          failed — see sweep-tombstones below to clean
-                          those up explicitly).
+                          failed). The standalone sweep-tombstones
+                          subcommand this note used to point at was deleted
+                          by issue #1472 — reap-stale's own first pass is
+                          now the only cleaner, and per issue #1482 it
+                          reports what it swept, failed on, and left via
+                          the tombstones_* fields of its summary line.
                           Empty stdout when everything was reaped. This is the
                           ONLY mechanism that catches a reap denied by Claude
                           Code's auto-mode permission classifier — the denial
@@ -1802,45 +1832,132 @@ fast_worktree_remove() {
 # Prints one `tombstone-swept: <name>` line per directory actually removed,
 # `tombstone-sweep-failed: <name>` if a removal attempt leaves something
 # behind (surfaces rather than silently re-stranding it), or
-# `would-sweep-tombstone: <name>` under --dry-run (nothing is touched).
-# These lines carry no summary field of their own and are not written to
-# the reap-audit log — they precede reap_stale's own reaped:/deferred:/
-# summary: lines in that caller's stdout, and are distinguishable by
-# prefix. No JSONL audit entry: an already-tombstoned tree has no live
-# branch or classification left to describe; the `reaped` audit action's
-# `--classification` field would have nothing meaningful to carry.
+# `would-sweep-tombstone: <name>` under --dry-run (nothing is touched);
+# then exactly one `tombstone-summary: swept=<S> failed=<F> remaining=<R>`
+# line. These lines are not written to the reap-audit log — they precede
+# reap_stale's own reaped:/deferred:/summary: lines in that caller's
+# stdout, and are distinguishable by prefix. No JSONL audit entry: an
+# already-tombstoned tree has no live branch or classification left to
+# describe; the `reaped` audit action's `--classification` field would
+# have nothing meaningful to carry.
 #
-# Args: <worktrees-dir> [--dry-run]
+# Issue #1482 — this pass is BOUNDED and its outcome is REPORTED. Both
+# properties were missing, and their absence is what made a partial sweep
+# invisible and self-compounding:
+#
+#   * Bounded (`--max <N>`, 0 = unbounded). This pass runs BEFORE
+#     classification and used to have no cap at all, while the reap loop it
+#     precedes has had `--max-per-session` since #836. A backlog of large
+#     tombstones could therefore consume the caller's entire time budget in
+#     a pass that never reached a single worktree reap — and since a killed
+#     `rm -rf` leaves a *partially*-deleted tombstone behind, the next pass
+#     restarts the same unbounded traversal from the top. That is the
+#     compounding loop #1482 reported: each timed-out pass leaves at least
+#     as much work as it found. Capping the count lets a pass make bounded
+#     forward progress and hand the rest to the next one, exactly the
+#     self-checkpointing contract reap_stale's own loop already had.
+#   * Reported. Failures used to print a line and then vanish: this
+#     function returned 0 unconditionally, reap_stale ignored the return,
+#     and the `summary:` line carried no tombstone field — so a caller
+#     reading only the summary (disk-space-guard.md takes `tail -1`) saw
+#     total success over bytes that were never reclaimed. For the disk
+#     guard specifically, whose whole purpose is reclaiming disk, that is
+#     the silent-degrade dont.md's "Don't swallow a failed or denied reap"
+#     bullet (#712/#1274) forbids.
+#
+# Deliberately NOT changed: what qualifies for deletion. The `.reap-dead-`
+# infix remains the sole criterion, for the reasons argued above — this
+# function only ever deletes FEWER directories per pass than before, never
+# more, so it cannot widen reap eligibility.
+#
+# Publishes its tallies to the caller via three globals (shell functions
+# can't return structured values, and reap_stale needs the counts for its
+# own summary line): SWEEP_TOMBSTONE_SWEPT / _FAILED / _REMAINING.
+#
+# Returns 1 when at least one removal attempt left its directory behind, 0
+# otherwise. A capped-out remainder is NOT a failure — it's the checkpoint.
+#
+# Args: <worktrees-dir> [--dry-run] [--max <N>]
 sweep_stray_tombstones() {
   local wt_dir="$1"
-  local dry_run="${2:-}"
+  shift || true
+
+  local dry_run=""
+  local max_tombstones=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run)
+        dry_run="--dry-run"
+        shift
+        ;;
+      --max)
+        if [ -n "${2:-}" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+          max_tombstones="$2"
+        fi
+        shift 2
+        ;;
+      --max=*)
+        local mt_val="${1#--max=}"
+        [[ "$mt_val" =~ ^[0-9]+$ ]] && max_tombstones="$mt_val"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  SWEEP_TOMBSTONE_SWEPT=0
+  SWEEP_TOMBSTONE_FAILED=0
+  SWEEP_TOMBSTONE_REMAINING=0
 
   [ -d "$wt_dir" ] || return 0
 
+  local attempts=0
   local path name
   while IFS= read -r path; do
     [ -z "$path" ] && continue
     [ -d "$path" ] || continue
     name="$(basename "$path")"
+
+    # Past the cap: leave it on disk untouched and count it as the backlog
+    # a later pass continues from. Same checkpoint semantics as the reap
+    # loop's `remaining`.
+    if [ "$max_tombstones" -gt 0 ] && [ "$attempts" -ge "$max_tombstones" ]; then
+      SWEEP_TOMBSTONE_REMAINING=$((SWEEP_TOMBSTONE_REMAINING + 1))
+      continue
+    fi
+    attempts=$((attempts + 1))
+
     if [ "$dry_run" = "--dry-run" ]; then
       printf 'would-sweep-tombstone: %s\n' "$name"
+      SWEEP_TOMBSTONE_SWEPT=$((SWEEP_TOMBSTONE_SWEPT + 1))
       continue
     fi
     rm -rf "$path" >/dev/null 2>&1
     if [ -e "$path" ]; then
       printf 'tombstone-sweep-failed: %s\n' "$name"
+      SWEEP_TOMBSTONE_FAILED=$((SWEEP_TOMBSTONE_FAILED + 1))
     else
       printf 'tombstone-swept: %s\n' "$name"
+      SWEEP_TOMBSTONE_SWEPT=$((SWEEP_TOMBSTONE_SWEPT + 1))
     fi
   done < <(find "$wt_dir" -maxdepth 1 -mindepth 1 -type d -name '*.reap-dead-*' 2>/dev/null | sort)
 
-  return 0
+  printf 'tombstone-summary: swept=%s failed=%s remaining=%s\n' \
+    "$SWEEP_TOMBSTONE_SWEPT" "$SWEEP_TOMBSTONE_FAILED" "$SWEEP_TOMBSTONE_REMAINING"
+
+  [ "$SWEEP_TOMBSTONE_FAILED" -eq 0 ]
 }
 
-# Issue #1223 — CLI wrapper for the `sweep-tombstones` subcommand: parses
-# --repo-root/--dry-run and delegates to sweep_stray_tombstones. Standalone
-# entry point for manual cleanup and direct testing; reap_stale already
-# calls sweep_stray_tombstones itself at the start of every sweep.
+# Issue #1261 — mid-session disk-space backpressure probe for
+# disk-space-guard.md. Reports free space on the volume holding --path and
+# whether it is below --floor-mb. Fails OPEN: an unreadable `df` result
+# reports free_mb=unknown low=false rather than blocking dispatch.
+#
+# (The docstring that stood here described the `sweep-tombstones` CLI
+# wrapper, which issue #1472 deleted without moving its comment — leaving
+# this function documented as something it never was. Fixed in #1482.)
 disk_free_check() {
   local path=""
   local floor_mb=0
@@ -2836,11 +2953,21 @@ reap_stale() {
   # never match a live worktree. Runs before classification so a sweep that
   # is ALSO under --dry-run reports what it would sweep without touching
   # anything.
+  #
+  # Issue #1482 — bounded by the SAME --max-per-session cap the reap loop
+  # below uses, and its tallies are folded into this function's summary
+  # line + exit code. Before that, this pass was the one unbounded step in
+  # a function that advertises itself as bounded and checkpointed, and its
+  # failures were printed and then dropped on the floor. See
+  # sweep_stray_tombstones' docstring for the full mechanism.
   if [ "$dry_run" -eq 1 ]; then
-    sweep_stray_tombstones "$repo_root/.claude/worktrees" --dry-run
+    sweep_stray_tombstones "$repo_root/.claude/worktrees" --dry-run --max "$max_per_session"
   else
-    sweep_stray_tombstones "$repo_root/.claude/worktrees"
+    sweep_stray_tombstones "$repo_root/.claude/worktrees" --max "$max_per_session"
   fi
+  local tombstones_swept="${SWEEP_TOMBSTONE_SWEPT:-0}"
+  local tombstones_failed="${SWEEP_TOMBSTONE_FAILED:-0}"
+  local tombstones_remaining="${SWEEP_TOMBSTONE_REMAINING:-0}"
 
   # Issue #1147 — mandatory in-flight cross-check. `--exclude-agent-id` is
   # only as protective as every calling site remembering to compute and
@@ -3007,28 +3134,49 @@ reap_stale() {
       remaining_count=$((remaining_count + 1))
   done
 
-  printf 'summary: reaped=%s deferred=%s unreaped=%s remaining=%s\n' \
-    "$reaped_count" "$deferred_count" "$unreaped_count" "$remaining_count"
+  printf 'summary: reaped=%s deferred=%s unreaped=%s remaining=%s tombstones_swept=%s tombstones_failed=%s tombstones_remaining=%s\n' \
+    "$reaped_count" "$deferred_count" "$unreaped_count" "$remaining_count" \
+    "$tombstones_swept" "$tombstones_failed" "$tombstones_remaining"
 
+  # Issue #1482 — an honest exit code. This used to `return 0`
+  # unconditionally, so a pass that attempted N reaps and left some of them
+  # on disk was indistinguishable, to any caller reading only the status,
+  # from a clean sweep — the exact silent-degrade dont.md's "Don't swallow
+  # a failed or denied reap" bullet (#712/#1274) forbids, one layer below
+  # where that bullet's report-unreaped / reaped-failed machinery operates.
+  # Those remain the durable, per-worktree forensic record; this is the
+  # immediate signal to the caller that made THIS call, which had none.
+  #
+  # Exit 3, not 1: this is "completed, but partial", not "crashed" and not
+  # "bad usage" (64). The summary line is still emitted, every successful
+  # reap still happened, and the caller's correct response is to surface
+  # the count — never to treat the sweep as not having run. `remaining` /
+  # `tombstones_remaining` deliberately do NOT trigger it: those are the
+  # intentional cap checkpoint, which is normal operation.
+  if [ "$unreaped_count" -gt 0 ] || [ "$tombstones_failed" -gt 0 ]; then
+    return 3
+  fi
   return 0
 }
 
-# Issue #1355 — single-call replacement for setup-3b's own preamble (disk-
-# backlog warning banner, orchestrator-PID detection, config reads) plus its
-# `reap-stale` call. Before this subcommand existed, that preamble was
-# several separate statements in the orchestrator's own Bash tool call —
-# fine pre-relocation, but exactly the multi-statement shape dont.md's
-# post-relocation-Bash-blocks rule (#1277) and reap-orphan-orchestrators'
-# comment above both document as fragile once compounded further. Wrapping
-# the whole preamble + reap-stale call in one script call, invoked as ONE
-# plain `worktree-reap.sh sweep-stale-agents ...` command, makes it
-# reachable at any point in setup, pre- or post-relocation — same rationale
-# as reap_orphan_orchestrators above.
+# Issue #1365 (follow-up to #1355) — single-call replacement for setup step
+# 3c's own discover-then-triage loop: the per-branch state machine (push,
+# PR creation, gated auto-merge arming, the tracked counters) plus the
+# issue #303 stale @me self-assign sweep, which used to live as a
+# `for wt_dir in $(find ...)` loop directly in the orchestrator's own Bash
+# tool call. Wrapping it in one script call, invoked as ONE plain
+# `worktree-reap.sh triage-orphan-branches ...` command, makes it reachable
+# at any point in setup, pre- or post-relocation — the multi-statement
+# shape dont.md's post-relocation-Bash-blocks rule (#1277) documents as
+# fragile. This is the ONLY sweep step 0.45 still runs; see
+# 00e-pre-relocation-sweeps.md.
 #
-# Deliberately does NOT recompute an --exclude-agent-id list itself: issue
-# #1147 already made reap_stale's own in-flight guard automatic (it reads
-# .in_flight straight off the SAME --session-id this wrapper is given), so
-# doing it again here would be pure duplication, not defense in depth.
+# (The docstring that stood here described `sweep_stale_agents`, the
+# setup-3b wrapper issue #1472 deleted without moving its comment —
+# leaving this function documented as a different, now-nonexistent
+# subcommand. That stale text is the most likely reason issue #1482's
+# reporter invoked `sweep-stale-agents` against a version that no longer
+# has it. Fixed in #1482.)
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
