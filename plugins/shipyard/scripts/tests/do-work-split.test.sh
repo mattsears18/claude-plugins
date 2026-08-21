@@ -3899,6 +3899,107 @@ assert_contains "$rationale_path" \
   'issues/1486' \
   "RATIONALE.md cites issue #1486"
 
+# ── Issue #1490 — a peer's claimed_paths must be communicated to a concurrent
+#    worker at the granularity it was actually claimed, not widened to a dir
+#    ────────────────────────────────────────────────────────────────────────
+#
+# Repro: the orchestrator recorded a worker's claimed_paths.hard as a script
+# file plus a `__tests__/helpers/` subdirectory, then described that claim to
+# a CONCURRENT worker as the parent directory `apps/lightwork/__tests__/` —
+# ~400 uncontended sibling test files. The receiving worker honoured the line
+# and dropped a planned source-assertion test for a collision that did not
+# exist. Nothing in the spec said at what granularity a peer's claim should be
+# described, and the widened phrasing is both easier to write and strictly
+# broader than the truth. Distinct from the #781/#1062 state-assertion rules:
+# those govern claims the worker can re-verify; a claimed-paths line silently
+# REMOVES work from scope with nothing for the worker to check it against.
+issue_work_path1490="$repo_root/plugins/shipyard/agents/issue-worker/issue-work.md"
+
+# dispatch-rules.md, site 1: the rule at the claimed_paths definition.
+assert_contains "$dispatch_rules_path" \
+  'reproduce it at the granularity it was actually claimed' \
+  "dispatch-rules.md states the claimed-paths granularity rule where claimed_paths is defined (#1490)"
+
+assert_contains "$dispatch_rules_path" \
+  'Never roll a set of file claims up into their common parent directory' \
+  "dispatch-rules.md forbids rolling file claims up to a parent directory (#1490)"
+
+# Both phrasings the rule requires: partial-directory and whole-directory.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$dispatch_rules_path" \
+  'other files in `<dir>` are yours' \
+  "dispatch-rules.md gives the file-level-claim-inside-a-shared-directory phrasing (#1490)"
+
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$dispatch_rules_path" \
+  'a peer holds the whole of `<dir>` this session' \
+  "dispatch-rules.md gives the genuine whole-directory-claim phrasing (#1490)"
+
+# The prefix-matching carve-out — correct for dispatch decisions, not for prose.
+assert_contains "$dispatch_rules_path" \
+  'It is **not** a license to re-describe that claim' \
+  "dispatch-rules.md distinguishes prefix-matching-for-dispatch from prose widening (#1490)"
+
+# dispatch-rules.md, site 2: the prompt-composition rule beside #781/#1062.
+assert_contains "$dispatch_rules_path" \
+  'A claimed-paths line is a third category of prompt assertion' \
+  "dispatch-rules.md restates the granularity rule in the prompt-composition rules (#1490)"
+
+assert_contains "$dispatch_rules_path" \
+  'silently **removes work from scope**' \
+  "dispatch-rules.md names why a claimed-paths line differs from a state assertion (#1490)"
+
+assert_contains "$dispatch_rules_path" \
+  'omit the line rather than guess wide' \
+  "dispatch-rules.md says to omit rather than widen when granularity is unknown (#1490)"
+
+assert_contains "$dispatch_rules_path" \
+  'issues/1490' \
+  "dispatch-rules.md cites issue #1490"
+
+# dont.md: the orchestrator-side one-liner.
+assert_contains "$dont_path" \
+  "Don't widen a peer's \`claimed_paths\` to a directory" \
+  "dont.md carries the no-widening prohibition (#1490)"
+
+assert_contains "$dont_path" \
+  'issues/1490' \
+  "dont.md cites issue #1490"
+
+# issue-work.md: the worker-side divergence-reporting rule.
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$issue_work_path1490" \
+  'You narrowed your own scope to honor an `Off-limits: <path>` line' \
+  "issue-work.md §5.5 adds the scope-narrowing decision-comment trigger (#1490)"
+
+assert_contains "$issue_work_path1490" \
+  '**Honor it as written**' \
+  "issue-work.md tells the worker to honor the restriction rather than work around it (#1490)"
+
+assert_contains "$issue_work_path1490" \
+  'never inspect the peer'\''s worktree' \
+  "issue-work.md forbids probing the peer's worktree to test the collision (#1490)"
+
+assert_contains "$issue_work_path1490" \
+  '**name the narrowing**' \
+  "issue-work.md requires the narrowing be reported as a divergence (#1490)"
+
+assert_contains "$issue_work_path1490" \
+  'Scope narrowed to honor a claimed-paths / off-limits line' \
+  "issue-work.md §5.5 routing table routes the narrowing to both PR and issue (#1490)"
+
+# The (1)-(N) back-reference must have grown with the new trigger.
+assert_contains "$issue_work_path1490" \
+  'If none of (1)–(5) apply' \
+  "issue-work.md §5.5's post-nothing default counts the new fifth trigger (#1490)"
+
+assert_contains "$issue_work_path1490" \
+  'issues/1490' \
+  "issue-work.md cites issue #1490"
+
 echo
 if (( fail > 0 )); then
   printf '%sFAIL%s  %d test(s) failed (%d passed)\n' "$RED" "$RESET" "$fail" "$pass" >&2

@@ -410,6 +410,7 @@ Before enabling auto-merge, leave a **comment trail for non-trivial decisions** 
 2. **The PR diverges materially from the issue body or suggested approach.** The issue's suggested fix was wrong, outdated, or out-of-scope, and you implemented something different. Both the **PR** and the **originating issue** get a comment so future readers of either don't re-litigate.
 3. **An external constraint shaped the implementation.** SDK quirk, rate limit, deprecation, browser-platform gotcha. One sentence is plenty — the goal is "next person doesn't get burned by the same thing."
 4. **A potential side-effect was deliberately accepted or punted.** "This breaks existing X behavior; documented in CHANGELOG." or "Doesn't handle Y case; filed #N as follow-up."
+5. **You narrowed your own scope to honor an `Off-limits: <path>` line in your Context block ([#1490](https://github.com/mattsears18/shipyard/issues/1490)).** Such a line can be **broader than the claim it describes** — the orchestrator's [composition rule](../../commands/do-work/dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) requires matching granularity, but a widened one reads identically from where you sit and you have nothing to re-check it against. **Honor it as written** (never work around it, never inspect the peer's worktree), then **name the narrowing** on both the PR and the issue: the restriction quoted verbatim, what you dropped or substituted, what you shipped instead. Silence makes a phantom collision invisible — a test dropped for a collision that never existed looks identical to one never planned. A whole dropped AC bullet is [§6.7](#67-deferred-slice-disposition-hand-back-an-autonomously-workable-residual-to-a-new-issue-keep-the-issue-open-986)'s shape instead.
 
 **What is NOT a decision comment.** Avoid comment noise:
 
@@ -426,8 +427,9 @@ Before enabling auto-merge, leave a **comment trail for non-trivial decisions** 
 | Divergence from issue body / suggested approach | **PR** (why this code) AND **issue** (why the issue's suggestion was wrong/outdated) |
 | External constraint that shaped implementation | **PR** |
 | Side-effect accepted or follow-up filed | **PR** |
+| Scope narrowed to honor a claimed-paths / off-limits line ([#1490](https://github.com/mattsears18/shipyard/issues/1490)) | **PR** (what shipped instead) AND **issue** (which AC item was narrowed, and why) |
 
-When in doubt: PR for implementation decisions, issue for triage/scope decisions. If none of (1)–(4) apply, **post nothing** — silence is the correct default for routine work.
+When in doubt: PR for implementation decisions, issue for triage/scope decisions. If none of (1)–(5) apply, **post nothing** — silence is the correct default for routine work.
 
 **Format.** One PR comment, one bullet per decision, named alternative or constraint plus the tradeoff in one sentence. Use `gh pr comment <pr-num> --repo <owner/repo> --body "..."`. For an issue-side comment on divergence use `gh issue comment <N> --repo <owner/repo> --body "..."`.
 
