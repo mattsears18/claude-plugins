@@ -90,6 +90,9 @@ dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules
 # concatenation as dispatch_rules_path/operate_path so content assertions
 # below keep finding it regardless of which physical file it lives in.
 disk_space_guard_path="$repo_root/plugins/shipyard/commands/do-work/disk-space-guard.md"
+# version-release.md — step B.0's release-on-non-claim hook, split out of
+# steady-state.md by #1420 for the same #611 size-cap reason as the two above.
+version_release_path="$repo_root/plugins/shipyard/commands/do-work/version-release.md"
 # invariant_line_path (issue #1261): the step-E per-token "what it means /
 # when it's set / divergence smells" narrative (tokens_attributed,
 # last_fresh_fetch, unfiltered_open_count, me_assigned_open, operator_q/
@@ -122,7 +125,7 @@ cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
 extracted_reap_scripts_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh $repo_root/plugins/shipyard/scripts/concurrent-session-guard.sh $repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh $repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh $repo_root/plugins/shipyard/scripts/stale-failure-check.sh $repo_root/plugins/shipyard/scripts/next-available-version.sh $repo_root/plugins/shipyard/scripts/primary-leak-guard.sh"
 steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
 # shellcheck disable=SC2086  # intentional word-splitting: space-separated path list
-cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
+cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$version_release_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
 trap 'rm -f "$setup_path" "$operate_path" "$steady_state_path"' EXIT
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
@@ -3109,10 +3112,10 @@ assert_contains "$steady_state_path" \
   'issues/1193' \
   "steady-state.md cites issue #1193 as the source of the operator invariant-line tokens"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · version_release=<n/a|none|released|skipped> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the operator_q / operator tokens (#1193)"
 assert_contains "$steady_state_path" \
-  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
+  'operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · version_release=<n/a|none|released|skipped> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the operator_q / operator tokens (#1193)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3160,10 +3163,10 @@ assert_contains "$steady_state_path" \
   'issues/1194' \
   "steady-state.md cites issue #1194 as the source of the me_assigned_open invariant-line token"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · version_release=<n/a|none|released|skipped> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line (steady-state format) includes the me_assigned_open token (#1194)"
 assert_contains "$steady_state_path" \
-  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
+  'unfiltered_open_count=<u> · me_assigned_open=<m> · operator_q=<oq> · operator=<active|skipped|unreachable> · peers=<p> · disk_free_mb=<N|"unknown"> · ci_backpressure=<n/a|skipped-hosted|checked|held> · paused_env=<none|active> · version_cursor=<X.Y.Z|"unset"|n/a> · version_release=<n/a|none|released|skipped> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line (idle-proof format) includes the me_assigned_open token (#1194)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3514,10 +3517,10 @@ assert_contains "$invariant_line_path" \
   'A missing `version_cursor=` token entirely is a contract violation' \
   "invariant-line.md treats a missing version_cursor= token as a contract violation (#1417)"
 assert_contains "$steady_state_path" \
-  'version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
+  'version_cursor=<X.Y.Z|"unset"|n/a> · version_release=<n/a|none|released|skipped> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=<k>' \
   "steady-state.md step E invariant line documents the version_cursor token in the dispatch format (#1417)"
 assert_contains "$steady_state_path" \
-  'version_cursor=<X.Y.Z|"unset"|n/a> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
+  'version_cursor=<X.Y.Z|"unset"|n/a> · version_release=<n/a|none|released|skipped> · spec_drift=<N|"unknown"|n/a> · dispatched_this_turn=0' \
   "steady-state.md step E invariant line documents the version_cursor token in the idle-proof format (#1417)"
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
@@ -3858,7 +3861,7 @@ assert_contains "$steady_state_path" \
 # shellcheck disable=SC2016
 # Backticks are literal markdown punctuation in the needle.
 assert_contains "$steady_state_path" \
-  '`version_cursor=`, `spec_drift=`' \
+  '`version_cursor=`, `version_release=`, `spec_drift=`' \
   "steady-state.md's token-presence self-check enumerates spec_drift= among the mandatory tokens (#1486)"
 
 # setup/00-config-worktree.md: step 0.5 seeds the cache from #1167's count.
@@ -3999,6 +4002,107 @@ assert_contains "$issue_work_path1490" \
 assert_contains "$issue_work_path1490" \
   'issues/1490' \
   "issue-work.md cites issue #1490"
+# --------------------------------------------------------------------------
+echo
+echo "(64) Release-on-non-claim: a version slot handed to a dispatch that never"
+echo "     opens a PR is released at reconcile (#1420)"
+# --------------------------------------------------------------------------
+# `compute` advances the version_cursor the instant it hands a slot out, so a
+# dispatch that terminates WITHOUT opening a PR (a `blocked` return, a
+# permission-classifier denial, a crash, an explicit worker decline) strands
+# that value and every later `compute` floors above the phantom. #1417's
+# `reseed-if-idle` structurally cannot reach this variant — it fires only when
+# `session_prs` has no OPEN member, while this leak happens with siblings still
+# open (the repro: cursor 4.40.0 against a true highest claim of 4.38.0).
+#
+# The fix is a release hook at step B, NOT a cursor rollback: a released slot
+# may not be the highest one outstanding, so decrementing would hand a later
+# batch member's already-promised value back out and reintroduce #437. The
+# released version is recorded as a hole and reclaimed by the next `compute`.
+orch_state_ref_path1420="$repo_root/plugins/shipyard/commands/do-work/orchestrator-state-reference.md"
+
+# The script gains the `release` subcommand and a reclaim-aware `compute`.
+assert_contains "$repo_root/plugins/shipyard/scripts/next-available-version.sh" \
+  'release --version <v>' \
+  "next-available-version.sh documents the release subcommand (#1420)"
+assert_contains "$repo_root/plugins/shipyard/scripts/next-available-version.sh" \
+  'reclaimed_slot=<semver-or-empty>' \
+  "next-available-version.sh compute emits the reclaimed_slot line (#1420)"
+assert_contains "$repo_root/plugins/shipyard/scripts/next-available-version.sh" \
+  'A release is NOT a cursor rollback' \
+  "next-available-version.sh states that release never lowers the cursor (#1420)"
+assert_contains "$repo_root/plugins/shipyard/scripts/next-available-version.sh" \
+  'claimed_floor' \
+  "next-available-version.sh bounds hole reuse on the ground-truth claimed floor (#1420)"
+
+# steady-state.md step B owns the single reconcile call site.
+assert_contains "$steady_state_path" \
+  'B.0. Release the version slot when this dispatch claimed no PR' \
+  "steady-state.md step B carries the release-on-non-claim hook (#1420)"
+assert_contains "$steady_state_path" \
+  'next-available-version.sh" release' \
+  "steady-state.md step B.0 calls next-available-version.sh release (#1420)"
+assert_contains "$steady_state_path" \
+  'single funnel' \
+  "steady-state.md explains why the release lives at step B, not per-mode in A.1 (#1420)"
+assert_file_exists "$version_release_path" \
+  "do-work/version-release.md exists (step B.0's hook, split out per #611's size cap) (#1420)"
+assert_contains "$steady_state_path" \
+  'degrades to the status quo' \
+  "steady-state.md records that a skipped release degrades to a leak, never a collision (#1420)"
+assert_contains "$steady_state_path" \
+  'issues/1420' \
+  "steady-state.md cites issue #1420"
+
+# The classifier-denial path is the one non-claiming shape that never reaches
+# step B (no in_flight slot is ever written for it), so it releases its own.
+assert_contains "$dispatch_rules_path" \
+  'Release the version slot too, when the denied dispatch had one' \
+  "dispatch-rules.md releases the slot on a permission-classifier denial (#1420)"
+assert_contains "$dispatch_rules_path" \
+  'version_slot' \
+  "dispatch-rules.md records the handed-out slot on the in_flight entry (#1420)"
+assert_contains "$dispatch_rules_path" \
+  'reclaimed_slot' \
+  "dispatch-rules.md parses compute's fourth output line (#1420)"
+
+# The invariant-line token — the ci_backpressure-family evidence flag that
+# makes a SKIPPED release visible rather than silent.
+assert_contains "$invariant_line_path" \
+  'version_release=<n/a|none|released|skipped>' \
+  "invariant-line.md documents the version_release token (#1420)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
+assert_contains "$invariant_line_path" \
+  'a direct application of the `ci_backpressure` pattern' \
+  "invariant-line.md places version_release in the ci_backpressure family (#1420)"
+assert_contains "$invariant_line_path" \
+  'This is the value the token exists to make visible' \
+  "invariant-line.md names skipped as the divergence smell (#1420)"
+
+# in_flight grows the version_slot field that carries the promise to reconcile.
+assert_contains "$do_work_path" \
+  'version_slot?' \
+  "do-work.md's in_flight struct carries version_slot (#1420)"
+assert_contains "$do_work_path" \
+  'issues/1420' \
+  "do-work.md cites issue #1420 for version_slot"
+
+# The cold version_cursor struct documents the release as its second self-heal.
+assert_contains "$orch_state_ref_path1420" \
+  'Released at reconcile when a dispatch never claims its slot' \
+  "orchestrator-state-reference.md documents the release half of the cursor self-heal (#1420)"
+
+# RATIONALE.md: why a hole rather than a rollback, and why no ledger is needed.
+assert_contains "$rationale_path" \
+  'Release-on-non-claim' \
+  "RATIONALE.md carries the #1420 release-on-non-claim writeup"
+assert_contains "$rationale_path" \
+  'per-slot promise ledger' \
+  "RATIONALE.md records why the per-slot promise ledger stays unbuilt (#1420)"
+assert_contains "$rationale_path" \
+  'issues/1420' \
+  "RATIONALE.md cites issue #1420"
 
 echo
 if (( fail > 0 )); then
