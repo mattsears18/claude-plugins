@@ -134,13 +134,15 @@ else
   bad "empty config-labels object: expected exit 0 + OK 0 label(s), got exit $status: $out"
 fi
 
-# ── (6) Bad usage — wrong arg count under --decide. ──────────────────────────
+# ── (6) Bad usage — wrong arg count under --decide. Exit 64 (EX_USAGE), not
+# 2: a malformed command line is a caller error, not an unreadable signal
+# (issue #1492). ─────────────────────────────────────────────────────────────
 out="$(bash "$script" --decide '{}' 2>&1)"
 status=$?
-if [[ $status -eq 2 && "$out" == *usage:* ]]; then
-  ok "bad usage (--decide with missing arg): exit 2, usage message"
+if [[ $status -eq 64 && "$out" == *usage:* ]]; then
+  ok "bad usage (--decide with missing arg): exit 64, usage message"
 else
-  bad "bad usage (--decide with missing arg): expected exit 2 + usage, got exit $status: $out"
+  bad "bad usage (--decide with missing arg): expected exit 64 + usage, got exit $status: $out"
 fi
 
 # ── (7) Malformed JSON input never reads as a silent pass — must be loud
@@ -192,10 +194,120 @@ fi
 # ── (10) Live-mode usage error (no repo arg). ────────────────────────────────
 out="$(bash "$script" 2>&1)"
 status=$?
-if [[ $status -eq 2 && "$out" == *usage:* ]]; then
-  ok "live mode with no repo argument: exit 2, usage message"
+if [[ $status -eq 64 && "$out" == *usage:* ]]; then
+  ok "live mode with no repo argument: exit 64, usage message"
 else
-  bad "live mode with no repo argument: expected exit 2 + usage, got exit $status: $out"
+  bad "live mode with no repo argument: expected exit 64 + usage, got exit $status: $out"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Issue #1492 — a malformed invocation must be a USAGE ERROR (exit 64), not
+# an INDETERMINATE laundered out of a nonsense `gh` command line.
+#
+# The repro: `verify-config-labels.sh --repo owner/name` bound repo="--repo"
+# and passed it straight through, producing `gh label list --repo --repo …`,
+# which failed — and the script reported
+# `INDETERMINATE: gh label list --repo --repo failed or returned nothing`.
+# A caller error wearing the costume of a transient network failure. These
+# tests pin the distinction, and pin that neither class ever reads as a pass.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── (11) THE #1492 REPRO SHAPE: `--repo <owner/repo>`. ──────────────────────
+out="$(bash "$script" --repo mattsears18/shipyard 2>&1)"
+status=$?
+if [[ $status -eq 64 ]]; then
+  ok "issue #1492 repro shape (--repo owner/name): exit 64 (EX_USAGE)"
+else
+  bad "issue #1492 repro shape (--repo owner/name): expected exit 64, got exit $status: $out"
+fi
+if [[ "$out" == *"unrecognized flag '--repo'"* && "$out" == *POSITIONAL* ]]; then
+  ok "issue #1492 repro shape: names the offending flag and says the repo is POSITIONAL"
+else
+  bad "issue #1492 repro shape: expected the message to name '--repo' and say POSITIONAL, got: $out"
+fi
+if [[ "$out" != *INDETERMINATE* ]]; then
+  ok "issue #1492 repro shape: does NOT report INDETERMINATE (caller error != unreadable signal)"
+else
+  bad "issue #1492 repro shape: still laundering a caller error into INDETERMINATE, got: $out"
+fi
+if [[ "$out" != *"gh label list"* ]]; then
+  ok "issue #1492 repro shape: rejects before shelling out to gh (no nonsense command line)"
+else
+  bad "issue #1492 repro shape: still passed the flag through to gh, got: $out"
+fi
+
+# ── (12) The whole point: a malformed invocation must never read as a pass.
+# `--repo` is the shape a caller reaches for when deriving the call from
+# prose, so this is the one that must not be mistaken for OK. ───────────────
+for bad_args in "--repo mattsears18/shipyard" "--foo" "-r mattsears18/shipyard"; do
+  # shellcheck disable=SC2086
+  out="$(bash "$script" $bad_args 2>&1)"
+  status=$?
+  if [[ $status -ne 0 && "$out" != OK:* ]]; then
+    ok "malformed invocation '$bad_args' never reads as a pass (exit $status, no OK:)"
+  else
+    bad "malformed invocation '$bad_args' read as a pass: exit $status: $out"
+  fi
+done
+
+# ── (13) An unknown flag is rejected, not forwarded. ────────────────────────
+out="$(bash "$script" --limit 300 2>&1)"
+status=$?
+if [[ $status -eq 64 && "$out" == USAGE_ERROR:* ]]; then
+  ok "unknown flag (--limit): exit 64, stdout starts USAGE_ERROR:"
+else
+  bad "unknown flag (--limit): expected exit 64 + USAGE_ERROR: on stdout, got exit $status: $out"
+fi
+
+# ── (14) Extra positional arguments are a usage error, not silently ignored.
+out="$(bash "$script" mattsears18/shipyard extra 2>&1)"
+status=$?
+if [[ $status -eq 64 && "$out" == *"exactly one"* ]]; then
+  ok "extra positional argument: exit 64 naming the arity, not silently ignored"
+else
+  bad "extra positional argument: expected exit 64 naming the arity, got exit $status: $out"
+fi
+
+# ── (15) An empty repo argument is a usage error. ───────────────────────────
+out="$(bash "$script" "" 2>&1)"
+status=$?
+if [[ $status -eq 64 ]]; then
+  ok "empty <owner/repo> argument: exit 64"
+else
+  bad "empty <owner/repo> argument: expected exit 64, got exit $status: $out"
+fi
+
+# ── (16) A malformed repo slug is rejected before spending a network call —
+# same class of caller error as an unrecognized flag, equally detectable. ───
+for bad_slug in "mattsears18" "a/b/c" "/shipyard" "mattsears18/"; do
+  out="$(bash "$script" "$bad_slug" 2>&1)"
+  status=$?
+  if [[ $status -eq 64 && "$out" == *"not a valid <owner/repo> slug"* ]]; then
+    ok "malformed repo slug '$bad_slug': exit 64 naming the expected form"
+  else
+    bad "malformed repo slug '$bad_slug': expected exit 64 + slug message, got exit $status: $out"
+  fi
+done
+
+# ── (17) `--help` is a request, not an error: usage on stdout, exit 0. ──────
+out="$(bash "$script" --help 2>&1)"
+status=$?
+if [[ $status -eq 0 && "$out" == *usage:* && "$out" != USAGE_ERROR:* ]]; then
+  ok "--help: exit 0 with the usage block, not a usage ERROR"
+else
+  bad "--help: expected exit 0 + usage block, got exit $status: $out"
+fi
+
+# ── (18) The 2-vs-64 split holds in BOTH directions: a well-formed call whose
+# signal is genuinely unreadable still exits 2 (INDETERMINATE), so the new
+# usage path did not swallow the pre-existing fail-loud posture. Pins the
+# regression the reverse of #1492 would be. ─────────────────────────────────
+out="$(env -u CLAUDE_PLUGIN_ROOT bash "$script" "mattsears18/shipyard" 2>&1)"
+status=$?
+if [[ $status -eq 2 && "$out" == *INDETERMINATE:* && "$out" != *USAGE_ERROR:* ]]; then
+  ok "well-formed call, unreadable signal: still exit 2 INDETERMINATE (not reclassified as usage)"
+else
+  bad "well-formed call, unreadable signal: expected exit 2 + INDETERMINATE (no USAGE_ERROR), got exit $status: $out"
 fi
 
 echo

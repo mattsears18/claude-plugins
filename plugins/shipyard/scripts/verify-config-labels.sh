@@ -40,6 +40,9 @@
 #     -> prints `OK: ...` (exit 0), `MISSING: ...` (exit 1), or
 #        `INDETERMINATE: ...` (exit 2) on stdout. Diagnostics on stderr.
 #
+#   The target repo is POSITIONAL. There is no `--repo` flag — passing one
+#   is a usage error (exit 64), not an unreadable signal. See issue #1492.
+#
 # Usage — pure decision (hermetic, for tests and for callers that already
 # hold both JSON blobs, e.g. a caller composing with gh-cached.sh):
 #
@@ -56,14 +59,52 @@
 #   1 — one or more config-named labels are missing. stdout: `MISSING: ...`
 #       summary line, followed by one `MISSING_LABEL: <key>="<value>"` line
 #       per absent label (machine-parseable, one per line).
-#   2 — could not establish a trustworthy result (bad usage, an empty/
-#       unparseable config-labels or existing-labels blob, or a live-mode
-#       `gh`/`shipyard-config.sh` call that failed). Never treat this as a
-#       pass — the point of the check is to be loud, and "couldn't check" is
-#       itself something to surface, not something to swallow.
+#   2 — could not establish a trustworthy result from a WELL-FORMED call: an
+#       empty/unparseable config-labels or existing-labels blob, or a
+#       live-mode `gh`/`shipyard-config.sh` call that failed. Never treat
+#       this as a pass — the point of the check is to be loud, and "couldn't
+#       check" is itself something to surface, not something to swallow.
+#  64 — usage error (EX_USAGE, matching session-state.sh's convention): the
+#       script was CALLED wrong. stdout: `USAGE_ERROR: ...`; the full usage
+#       block goes to stderr.
+#
+# Why 64 is separate from 2 (issue #1492)
+# ---------------------------------------
+# Failing open on an unreadable signal is the right default posture for a
+# diagnostic — but a malformed command line is not an unreadable signal, it
+# is a bug in the invocation, and it is perfectly detectable. Before #1492
+# an unrecognized flag was passed straight through to `gh`, so
+# `verify-config-labels.sh --repo owner/name` produced
+# `gh label list --repo --repo …`, which failed, and the script reported
+# `INDETERMINATE: gh label list --repo --repo failed or returned nothing` —
+# a caller error wearing the costume of a transient network/permission
+# failure. Both classes still refuse to read as a pass, but they now carry
+# distinct exit codes and distinct stdout prefixes so a caller can tell
+# "fix your call site" apart from "the signal was unreadable this time."
 
 set -u
 export LC_ALL=C
+
+# EX_USAGE, per sysexits.h — the same convention session-state.sh uses for
+# every bad-subcommand / missing-argument path.
+EX_USAGE=64
+
+usage() {
+  echo "usage: $0 <owner/repo>" >&2
+  echo "       $0 --decide <config-labels-json> <existing-labels-json>" >&2
+  echo "       $0 --help" >&2
+  echo "note: the target repo is POSITIONAL — there is no --repo flag." >&2
+}
+
+# A caller error: the command line itself is wrong. Distinct from
+# die_indeterminate below, which is for a well-formed call whose signal
+# could not be read.
+die_usage() {
+  echo "USAGE_ERROR: $1"
+  echo "verify-config-labels.sh: usage error (exit $EX_USAGE): $1" >&2
+  usage
+  exit "$EX_USAGE"
+}
 
 die_indeterminate() {
   echo "INDETERMINATE: $1" >&2
@@ -128,21 +169,53 @@ decide() {
 }
 
 main() {
-  if [ "${1:-}" = "--decide" ]; then
-    if [ "$#" -ne 3 ]; then
-      echo "usage: $0 --decide <config-labels-json> <existing-labels-json>" >&2
-      exit 2
-    fi
-    decide "$2" "$3"
-    exit $?
+  if [ "$#" -eq 0 ]; then
+    die_usage "no arguments given — the target repo is required"
   fi
 
-  local repo="${1:-}"
-  if [ -z "$repo" ]; then
-    echo "usage: $0 <owner/repo>" >&2
-    echo "       $0 --decide <config-labels-json> <existing-labels-json>" >&2
-    exit 2
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --decide)
+      if [ "$#" -ne 3 ]; then
+        die_usage "--decide takes exactly 2 arguments (<config-labels-json> <existing-labels-json>), got $(( $# - 1 ))"
+      fi
+      decide "$2" "$3"
+      exit $?
+      ;;
+    -*)
+      # THE #1492 FIX. Never pass an unrecognized flag through to `gh` — it
+      # produces a nonsense command line (`gh label list --repo --repo …`)
+      # whose failure is then misreported as INDETERMINATE, i.e. a caller
+      # error indistinguishable from a transient one.
+      die_usage "unrecognized flag '$1' — the target repo is a POSITIONAL argument; this script does not accept --repo"
+      ;;
+  esac
+
+  if [ "$#" -ne 1 ]; then
+    die_usage "expected exactly one <owner/repo> argument, got $#"
   fi
+
+  local repo="$1"
+  if [ -z "$repo" ]; then
+    die_usage "the <owner/repo> argument is empty"
+  fi
+
+  # Shape-check the repo before spending a network call on it: `owner/name`,
+  # exactly one slash, both halves non-empty, no whitespace. A malformed
+  # repo slug is the same class of caller error as an unrecognized flag —
+  # cheaply detectable, and not something to launder into INDETERMINATE.
+  case "$repo" in
+    */*/*) die_usage "'$repo' is not a valid <owner/repo> slug — too many '/' separators" ;;
+    */*)   ;;
+    *)     die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+  esac
+  case "$repo" in
+    /*|*/) die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+    *[[:space:]]*) die_usage "'$repo' is not a valid <owner/repo> slug — contains whitespace" ;;
+  esac
 
   local plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
   if [ -z "$plugin_root" ] || [ ! -x "$plugin_root/scripts/shipyard-config.sh" ]; then
