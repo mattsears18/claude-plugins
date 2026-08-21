@@ -90,6 +90,9 @@ dispatch_rules_path="$repo_root/plugins/shipyard/commands/do-work/dispatch-rules
 # concatenation as dispatch_rules_path/operate_path so content assertions
 # below keep finding it regardless of which physical file it lives in.
 disk_space_guard_path="$repo_root/plugins/shipyard/commands/do-work/disk-space-guard.md"
+# version-release.md — step B.0's release-on-non-claim hook, split out of
+# steady-state.md by #1420 for the same #611 size-cap reason as the two above.
+version_release_path="$repo_root/plugins/shipyard/commands/do-work/version-release.md"
 # invariant_line_path (issue #1261): the step-E per-token "what it means /
 # when it's set / divergence smells" narrative (tokens_attributed,
 # last_fresh_fetch, unfiltered_open_count, me_assigned_open, operator_q/
@@ -122,7 +125,7 @@ cat "$operate_router_path" "$operate_dir"/*.md > "$operate_path" 2>/dev/null
 extracted_reap_scripts_path="$repo_root/plugins/shipyard/scripts/pre-dispatch-branch-reap.sh $repo_root/plugins/shipyard/scripts/concurrent-session-guard.sh $repo_root/plugins/shipyard/scripts/shipped-immediate-branch-reap.sh $repo_root/plugins/shipyard/scripts/classify-blocked-bail.sh $repo_root/plugins/shipyard/scripts/stale-failure-check.sh $repo_root/plugins/shipyard/scripts/next-available-version.sh $repo_root/plugins/shipyard/scripts/primary-leak-guard.sh"
 steady_state_path="$(mktemp -t do-work-steady-concat.XXXXXX)"
 # shellcheck disable=SC2086  # intentional word-splitting: space-separated path list
-cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
+cat "$steady_state_router_path" "$dispatch_rules_path" "$disk_space_guard_path" "$version_release_path" "$invariant_line_path" "$operate_path" $extracted_reap_scripts_path > "$steady_state_path" 2>/dev/null
 trap 'rm -f "$setup_path" "$operate_path" "$steady_state_path"' EXIT
 drain_path="$repo_root/plugins/shipyard/commands/do-work/drain.md"
 cleanup_path="$repo_root/plugins/shipyard/commands/do-work/cleanup-summary.md"
@@ -4040,8 +4043,10 @@ assert_contains "$steady_state_path" \
   'next-available-version.sh" release' \
   "steady-state.md step B.0 calls next-available-version.sh release (#1420)"
 assert_contains "$steady_state_path" \
-  'Step B is the single funnel for this' \
+  'single funnel' \
   "steady-state.md explains why the release lives at step B, not per-mode in A.1 (#1420)"
+assert_file_exists "$version_release_path" \
+  "do-work/version-release.md exists (step B.0's hook, split out per #611's size cap) (#1420)"
 assert_contains "$steady_state_path" \
   'degrades to the status quo' \
   "steady-state.md records that a skipped release degrades to a leak, never a collision (#1420)"
@@ -4066,6 +4071,8 @@ assert_contains "$dispatch_rules_path" \
 assert_contains "$invariant_line_path" \
   'version_release=<n/a|none|released|skipped>' \
   "invariant-line.md documents the version_release token (#1420)"
+# shellcheck disable=SC2016
+# Backticks are literal markdown punctuation in the needle.
 assert_contains "$invariant_line_path" \
   'a direct application of the `ci_backpressure` pattern' \
   "invariant-line.md places version_release in the ci_backpressure family (#1420)"

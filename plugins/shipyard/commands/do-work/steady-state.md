@@ -940,32 +940,9 @@ The mid-session blocked-issue re-evaluation sweep ([#245](https://github.com/mat
 
 Remove the completed entry from `in_flight`. Its `claimed_paths` are now free.
 
-#### B.0. Release the version slot when this dispatch claimed no PR — MANDATORY on every non-claiming terminal ([#1420](https://github.com/mattsears18/shipyard/issues/1420))
+#### B.0. Release the version slot when this dispatch claimed no PR ([#1420](https://github.com/mattsears18/shipyard/issues/1420))
 
-**Run this BEFORE removing the slot from `in_flight`** — the value it needs (`.in_flight[<slot-id>].version_slot`, written at dispatch time per [dispatch-rules.md](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c)) lives on the entry you are about to delete.
-
-`compute` hands a coordinated manifest version to a dispatch and advances the `version_cursor` to it **immediately**, before the worker has done anything. When that dispatch terminates *without ever opening a PR*, nothing claims the slot and every later `compute` floors above a phantom. [#1417](https://github.com/mattsears18/shipyard/issues/1417)'s `reseed-if-idle` cannot recover this variant by design — it fires only once `session_prs` has no OPEN member, and the leak routinely happens with sibling PRs still open (the #1420 repro: the cursor read `4.40.0` while the true highest claim across every open PR was `4.38.0`). **This step is the other half.**
-
-**Step B is the single funnel for this, deliberately — do not scatter it across A.1's per-mode branches.** Every mode's terminal return reaches step B ([A.0.5 says so explicitly](#a05-post-return-worktree-reap-for-crashed--narrative-non-terminal-returns-fires-before-a1s-return-string-parsing): *"Step B still fires on every completion path — A.0.5 does NOT replace it"*), so one call here covers a `blocked` return, a crash-recovery reap, an explicit worker decline, and every disposition outcome that resolves an issue without a PR. The one non-claiming shape that never reaches here is a **permission-classifier denial**, which by the ordering rule never gets an `in_flight` slot at all — [dispatch-rules.md's denial cleanup](./dispatch-rules.md#dispatch-rules-used-by-step-7-and-step-c) owns that one.
-
-**Gate — did this dispatch claim its slot?** A dispatch claimed it iff this turn's A.1 appended a PR to `session_prs` on this slot's account (`shipped`, `investigated+fixed`, `spiked+shipped`, `shipped main-ci-fix` / `shipped pr-batch-fix`, or a `verified` return's optional `incidental PR:` token). **Anything else is a non-claiming terminal** — `blocked`, `errored`, `reaped`, `noop`, `investigated+needs-human-review` / `+closed-noise` / `+duplicate`, `spiked+needs-human-review`, a bare `verified` with no incidental PR, and an A.0.5 crash-recovery reap that recovered nothing. Note the `partial` shapes ([§6.5](../../agents/issue-worker/issue-work.md#65-split-dispatch-disposition-hand-back-the-operatorsecurity-residual-keep-the-issue-open-851)/[§6.7](../../agents/issue-worker/issue-work.md#67-deferred-slice-disposition-hand-back-an-autonomously-workable-residual-to-a-new-issue-keep-the-issue-open-986)) DID open a PR that bumped the manifest — they are claims, not releases.
-
-**Skip entirely** when `version_coordination.enabled` is false / no `manifest_path` is configured (set `version_release=n/a`), or when the slot claimed its PR (set `version_release=none`). Otherwise run it, substituting the literal `version_slot` read off the entry:
-
-```bash
-CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
-export CLAUDE_PLUGIN_ROOT
-release_result=$("$CLAUDE_PLUGIN_ROOT/scripts/next-available-version.sh" release \
-  --version "<version_slot>" \
-  --cursor-file .shipyard-version-cursor 2>/dev/null || echo "release=noop-no-version")
-```
-
-Parse the single `release=<...>` line and set this turn's [`version_release`](./invariant-line.md) invariant-line token:
-
-- `recorded-hole` / `already-recorded` / `noop-no-cursor` / `noop-above-cursor` → **`version_release=released`** (the hook ran; what it decided is the script's business, not the token's).
-- `noop-no-version` / `noop-bad-version`, or you skipped the call → **`version_release=skipped`**. This is the divergence smell the token exists for: the slot carried no recorded `version_slot`, which means the dispatch-time bookkeeping was dropped — exactly the "a future edit to this hot path silently drops the mandatory step" failure class [#1399](https://github.com/mattsears18/shipyard/issues/1399)'s `ci_backpressure` token was built to catch.
-
-**Fire-and-forget, and safe in the general case.** A release **never lowers the cursor** — slots are handed out monotonically, so a released slot may not be the highest one outstanding, and decrementing would hand a later batch member's already-promised value back out, reintroducing the exact [#437](https://github.com/mattsears18/shipyard/issues/437) collision the cursor exists to prevent. The released version is recorded as a *hole* instead, and the next `compute` hands it back out (reporting it as `reclaimed_slot`) only when it sits strictly above the floor derived from ground truth alone. **A skipped or failed release therefore degrades to the status quo — the slot stays leaked, exactly as before #1420 — never to a collision**; that asymmetry is what lets this ship without per-slot promise bookkeeping. Never block the turn on it. See [RATIONALE](../do-work-RATIONALE.md#release-on-non-claim--why-a-released-slot-becomes-a-hole-instead-of-a-cursor-rollback-and-why-that-needs-no-per-slot-promise-ledger-issue-1420).
+**Run this BEFORE removing the entry from `in_flight`** — it reads `.in_flight[<slot-id>].version_slot` off the entry you are about to delete. Read [`version-release.md`](./version-release.md) now and run it in full: `compute` advances the `version_cursor` the instant it hands a slot out, so a dispatch that ends *without ever opening a PR* strands that value and every later `compute` floors above the phantom — the leak [#1417](https://github.com/mattsears18/shipyard/issues/1417)'s `reseed-if-idle` structurally cannot reach. Step B is the **single funnel** for the fix (every mode's terminal return passes through here); do NOT scatter it across A.1's per-mode branches. Fire-and-forget — a release never lowers the cursor, so a skipped one degrades to the status quo, never to a collision. Feeds `version_release=` into step E below.
 
 **Then reap the agent's worktree — every completion path, every mode.** Closes [#334](https://github.com/mattsears18/shipyard/issues/334). The A.1 `shipped #<N>` handler already runs an immediate-reap for issue-work `do-work/issue-<N>` worktrees (per [#282](https://github.com/mattsears18/shipyard/issues/282)), but that path does NOT cover the other return shapes:
 

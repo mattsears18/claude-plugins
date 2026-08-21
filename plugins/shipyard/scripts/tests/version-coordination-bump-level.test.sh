@@ -117,11 +117,29 @@ if [[ -f "$next_available_version_script" ]]; then
   assert_contains "$next_available_version_script" 'minor)   next_available_version="${MAJ}.$((MIN + 1)).0"' \
     "next-available-version.sh minor bump zeroes patch"
   # Cursor still advances to the exact computed value (monotonicity preserved) —
-  # now via a persisted --cursor-file rather than an in-memory variable.
+  # via a persisted --cursor-file rather than an in-memory variable.
+  #
+  # #1420 wrapped this write in `version_max` against the cursor's existing
+  # value. That does NOT weaken what this assertion guards: on the no-hole
+  # path `next_available_version` is always strictly greater than the stored
+  # cursor (the cursor is folded into `max_inflight_version` and then bumped),
+  # so `version_max` returns it unchanged and the write is byte-identical to
+  # the pre-#1420 unconditional form. What the wrapper adds is a guarantee in
+  # the SAME direction this assertion exists to protect: a reclaimed hole
+  # (which is by construction <= the cursor) can never lower it. The needle is
+  # updated rather than dropped so the write stays pinned, and the pairing
+  # below pins the max-guard itself so a future edit cannot quietly make the
+  # cursor lowerable. The behavioural proof — that a no-holes-file compute
+  # still advances the cursor to exactly the value it handed out — lives in
+  # next-available-version.test.sh's "holes file absent" case.
   # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
   assert_contains "$next_available_version_script" \
-    'next_available_version" > "$cursor_file"' \
+    'next_available_version")" > "$cursor_file"' \
     "next-available-version.sh still advances the cursor to the exact computed value"
+  # shellcheck disable=SC2016  # literal grep needle — matched verbatim in the script, not expanded
+  assert_contains "$next_available_version_script" \
+    'version_max "$cursor_prev" "$next_available_version"' \
+    "next-available-version.sh guards the cursor write with version_max so a reclaim can never lower it (#1420)"
 else
   bad "scripts/next-available-version.sh exists (missing)"
 fi
