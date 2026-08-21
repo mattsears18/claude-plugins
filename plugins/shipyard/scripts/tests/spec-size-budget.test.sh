@@ -224,6 +224,25 @@
 # only 110 bytes of headroom after #1335's raise, so the bump is the whole
 # section's cost; 66000 (not 65000) leaves real headroom rather than 47 bytes.
 #
+# issue-work.md's ceiling was raised 128000 -> 130000 by #1490 (2026-08-21):
+# a fifth §5.5 decision-comment trigger (plus its routing-table row) telling
+# a worker that narrows its own scope to honor an `Off-limits: <path>` line
+# to report the narrowing as a divergence on both the PR and the issue. It
+# can't be an on-demand fragment behind a trigger stub the way §6.5/§6.6/
+# §6.7 are: the whole failure mode is that the narrowing feels routine, so a
+# worker never recognizes a trigger condition to go load anything — the
+# #1490 repro's worker reported its narrowing correctly and *unprompted*,
+# which is exactly the luck this rule exists to stop depending on. It also
+# can't fold into item 4 ("side-effect accepted or punted"), because the
+# distinguishing instruction is behavioral, not just reportorial: honor the
+# line as written, never work around it or inspect the peer's worktree to
+# test whether the collision is real. The orchestrator-side half of the fix
+# (never widen a peer's claimed_paths to a directory) lives in
+# dispatch-rules.md and dont.md, both uncapped; the repro detail lives there
+# too rather than here. The bullet was trimmed once to the terseness of the
+# four existing items before the raise; the file had 0 bytes of headroom
+# after #1334's raise, so even the trimmed bullet needed the bump.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -283,7 +302,7 @@ echo "== always-loaded issue-work worker spec — per-file size budget (#980)"
 
 assert_under_budget \
   "$plugin_root/agents/issue-worker/issue-work.md" \
-  128000 \
+  130000 \
   "agents/issue-worker/issue-work.md"
 
 assert_under_budget \
