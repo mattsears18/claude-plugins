@@ -48,6 +48,11 @@ fi
 script="$repo_root/plugins/shipyard/scripts/assert-ci-green.sh"
 ci_pitfalls="$repo_root/plugins/shipyard/skills/worker-preamble/ci-pitfalls.md"
 fix_main_ci="$repo_root/plugins/shipyard/agents/issue-worker/fix-main-ci.md"
+# The step-4.5a `main_ci` aggregation lives in one of do-work/setup/'s fragments.
+# Scan ACROSS the fragment set rather than naming one file: a router/fragment
+# split can relocate the prose without changing its meaning, and a hardcoded
+# fragment path would then red in CI with no local warning (issue #1453).
+setup_dir="$repo_root/plugins/shipyard/commands/do-work/setup"
 
 pass=0
 fail=0
@@ -283,6 +288,259 @@ assert_contains "$ci_pitfalls" "717" \
   "worker-preamble ci-pitfalls.md cites issue #717"
 assert_contains "$fix_main_ci" "assert-ci-green.sh" \
   "fix-main-ci.md's green-main pre-flight uses the shared helper"
+
+# ===========================================================================
+# #1495 — the SECOND vacuous shape: a run whose required job reported `success`
+# with every substantive step `skipped` by a path filter. Zero tests ran, so the
+# success carries no evidence about the tree, yet `conclusion` cannot say so.
+# ===========================================================================
+
+# Run `<script> --classify-steps <jobs-json>` and assert the word + exit code.
+expect_steps() {
+  local json="$1" want_word="$2" want_code="$3" desc="$4"
+  local got_word got_code
+  got_word="$(bash "$script" --classify-steps "$json" 2>/dev/null)"
+  got_code=$?
+  if [[ "$got_word" == "$want_word" && "$got_code" -eq "$want_code" ]]; then
+    ok "$desc"
+  else
+    bad "$desc (want '${want_word}'/${want_code}, got '${got_word}'/${got_code})"
+  fi
+}
+
+# The exact job shape from #1495's repro: guard steps succeed, checkout and every
+# test step is skipped, the runner's own bookkeeping succeeds.
+jobs_vacuous='[{"name":"Unit Tests","conclusion":"success","steps":[
+  {"number":1,"name":"Set up job","conclusion":"success"},
+  {"number":2,"name":"Require detect-paths to complete","conclusion":"success"},
+  {"number":3,"name":"Skip on docs-only changes","conclusion":"success"},
+  {"number":4,"name":"Run actions/checkout@v7.0.1","conclusion":"skipped"},
+  {"number":12,"name":"Unit tests - meta (config/process)","conclusion":"skipped"},
+  {"number":13,"name":"Unit tests - product (web + native)","conclusion":"skipped"},
+  {"number":14,"name":"Cloud Functions tests","conclusion":"skipped"},
+  {"number":19,"name":"Complete job","conclusion":"success"}]}]'
+
+jobs_executed='[{"name":"Unit Tests","conclusion":"success","steps":[
+  {"number":1,"name":"Set up job","conclusion":"success"},
+  {"number":2,"name":"Run actions/checkout@v7.0.1","conclusion":"success"},
+  {"number":3,"name":"Install deps","conclusion":"success"},
+  {"number":4,"name":"Unit tests","conclusion":"success"},
+  {"number":5,"name":"Upload failure artifacts","conclusion":"skipped"},
+  {"number":6,"name":"Post Run actions/checkout@v7.0.1","conclusion":"success"},
+  {"number":7,"name":"Complete job","conclusion":"success"}]}]'
+
+run "13. --classify-steps: the path-filtered vacuous success is detected"
+expect_steps "$jobs_vacuous" vacuous 4 \
+  "a job whose checkout + every test step was skipped => vacuous, exit 4 (#1495)"
+expect_steps "$jobs_executed" executed 0 \
+  "a job that really ran => executed, exit 0 (a trailing if:failure() skip is not vacuity)"
+
+# Per-JOB granularity is load-bearing: in #1495's repro the `detect-paths` job ran
+# for real while the required test job skipped everything. A "were ALL jobs
+# vacuous?" rule would have missed the bug entirely.
+expect_steps '[{"name":"detect-paths","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Compute changed paths","conclusion":"success"},
+    {"number":3,"name":"Complete job","conclusion":"success"}]},
+  {"name":"Unit Tests","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Run actions/checkout@v7.0.1","conclusion":"skipped"},
+    {"number":3,"name":"Unit tests","conclusion":"skipped"},
+    {"number":4,"name":"Complete job","conclusion":"success"}]}]' vacuous 4 \
+  "one real job does not launder a sibling job that skipped everything"
+
+# An ordinary job-level `if:` skip reports conclusion=skipped with no step detail.
+# It never claimed to have run, so there is no false success to catch.
+expect_steps '[{"name":"deploy","conclusion":"skipped","steps":[]},
+  {"name":"Unit Tests","conclusion":"success","steps":[
+    {"number":1,"name":"Set up job","conclusion":"success"},
+    {"number":2,"name":"Run actions/checkout@v4","conclusion":"success"},
+    {"number":3,"name":"Unit tests","conclusion":"success"},
+    {"number":4,"name":"Complete job","conclusion":"success"}]}]' executed 0 \
+  "a job-level skip with no steps is not vacuity (no false success to catch)"
+
+expect_steps '[]' unknown 2 "a run reporting 0 jobs => unknown, never executed"
+expect_steps 'not json'  unknown 2 "an unreadable jobs payload => unknown, never executed"
+
+# ---------------------------------------------------------------------------
+# 14-17. Live mode: a vacuous newest run must not read as green — walk back to
+#        the last run that actually executed and use THAT verdict.
+# ---------------------------------------------------------------------------
+tmp_live="$(mktemp -d -t assert-ci-green-live.XXXXXX)"
+trap 'rm -f "$tmp_mutant"; rm -rf "$tmp_repo" "$tmp_bin" "$tmp_live"' EXIT
+
+mkdir -p "$tmp_live/bin" "$tmp_live/jobs"
+
+# A `gh` stub that dispatches on the subcommand: `run list` serves the run-list
+# fixture, `run view <id>` serves that run's jobs fixture (or fails if absent,
+# exercising the unreadable-jobs fallback).
+cat > "$tmp_live/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_STUB_ARGS"
+if [[ "${1:-}" == "run" && "${2:-}" == "list" ]]; then
+  cat "$GH_STUB_RUNS"
+  exit 0
+fi
+if [[ "${1:-}" == "run" && "${2:-}" == "view" ]]; then
+  f="$GH_STUB_JOBS_DIR/${3:-}.json"
+  [[ -f "$f" ]] || exit 1
+  cat "$f"
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$tmp_live/bin/gh"
+
+# Three completed `Tests` runs, newest first by createdAt. All three report
+# `success` at the RUN level — the run list alone cannot tell them apart.
+cat > "$tmp_live/runs.json" <<'JSON'
+[
+ {"workflowName":"Tests","databaseId":300,"status":"completed","conclusion":"success","createdAt":"2026-08-20T03:00:00Z"},
+ {"workflowName":"Tests","databaseId":200,"status":"completed","conclusion":"failure","createdAt":"2026-08-20T02:00:00Z"},
+ {"workflowName":"Tests","databaseId":100,"status":"completed","conclusion":"success","createdAt":"2026-08-20T01:00:00Z"}
+]
+JSON
+
+printf '%s' "$jobs_vacuous"  > "$tmp_live/jobs/300.json"
+printf '%s' "$jobs_executed" > "$tmp_live/jobs/200.json"
+printf '%s' "$jobs_executed" > "$tmp_live/jobs/100.json"
+
+live_args="$tmp_live/gh-args.txt"
+
+# Run the script in live --branch mode against the stub. $1 = script path,
+# remaining args are appended. Sets `live_word` / `live_code`.
+run_live() {
+  local s="$1"; shift
+  : > "$live_args"
+  live_word="$(GH_STUB_ARGS="$live_args" GH_STUB_RUNS="$tmp_live/runs.json" \
+    GH_STUB_JOBS_DIR="$tmp_live/jobs" PATH="$tmp_live/bin:$PATH" \
+    bash "$s" owner/repo --branch main "$@" 2>/dev/null)"
+  live_code=$?
+}
+
+run "14. THE BUG: a vacuous newest run does not read as green — walk back finds the live red"
+run_live "$script"
+if [[ "$live_word" == "red" && "$live_code" -eq 1 ]]; then
+  ok "newest run success-but-vacuous, last executed run failed => red, exit 1 (#1495)"
+else
+  bad "expected 'red'/1, got '${live_word}'/${live_code}"
+fi
+
+# Sanity: the run-level classifier ALONE (the pre-#1495 answer) says green here.
+# If it didn't, test 14 would be passing for the wrong reason.
+expect_classify "$(cat "$tmp_live/runs.json")" green 0 \
+  "sanity: the run-level verdict on this fixture is green (the false-green #1495 reports)"
+
+run "15. walk-back that lands on a real success resolves green"
+printf '%s' "$jobs_executed" > "$tmp_live/jobs/200.json"
+cat > "$tmp_live/runs.json" <<'JSON'
+[
+ {"workflowName":"Tests","databaseId":300,"status":"completed","conclusion":"success","createdAt":"2026-08-20T03:00:00Z"},
+ {"workflowName":"Tests","databaseId":200,"status":"completed","conclusion":"success","createdAt":"2026-08-20T02:00:00Z"}
+]
+JSON
+run_live "$script"
+if [[ "$live_word" == "green" && "$live_code" -eq 0 ]]; then
+  ok "vacuous newest run + executed green predecessor => green, exit 0"
+else
+  bad "expected 'green'/0, got '${live_word}'/${live_code}"
+fi
+
+run "16. nothing in the window executed => unproven (exit 4), never green"
+printf '%s' "$jobs_vacuous" > "$tmp_live/jobs/200.json"
+run_live "$script"
+if [[ "$live_word" == "unproven" && "$live_code" -eq 4 ]]; then
+  ok "every run in the window vacuous => unproven, exit 4 — NOT VERIFIED, not green"
+else
+  bad "expected 'unproven'/4, got '${live_word}'/${live_code}"
+fi
+
+run "17. --no-step-check restores the pre-#1495 run-level-only behaviour"
+run_live "$script" --no-step-check
+if [[ "$live_word" == "green" && "$live_code" -eq 0 ]]; then
+  ok "--no-step-check opts out of the extra gh calls (and back into the weaker verdict)"
+else
+  bad "expected 'green'/0 with --no-step-check, got '${live_word}'/${live_code}"
+fi
+if ! grep -q "run view" "$live_args"; then
+  ok "--no-step-check makes no gh run view calls at all"
+else
+  bad "--no-step-check still called gh run view: $(cat "$live_args")"
+fi
+
+run "18. an unreadable jobs payload retains the run-level verdict (documented fail-safe carve-out)"
+rm -f "$tmp_live/jobs/300.json" "$tmp_live/jobs/200.json"
+run_live "$script"
+if [[ "$live_word" == "green" && "$live_code" -eq 0 ]]; then
+  ok "a failing gh run view does not degrade an observed completed run to unproven"
+else
+  bad "expected 'green'/0 when job detail is unreadable, got '${live_word}'/${live_code}"
+fi
+
+# ---------------------------------------------------------------------------
+# 19. NEGATIVE CONTROL — prove the vacuous-steps guard is what prevents the
+#     path-filtered false green. Delete the marker-delimited block from a copy
+#     and assert the mutant reports `executed` for an all-skipped job, and
+#     `green` for a branch whose every run was vacuous.
+# ---------------------------------------------------------------------------
+run "19. NEGATIVE CONTROL: removing the vacuous-steps guard reintroduces the false green"
+
+tmp_mutant2="$(mktemp -t assert-ci-green-mutant2.XXXXXX)"
+trap 'rm -f "$tmp_mutant" "$tmp_mutant2"; rm -rf "$tmp_repo" "$tmp_bin" "$tmp_live"' EXIT
+
+if ! grep -q 'BEGIN vacuous-steps guard (#1495)' "$script" || ! grep -q 'END vacuous-steps guard (#1495)' "$script"; then
+  bad "the vacuous-steps guard markers are missing from $script — the negative control cannot run"
+else
+  sed '/BEGIN vacuous-steps guard (#1495)/,/END vacuous-steps guard (#1495)/d' "$script" > "$tmp_mutant2"
+
+  if [[ "$(wc -l < "$tmp_mutant2")" -ge "$(wc -l < "$script")" ]]; then
+    bad "the mutant is not smaller than the original — the guard block was not removed"
+  else
+    m_word="$(bash "$tmp_mutant2" --classify-steps "$jobs_vacuous" 2>/dev/null)"
+    m_code=$?
+    if [[ "$m_word" == "executed" && "$m_code" -eq 0 ]]; then
+      ok "guard-removed mutant reads an all-skipped job as 'executed' => the guard is load-bearing"
+    else
+      bad "guard-removed mutant returned '${m_word}'/${m_code}, expected 'executed'/0 — test 13 is not actually gated on the guard"
+    fi
+
+    # And end-to-end: the mutant reports the branch green even though every run
+    # in the window was a vacuous, path-filtered skip. That is the #1495 bug.
+    printf '%s' "$jobs_vacuous" > "$tmp_live/jobs/300.json"
+    printf '%s' "$jobs_vacuous" > "$tmp_live/jobs/200.json"
+    run_live "$tmp_mutant2"
+    if [[ "$live_word" == "green" && "$live_code" -eq 0 ]]; then
+      ok "guard-removed mutant reports GREEN for a branch whose every run was vacuous (the #1495 false green)"
+    else
+      bad "guard-removed mutant returned '${live_word}'/${live_code} end-to-end, expected 'green'/0"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 20. Doc call-sites for the new verdict.
+# ---------------------------------------------------------------------------
+run "20. doc call-sites cover the unproven verdict"
+
+assert_contains "$fix_main_ci" "unproven" \
+  "fix-main-ci.md's pre-flight documents the unproven (exit 4) branch"
+assert_contains "$fix_main_ci" "1495" \
+  "fix-main-ci.md cites issue #1495"
+assert_setup_contains() {
+  local needle="$1" desc="$2"
+  if find "$setup_dir" -type f -name '*.md' -exec grep -qF -- "$needle" {} + 2>/dev/null; then
+    ok "$desc"
+  else
+    bad "$desc (no do-work/setup/*.md fragment contains '${needle}')"
+  fi
+}
+
+assert_setup_contains "unproven" \
+  "do-work/setup's 4.5a aggregation carries the unproven per-workflow state"
+assert_setup_contains "1495" \
+  "do-work/setup's 4.5a aggregation cites issue #1495"
+assert_contains "$ci_pitfalls" "1495" \
+  "worker-preamble ci-pitfalls.md cites issue #1495"
 
 echo
 echo "-----------------------------------------"

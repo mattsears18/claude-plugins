@@ -28,21 +28,74 @@
 # swallowed). The structural fix is the same everywhere: assert you observed
 # something BEFORE you assert that what you observed was clean.
 #
+# Background (issue #1495) — the SECOND vacuous shape: a path-filtered skip
+# ------------------------------------------------------------------------
+# #717 covered "0 runs observed". #1495 is the same class one layer down: a run
+# IS observed, its required job's `conclusion` IS `success`, and yet **zero
+# tests ran** — every substantive step was `skipped` by a `paths`/`paths-ignore`
+# / `detect-paths` docs-only gate:
+#
+#     1  Set up job                                    : success
+#     2  Require detect-paths to complete              : success
+#     3  Skip on docs-only changes                     : success
+#     4  Run actions/checkout@v7.0.1                   : skipped
+#     ..
+#    13  Unit tests — product (web + native, coverage) : skipped
+#    ..
+#    19  Complete job                                  : success
+#
+# The run's own `conclusion` field has no way to express "I passed vacuously",
+# so a `conclusion == success` read is green-when-red in the dangerous
+# direction: the last run that actually executed the suite may still be failing,
+# and that stale red silently poisons every PR branched afterwards. This sits
+# directly under the main-CI divert — the highest-priority dispatch in the loop.
+#
+# The fix is the same structural move as #717's, applied to steps instead of
+# runs: assert the job actually DID something before reading its `success` as
+# evidence. When the deciding run turns out to be vacuous, walk back to the most
+# recent run of that same workflow whose steps really executed and use THAT
+# verdict; if no run in the lookback window executed, the answer is `unproven`.
+#
 # Verdicts (exit code == verdict; the word is also printed on stdout)
 # ------------------------------------------------------------------
 #   0  green    >=1 run matched AND every workflow's latest completed run passed
-#   1  red      >=1 workflow's latest completed run failed
+#                  AND that run actually executed its steps
+#   1  red      >=1 workflow's latest *executed* run failed
 #   3  pending  runs matched, but no workflow has a completed verdict yet
 #   2  unknown  NOT VERIFIED — 0 runs matched, the ref could not be resolved to a
 #               full SHA, or the gh call failed. **Never treat as green.**
+#   4  unproven NOT VERIFIED — a run matched and reported success, but every
+#               substantive step was `skipped` (a path filter short-circuited the
+#               job) and no run within the lookback window actually executed.
+#               The success carries no evidence about the tree. **Never treat as
+#               green.** (#1495)
 #
-# `unknown` is deliberately its own verdict rather than being folded into `red`
-# or `green`: the caller usually wants to retry / widen the window / bail, not to
-# act as if it has a verdict. What it must never do is proceed as if green.
+# `unknown` and `unproven` are deliberately their own verdicts rather than being
+# folded into `red` or `green`: the caller usually wants to retry / widen the
+# window / bail, not to act as if it has a verdict. What it must never do is
+# proceed as if green. They are kept distinct from each other because they are
+# differently actionable — `unknown` means "look again / widen the window",
+# `unproven` means "the newest run is structurally incapable of telling you, go
+# find one that ran".
+#
+# Aggregation precedence across workflows: red > unproven > pending > green.
+# `unproven` outranks `pending` because a pending workflow resolves itself on the
+# next refresh, whereas an unproven one will keep reporting a vacuous success on
+# every subsequent docs-only commit.
 #
 # Usage — live (the normal path):
 #   bash assert-ci-green.sh <owner/repo> --commit <ref>  [--limit N]
+#                                                        [--max-lookback N]
+#                                                        [--no-step-check]
 #   bash assert-ci-green.sh <owner/repo> --branch <name> [--limit N]
+#                                                        [--max-lookback N]
+#                                                        [--no-step-check]
+#
+#   Step-level verification is ON by default and costs one extra
+#   `gh run view --json jobs` call per workflow whose deciding run is green,
+#   plus up to `--max-lookback` (default 5) more per vacuous workflow while
+#   walking back. `--no-step-check` restores the pre-#1495 run-level-only
+#   behaviour for callers that cannot afford those calls.
 #
 #   `--commit <ref>` accepts a full 40-char SHA (used as-is) or any git ref this
 #   worktree can resolve (`HEAD`, a branch name, a short SHA) — the script
@@ -55,9 +108,26 @@
 #   bash assert-ci-green.sh --classify '<json-array>'
 #   printf '%s' "$json" | bash assert-ci-green.sh --classify -
 #
-# Fail-safe posture: any signal that cannot be read resolves toward `unknown`
-# (i.e. toward "I did not verify"), never toward `green`. Claiming green without
-# evidence is the one outcome this script exists to make impossible.
+# Usage — pure step-level decision (hermetic; takes the `.jobs` array from
+# `gh run view <id> --json jobs`, answers "did this run actually do anything?"):
+#   bash assert-ci-green.sh --classify-steps '<jobs-json-array>'
+#   printf '%s' "$jobs" | bash assert-ci-green.sh --classify-steps -
+#     prints `executed` (exit 0) | `vacuous` (exit 4) | `unknown` (exit 2)
+#
+# Fail-safe posture: any signal that cannot be read resolves toward `unknown` /
+# `unproven` (i.e. toward "I did not verify"), never toward `green`. Claiming
+# green without evidence is the one outcome this script exists to make
+# impossible.
+#
+# One deliberate, narrow exception (#1495): if the *step-level* read itself
+# fails — `gh run view --json jobs` errors, is rate-limited, or the token cannot
+# see job detail — the workflow KEEPS its run-level verdict and a loud advisory
+# goes to stderr. That is not a "fail toward green" violation: unlike the
+# empty-set case, a real completed run WAS observed, so there is genuine (if
+# weaker) evidence in hand. Degrading every green to `unproven` on an API hiccup
+# would make the script unusable in constrained environments, which is a worse
+# failure than the one it would prevent. Callers who want the strict posture can
+# treat the advisory as fatal themselves.
 
 set -uo pipefail
 
@@ -65,6 +135,20 @@ readonly EXIT_GREEN=0
 readonly EXIT_RED=1
 readonly EXIT_UNKNOWN=2
 readonly EXIT_PENDING=3
+readonly EXIT_UNPROVEN=4
+
+# Steps the GitHub Actions runner injects into every job. They run (and succeed)
+# even when every user-authored step was skipped, so they must be excluded before
+# asking "did this job do any real work?".
+# shellcheck disable=SC2016  # `$l` is a jq binding, not a shell expansion.
+readonly RUNNER_STEP_JQ='
+  def is_runner_step:
+    ((.name // "") | ascii_downcase) as $l
+    | ($l == "set up job")
+      or ($l == "complete job")
+      or ($l | startswith("set up runner"))
+      or ($l | startswith("post "));
+'
 
 # ---------------------------------------------------------------------------
 # The decision. Pure function of a `gh run list --json` payload — no I/O, no
@@ -155,6 +239,228 @@ classify() {
 }
 
 # ---------------------------------------------------------------------------
+# The step-level decision (#1495). Pure function of a `gh run view --json jobs`
+# payload's `.jobs` array — no I/O, no network. Answers the one question the
+# run-level `conclusion` field structurally cannot: did this run actually DO
+# anything, or did a path filter skip its way to a vacuous `success`?
+#
+# A job is VACUOUS when, among its user-authored steps (runner-injected ones
+# excluded — see RUNNER_STEP_JQ):
+#
+#   (a) at least one step was `skipped`, AND
+#   (b) EITHER skipped steps outnumber steps that actually ran,
+#       OR a checkout-shaped step was skipped.
+#
+# (b)'s first clause is the general signal — a job whose real work was gated off
+# skips far more than it runs. The second is the crisp special case: a job that
+# never even checked out the tree cannot have tested it, whatever its conclusion
+# says. Requiring a STRICT majority in the first clause is what keeps the very
+# common trailing `if: failure()` artifact-upload step (1 skipped, many run) from
+# false-positiving.
+#
+# A run is vacuous when ANY of its jobs is — per-job granularity is load-bearing:
+# in #1495's repro the `detect-paths` job ran for real while the required
+# `🧪 Unit Tests` job skipped everything, so a "were ALL jobs vacuous?" rule
+# would have missed the bug entirely.
+#
+# A job with zero user-authored steps (the ordinary job-level `if:` skip, where
+# GitHub reports `conclusion: skipped` and no step detail) is NOT vacuous — it
+# never claimed to have run, so there is no false success to catch.
+#
+# Over-triggering is cheap and safe: a false `vacuous` costs one extra API call
+# and a walk-back that lands on the same verdict. Under-triggering is the bug.
+# ---------------------------------------------------------------------------
+classify_steps() {
+  local json="$1" total verdict
+
+  total="$(printf '%s' "$json" | jq 'if type == "array" then length else -1 end' 2>/dev/null)"
+  case "$total" in
+    ''|*[!0-9-]*) total=-1 ;;
+  esac
+
+  if [ "$total" -lt 0 ]; then
+    printf 'unknown\n'
+    echo "assert-ci-green: could not parse the jobs payload as a JSON array — step-level signal NOT READ" >&2
+    return "$EXIT_UNKNOWN"
+  fi
+
+  if [ "$total" -eq 0 ]; then
+    printf 'unknown\n'
+    echo "assert-ci-green: the run reported 0 jobs — step-level signal NOT READ" >&2
+    return "$EXIT_UNKNOWN"
+  fi
+
+  # Pre-guard default. Deliberately the permissive answer, so that deleting the
+  # marker-delimited block below yields a mutant that reproduces the ORIGINAL
+  # bug (every job reads as `executed`, so a path-filtered vacuous success reads
+  # as green) rather than one that merely crashes. That is what makes the
+  # negative control in scripts/tests/assert-ci-green.test.sh meaningful.
+  verdict="executed"
+
+  # --- BEGIN vacuous-steps guard (#1495) -- do not remove; see negative control
+  # --- in scripts/tests/assert-ci-green.test.sh, which deletes this exact block
+  # --- and asserts the mutant then reports `executed` for an all-steps-skipped
+  # --- job (i.e. reintroduces the green-when-red path-filter bug).
+  verdict="$(printf '%s' "$json" | jq -r "$RUNNER_STEP_JQ"'
+    def concl: ((.conclusion // "") | ascii_downcase);
+    def is_checkout:
+      ((.name // "") | ascii_downcase) as $l
+      | ($l | test("actions/checkout")) or ($l | test("^checkout( |$)"));
+
+    [ .[]
+      | [ (.steps // [])[] | select(is_runner_step | not) ] as $user
+      | ([ $user[] | select(concl == "skipped") ] | length) as $skipped
+      | ([ $user[] | select(concl != "" and concl != "skipped") ] | length) as $ran
+      | ([ $user[] | select(is_checkout) | select(concl == "skipped") ] | length) as $checkout_skipped
+      | ($skipped > 0 and ($skipped > $ran or $checkout_skipped > 0))
+    ]
+    | if any(.[]; .) then "vacuous" else "executed" end
+  ' 2>/dev/null)"
+  # --- END vacuous-steps guard (#1495) ---
+
+  case "$verdict" in
+    vacuous)
+      printf 'vacuous\n'
+      echo "assert-ci-green: at least one job reported a conclusion but every substantive step was skipped — NO SIGNAL" >&2
+      return "$EXIT_UNPROVEN"
+      ;;
+    executed)
+      printf 'executed\n'
+      return "$EXIT_GREEN"
+      ;;
+    *)
+      printf 'unknown\n'
+      echo "assert-ci-green: could not classify the jobs payload — step-level signal NOT READ" >&2
+      return "$EXIT_UNKNOWN"
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Run-list projections feeding the step-level walk-back. Both mirror `classify`'s
+# per-workflow / latest-completed-non-cancelled selection rule exactly, so the
+# run the walk-back inspects is always the same run `classify` decided on.
+# ---------------------------------------------------------------------------
+
+# Emits one `<workflowName>\t<databaseId>\t<conclusion>` line per workflow, for
+# the workflow's deciding run.
+deciding_runs() {
+  printf '%s' "$1" | jq -r '
+    def wf_name: (.workflowName // .name // "(unnamed)");
+    def sort_key: (.createdAt // .startedAt // "");
+    group_by(wf_name)[]
+    | [ .[]
+        | select((.status // "") == "completed")
+        | select(((.conclusion // "") | ascii_downcase) != "cancelled")
+      ]
+      | sort_by(sort_key)
+      | if length == 0 then empty
+        else (last | [ wf_name, ((.databaseId // "") | tostring), ((.conclusion // "") | ascii_downcase) ] | @tsv)
+        end
+  ' 2>/dev/null
+}
+
+# Emits `<databaseId>\t<conclusion>` for the given workflow's completed,
+# non-cancelled runs OTHER than $3, newest first.
+older_runs() {
+  printf '%s' "$1" | jq -r --arg wf "$2" --arg skip "$3" '
+    def wf_name: (.workflowName // .name // "(unnamed)");
+    def sort_key: (.createdAt // .startedAt // "");
+    [ .[]
+      | select(wf_name == $wf)
+      | select((.status // "") == "completed")
+      | select(((.conclusion // "") | ascii_downcase) != "cancelled")
+      | select(((.databaseId // "") | tostring) != $skip)
+    ]
+    | sort_by(sort_key)
+    | reverse
+    | .[]
+    | [ ((.databaseId // "") | tostring), ((.conclusion // "") | ascii_downcase) ]
+    | @tsv
+  ' 2>/dev/null
+}
+
+# `</dev/null` matters: this runs inside `while read` loops fed by heredocs, and
+# an unredirected gh would otherwise eat the loop's remaining input.
+fetch_jobs() {
+  gh run view "$2" --repo "$1" --json jobs --jq '.jobs' </dev/null 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Step-level verification + walk-back (#1495). Called only when the run-level
+# verdict was already `green`; a red or pending verdict needs no strengthening.
+# Prints the refined verdict word on stdout and returns the matching exit code.
+# ---------------------------------------------------------------------------
+step_verify() {
+  local repo="$1" json="$2" max_lookback="$3"
+  local any_red=0 any_unproven=0
+  local wf run_id concl jobs steps_word
+  local found n oid oconcl ojobs oword
+
+  while IFS=$'\t' read -r wf run_id concl; do
+    [ -n "${run_id:-}" ] || continue
+
+    jobs="$(fetch_jobs "$repo" "$run_id")"
+    if [ -z "$jobs" ]; then
+      echo "assert-ci-green: could not read jobs for run ${run_id} (${wf}) — step-level check skipped for this workflow; its run-level verdict is retained (see the fail-safe note at the top of this script)" >&2
+      continue
+    fi
+
+    steps_word="$(classify_steps "$jobs" 2>/dev/null)"
+    [ "$steps_word" = "vacuous" ] || continue
+
+    echo "assert-ci-green: run ${run_id} ('${wf}') reported '${concl}' but every substantive step was SKIPPED — that success carries no evidence about the tree (#1495). Walking back for the last run that really executed…" >&2
+
+    found=0
+    n=0
+    while IFS=$'\t' read -r oid oconcl; do
+      [ -n "${oid:-}" ] || continue
+      n=$((n + 1))
+      if [ "$n" -gt "$max_lookback" ]; then
+        echo "assert-ci-green: lookback limit (${max_lookback}) reached for '${wf}' without finding an executed run" >&2
+        break
+      fi
+      ojobs="$(fetch_jobs "$repo" "$oid")"
+      [ -n "$ojobs" ] || continue
+      oword="$(classify_steps "$ojobs" 2>/dev/null)"
+      [ "$oword" = "executed" ] || continue
+
+      found=1
+      case "$oconcl" in
+        success|skipped|neutral)
+          echo "assert-ci-green: the last run of '${wf}' that actually executed is ${oid} (${oconcl}) — '${wf}' resolves GREEN" >&2
+          ;;
+        *)
+          echo "assert-ci-green: the last run of '${wf}' that actually executed is ${oid} (${oconcl}) — '${wf}' resolves RED, and that red is still live" >&2
+          any_red=1
+          ;;
+      esac
+      break
+    done <<EOF
+$(older_runs "$json" "$wf" "$run_id")
+EOF
+
+    if [ "$found" -eq 0 ]; then
+      echo "assert-ci-green: no run of '${wf}' in the window actually executed its steps — UNPROVEN, NOT green" >&2
+      any_unproven=1
+    fi
+  done <<EOF
+$(deciding_runs "$json")
+EOF
+
+  if [ "$any_red" -eq 1 ]; then
+    printf 'red\n'
+    return "$EXIT_RED"
+  fi
+  if [ "$any_unproven" -eq 1 ]; then
+    printf 'unproven\n'
+    return "$EXIT_UNPROVEN"
+  fi
+  printf 'green\n'
+  return "$EXIT_GREEN"
+}
+
+# ---------------------------------------------------------------------------
 # Full-SHA resolution. `gh run list --commit` matches on the FULL 40-char SHA and
 # silently returns an empty list for an abbreviated one — so resolving the ref is
 # the script's job, not the caller's (#717).
@@ -180,11 +486,12 @@ resolve_full_sha() {
 
 usage() {
   cat >&2 <<'EOF'
-usage: assert-ci-green.sh <owner/repo> --commit <ref>  [--limit N]
-       assert-ci-green.sh <owner/repo> --branch <name> [--limit N]
+usage: assert-ci-green.sh <owner/repo> --commit <ref>  [--limit N] [--max-lookback N] [--no-step-check]
+       assert-ci-green.sh <owner/repo> --branch <name> [--limit N] [--max-lookback N] [--no-step-check]
        assert-ci-green.sh --classify <json-array|->
+       assert-ci-green.sh --classify-steps <jobs-json-array|->
 
-exit: 0 green | 1 red | 2 unknown (NOT VERIFIED) | 3 pending
+exit: 0 green | 1 red | 2 unknown (NOT VERIFIED) | 3 pending | 4 unproven (NOT VERIFIED)
 EOF
 }
 
@@ -197,22 +504,33 @@ main() {
     exit $?
   fi
 
+  if [ "${1:-}" = "--classify-steps" ]; then
+    local jobs_payload="${2:-}"
+    if [ -z "$jobs_payload" ]; then usage; exit "$EXIT_UNKNOWN"; fi
+    if [ "$jobs_payload" = "-" ]; then jobs_payload="$(cat)"; fi
+    classify_steps "$jobs_payload"
+    exit $?
+  fi
+
   local repo="${1:-}"
   shift || true
   if [ -z "$repo" ] || [ "$#" -eq 0 ]; then usage; exit "$EXIT_UNKNOWN"; fi
 
-  local mode="" target="" limit=60
+  local mode="" target="" limit=60 max_lookback=5 step_check=1
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --commit) mode="commit"; target="${2:-}"; shift 2 || true ;;
       --branch) mode="branch"; target="${2:-}"; shift 2 || true ;;
       --limit)  limit="${2:-60}";              shift 2 || true ;;
+      --max-lookback) max_lookback="${2:-5}";  shift 2 || true ;;
+      --no-step-check) step_check=0;           shift    || true ;;
       *) usage; exit "$EXIT_UNKNOWN" ;;
     esac
   done
 
   if [ -z "$mode" ] || [ -z "$target" ]; then usage; exit "$EXIT_UNKNOWN"; fi
   case "$limit" in ''|*[!0-9]*) limit=60 ;; esac
+  case "$max_lookback" in ''|*[!0-9]*) max_lookback=5 ;; esac
 
   local json
   if [ "$mode" = "commit" ]; then
@@ -242,8 +560,22 @@ main() {
     exit "$EXIT_UNKNOWN"
   fi
 
-  classify "$json"
-  exit $?
+  # `classify`'s stdout is captured (so the word is printed exactly once, below);
+  # its stderr passes straight through as the human-readable explanation.
+  local verdict_word verdict_code
+  verdict_word="$(classify "$json")"
+  verdict_code=$?
+
+  # #1495: a run-level `green` is only provisional until we confirm the deciding
+  # run actually executed its steps. Red / pending / unknown need no
+  # strengthening — they are already not-green.
+  if [ "$verdict_code" -eq "$EXIT_GREEN" ] && [ "$step_check" -eq 1 ]; then
+    verdict_word="$(step_verify "$repo" "$json" "$max_lookback")"
+    verdict_code=$?
+  fi
+
+  printf '%s\n' "$verdict_word"
+  exit "$verdict_code"
 }
 
 main "$@"

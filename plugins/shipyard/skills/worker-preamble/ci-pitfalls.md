@@ -25,20 +25,27 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-topl
 # observed-something precondition built in.
 bash "$CLAUDE_PLUGIN_ROOT/scripts/assert-ci-green.sh" <owner/repo> --commit HEAD
 case $? in
-  0) : ;;  # green   — >=1 run observed AND every workflow's latest completed run passed
-  1) : ;;  # red     — a workflow's latest completed run failed
-  3) : ;;  # pending — runs observed, no completed verdict yet
-  2) : ;;  # unknown — NOT VERIFIED (0 runs matched / ref unresolvable / gh failed)
+  0) : ;;  # green    — >=1 run observed, every workflow's latest completed run
+           #            passed, AND that run actually executed its steps
+  1) : ;;  # red      — a workflow's latest *executed* run failed
+  3) : ;;  # pending  — runs observed, no completed verdict yet
+  2) : ;;  # unknown  — NOT VERIFIED (0 runs matched / ref unresolvable / gh failed)
+  4) : ;;  # unproven — NOT VERIFIED: a run reported success but a path filter
+           #            skipped every real step, and no run in the lookback
+           #            window executed. Never treat as green. (#1495)
 esac
 ```
 
-[`scripts/assert-ci-green.sh`](../../scripts/assert-ci-green.sh) resolves the ref to a full SHA itself (so a caller passing `HEAD` or a short hash cannot reintroduce the trap), refuses to answer `green` on an empty result set, and aggregates at per-workflow / latest-run granularity. It also accepts `--branch <name>` for a default-branch health read, and `--classify '<json>'` for a payload you already hold.
+[`scripts/assert-ci-green.sh`](../../scripts/assert-ci-green.sh) resolves the ref to a full SHA itself (so a caller passing `HEAD` or a short hash cannot reintroduce the trap), refuses to answer `green` on an empty result set, and aggregates at per-workflow / latest-run granularity. It also accepts `--branch <name>` for a default-branch health read, `--classify '<json>'` for a run-list payload you already hold, and `--classify-steps '<jobs-json>'` for a `gh run view --json jobs` payload.
 
-**The three rules, if you must hand-roll a verification anyway:**
+**The second vacuous shape — a run that passed without running anything ([#1495](https://github.com/mattsears18/shipyard/issues/1495)).** The trap above is "0 runs observed". One layer down is "1 run observed, and it did nothing": on a repo with `paths` / `paths-ignore` filters (or a `detect-paths` fan-out job), a docs-only commit produces a required job whose `conclusion` is `success` while **every substantive step is `skipped`** — checkout included. Zero tests ran. The run's own conclusion field has no way to express that, so `jobs[].conclusion` is as unreliable here as `length == 0` was there, and the last run that *did* execute the suite may still be failing — a stale red that silently poisons every branch cut afterwards. `assert-ci-green.sh` walks `jobs[].steps[]` for the deciding run, and on a vacuous one walks back to the most recent run that really executed and reports **that** verdict (`--max-lookback`, default 5; `--no-step-check` opts out). Don't substitute a `jobs[].conclusion` read for it.
+
+**The four rules, if you must hand-roll a verification anyway:**
 
 1. **Full SHA, always.** `git rev-parse HEAD` — never `--short`, never a hash copied from a log line. `gh run list --commit` does not accept abbreviated SHAs and does not warn.
 2. **`total == 0` is `unknown`, never `green`.** Assert the set is non-empty *before* asserting it is clean. Emit `could not verify — 0 runs matched <sha>` and treat it as not-verified.
-3. **`unknown` is its own outcome.** Don't fold it into green ("nothing red, ship it") or into red ("assume the worst"). The caller usually wants to widen the window, retry, or bail — what it must never do is proceed as if it has a verdict.
+3. **A job that skipped its real steps is `unproven`, never `green`.** Assert the run actually *did* something before reading its `success` as evidence — the step-level analogue of rule 2.
+4. **`unknown` and `unproven` are their own outcomes.** Don't fold either into green ("nothing red, ship it") or into red ("assume the worst"). The caller usually wants to widen the window, walk back, retry, or bail — what it must never do is proceed as if it has a verdict.
 
 **The pattern generalizes past `gh` — watch for any tool whose degenerate output reads as a pass.** Two more from the same session that filed #717:
 
