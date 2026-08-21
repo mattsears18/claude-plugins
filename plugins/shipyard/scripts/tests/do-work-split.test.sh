@@ -3825,8 +3825,8 @@ assert_contains "$steady_state_path" \
   'issues/1486' \
   "steady-state.md cites issue #1486 as the source of the spec-drift measurement"
 assert_contains "$steady_state_path" \
-  'it runs five sub-steps' \
-  "steady-state.md step D's sub-step count reflects the added spec-drift sub-step (#1486)"
+  'it runs six sub-steps' \
+  "steady-state.md step D's sub-step count reflects the added spec-drift (#1486) and config-staleness (#1493) sub-steps"
 assert_contains "$steady_state_path" \
   'MUST NOT refresh, re-read, or reset the worktree' \
   "steady-state.md's spec-drift sub-step forbids refreshing the orchestrator worktree (#1486)"

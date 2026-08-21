@@ -1291,7 +1291,7 @@ export CLAUDE_PLUGIN_ROOT
 
 **Drain guard:** skip during drain — refresh is pointless when no new work will be dispatched.
 
-Otherwise, the refresh is **event-driven with adaptive backoff** (see [refresh trigger rules](#refresh-trigger-rules) below). When a refresh fires, it runs five sub-steps (plus, on a merge-completion trigger, the [own-the-tail sweeps](#d-tail-own-the-tail-merge-completion-sweeps-phase-c--663) in D-tail):
+Otherwise, the refresh is **event-driven with adaptive backoff** (see [refresh trigger rules](#refresh-trigger-rules) below). When a refresh fires, it runs six sub-steps (plus, on a merge-completion trigger, the [own-the-tail sweeps](#d-tail-own-the-tail-merge-completion-sweeps-phase-c--663) in D-tail):
 
 1. **Divert-checks refresh** — re-run step 4.5 (main CI + all-authors failing PR count). Update `main_ci` and the `failing_pr_count_all` cache. Enqueue or clear `divert_queue` entries per the rules in step 4.5. This is the only place outside setup where diversions are evaluated. **`--fast` skip:** when `--fast` was set at session startup, skip this sub-step every time step D runs — leave `main_ci.status` and `failing_pr_count_all` as `"unknown"` / `0` for the session. The divert-checks cost is the mechanism `--fast` traded away; re-enabling them mid-session would undercut the savings.
 2. **Failed-PR scan (@me)** — re-run the step-5 query. Append any newly-red PRs to `failed_prs` (deduped against entries already in `in_flight` or `failed_prs`). **Also run [setup step 5.7's inherited-DIRTY snapshot](./setup/04j-failing-pr-snapshot.md#57-seed-inherited-dirty-prs-into-session_prs-cross-session-drain-hand-off)** here — it's the same `@me` open-PR list, projected for `mergeStateStatus == "DIRTY"` (regardless of check colour, per [#1060](https://github.com/mattsears18/shipyard/issues/1060)) instead of for failing checks. Append the resulting numbers to `session_prs` (deduped) so the end-of-session drain owns them. At C=1, where the setup-time 5.7 snapshot is deferred (per its lazy-load carve-out), this is where the seeding actually happens; at C≥2 it's a cheap idempotent re-confirm (the dedup makes a re-seed a no-op if setup already ran it). This catches PRs that go DIRTY *mid-session* too — a sibling merge can DIRTY an inherited PR after setup ran, and without re-snapshotting here it would fall back into the blackhole until drain.
@@ -1336,6 +1336,26 @@ Otherwise, the refresh is **event-driven with adaptive backoff** (see [refresh t
    c. **Log only on a change.** When the new value differs from the previously-cached one, log `[spec-drift] orchestrator worktree now <N> commit(s) behind origin/<default-branch> (#1486)`. When it's unchanged, emit nothing — the [step-E token](#e-invariant-line-end-of-every-steady-state-turn) already renders the value every turn, and a per-refresh restatement would be pure noise.
 
    **Three things this sub-step deliberately is NOT:** (1) **not a refresh trigger** — it runs *inside* an already-firing refresh and never causes one, since forcing a `git fetch` every turn is exactly the cost the adaptive backoff bounds; (2) **not an input to the [delta computation](#refresh-trigger-rules)** — never fold `SHIPYARD_SPEC_DRIFT` into `refresh_last_snapshot` or count it as a "change" for `refresh_zero_delta_streak`, because on a dogfooding session it increments on nearly every merge and would pin the streak at `0` forever, defeating the backoff outright (the streak's three inputs are unchanged); (3) **not a remedy** — no `git reset --hard`, no spec re-read, no re-entering the worktree.
+
+6. **Config-staleness measurement ([#1493](https://github.com/mattsears18/shipyard/issues/1493))** — re-measure whether the repo-layer config this session is *reading* (`shipyard.config.json` under the [step-0.56 `SHIPYARD_REPO_ROOT` pin](./setup/00k-repo-root-pin.md)) has fallen behind `origin/<default-branch>`, and name the keys that differ. Like sub-steps 2, 4, and 5 it runs regardless of queue depth and regardless of `--fast`. **Unlike sub-step 5 it does NOT short-circuit on a consumer install** — #1493's repro was a consumer session, and a consumer repo is exactly where a session's own merged PR most often edits `shipyard.config.json`.
+
+   a. **Fetch the comparison ref** — one plain command, `<default-branch>` the **resolved literal** ([`dont.md`'s corrected rule](./dont.md#the-corrected-rule-1474-never-let-an-unresolvable-expansion-be-the-whole-word)). Skip when sub-step 5b already fetched this turn — same ref, same tick:
+
+      ```bash
+      git fetch origin <default-branch> --quiet 2>/dev/null || true
+      ```
+
+   b. **Run the detector** — a **script, not a condition to re-derive here** (same anti-drift rationale as [`detect-ungated-admin-direct-merge.sh`](../../scripts/detect-ungated-admin-direct-merge.sh), #716). Both literals are already resolved (the step-0.5 plugin-root and [step-0.56](./setup/00k-repo-root-pin.md) primary-root stashes), so this is one plain command with no env-var plumbing:
+
+      ```bash
+      bash "<plugin-root literal, 0.5>/scripts/detect-config-staleness.sh" <default-branch> "<primary-root literal, 0.4>"
+      ```
+
+   c. **Warn only on a transition.** `fresh` emits nothing. A `stale:<keys>` verdict whose key list differs from the previously-cached one emits exactly one line, then caches the list as session-local `SHIPYARD_CONFIG_STALE_KEYS`:
+
+      `[config-stale] shipyard.config.json on origin/<default-branch> differs from the copy this session reads (#1059 pin): <keys>. Every config read for the REST of this session returns the pre-merge value, and re-verifying such a change against the live classifier WILL produce a false negative — re-verify against origin/<default-branch> or in a fresh session before recording any "the fix didn't work" conclusion. (#1493)`
+
+   **Not a refresh trigger and not an input to the [delta computation](#refresh-trigger-rules)** (identical reasoning to sub-step 5), and **not a remedy** — never `git pull` / reset the primary checkout, and never unpin `SHIPYARD_REPO_ROOT`, which is what keeps the gitignored `.shipyard/config.local.json` layer in the merged result (#1059). That layer is also deliberately **not** compared: it is read live from disk, so it can never go stale.
 
 Background refill means the ~30s scope-wait at step C never blocks a slot again once the initial batch (step 6) has seeded at least one `ready_issues` entry. See [RATIONALE → Why background refill matters](../do-work-RATIONALE.md#why-background-refill-matters) for the synchronous-model comparison.
 
