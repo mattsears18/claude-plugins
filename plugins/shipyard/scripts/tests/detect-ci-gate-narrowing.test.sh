@@ -30,6 +30,10 @@
 #       representative synthetic diffs (allowlist add, continue-on-error,
 #       raised --audit-level, deleted step, narrowed paths-ignore, and a
 #       negative control that must NOT trip);
+#   (B2) `continue-on-error: true` is attributed PER STEP (issue #1494) — it
+#       counts only when the enclosing step existed on the base branch, with
+#       every unattributable shape still failing toward `narrowing`, plus a
+#       mutation-style negative control proving the guard is load-bearing;
 #   (C) auto-merge.md wires the check in BEFORE any merge call, as its own
 #       named step, distinct from the #1088 policy-override step;
 #   (D) issue-work.md, fix-main-ci.md, and fix-failing-prs-batch.md all
@@ -180,6 +184,153 @@ if [[ -f "$DETECTOR" ]]; then
     "$(decide "$(sig_touches_workflow "$diff_unrelated")" "$(sig_new_gate_file "$diff_unrelated")" 0 0 0 0)"
 else
   assert_fail "signal extraction tests skipped — detector script missing"
+fi
+echo
+
+# ---------------------------------------------------------------------------
+# (B2) `continue-on-error: true` — per-step attribution (issue #1494).
+#
+# The flag narrows a gate only when the step it belongs to ALREADY EXISTED on
+# the base branch: the gate stays nominally in place while ceasing to fail.
+# The same flag on a step the PR is itself ADDING relaxes nothing that existed
+# before, and gate strength on the default branch after the merge is identical
+# to before it.
+#
+# Repro that motivated this: `mattsears18/lightwork` PR #4382 — two purely
+# additive trailing steps that extract per-run Lighthouse metrics and upload a
+# ~3 KB JSON artifact, with the `Run Lighthouse CI` step and every threshold
+# byte-identical. The pre-#1494 detector keyed on the flag appearing anywhere
+# in the added lines and returned `narrowing`. That repo *mandates* the flag on
+# every reporting-only upload (`.claude/rules/ci-artifact-uploads.md`, after a
+# quota-exhausted upload step turned an all-green run red across two required
+# checks), so the false positive was structural and recurring — every future
+# artifact-upload PR would have cost a `needs-human-review` plus a human clear,
+# which is how a gate that is wrong often enough gets waved through by reflex.
+#
+# The fail-safe direction is unchanged: anything that cannot be attributed to a
+# demonstrably-new step still counts as narrowing.
+# ---------------------------------------------------------------------------
+echo "(B2) continue-on-error — per-step attribution (issue #1494)"
+if [[ -f "$DETECTOR" ]]; then
+  tmp_src="$(mktemp)"
+  sed '$d' "$DETECTOR" > "$tmp_src"
+  # shellcheck disable=SC1090
+  source "$tmp_src"
+  rm -f "$tmp_src"
+
+  # NEW reporting-only steps, modeled on lightwork #4382. Both step entries are
+  # themselves added lines => not narrowing.
+  diff_coe_new_step=$'diff --git a/.github/workflows/lighthouse.yml b/.github/workflows/lighthouse.yml\nindex abc..def 100644\n--- a/.github/workflows/lighthouse.yml\n+++ b/.github/workflows/lighthouse.yml\n@@ -109,3 +109,12 @@ jobs:\n         run: npx lhci autorun\n+\n+      # Reporting only — see .claude/rules/ci-artifact-uploads.md.\n+      - name: Summarize per-run metrics\n+        if: always()\n+        continue-on-error: true\n+        run: node scripts/summarize-runs.mjs\n+\n+      - name: Upload per-run metrics\n+        if: always()\n+        continue-on-error: true\n+        uses: actions/upload-artifact@v7\n'
+
+  # A brand-new workflow FILE is the degenerate case of the same thing: every
+  # step in it is new, so nothing that existed before was relaxed.
+  diff_coe_new_file=$'diff --git a/.github/workflows/report.yml b/.github/workflows/report.yml\nnew file mode 100644\nindex 0000000..abc1234\n--- /dev/null\n+++ b/.github/workflows/report.yml\n@@ -0,0 +1,9 @@\n+name: report\n+on: [pull_request]\n+jobs:\n+  report:\n+    runs-on: ubuntu-latest\n+    steps:\n+      - name: Upload\n+        continue-on-error: true\n+        uses: actions/upload-artifact@v7\n'
+
+  # A nested sequence item under `with:` is NOT a step marker — the enclosing
+  # step must be resolved by indent, not by "nearest preceding dash".
+  diff_coe_new_step_nested=$'diff --git a/.github/workflows/audit.yml b/.github/workflows/audit.yml\nindex abc..def 100644\n--- a/.github/workflows/audit.yml\n+++ b/.github/workflows/audit.yml\n@@ -20,1 +20,8 @@\n+      - name: Upload audit report\n+        uses: actions/upload-artifact@v7\n+        with:\n+          path: |\n+            - not-a-step\n+        continue-on-error: true\n'
+
+  # Mirror image: the flag lands on a PRE-EXISTING step whose own body happens
+  # to contain a nested list. Still narrowing.
+  diff_coe_existing_nested=$'diff --git a/.github/workflows/audit.yml b/.github/workflows/audit.yml\nindex abc..def 100644\n--- a/.github/workflows/audit.yml\n+++ b/.github/workflows/audit.yml\n@@ -10,6 +10,7 @@\n       - name: Scan\n         with:\n           paths:\n             - src\n+        continue-on-error: true\n'
+
+  # One clean new step must not mask a dirty edit to an existing one in the
+  # same hunk — the signal is per-occurrence, not per-diff.
+  diff_coe_mixed=$'diff --git a/.github/workflows/audit.yml b/.github/workflows/audit.yml\nindex abc..def 100644\n--- a/.github/workflows/audit.yml\n+++ b/.github/workflows/audit.yml\n@@ -10,6 +10,12 @@\n       - name: npm audit\n         run: npm audit --audit-level=high\n+        continue-on-error: true\n+\n+      - name: Upload audit report\n+        continue-on-error: true\n+        uses: actions/upload-artifact@v7\n'
+
+  # Renaming an existing gate step is not "adding a new step" — the added
+  # marker replaces a removed marker at the same indent in the same change
+  # block, so the conservative reading holds.
+  diff_coe_renamed=$'diff --git a/.github/workflows/audit.yml b/.github/workflows/audit.yml\nindex abc..def 100644\n--- a/.github/workflows/audit.yml\n+++ b/.github/workflows/audit.yml\n@@ -10,4 +10,5 @@\n-      - name: npm audit\n+      - name: npm audit (advisory)\n+        continue-on-error: true\n         run: npm audit --audit-level=high\n'
+
+  # A hunk that begins mid-step carries no enclosing marker at all. Cannot
+  # attribute => must fail toward narrowing.
+  diff_coe_indeterminate=$'diff --git a/.github/workflows/audit.yml b/.github/workflows/audit.yml\nindex abc..def 100644\n--- a/.github/workflows/audit.yml\n+++ b/.github/workflows/audit.yml\n@@ -12,2 +12,3 @@\n         run: npm audit --audit-level=high\n+        continue-on-error: true\n'
+
+  assert_equals "new reporting-only steps (lightwork #4382 shape): continue_on_error_added=0" \
+    "0" "$(sig_continue_on_error_added "$diff_coe_new_step")"
+  assert_equals "brand-new workflow file: continue_on_error_added=0" \
+    "0" "$(sig_continue_on_error_added "$diff_coe_new_file")"
+  assert_equals "new step with a nested list before the flag: continue_on_error_added=0" \
+    "0" "$(sig_continue_on_error_added "$diff_coe_new_step_nested")"
+  assert_equals "existing step with a nested list: continue_on_error_added=1" \
+    "1" "$(sig_continue_on_error_added "$diff_coe_existing_nested")"
+  assert_equals "existing step + new step in one hunk: continue_on_error_added=1" \
+    "1" "$(sig_continue_on_error_added "$diff_coe_mixed")"
+  assert_equals "renamed existing gate step: continue_on_error_added=1" \
+    "1" "$(sig_continue_on_error_added "$diff_coe_renamed")"
+  assert_equals "unattributable hunk (starts mid-step): continue_on_error_added=1 (fail-safe)" \
+    "1" "$(sig_continue_on_error_added "$diff_coe_indeterminate")"
+  assert_equals "the original existing-gate-step diff still trips: continue_on_error_added=1" \
+    "1" "$(sig_continue_on_error_added "$diff_continue_on_error")"
+
+  # End-to-end through decide(): the additive-reporting PR resolves `clean`
+  # even though it plainly touches a workflow file.
+  assert_equals "end-to-end: new reporting-only steps resolve clean" "clean" \
+    "$(decide "$(sig_touches_workflow "$diff_coe_new_step")" \
+              "$(sig_new_gate_file "$diff_coe_new_step")" \
+              "$(sig_continue_on_error_added "$diff_coe_new_step")" 0 0 0)"
+  assert_equals "end-to-end: existing gate step resolves narrowing" "narrowing" \
+    "$(decide "$(sig_touches_workflow "$diff_continue_on_error")" \
+              "$(sig_new_gate_file "$diff_continue_on_error")" \
+              "$(sig_continue_on_error_added "$diff_continue_on_error")" 0 0 0)"
+
+  # -------------------------------------------------------------------------
+  # Mutation-style negative control. Delete the one line carrying the
+  # step-attribution guard and assert the mutant REPRODUCES the #1494 bug. A
+  # test that passes against both the fixed script and the broken one proves
+  # nothing; this pins that the assertions above are actually load-bearing.
+  # -------------------------------------------------------------------------
+  mutant_src="$(mktemp)"
+  sed '$d' "$DETECTOR" | sed '/MUTATION-ANCHOR-1494/d' > "$mutant_src"
+  orig_lines=$(sed '$d' "$DETECTOR" | wc -l | tr -d ' ')
+  mutant_lines=$(wc -l < "$mutant_src" | tr -d ' ')
+  if [[ "$mutant_lines" -lt "$orig_lines" ]]; then
+    assert_pass "mutation applied — the MUTATION-ANCHOR-1494 guard line was removed"
+  else
+    assert_fail "mutation applied — the MUTATION-ANCHOR-1494 guard line was removed (anchor not found in $DETECTOR)"
+  fi
+
+  mutant_verdict="$(
+    # shellcheck disable=SC1090
+    source "$mutant_src"
+    sig_continue_on_error_added "$diff_coe_new_step"
+  )"
+  rm -f "$mutant_src"
+  assert_equals "negative control: guard-removed mutant reproduces the #1494 false positive" \
+    "1" "$mutant_verdict"
+
+  # -------------------------------------------------------------------------
+  # End-to-end through main(), with `gh pr diff` stubbed on PATH — this is the
+  # surface the acceptance criteria are written against (verdict on stdout,
+  # exit code, and the `unknown` fail-safe on an unreadable diff).
+  # -------------------------------------------------------------------------
+  run_detector_with_stub() {
+    local diff_text="$1" stub_dir out
+    stub_dir="$(mktemp -d)"
+    printf '%s' "$diff_text" > "$stub_dir/diff.txt"
+    {
+      printf '#!/usr/bin/env bash\n'
+      if [[ -n "$diff_text" ]]; then
+        printf 'cat %q\n' "$stub_dir/diff.txt"
+      else
+        printf 'exit 1\n'
+      fi
+    } > "$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    out="$(PATH="$stub_dir:$PATH" bash "$DETECTOR" owner/repo 1 2>/dev/null)"
+    printf '%s|%s' "$out" "$?"
+    rm -rf "$stub_dir"
+  }
+
+  assert_equals "main(): new reporting-only steps => clean, exit 0" \
+    "clean|0" "$(run_detector_with_stub "$diff_coe_new_step")"
+  assert_equals "main(): existing gate step => narrowing, exit 0" \
+    "narrowing|0" "$(run_detector_with_stub "$diff_continue_on_error")"
+  assert_equals "main(): unreadable diff => unknown, exit 2 (still blocking)" \
+    "unknown|2" "$(run_detector_with_stub "")"
+else
+  assert_fail "step-attribution tests skipped — detector script missing"
 fi
 echo
 

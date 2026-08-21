@@ -25,6 +25,15 @@
 # is that its blast radius is every FUTURE PR, not just this one — so the risk
 # acceptance belongs to a human, not an autonomous merge.
 #
+# The `continue-on-error` signal is attributed PER STEP (issue #1494): the flag
+# only counts when the step it belongs to already existed on the base branch.
+# The same flag on a brand-new reporting-only step (an `actions/upload-artifact`
+# upload, a summary emitter) relaxes nothing that existed before — a repo can
+# even *mandate* it there, as `mattsears18/lightwork` does after a quota-
+# exhausted upload step turned an all-green run red across two required checks.
+# Treating that shape as narrowing made every such PR cost a human clear, which
+# is how a gate loses its credibility. See sig_continue_on_error_added below.
+#
 # Detection is diff-based and mechanical, matching the issue's own "cheap,
 # mostly-mechanical signal" framing — it is a heuristic, not a semantic
 # analysis, and deliberately requires BOTH (a) the diff touches a CI-gate
@@ -117,8 +126,61 @@ sig_new_gate_file() {
   fi
 }
 
+# A `continue-on-error: true` added to a step that ALREADY EXISTED on the base
+# branch — the gate stays nominally in place while ceasing to fail (the #1139
+# risk). The same flag on a step this PR is itself *adding* is NOT a narrowing
+# signal: it relaxes nothing that existed before, and gate strength on the
+# default branch after the merge is identical to before it (issue #1494).
+#
+# Attribution is per-step, walking the unified diff hunk-wise. For each added
+# `continue-on-error: true` at indent K, the enclosing step is the nearest
+# preceding YAML sequence-item marker (`- name:` / `- uses:` / `- run:` …) at
+# an indent < K that is present in the NEW file (a context or added line).
+# Deeper markers are nested lists (`with: { paths: [...] }`) and are skipped.
+#
+# Fail-safe direction is preserved in three places, all resolving toward 1:
+#   * no enclosing marker in the hunk (the hunk starts mid-step) => cannot
+#     attribute => count it;
+#   * the enclosing marker is a context line => pre-existing step => count it;
+#   * the enclosing ADDED marker replaces a removed marker at the same indent
+#     within the same contiguous change block => a renamed/rewritten existing
+#     step, not a new one => count it.
 sig_continue_on_error_added() {
-  printf '%s' "$1" | grep -qE '^\+[[:space:]]*continue-on-error:[[:space:]]*true[[:space:]]*$' && echo 1 || echo 0
+  printf '%s' "$1" | awk '
+    BEGIN { blkgen = 1 }
+    # File boundary: nothing carries across it.
+    /^diff --git / { inhunk = 0; enc_set = 0; blkgen++; next }
+    # Hunk boundary: lines are non-contiguous, so a marker seen in a previous
+    # hunk is not necessarily the step this hunk starts inside.
+    /^@@/          { inhunk = 1; enc_set = 0; blkgen++; next }
+    !inhunk { next }
+    {
+      pfx = substr($0, 1, 1)
+      if (pfx != "+" && pfx != "-" && pfx != " ") next   # e.g. "\ No newline..."
+      body = substr($0, 2)
+      match(body, /^ */); ind = RLENGTH
+
+      # A context line closes the current contiguous change block.
+      if (pfx == " ") blkgen++
+
+      if (body ~ /^ *-[ \t]/) {                          # YAML sequence item
+        if (pfx == "-") {
+          blkrm[ind] = blkgen                            # step entry removed here
+        } else if (enc_set == 0 || ind <= enc_ind) {
+          enc_ind = ind
+          enc_added = (pfx == "+" && blkrm[ind] != blkgen) ? 1 : 0
+          enc_set = 1
+        }
+        next
+      }
+
+      if (pfx == "+" && body ~ /^ *continue-on-error:[ \t]*true[ \t]*$/) {
+        if (enc_set && enc_ind < ind && enc_added) next   # MUTATION-ANCHOR-1494: deleting this line reproduces the #1494 false positive
+        found = 1
+      }
+    }
+    END { print (found ? 1 : 0) }
+  '
 }
 
 sev_rank() {
