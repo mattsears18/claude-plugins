@@ -26,6 +26,12 @@
 #   - An issue with no milestone (or an unparseable milestone title) still
 #     ranks -- it sorts to the tail, never dropped.
 #
+# Issue #1499 added a third obligation, covered by cases (17)-(23): with
+# --fallback-milestone naming the repo's catch-all phase, an unmilestoned
+# issue ranks TIED with that phase rather than strictly behind it, so
+# priority_rank decides between them instead of the milestone tier
+# silently overriding severity. Without the flag, ranking is unchanged.
+#
 # Run with:
 #   bash plugins/shipyard/scripts/tests/backlog-milestone-ranking.test.sh
 
@@ -277,6 +283,81 @@ assert_equals "$order" "604,603,602,601" "(15) compose: milestones OFF + --respe
 out=$(classify_flags --respect-assignees false --milestones-prioritize-dispatch true \
   --milestones-enabled true <<<"$fixture_compose")
 assert_equals "$(order_of "$out" | paste -sd, -)" "604,601,602,603" "(16) compose: the three flags parse identically regardless of argv order"
+
+# --- --fallback-milestone: unmilestoned ties with the fallback phase -------
+# Issue #1499. milestone_seq's sentinel (999999999) is strictly LARGER than
+# any real N, and _sort_key puts the milestone tier ABOVE priority_rank --
+# so before this flag existed, an unmilestoned issue lost to EVERY
+# milestoned issue, including one in the fallback phase. The fallback is
+# the catch-all for work with no phase, i.e. semantically the same state as
+# unmilestoned, so that loss was not a tiebreak: it was a wholesale
+# severity override, and it silently ranked a P2 (and even an unlabeled
+# issue) ahead of a P1. It also contradicted milestone_seq's own comment,
+# which claimed the sentinel sorts "alongside where the fallback milestone
+# already sorts". These cases pin both halves: the tie when the caller
+# names a fallback milestone, and byte-identical pre-#1499 behavior when it
+# does not.
+
+# The exact shape the issue asks for: one P1 with no milestone at all, one
+# P2 in the fallback milestone, milestone ranking fully on.
+fixture_fallback_min='[
+  {"number":701,"title":"t","body":"","labels":["P2"],"milestone":"4 · Ongoing maintenance","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":702,"title":"t","body":"","labels":["P1"],"milestone":null,"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+
+out=$(classify_on --fallback-milestone "Ongoing maintenance" <<<"$fixture_fallback_min")
+assert_equals "$(order_of "$out" | paste -sd, -)" "702,701" "(17) an unmilestoned P1 outranks a P2 in the fallback milestone once --fallback-milestone names it -- the milestone tier ties, priority_rank decides"
+
+out=$(classify_on <<<"$fixture_fallback_min")
+assert_equals "$(order_of "$out" | paste -sd, -)" "701,702" "(18) without --fallback-milestone the pre-#1499 order stands byte-identically -- the sentinel is still strictly last, so the fallback P2 still outranks the unmilestoned P1"
+
+# The tie is scoped to the FALLBACK milestone specifically -- an
+# unmilestoned issue must NOT be promoted past a genuine earlier phase,
+# however high its priority label. 801 (P2, phase 1) has to stay ahead of
+# 803 (P1, unmilestoned) even with the flag on.
+fixture_fallback_scope='[
+  {"number":801,"title":"t","body":"","labels":["P2"],"milestone":"1 · Foundation","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":802,"title":"t","body":"","labels":["P2"],"milestone":"4 · Ongoing maintenance","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":803,"title":"t","body":"","labels":["P1"],"milestone":null,"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+
+out=$(classify_on --fallback-milestone "Ongoing maintenance" <<<"$fixture_fallback_scope")
+assert_equals "$(order_of "$out" | paste -sd, -)" "801,803,802" "(19) the tie is scoped to the fallback phase -- a P2 in a real earlier phase still outranks an unmilestoned P1, which in turn now outranks the fallback P2"
+
+# Title matching mirrors is_someday: the bare title (any `N · ` prefix
+# stripped), case-insensitive, surrounding whitespace trimmed. A caller
+# passes the raw `milestones.fallback` config value, which carries no
+# sequence prefix, so this normalization is what makes the two meet.
+out=$(classify_on --fallback-milestone "  ONGOING Maintenance  " <<<"$fixture_fallback_min")
+assert_equals "$(order_of "$out" | paste -sd, -)" "702,701" "(20) --fallback-milestone matches on the bare title, case-insensitively, with surrounding whitespace trimmed"
+
+# A configured fallback milestone that no issue in THIS input carries gives
+# nothing to tie with, so the sentinel stands. This is the fail-safe: the
+# flag can never move an unmilestoned issue to a phase that isn't there.
+out=$(classify_on --fallback-milestone "Some Other Phase" <<<"$fixture_fallback_min")
+assert_equals "$(order_of "$out" | paste -sd, -)" "701,702" "(21) a --fallback-milestone absent from this input leaves the sentinel in place -- unmilestoned still sorts last, never promoted to a phase with no issues"
+
+# The milestone-OFF branch of _sort_key must stay byte-identical to its
+# pre-#1241 form, and #1499 must not sneak a new tier into it -- passing
+# the flag with ranking off has to change nothing at all.
+out=$(bash "$helper" classify --me "test-me" --trusted-authors "alice" --today "2026-08-11" \
+  --fallback-milestone "Ongoing maintenance" <<<"$fixture_fallback_scope")
+assert_equals "$(order_of "$out" | paste -sd, -)" "803,801,802" "(22) with milestone ranking OFF, --fallback-milestone is inert -- flat P1>P2 then stable input order, exactly as if the flag were never passed"
+
+# Regression guard for the whole-input hoist: $unmilestoned_seq is computed
+# once from the backlog, so a fallback-milestoned issue that is DROPPED
+# (here: gated by an open `Blocked by #N`) must still establish the tie for
+# the unmilestoned issues that survive. Computing it from the eligible
+# bucket instead would silently reinstate the inversion.
+fixture_fallback_dropped='[
+  {"number":901,"title":"t","body":"Blocked by #902","labels":["P2"],"milestone":"4 · Ongoing maintenance","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":902,"title":"t","body":"","labels":["P2"],"milestone":"1 · Foundation","assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":903,"title":"t","body":"","labels":[],"milestone":null,"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"},
+  {"number":904,"title":"t","body":"","labels":["P1"],"milestone":null,"assignees":[],"author":{"login":"alice"},"createdAt":"a","updatedAt":"2026-01-01"}
+]'
+
+out=$(classify_on --fallback-milestone "Ongoing maintenance" <<<"$fixture_fallback_dropped")
+assert_equals "$(order_of "$out" | paste -sd, -)" "902,904,903" "(23) the fallback sequence number is read from the whole input, not the eligible bucket -- a dropped fallback-milestoned issue still establishes the tie"
 
 echo
 echo "----------------------------------------"
