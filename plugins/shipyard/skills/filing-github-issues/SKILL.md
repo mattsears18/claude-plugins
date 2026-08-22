@@ -92,20 +92,26 @@ Then pass `--label "P0"` / `--label "P1"` / `--label "P2"` — matching the buck
 
 ## Milestone assignment (gated on `milestones.enabled` + `milestones.assign_on_file`, issue [#1242](https://github.com/mattsears18/shipyard/issues/1242))
 
-**Read the gate once, at the start of the run, alongside the label-discovery calls above — never per finding:**
+**Read the gate once, at the start of the run, alongside the label-discovery calls above — never per finding. Resolve it from the repo you are filing AGAINST, never from the repo this session happens to be running in ([#1498](https://github.com/mattsears18/shipyard/issues/1498)):**
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
-MILESTONES_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+MILESTONE_GATE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/resolve-filing-milestone-gate.sh" <owner/repo>)
+MILESTONES_ENABLED=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^enabled=//p')
+MILESTONES_ASSIGN=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^assign_on_file=//p')
+MILESTONES_FALLBACK=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^fallback=//p')
+MILESTONES_SOURCE=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^source=//p')
 ```
 
-**When `MILESTONES_ENABLED` != `"true"` OR `MILESTONES_ASSIGN` != `"true"`, skip this entire section.** File exactly as you would without it — no `gh api .../milestones` call, no `--milestone` flag, nothing else changes. This must be byte-for-byte identical to running with no `milestones` block at all.
+**Do NOT read the gate with a bare `shipyard-config.sh get milestones.enabled`.** That helper resolves its repo layer from the **cwd's git toplevel**, which is the repo the *session* is running in — correct for a same-repo filing and silently wrong for a cross-repo one. Cross-repo filing is not an edge case here: the standard "file the friction against the plugin repo" flow files `--repo <plugin-repo>` from a session working in some *other* repo, and it is how essentially every issue in this repo originates. `resolve-filing-milestone-gate.sh` compares the two repos itself and reads the target repo's committed `shipyard.config.json` over the API when they differ; when they match it returns the session's own 4-layer effective config unchanged, so the same-repo case is byte-for-byte what it was before. It always exits 0 and always emits the four lines — a milestone lookup must never fail a filing.
+
+The *candidate milestone list* was already correct and is unchanged: `gh api repos/<owner>/<repo>/milestones` below is scoped to the filing target, not the session repo. Only the gate was misresolved.
+
+**When `MILESTONES_ENABLED` != `"true"` OR `MILESTONES_ASSIGN` != `"true"`, skip this entire section.** File exactly as you would without it — no `gh api .../milestones` call, no `--milestone` flag, nothing else changes. This must be byte-for-byte identical to running with no `milestones` block at all. **When you skip and `MILESTONES_SOURCE` is one of `target-repo-config-absent` / `target-repo-config-unreadable` / `target-repo-config-invalid`, say so in your end-of-run summary** (`Milestone gate: skipped — <source> for <owner/repo>`). That one line is what converts a silent skip into something the operator can act on; #1498 went unnoticed for three days precisely because the skip printed nothing.
 
 **When both are `"true"`, fetch the open milestone list once for the whole run and cache it** — an audit filing 30 findings reads this once, not 30 times. **`--method GET` is not optional here** — `gh api` silently defaults to `POST` whenever any `-f` field is present, and a `POST` to the milestones endpoint with no `title` field fails with a confusing `422 "title" wasn't supplied` (it's attempting to *create* a milestone, not list them):
 
 ```bash
-MILESTONES_FALLBACK=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
 MILESTONES_JSON=$(gh api repos/<owner>/<repo>/milestones --method GET --paginate -f state=open \
   --jq '[.[] | {number, title, description}]' 2>/dev/null)
 ```
@@ -412,4 +418,6 @@ When "Milestone assignment" is gated on (both config keys `true`) and one or mor
 - Don't create a milestone, even the fallback one, from inside a filing pass — see "Milestone assignment" above. Match against an existing phase's `BET:` or its already-existing fallback; if neither exists, file without one.
 - Don't skip a filing because the milestone lookup errored or nothing matched. File the finding without a milestone and note it — a lost finding is worse than an unmilestoned one.
 - Don't re-fetch the milestone list per finding. Cache it once at the start of the run alongside the label-discovery calls.
+- **Don't resolve the milestone gate with a bare `shipyard-config.sh get milestones.*` ([#1498](https://github.com/mattsears18/shipyard/issues/1498)).** That reads the *session's* repo config, not the repo named by `--repo`, so a cross-repo filing silently inherits the working repo's opt-in state — which on the primary "file the friction against the plugin repo" path meant no milestone at all, and (because `milestones.prioritize_dispatch` ranks on it) a backlog where fresh P1s sorted behind older P2s. Call `scripts/resolve-filing-milestone-gate.sh <owner/repo>` instead; it is repo-aware and same-repo-identical.
+- **Don't skip milestone assignment silently on a cross-repo filing.** When the gate resolves off and `MILESTONES_SOURCE` names a target-repo read that was absent, unreadable, or invalid, put one line in the end-of-run summary. A silent skip is indistinguishable from a repo that genuinely opted out.
 - If you're one of the five deployed-artifact auditors (`lighthouse`, `seo`, `pwa`, `web-ux`, `functional-qa`): don't file a finding whose proposed remedy already exists in the tree and is test-guarded without first running the "Tree-freshness check" above — and don't silently drop a finding that check touches without leaving a trace in your end-of-run summary.
