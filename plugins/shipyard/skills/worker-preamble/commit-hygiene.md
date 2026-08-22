@@ -25,3 +25,11 @@ If you genuinely need to commit a symlink with `../` in the target (rare — and
 - **Multiple commits where the whole set should ship as one:** squash them (interactive rebase, or `git reset --soft` to the branch point + a fresh `git commit`) into a single compliant commit — this also sidesteps the single-commit-squash-message hazard entirely for future edits, since a compliant final commit is safe regardless of how many commits preceded it.
 
 Verify before pushing: `git log -1 --format=%s` should read as a valid Conventional Commits subject on its own, with no `wip:`/scratch prefix — not "the PR title looks right."
+
+**Or check the whole branch mechanically ([#1412](https://github.com/mattsears18/shipyard/issues/1412)).** [`scripts/commit-subject-scan.sh`](../../scripts/commit-subject-scan.sh) is the executable counterpart to the prose rule above — it walks every subject in `<base>..HEAD`, asserts each matches the Conventional Commits grammar, and applies exactly the carve-out this section describes: a `wip:` prefix is tolerated on a non-final commit but never on the final (squash-merge) one. Run it yourself before `git push` / `gh pr create` rather than eyeballing `git log`:
+
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/commit-subject-scan.sh" "origin/$DEFAULT_BRANCH"
+```
+
+Exit 0 → every subject conforms, push. Exit 1 → it prints each offending `<sha>  <subject>` and why; amend or squash per the three cases above, then re-run. Exit 2 → usage/environment error (not in a work tree, unresolvable base ref) — fix the invocation; never read a 2 as a pass.
