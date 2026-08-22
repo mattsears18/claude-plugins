@@ -833,6 +833,36 @@ assert_contains "$skill_path" "(./write-probe.md)" \
   assert_contains "$git_stash_prohibition_path" "What it deliberately does not cover" \
     "git-stash-prohibition.md documents the hook's gaps rather than overclaiming (issue #1506)"
 
+  # Issue #1511 — the "Never `--no-verify`" section used to close by asserting
+  # that the plugin manifest's `permissions.deny` block enforced the rule at
+  # the harness level. `permissions` is not among the documented `plugin.json`
+  # fields and the documented permission rule sources name no plugin-manifest
+  # tier, so the section was describing an unverified mechanism as a live one
+  # — the same "documented but unenforced" shape #1506 fixed for `git stash`.
+  # The prohibition is now backed by hooks/refuse-hook-bypass-flag.sh
+  # (registered under the Bash matcher; hooks-json.test.sh guards the
+  # registration, refuse-hook-bypass-flag.test.sh guards the decision rules).
+  # The section must (1) name the hook as the enforcement, (2) mark the
+  # manifest block's status as UNVERIFIED rather than asserting either that it
+  # works or that it is inert — the binary-reading evidence is strong but an
+  # interactive `/permissions` check is still owed, and #1511 deliberately
+  # stops short of calling it conclusive — and (3) say `git push -n` stays
+  # allowed, so nobody infers the hook refuses `--dry-run` on the strength of
+  # `-n` being `--no-verify` on commit.
+  assert_contains "$skill_path" "refuse-hook-bypass-flag.sh" \
+    "SKILL.md names the hook that enforces the --no-verify prohibition (issue #1511)"
+  assert_contains "$skill_path" "**The hook is the enforcement.**" \
+    "SKILL.md names the hook, not the manifest block, as the enforcement (issue #1511)"
+  assert_contains "$skill_path" "that claim is **unverified**" \
+    "SKILL.md marks the permissions.deny block's status as unverified, not inert (issue #1511)"
+  assert_contains "$skill_path" "no plugin-manifest tier" \
+    "SKILL.md records why the manifest block cannot be relied on (issue #1511)"
+  assert_contains "$skill_path" "which is \`--dry-run\`, not \`--no-verify\`" \
+    "SKILL.md states git push -n stays reachable (issue #1511)"
+  assert_count_at_most "$skill_path" \
+    "enforces this at the harness level" 0 \
+    "SKILL.md no longer asserts harness-level manifest enforcement (issue #1511)"
+
   # Issue #751 — "Never run a broad process kill" split the same way: the
   # core prohibition + PID-tracking rule + hook-enforcement note stay in
   # SKILL.md; the reproduced repro narrative and the cheap CI-executor

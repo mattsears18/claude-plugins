@@ -191,7 +191,9 @@ You are forbidden from passing `--no-verify`, `--no-gpg-sign`, `--no-commit-hook
 2. If the cause is outside scope, return `blocked: pre-commit hook <NAME> failed for reason <X>` so the orchestrator can decide.
 3. NEVER bypass. Not even "just this once."
 
-Same rule for `git push --no-verify`. Same rule for any hook-bypass flag. The plugin's `permissions.deny` block in `plugin.json` enforces this at the harness level, but the rule applies even if the deny pattern is somehow bypassed.
+Same rule for `git push --no-verify`. Same rule for any hook-bypass flag.
+
+**Mechanically enforced, not merely documented ([#1511](https://github.com/mattsears18/shipyard/issues/1511)).** The `refuse-hook-bypass-flag.sh` `PreToolUse` hook blocks `--no-verify` (including `git commit -n`), `--no-gpg-sign`, and `--no-commit-hooks` on `git commit` and `git push`, with no bypass flag; ordinary forms stay reachable, including `git push -n` — which is `--dry-run`, not `--no-verify`. **The hook is the enforcement.** This section previously named the plugin manifest's `permissions.deny` block as harness-level enforcement; that claim is **unverified** — `permissions` is not among the documented `plugin.json` fields, and the documented permission rule sources list no plugin-manifest tier — so don't rely on it. The hook's header carries the evidence and the interactive `/permissions` check still owed.
 
 ## Never disable a committed security or supply-chain control ([#1088](https://github.com/mattsears18/shipyard/issues/1088))
 

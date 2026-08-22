@@ -224,6 +224,25 @@
 # only 110 bytes of headroom after #1335's raise, so the bump is the whole
 # section's cost; 66000 (not 65000) leaves real headroom rather than 47 bytes.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 66000 -> 67000 by
+# #1511 (2026-08-21): the "Never `--no-verify`" section's closing sentence
+# asserted that the plugin manifest's `permissions.deny` block enforced the
+# prohibition at the harness level. `permissions` is not among the documented
+# `plugin.json` fields and the documented permission rule sources name no
+# plugin-manifest tier, so the sentence was describing an unverified
+# mechanism as a live one — the "documented but unenforced" shape #1506 was
+# filed about for `git stash`. Replacing it costs more bytes than deleting
+# it, because the correction has to do three things a one-liner can't: name
+# the `refuse-hook-bypass-flag.sh` hook that IS the enforcement, record the
+# manifest block's status as unverified rather than asserting it inert (the
+# binary-reading evidence is strong but stops short of conclusive — an
+# interactive `/permissions` check is still owed), and call out that
+# `git push -n` is `--dry-run`, so a reader doesn't infer the hook refuses
+# it. It stays in the always-loaded core for the same reason the rule above
+# it does: every mode reads this section, and a worker reaching for a bypass
+# flag is not going to detour into a fragment first. The file had 73 bytes
+# of headroom after the edit; 67000 restores real headroom rather than none.
+#
 # issue-work.md's ceiling was raised 128000 -> 130000 by #1490 (2026-08-21):
 # a fifth §5.5 decision-comment trigger (plus its routing-table row) telling
 # a worker that narrows its own scope to honor an `Off-limits: <path>` line
@@ -307,7 +326,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  66000 \
+  67000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \

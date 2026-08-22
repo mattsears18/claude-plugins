@@ -119,7 +119,7 @@ echo "== The load-bearing safety hooks are each registered"
 # -----------------------------------------------------------------------------
 # A dropped entry for any of these silently disables a worker-safety gate.
 
-for safety in guard-primary-checkout refuse-escape-symlink-commit refuse-broad-process-kill refuse-credential-mint refuse-unsafe-git-stash; do
+for safety in guard-primary-checkout refuse-escape-symlink-commit refuse-broad-process-kill refuse-credential-mint refuse-unsafe-git-stash refuse-hook-bypass-flag; do
   if printf '%s\n' "$commands" | grep -q "/${safety}\.sh\""; then
     ok "safety hook registered: ${safety}.sh"
   else
@@ -161,21 +161,21 @@ else
   no "enforce-fresh-spec-read.sh NOT registered under matcher: Read"
 fi
 
-# The Bash matcher carries four refusal hooks — assert they all compose
+# The Bash matcher carries five refusal hooks — assert they all compose
 # (hooks append, they don't replace).
 bash_commands=$(jq -r '
   [ .hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[].command ] | .[]
 ' "$hooks_json")
 bash_ok=1
-for bh in refuse-escape-symlink-commit refuse-broad-process-kill refuse-credential-mint refuse-unsafe-git-stash; do
+for bh in refuse-escape-symlink-commit refuse-broad-process-kill refuse-credential-mint refuse-unsafe-git-stash refuse-hook-bypass-flag; do
   if ! printf '%s\n' "$bash_commands" | grep -q "/${bh}\.sh\""; then
     bash_ok=0
   fi
 done
 if [[ $bash_ok -eq 1 ]]; then
-  ok "Bash matcher composes all four refusal hooks (appended, not replaced)"
+  ok "Bash matcher composes all five refusal hooks (appended, not replaced)"
 else
-  no "Bash matcher lost one of its four refusal hooks"
+  no "Bash matcher lost one of its five refusal hooks"
 fi
 # -----------------------------------------------------------------------------
 echo "== Summary"
