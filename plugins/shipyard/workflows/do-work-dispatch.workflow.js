@@ -1316,6 +1316,24 @@ function buildIssueWorkPrompt(unit, repoSlug) {
     )
   }
 
+  // Stale-agent-limitation augmentation — mirrors dispatch-rules.md's
+  // "Stale-agent-limitation augmentation (#1491)" paragraph verbatim. Set by
+  // setup step 6's self-declared agent-limitation re-validation when
+  // detect-stale-agent-limitation.sh returned `verdict=stale`; absent on
+  // `no-claim` / `upheld` / `indeterminate`, which is the common case.
+  if (unit.stalePremisePhrase) {
+    lines.push(
+      ``,
+      `**Stale premise in the issue body (orchestrator-verified, #1491):** the body declares`,
+      `part of this work out of scope for an autonomous worker — "${unit.stalePremisePhrase}" —`,
+      `and that premise is **false right now**: ${unit.stalePremiseCorrection}. Do not act on`,
+      `it: do not narrow your scope, and do not file an operator hand-back, on its say-so.`,
+      `Implement the full deliverable, including the part the body hands back. If you hit a`,
+      `genuine, currently-observed obstacle doing so, bail on THAT instead — never on the`,
+      `body's own stale claim.`,
+    )
+  }
+
   // Claimed-paths token-budget-warn augmentation — mirrors dispatch-rules.md's
   // "Claimed-paths token-budget-warn augmentation" paragraph verbatim (#1443).
   if (unit.tokenBudgetWarning) {
