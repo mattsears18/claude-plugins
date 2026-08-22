@@ -794,6 +794,45 @@ assert_contains "$skill_path" "(./write-probe.md)" \
   assert_contains "$git_stash_prohibition_path" "WIP commit" \
     "git-stash-prohibition.md's substitute section leads with a WIP commit (issue #1224)"
 
+  # Issue #1506 — the third recorded instance of a worker reaching for a bare
+  # stash, after two documentation-only fixes (#1345 made the prohibition
+  # explicit, #1224 supplied the substitute). That worker named the correct
+  # substitute unprompted in its own return and still reached for stash, so
+  # the failure is a reflex outrunning a recalled rule, not missing
+  # knowledge — a fourth documentation edit was not expected to work. The
+  # prohibition is now backed by hooks/refuse-unsafe-git-stash.sh (registered
+  # under the Bash matcher; hooks-json.test.sh guards the registration, and
+  # refuse-unsafe-git-stash.test.sh guards the decision rules). Both specs
+  # must (1) say the rule is mechanically enforced and name the hook, and
+  # (2) state that the sanctioned tagged form is deliberately still
+  # reachable — a guard that also blocked `git stash push -u -m "<tag>"`
+  # would break the documented escape hatch, which is worse than the status
+  # quo. git-stash-prohibition.md additionally records WHY this is a hook and
+  # not a permissions.deny pattern, so a future editor doesn't "simplify" it
+  # back into a pattern that cannot express the carve-out.
+  assert_contains "$skill_path" "Mechanically enforced, not merely documented" \
+    "SKILL.md states the git-stash prohibition is mechanically enforced (issue #1506)"
+  assert_contains "$skill_path" "refuse-unsafe-git-stash.sh" \
+    "SKILL.md names the enforcing hook (issue #1506)"
+  assert_contains "$skill_path" 'git stash push -u -m "<tag>"` procedure stays reachable' \
+    "SKILL.md states the sanctioned tagged form stays reachable (issue #1506)"
+  assert_contains "$skill_path" "no negation operator" \
+    "SKILL.md explains why a deny pattern cannot express the carve-out (issue #1506)"
+  assert_contains "$git_stash_prohibition_path" \
+    "## Mechanical enforcement — the \`refuse-unsafe-git-stash.sh\` hook" \
+    "git-stash-prohibition.md carries the mechanical-enforcement section (issue #1506)"
+  assert_contains "$git_stash_prohibition_path" \
+    "([#1506](https://github.com/mattsears18/shipyard/issues/1506))" \
+    "git-stash-prohibition.md's enforcement section cites issue #1506"
+  assert_contains "$git_stash_prohibition_path" "Still permitted, in full" \
+    "git-stash-prohibition.md states the sanctioned procedure is still permitted (issue #1506)"
+  assert_contains "$git_stash_prohibition_path" "The Bash rule matcher has no negation" \
+    "git-stash-prohibition.md records why a deny pattern cannot express the carve-out (issue #1506)"
+  assert_contains "$git_stash_prohibition_path" "command-rewriting \`PreToolUse\` hook" \
+    "git-stash-prohibition.md records the command-rewrite laundering hazard (issue #1506)"
+  assert_contains "$git_stash_prohibition_path" "What it deliberately does not cover" \
+    "git-stash-prohibition.md documents the hook's gaps rather than overclaiming (issue #1506)"
+
   # Issue #751 — "Never run a broad process kill" split the same way: the
   # core prohibition + PID-tracking rule + hook-enforcement note stay in
   # SKILL.md; the reproduced repro narrative and the cheap CI-executor
