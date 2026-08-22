@@ -45,7 +45,15 @@
 #   bash detect-ci-gate-narrowing.sh <owner/repo> <pr-number>
 #     -> prints `narrowing`, `clean`, or `unknown` on stdout; diagnostics on
 #        stderr. Exit 0 on `narrowing`/`clean`, 2 when the diff could not be
-#        read at all (`unknown`), 1 on a usage error.
+#        read at all from a WELL-FORMED call (`unknown`), 64 on a usage error.
+#
+#   The target repo is POSITIONAL. There is no `--repo` flag — passing one is a
+#   usage error (exit 64), not an unreadable diff. See issue #1502: before that
+#   fix, `--repo owner/name 123` bound `repo` to the literal `--repo`, produced
+#   `gh pr diff owner/name --repo --repo`, and reported
+#   `could not read diff for --repo#owner/name — failing toward 'unknown'` —
+#   a caller error wearing the costume of a transient read failure, which then
+#   silently costs a human-review clear on a PR that never needed one.
 #
 #   `narrowing` => do NOT arm auto-merge in any form. Label needs-human-review.
 #   `clean`     => no gate-narrowing signal found; continue the normal flow.
@@ -70,6 +78,41 @@
 # ships (see auto-merge.md step 0.34 — this is not a refusal to do the work).
 
 set -uo pipefail
+
+# EX_USAGE, per sysexits.h — the same convention session-state.sh,
+# shipyard-config.sh and detect-ci-runner-capacity.sh already use.
+EX_USAGE=64
+
+usage() {
+  echo "usage: $0 <owner/repo> <pr-number>" >&2
+  echo "       $0 --decide <touches_workflow> <new_gate_file> <continue_on_error_added> <audit_level_lowered> <gate_step_deleted> <path_filter_narrowed>" >&2
+  echo "       $0 --help" >&2
+  echo "note: the target repo is POSITIONAL — there is no --repo flag." >&2
+}
+
+# A caller error: the command line itself is wrong. Distinct from the `unknown`
+# path below, which is for a well-formed call whose diff could not be read.
+die_usage() {
+  echo "USAGE_ERROR: $1"
+  echo "detect-ci-gate-narrowing: usage error (exit $EX_USAGE): $1" >&2
+  usage
+  exit "$EX_USAGE"
+}
+
+# Shape-check the repo before spending a network call on it: `owner/name`,
+# exactly one slash, both halves non-empty, no whitespace.
+assert_repo_slug() {
+  local repo="$1"
+  case "$repo" in
+    */*/*) die_usage "'$repo' is not a valid <owner/repo> slug — too many '/' separators" ;;
+    */*)   ;;
+    *)     die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+  esac
+  case "$repo" in
+    /*|*/) die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+    *[[:space:]]*) die_usage "'$repo' is not a valid <owner/repo> slug — contains whitespace" ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # The decision. Pure function of the six signals — no I/O, no network.
@@ -247,21 +290,43 @@ sig_path_filter_narrowed() {
 }
 
 main() {
-  if [ "${1:-}" = "--decide" ]; then
-    if [ "$#" -ne 7 ]; then
-      echo "usage: $0 --decide <touches_workflow> <new_gate_file> <continue_on_error_added> <audit_level_lowered> <gate_step_deleted> <path_filter_narrowed>" >&2
-      exit 1
-    fi
-    decide "$2" "$3" "$4" "$5" "$6" "$7"
-    exit 0
+  if [ "$#" -eq 0 ]; then
+    die_usage "no arguments given — <owner/repo> and <pr-number> are both required"
   fi
 
-  local repo="${1:-}" pr="${2:-}"
-  if [ -z "$repo" ] || [ -z "$pr" ]; then
-    echo "usage: $0 <owner/repo> <pr-number>" >&2
-    echo "       $0 --decide <touches_workflow> <new_gate_file> <continue_on_error_added> <audit_level_lowered> <gate_step_deleted> <path_filter_narrowed>" >&2
-    exit 1
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --decide)
+      if [ "$#" -ne 7 ]; then
+        die_usage "--decide takes exactly 6 arguments, got $(( $# - 1 ))"
+      fi
+      decide "$2" "$3" "$4" "$5" "$6" "$7"
+      exit 0
+      ;;
+    -*)
+      # THE #1502 FIX. Never bind an unrecognized flag into `repo` and forward
+      # it to `gh pr diff` — the resulting failure is misreported as `unknown`,
+      # which callers treat as `narrowing`, so a caller error silently costs a
+      # human-review clear on a PR that never needed one.
+      die_usage "unrecognized flag '$1' — the target repo is a POSITIONAL argument; this script does not accept --repo"
+      ;;
+  esac
+
+  if [ "$#" -ne 2 ]; then
+    die_usage "expected exactly two arguments (<owner/repo> <pr-number>), got $#"
   fi
+
+  local repo="$1" pr="$2"
+  if [ -z "$repo" ]; then
+    die_usage "the <owner/repo> argument is empty"
+  fi
+  assert_repo_slug "$repo"
+  case "$pr" in
+    ''|*[!0-9]*) die_usage "'$pr' is not a valid <pr-number> — expected a positive integer" ;;
+  esac
 
   local diff
   diff="$(gh pr diff "$pr" --repo "$repo" 2>/dev/null)"

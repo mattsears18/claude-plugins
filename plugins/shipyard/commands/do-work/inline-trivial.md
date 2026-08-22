@@ -125,6 +125,11 @@ export CLAUDE_PLUGIN_ROOT
 SHIPYARD_REPO_ROOT=$(cat .shipyard-primary-root 2>/dev/null || pwd)
 export SHIPYARD_REPO_ROOT
 VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+# The repo is POSITIONAL — there is no --repo flag (#1502). A VERDICT starting
+# with `USAGE_ERROR:` (exit 64) means YOU called it wrong; the `= "gated"` test
+# below then correctly falls through to the conservative branch, but re-run once
+# with the literal positional form above and fix the call site rather than
+# shipping on an unmeasured shape.
 # Resolve the merge method from config — never hardcode --merge (#989).
 AUTO_MERGE_METHOD=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get auto_merge.method 2>/dev/null)
 case "$AUTO_MERGE_METHOD" in squash|merge|rebase) ;; *) AUTO_MERGE_METHOD=squash ;; esac

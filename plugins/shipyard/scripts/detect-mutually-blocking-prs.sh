@@ -43,9 +43,17 @@
 #     -> prints nothing on stdout when no pair is mutually blocking.
 #     -> diagnostics on stderr.
 #     -> exit 0 on a successful (possibly empty) scan; 2 when a required
-#        signal could not be read for one or more PRs and NO pair was found
-#        (treat as "no pairs this poll" — the safe/inert default, see below);
-#        1 on a usage error.
+#        signal could not be read for one or more PRs from a WELL-FORMED call
+#        and NO pair was found (treat as "no pairs this poll" — the safe/inert
+#        default, see below); 64 on a usage error.
+#
+#   The target repo is POSITIONAL. There is no `--repo` flag — passing one is a
+#   usage error (exit 64), not an unreadable signal. See issue #1502: before
+#   that fix, `--repo owner/name 1 2` bound `repo` to the literal `--repo`, the
+#   default-branch read failed, and the script reported
+#   `could not read default branch for '--repo'` and exited 2 — a caller error
+#   indistinguishable from a transient API failure, which the drain then
+#   correctly-but-uselessly treats as "no pairs this poll", forever.
 #
 # Usage — pure decision (hermetic, for tests and for callers that already
 # hold the four signals):
@@ -66,6 +74,41 @@
 # positive would spam an incorrect diagnosis onto two unrelated red PRs.
 
 set -uo pipefail
+
+# EX_USAGE, per sysexits.h — the same convention session-state.sh,
+# shipyard-config.sh and detect-ci-runner-capacity.sh already use.
+EX_USAGE=64
+
+usage() {
+  echo "usage: $0 <owner/repo> <pr1> <pr2> [<pr3> ...]" >&2
+  echo "       $0 --decide-pair <a_failing_csv> <a_passing_csv> <b_failing_csv> <b_passing_csv>" >&2
+  echo "       $0 --help" >&2
+  echo "note: the target repo is POSITIONAL — there is no --repo flag." >&2
+}
+
+# A caller error: the command line itself is wrong. Distinct from the exit-2
+# path below, which is for a well-formed call whose signals could not be read.
+die_usage() {
+  echo "USAGE_ERROR: $1"
+  echo "detect-mutually-blocking-prs: usage error (exit $EX_USAGE): $1" >&2
+  usage
+  exit "$EX_USAGE"
+}
+
+# Shape-check the repo before spending a network call on it: `owner/name`,
+# exactly one slash, both halves non-empty, no whitespace.
+assert_repo_slug() {
+  local repo="$1"
+  case "$repo" in
+    */*/*) die_usage "'$repo' is not a valid <owner/repo> slug — too many '/' separators" ;;
+    */*)   ;;
+    *)     die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+  esac
+  case "$repo" in
+    /*|*/) die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+    *[[:space:]]*) die_usage "'$repo' is not a valid <owner/repo> slug — contains whitespace" ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # The pairwise decision. Pure function of four CSV sets — no I/O, no network.
@@ -177,26 +220,46 @@ files_disjoint() {
 }
 
 main() {
-  if [ "${1:-}" = "--decide-pair" ]; then
-    if [ "$#" -ne 5 ]; then
-      echo "usage: $0 --decide-pair <a_failing_csv> <a_passing_csv> <b_failing_csv> <b_passing_csv>" >&2
-      exit 1
-    fi
-    decide_pair "$2" "$3" "$4" "$5"
-    exit 0
+  if [ "$#" -eq 0 ]; then
+    die_usage "no arguments given — <owner/repo> and at least two PR numbers are required"
   fi
 
-  local repo="${1:-}"
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --decide-pair)
+      if [ "$#" -ne 5 ]; then
+        die_usage "--decide-pair takes exactly 4 arguments (<a_failing_csv> <a_passing_csv> <b_failing_csv> <b_passing_csv>), got $(( $# - 1 ))"
+      fi
+      decide_pair "$2" "$3" "$4" "$5"
+      exit 0
+      ;;
+    -*)
+      # THE #1502 FIX. Never bind an unrecognized flag into `repo` and forward
+      # it to `gh` — the resulting failure is misreported as exit 2 ("a signal
+      # could not be read this poll"), i.e. a caller error indistinguishable
+      # from a transient API failure that the drain treats as inert.
+      die_usage "unrecognized flag '$1' — the target repo is a POSITIONAL argument; this script does not accept --repo"
+      ;;
+  esac
+
+  local repo="$1"
   if [ -z "$repo" ]; then
-    echo "usage: $0 <owner/repo> <pr1> <pr2> [<pr3> ...]" >&2
-    echo "       $0 --decide-pair <a_failing_csv> <a_passing_csv> <b_failing_csv> <b_passing_csv>" >&2
-    exit 1
+    die_usage "the <owner/repo> argument is empty"
   fi
+  assert_repo_slug "$repo"
   shift
   if [ "$#" -lt 2 ]; then
-    echo "usage: $0 <owner/repo> <pr1> <pr2> [<pr3> ...] -- need at least two PR numbers to look for a pair" >&2
-    exit 1
+    die_usage "need at least two PR numbers to look for a pair, got $#"
   fi
+  local n
+  for n in "$@"; do
+    case "$n" in
+      ''|*[!0-9]*) die_usage "'$n' is not a valid PR number — expected a positive integer" ;;
+    esac
+  done
   local -a prs=("$@")
 
   local default_branch required_names required_json

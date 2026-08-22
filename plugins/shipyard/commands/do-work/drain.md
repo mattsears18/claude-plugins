@@ -407,7 +407,10 @@ mb_pairs=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-mutually-blocking-prs.sh" <o
 mb_exit=$?
 ```
 
-- **`mb_exit == 2`** (a required-check name or a PR's rollup couldn't be read) → log `[drain] mutually-blocking scan: signal read failure this poll, skipping (#1140)` and move on to the per-poll actions below unchanged. This is the safe/inert direction — a missed scan this poll just defers the diagnosis to a later poll, never a false positive.
+The repo is **POSITIONAL** — there is no `--repo` flag ([#1502](https://github.com/mattsears18/shipyard/issues/1502)). Run it exactly as written above.
+
+- **`mb_exit == 64`** (stdout starts `USAGE_ERROR:`) → you called the script wrong; this says nothing about the PRs. Before #1502 the flag form bound the repo variable to the literal `--repo`, the default-branch read failed, and the script exited 2 — indistinguishable from the transient read failure below, so the scan silently never ran, every poll, forever. **Re-run once with the literal positional form above**; if the retry also returns `64`, log `[drain] mutually-blocking scan: detect-mutually-blocking-prs.sh invoked incorrectly (#1502)` and stop retrying it this session. Never treat `64` as "no pairs found".
+- **`mb_exit == 2`** (a required-check name or a PR's rollup couldn't be read **from a well-formed call**) → log `[drain] mutually-blocking scan: signal read failure this poll, skipping (#1140)` and move on to the per-poll actions below unchanged. This is the safe/inert direction — a missed scan this poll just defers the diagnosis to a later poll, never a false positive.
 - **`mb_pairs` non-empty** → each stdout line is `<pr_a>,<pr_b>,<files_disjoint:0|1|unknown>`. For each pair:
   1. **Idempotency check — never re-post on every poll.** Before posting, check whether PR `<pr_a>` already carries a comment whose body starts with the sentinel `<!-- do-work-mutually-blocking pr-pair=<pr_a>,<pr_b> -->`:
      ```bash
@@ -752,6 +755,15 @@ Closes the orchestrator-turn half of [#720](https://github.com/mattsears18/shipy
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 merge_gating=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+# The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
+# prints `USAGE_ERROR: ...` on stdout and exits 64, which the `|| echo ungated`
+# fallback then appends to, producing a verdict matching NEITHER literal — which
+# would silently disable the lander for the whole drain. Normalize it: re-run
+# once with the literal positional form above, and if it still reports
+# USAGE_ERROR, fall back to `ungated` (the lander's own conservative default —
+# it only ever merges a GREEN PR, so a false `ungated` is inert) and fix the
+# call site.
+case "$merge_gating" in USAGE_ERROR:*) merge_gating=ungated ;; esac
 ```
 
 The action is a **no-op when `merge_gating == "gated"`** (GitHub's real auto-merge queue owns the merge — never race it) and a no-op when `auto_merge.policy == never`.
