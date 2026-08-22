@@ -45,6 +45,7 @@
 #            [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
 #            [--pr-collision-verdicts <json-object>]
 #            [--someday-milestone <title>] [--someday-recheck-days <N>]
+#            [--fallback-milestone <title>]
 #     Reads a JSON array of issues on stdin — the exact projection setup.md
 #     step 4's wide fetch produces: [{number, title, body, labels: [name,...],
 #     assignees: [login,...], author: {login}, createdAt, updatedAt,
@@ -101,8 +102,11 @@
 #          a milestone with zero eligible issues simply never appears in
 #          this list, so ascending-N naturally skips it. An unmilestoned
 #          issue, or one whose milestone title doesn't parse, sorts to the
-#          tail (alongside where the fallback milestone's own high N
-#          already sorts) rather than being dropped.
+#          tail rather than being dropped -- and when --fallback-milestone
+#          names a milestone that is actually present in this input, it
+#          sorts TIED WITH that milestone rather than strictly after it,
+#          so tier 4 below (P1>P2>unlabeled) decides between an
+#          unmilestoned issue and a fallback-milestoned one (issue #1499).
 #       4. P1>P2>unlabeled, then type, then staleness — the same
 #          tiebreakers as the milestone-off order, now operating WITHIN a
 #          milestone rather than across the whole backlog.
@@ -250,6 +254,31 @@
 #     issue; see that function's own doc comment for the full state
 #     semantics. Irrelevant (never evaluated) for an issue that doesn't
 #     match `--someday-milestone` in the first place.
+#     `--fallback-milestone <title>` (issue #1499) is the BARE title of the
+#     repo's fallback milestone — the `milestones.fallback` config knob's
+#     value ("Ongoing maintenance" by default), matched against
+#     `milestone_title_bare()` exactly the way `--someday-milestone` is.
+#     Default "" — the clause is off by construction for every caller and
+#     fixture that predates this flag, so their ranking is byte-identical.
+#     It affects ONLY tier 3 of the milestone-on `_sort_key`, and only for
+#     an issue that has NO milestone (or an unparseable one): such an issue
+#     ranks at the fallback milestone's own sequence number instead of at
+#     the `999999999` sentinel, so the two TIE and `priority_rank` decides
+#     between them. Before this, the sentinel was strictly larger than any
+#     real N, so a fallback-milestoned P2 outranked an unmilestoned P1 —
+#     a wholesale severity override, not a tiebreak, and the exact
+#     opposite of what `milestone_seq()`'s own comment claimed ("sorts to
+#     the tail ALONGSIDE where the fallback milestone already sorts").
+#     The fallback's N is read back from THIS input (the lowest N among
+#     issues whose bare milestone title matches), not from a config number
+#     — `classify` stays a pure function with no I/O. When no input issue
+#     carries the fallback milestone there is nothing to tie with, so the
+#     sentinel stands and unmilestoned issues sort last exactly as before.
+#     Deliberately honors the configured title even if that milestone is
+#     NOT the highest-N one in the input: the schema guarantees the
+#     fallback always holds the highest N, and a repo that violates that
+#     invariant is better served by "tie with the milestone you named"
+#     than by this script silently second-guessing its own config.
 #     Exit 0 always (even on an empty input array — emits nothing).
 #
 #   someday-recheck-write --repo <owner/repo> --someday-recheck-days <N>
@@ -437,6 +466,7 @@ Usage:
       [--probe-verdicts <json-object>] [--recheck-probe-enabled true|false]
       [--pr-collision-verdicts <json-object>]
       [--someday-milestone <title>] [--someday-recheck-days <N>]
+      [--fallback-milestone <title>]
     < wide-fetch-issue-json (array) on stdin
 
   backlog-filter.sh closed-by-healthy-pr --repo <owner/repo> --me <login>
@@ -567,9 +597,11 @@ def type_rank($issue):
 # issue, or one whose milestone title does not parse (malformed, or a
 # pre-#1239 milestone that predates the numbering convention), gets a
 # sentinel far larger than any real sequence number so it sorts to the
-# tail alongside where the fallback milestone (always the highest N)
-# already sorts, rather than being dropped from the ranked list (issue
-# #1241 acceptance: "An issue with no milestone at all still ranks").
+# tail rather than being dropped from the ranked list (issue #1241
+# acceptance: "An issue with no milestone at all still ranks"). This def
+# reports the RAW sentinel; milestone_rank below is what the sort key
+# actually uses, and it is what turns "strictly after the fallback
+# milestone" into "tied with it" when the caller names one (issue #1499).
 # capture() wrapped in [...] then `first` turns "zero outputs on
 # no-match" into a real `null` we can branch on, same defensive pattern
 # time_gate_future uses below for the identical reason. NOTE: no literal
@@ -593,6 +625,59 @@ def milestone_seq($issue):
 def milestone_title_bare($issue):
   ($issue.milestone // "") as $m
   | ($m | sub("^\\s*[0-9]+\\s*·\\s*"; "") | ascii_downcase | gsub("^\\s+|\\s+$"; ""));
+
+# fallback_milestone_seq($issues; $fallback) -- issue #1499. The sequence
+# number the FALLBACK milestone occupies in THIS input, or null when it
+# cannot be established (no title configured, or no input issue carries
+# that milestone). Read back from the data rather than taken as a config
+# number so classify stays a pure function -- the caller supplies only the
+# bare TITLE, exactly as it does for --someday-milestone, and never a
+# number it would have to keep in sync with the repo own milestone list.
+# `min` over the matching issues sequence numbers (rather than `first`)
+# is the conservative pick: every issue on one milestone reports the same
+# N, so they agree in practice, and if a malformed payload ever disagreed
+# the LOWER number is the one that ranks unmilestoned issues no later than
+# the fallback -- never accidentally promoting them past a real phase.
+# jq `[] | min` is null, which is exactly the "cannot be established"
+# signal milestone_rank below branches on. NOTE: no literal apostrophes
+# anywhere in this program string -- see the style note on milestone_seq.
+def fallback_milestone_seq($issues; $fallback):
+  ($fallback | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $target
+  | if $target == "" then null
+    else ([$issues[]
+           | select(milestone_title_bare(.) == $target)
+           | milestone_seq(.)]
+          | min)
+    end;
+
+# milestone_rank($issue; $unmilestoned_seq) -- issue #1499. The value tier
+# 3 of the milestone-on _sort_key actually sorts on: milestone_seq, with
+# the unmilestoned/unparseable sentinel remapped onto the fallback
+# milestone own sequence number whenever the caller named a fallback
+# milestone that is present in this input.
+#
+# Why this exists: milestone_seq sentinel (999999999) is strictly LARGER
+# than any real N, and _sort_key puts milestone ABOVE priority_rank. So an
+# unmilestoned issue lost to every milestoned issue -- including one in
+# the fallback phase, which is semantically the SAME state ("no phase
+# fits"). That made a fallback-milestoned P2 outrank an unmilestoned P1,
+# a wholesale severity override rather than a tiebreak, and it contradicted
+# milestone_seq own stated intent ("alongside where the fallback milestone
+# already sorts"). Remapping the sentinel onto the fallback N makes the two
+# genuinely equivalent, so priority_rank decides between them.
+#
+# When $unmilestoned_seq is null (no fallback title configured, or no
+# input issue carries it) this is the identity on milestone_seq -- the
+# sentinel stands and unmilestoned issues sort last, byte-identical to
+# pre-#1499 behavior. A fallback milestone whose OWN title does not parse
+# also yields 999999999 here, which remaps to itself: still a tie, still
+# correct.
+def milestone_rank($issue; $unmilestoned_seq):
+  milestone_seq($issue) as $seq
+  | if ($seq == 999999999) and ($unmilestoned_seq != null)
+    then $unmilestoned_seq
+    else $seq
+    end;
 
 # is_someday($issue; $someday) -- issue #1406. True only when $someday is
 # non-empty (the off-by-default posture -- an empty configured title never
@@ -794,7 +879,7 @@ def is_pr_collision_gated($issue):
 def pr_collision_verdict($issue; $verdicts):
   ($verdicts[($issue.number | tostring)] // "open");
 
-def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days):
+def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_dispatch; $today; $re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days; $unmilestoned_seq):
   (matches_gate_label($issue)) as $gate_hit
   | is_event_gated($issue; $recheck_probe_enabled) as $event_gated
   | is_pr_collision_gated($issue) as $pr_collision_gated
@@ -883,12 +968,15 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
       # _prioritized_tier -- a deliberate behavior CHANGE, gated so it can
       # only fire when a repo has actually opted into milestone-ordered
       # dispatch (see header comment + do-work-RATIONALE.md for the full
-      # tier-ordering rationale).
+      # tier-ordering rationale). The milestone tier is milestone_rank,
+      # not milestone_seq, so an unmilestoned issue TIES with the fallback
+      # milestone rather than losing to it -- the milestone tier then has
+      # nothing to say and priority_rank below decides (issue #1499).
       _sort_key: (
         if $milestone_rank_on then
           [(if priority_rank($issue) == 0 then 0 else 1 end),
            prioritized_tier($issue; $prioritize_label),
-           milestone_seq($issue),
+           milestone_rank($issue; $unmilestoned_seq),
            priority_rank($issue),
            type_rank($issue),
            ($issue.updatedAt // "")]
@@ -903,7 +991,12 @@ def classify_one($issue; $me; $trusted; $healthy; $covered; $peer; $investigate_
 
 . as $issues
 | ($issues | map(.number)) as $opennums
-| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days))) as $classified
+# $unmilestoned_seq (issue #1499) -- one whole-input computation, hoisted
+# out of the per-issue map because it is a property of the BACKLOG, not of
+# any single issue. null whenever no fallback milestone was named or none
+# is present in this input, which makes milestone_rank the identity.
+| (fallback_milestone_seq($issues; $fallback_milestone)) as $unmilestoned_seq
+| ($issues | map(. as $issue | classify_one($issue; $me; $trusted; $healthy; $covered_by_open_pr; $peer; $investigate_dispatch; $today; $symptom_re; $opennums; $respect_assignees; $recheck_probe_enabled; $probe_verdicts; $pr_collision_verdicts; $someday_milestone; $someday_recheck_days; $unmilestoned_seq))) as $classified
 | (
     ($classified | map(select(.verdict == "eligible"))
       | sort_by(._sort_key))
@@ -970,6 +1063,14 @@ cmd_classify() {
   # resolved `backlog.someday_recheck_days` config value (built-in default
   # 30) explicitly, same convention as every other config-backed flag here.
   local someday_recheck_days="0"
+  # --fallback-milestone (issue #1499). Default "" -- an empty configured
+  # title never matches a real milestone title (fallback_milestone_seq
+  # returns null for a non-empty $target too when no input issue carries
+  # it), so milestone_rank is the identity on milestone_seq and the
+  # ranking is byte-identical to pre-#1499 for every existing caller and
+  # fixture. Mirrors the `milestones.fallback` config knob (schema default
+  # "Ongoing maintenance"); a real caller resolves and passes THAT.
+  local fallback_milestone=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --me) me="${2:-}"; shift 2 ;;
@@ -988,6 +1089,7 @@ cmd_classify() {
       --pr-collision-verdicts) pr_collision_verdicts_json="${2:-}"; shift 2 ;;
       --someday-milestone) someday_milestone="${2:-}"; shift 2 ;;
       --someday-recheck-days) someday_recheck_days="${2:-}"; shift 2 ;;
+      --fallback-milestone) fallback_milestone="${2:-}"; shift 2 ;;
       *) echo "classify: unknown arg $1" >&2; usage; return 64 ;;
     esac
   done
@@ -1099,6 +1201,7 @@ cmd_classify() {
     --argjson covered_by_open_pr "$covered_by_open_pr_json" \
     --arg someday_milestone "$someday_milestone" \
     --argjson someday_recheck_days "$someday_recheck_days" \
+    --arg fallback_milestone "$fallback_milestone" \
     "$CLASSIFY_JQ"
 }
 

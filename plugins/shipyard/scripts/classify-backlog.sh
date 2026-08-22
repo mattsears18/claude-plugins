@@ -56,7 +56,13 @@
 #         work on a repo that has not opted into milestone-ranked dispatch
 #         at all), and `backlog.someday_recheck_days` (built-in default 30
 #         — issue #1422, the slow re-scope cadence for a someday_milestone
-#         park; inert whenever someday_milestone is "") via
+#         park; inert whenever someday_milestone is ""), and
+#         `milestones.fallback` (schema default "Ongoing maintenance" —
+#         issue #1499, the title an unmilestoned issue ranks TIED WITH
+#         instead of strictly behind; read unconditionally but inert
+#         unless the two milestone-ranking knobs above are both true, and
+#         resolved to "" on any error so the tie clause simply never
+#         fires) via
 #         `shipyard-config.sh get` (each read falls back to its documented
 #         value on any error, matching the `|| echo "<default>"` posture
 #         the original inline block had for every config read);
@@ -175,6 +181,11 @@ case "$sub" in
     if ! [[ "$someday_recheck_days" =~ ^[0-9]+$ ]]; then
       someday_recheck_days="30"
     fi
+    # milestones.fallback (issue #1499). "" on any error — the tie clause
+    # is off by construction rather than guessing a title. Read
+    # unconditionally: classify already ignores it whenever milestone
+    # ranking is off, so there is no second gate to keep in sync here.
+    fallback_milestone=$("$SHIPYARD_CONFIG" get milestones.fallback 2>/dev/null || echo "")
 
     # --- Live-network precomputed sets --------------------------------------
     closed_healthy_csv=$("$BACKLOG_FILTER" closed-by-healthy-pr --repo "$repo" --me "$me")
@@ -205,6 +216,7 @@ case "$sub" in
       --pr-collision-verdicts "$pr_collision_verdicts_json" \
       --someday-milestone "$someday_milestone" \
       --someday-recheck-days "$someday_recheck_days" \
+      --fallback-milestone "$fallback_milestone" \
       < "$issues_file")
     classify_rc=$?
 
