@@ -550,6 +550,11 @@ Run the detector. It is a **script, not a rule for you to re-derive** — do not
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(R=$(git rev-parse --show-toplevel 2>/dev/null); if [ -d "$R/plugins/shipyard/scripts" ]; then echo "$R/plugins/shipyard"; else I=$(jq -r '.plugins["shipyard@shipyard"][0].installPath // empty' "$HOME/.claude/plugins/installed_plugins.json" 2>/dev/null); if [ -n "$I" ] && [ -d "$I/scripts" ]; then echo "$I"; else echo "$R/plugins/shipyard"; fi; fi)}"
 VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>)
+# The repo is POSITIONAL — there is no --repo flag (#1502). A VERDICT starting
+# with `USAGE_ERROR:` (exit 64) means YOU called it wrong and says nothing about
+# the repo: re-run once with the literal positional form above, and if it still
+# reports USAGE_ERROR take the `ungated` branch below (the conservative one) —
+# never `gated`, which would arm --auto on a shape you failed to measure.
 # Resolve the merge method from config — never hardcode --merge (#989). The
 # merge method is repo policy, not worker choice; every `gh pr merge` call in
 # this step and the next uses $AUTO_MERGE_METHOD, resolved once here.

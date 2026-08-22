@@ -45,6 +45,10 @@ After `gh pr create` returns:
    GATE_VERDICT=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ci-gate-narrowing.sh" <owner/repo> <pr-num>)
    ```
 
+   **The repo is POSITIONAL — there is no `--repo` flag** ([#1502](https://github.com/mattsears18/shipyard/issues/1502)). Run it exactly as written above. Passing `--repo <owner/repo> <pr-num>` used to bind the repo variable to the literal `--repo` and produce `gh pr diff owner/name --repo --repo`, whose failure surfaced as `unknown` — which this branch treats as `narrowing`, so a caller error silently cost a human-review clear on a PR that never needed one. The script now rejects the flag form up front (exit `64`, stdout `USAGE_ERROR: ...`) before any `gh` call.
+
+   - **`GATE_VERDICT` starts with `USAGE_ERROR:`** → you called the script wrong, and the verdict is about *this invocation*, not about the PR. **Re-run once with the literal positional form above.** If the retry also reports `USAGE_ERROR:`, fall back to the `narrowing`/`unknown` branch below (never to `clean` — a check that never ran is not a check that found nothing) and note the mis-invocation in the PR comment.
+
    - **`GATE_VERDICT == "narrowing"` (or `"unknown"` — the detector couldn't read the diff at all and fails toward the safe/blocking reading, never toward silently arming auto-merge on an unreadable diff)** →
 
      ```bash
@@ -83,6 +87,17 @@ After `gh pr create` returns:
    # `ungated` => do NOT arm --auto; --watch the PR's checks, merge only if green.
    # `gated`   => --auto genuinely queues behind CI; arm it (step 1 below).
    ```
+
+   **The repo is POSITIONAL — there is no `--repo` flag** ([#1502](https://github.com/mattsears18/shipyard/issues/1502)). Run it exactly as written above; the literal shape is stated here rather than left to be derived from prose, following the [#1455](https://github.com/mattsears18/shipyard/issues/1455) / [#1492](https://github.com/mattsears18/shipyard/issues/1492) precedent:
+
+   ```
+   bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo>          # correct
+   bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" --repo <owner/repo>   # WRONG — exits 64
+   ```
+
+   `--repo` is the natural guess, because `gh` itself spells the same argument that way. Before [#1502](https://github.com/mattsears18/shipyard/issues/1502) the flag was bound straight into the repo variable and forwarded, producing `gh api repos/--repo`, and the script reported `could not read repo signals for '--repo'` and exited 1 — a caller error wearing the costume of a transient API/permission failure, on the one detector `CLAUDE.md` designates as the executable source of truth a maintainer runs by hand.
+
+   - **`VERDICT` starts with `USAGE_ERROR:`** (exit `64`) → you called the script wrong. This says nothing about the repo, so it must not be read as either verdict. **Re-run once with the literal positional form above.** If the retry also reports `USAGE_ERROR:`, fall back to the **`ungated`** branch — the conservative reading, matching the script's own fail-safe posture — and fix the call site. Never fall back to `gated`: that arms `--auto` on a repo shape you failed to measure, which is precisely the [#598](https://github.com/mattsears18/shipyard/issues/598) ungated-landing this gate exists to prevent.
 
    The script is the **single source of truth** for this decision. It exists because the condition previously lived as prose in both this fragment and `agents/issue-worker/issue-work.md` step 6, and the two copies drifted into contradicting each other — issue-work.md claimed the gate only fires on `allow_auto_merge: false` and named "repo allows auto-merge" as a *skip* condition, so a worker that read that file (rather than this fragment) skipped the gate entirely and admin-direct-merged ungated (the #716 repro: PR #715 landed while CI was `IN_PROGRESS`; its sibling PR #713, whose worker loaded this fragment, correctly held). **Never restate this condition in prose in a third place.** The remainder of this section documents *what the script implements* and why — it is the reference explanation, not a second implementation to hand-execute.
 

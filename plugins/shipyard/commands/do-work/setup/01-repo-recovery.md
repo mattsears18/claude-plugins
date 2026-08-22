@@ -32,6 +32,13 @@ This is a **warning, not a behavior change** — the orchestrator does not flip 
 CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-ungated-admin-direct-merge.sh" <owner/repo> 2>/dev/null || echo ungated)
+# The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
+# prints `USAGE_ERROR: ...` on stdout and exits 64, which the `|| echo ungated`
+# fallback then appends to, producing a verdict that matches NEITHER literal.
+# Normalize it back to the conservative reading rather than silently skipping
+# the warning: re-run once with the literal positional form above, and if it
+# still reports USAGE_ERROR, treat the shape as `ungated` and fix the call site.
+case "$verdict" in USAGE_ERROR:*) verdict=ungated ;; esac
 if [ "$verdict" = "ungated" ]; then
   echo "[setup] WARNING (#438/#465): \`gh pr merge --auto\` will SILENTLY DIRECT-MERGE on this repo (no queue) — you have admin/maintain and either allow_auto_merge=false (#438) or the default branch has zero required status checks (#465, fires even when allow_auto_merge=true). Shipyard's merge call sites gate on this automatically (#720): workers block on the PR's own checks, and the orchestrator-turn sites defer to drain's merge lander. But at --concurrency >= 2, version/CHANGELOG coordination across in-flight PRs still cannot hold: the first PR to merge advances main and re-DIRTYs siblings. Recommend --concurrency 1 here, or add a required status check (and/or enable allow_auto_merge) so --auto actually queues. version_coordination.serialize_drain_rebase (drain phase) mitigates the CHANGELOG cascade but not the steady-state leapfrog."
 fi
@@ -88,6 +95,16 @@ CLAUDE_PLUGIN_ROOT=$(cat .shipyard-plugin-root 2>/dev/null)
 export CLAUDE_PLUGIN_ROOT
 
 verdict=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/detect-missing-workflow-scope.sh" <owner/repo> <default-branch> 2>/dev/null || echo silent)
+# The repo is POSITIONAL — there is no `--repo` flag (#1502). A mis-invocation
+# prints `USAGE_ERROR: ...` on stdout and exits 64 instead of the pre-#1502
+# behaviour of probing the repo `--repo`, failing both reads, and printing a
+# confident `silent`. Surface it rather than inheriting the quiet default:
+# re-run once with the literal positional form above, and if it still reports
+# USAGE_ERROR, print `[setup] could not run the workflow-scope preflight
+# (detect-missing-workflow-scope.sh invoked incorrectly) — see #1502` and
+# continue. Never treat USAGE_ERROR as `silent`: a check that never ran is not
+# a check that found nothing.
+case "$verdict" in USAGE_ERROR:*) verdict=usage-error ;; esac
 if [ "$verdict" = "warn" ]; then
   GH_TOKEN_SCOPES=$(gh auth status 2>&1 | grep -o "Token scopes: '[^']*'" | sed "s/Token scopes: //")
   cat <<EOF

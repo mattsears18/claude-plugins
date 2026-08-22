@@ -50,7 +50,10 @@
 # Usage — live detection (the normal path):
 #   bash detect-ungated-admin-direct-merge.sh <owner/repo>
 #     -> prints `ungated` or `gated` on stdout; diagnostic signals on stderr.
-#     -> exit 0 on a successful decision, 1 on a usage/API error.
+#     -> exit 0 on a successful decision, 1 on an API error, 64 on a usage error.
+#
+#   The target repo is POSITIONAL. There is no `--repo` flag — passing one is a
+#   usage error (exit 64), not an unreadable signal. See issue #1502.
 #
 #   `ungated` => do NOT run `gh pr merge --auto`. Block on
 #                `gh pr checks <M> --watch --interval 30`, then merge only if green.
@@ -60,12 +63,76 @@
 # the three signals):
 #   bash detect-ungated-admin-direct-merge.sh --decide <VIEWER_PERM> <ALLOW_AUTO_MERGE> <REQUIRED_CHECKS>
 #
-# Fail-safe posture: any signal that cannot be read resolves toward `ungated`
-# (i.e. toward *waiting for CI*). Waiting when we didn't need to costs one
-# worker's time; not waiting when we needed to lands a red commit on the
-# default branch with no gate at all. The asymmetry is deliberate.
+# Exit codes:
+#   0 — a verdict was reached; stdout is `ungated` or `gated`.
+#   1 — a WELL-FORMED call whose repo signals could not be read at all.
+#  64 — usage error (EX_USAGE, per sysexits.h — the convention ~30 of this
+#       repo's scripts already follow, e.g. session-state.sh, shipyard-config.sh,
+#       detect-ci-runner-capacity.sh). stdout: `USAGE_ERROR: ...`; the full usage
+#       block goes to stderr.
+#
+# Why 64 is separate from the fail-safe posture (issue #1502)
+# ----------------------------------------------------------
+# Resolving an unreadable signal toward `ungated` is the right default for this
+# detector — but a malformed command line is not an unreadable signal, it is a
+# bug in the invocation, and it is perfectly detectable. Before #1502 an
+# unrecognized flag was bound straight into `repo` and forwarded, so
+# `detect-ungated-admin-direct-merge.sh --repo owner/name` produced
+# `gh api repos/--repo` and `gh repo view --repo`, and the script reported
+# "could not read repo signals for '--repo'" — a caller error wearing the
+# costume of a transient API/permission failure. This script is the surface
+# CLAUDE.md designates as the executable source of truth a maintainer runs by
+# hand, so it is the one most likely to be invoked ad hoc, from memory, by
+# someone who has not read the signature. Same split #1492 made in
+# verify-config-labels.sh.
+#
+# Fail-safe posture: any signal that cannot be read *from a well-formed call*
+# resolves toward `ungated` (i.e. toward *waiting for CI*). Waiting when we
+# didn't need to costs one worker's time; not waiting when we needed to lands a
+# red commit on the default branch with no gate at all. The asymmetry is
+# deliberate. A usage error is NOT laundered through that posture — it exits 64
+# with an empty verdict so the caller fixes its call site rather than silently
+# inheriting the conservative branch for the wrong reason.
 
 set -uo pipefail
+
+# EX_USAGE, per sysexits.h — the same convention session-state.sh,
+# shipyard-config.sh and detect-ci-runner-capacity.sh already use for every
+# bad-subcommand / missing-argument path.
+EX_USAGE=64
+
+usage() {
+  echo "usage: $0 <owner/repo>" >&2
+  echo "       $0 --decide <VIEWER_PERM> <ALLOW_AUTO_MERGE> <REQUIRED_CHECKS>" >&2
+  echo "       $0 --help" >&2
+  echo "note: the target repo is POSITIONAL — there is no --repo flag." >&2
+}
+
+# A caller error: the command line itself is wrong. Distinct from the API-error
+# path below, which is for a well-formed call whose signals could not be read.
+die_usage() {
+  echo "USAGE_ERROR: $1"
+  echo "detect-ungated-admin-direct-merge: usage error (exit $EX_USAGE): $1" >&2
+  usage
+  exit "$EX_USAGE"
+}
+
+# Shape-check the repo before spending a network call on it: `owner/name`,
+# exactly one slash, both halves non-empty, no whitespace. A malformed repo slug
+# is the same class of caller error as an unrecognized flag — cheaply
+# detectable, and not something to launder into an API-error diagnostic.
+assert_repo_slug() {
+  local repo="$1"
+  case "$repo" in
+    */*/*) die_usage "'$repo' is not a valid <owner/repo> slug — too many '/' separators" ;;
+    */*)   ;;
+    *)     die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+  esac
+  case "$repo" in
+    /*|*/) die_usage "'$repo' is not a valid <owner/repo> slug — expected the form owner/name" ;;
+    *[[:space:]]*) die_usage "'$repo' is not a valid <owner/repo> slug — contains whitespace" ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # The decision. Pure function of the three signals — no I/O, no network.
@@ -171,21 +238,40 @@ read_required_checks() {
 }
 
 main() {
-  if [ "${1:-}" = "--decide" ]; then
-    if [ "$#" -ne 4 ]; then
-      echo "usage: $0 --decide <VIEWER_PERM> <ALLOW_AUTO_MERGE> <REQUIRED_CHECKS>" >&2
-      exit 1
-    fi
-    decide "$2" "$3" "$4"
-    exit 0
+  if [ "$#" -eq 0 ]; then
+    die_usage "no arguments given — the target repo is required"
   fi
 
-  local repo="${1:-}"
-  if [ -z "$repo" ]; then
-    echo "usage: $0 <owner/repo>" >&2
-    echo "       $0 --decide <VIEWER_PERM> <ALLOW_AUTO_MERGE> <REQUIRED_CHECKS>" >&2
-    exit 1
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --decide)
+      if [ "$#" -ne 4 ]; then
+        die_usage "--decide takes exactly 3 arguments (<VIEWER_PERM> <ALLOW_AUTO_MERGE> <REQUIRED_CHECKS>), got $(( $# - 1 ))"
+      fi
+      decide "$2" "$3" "$4"
+      exit 0
+      ;;
+    -*)
+      # THE #1502 FIX. Never bind an unrecognized flag into `repo` and forward
+      # it to `gh` — that produces a nonsense command line (`gh api repos/--repo`)
+      # whose failure is then misreported as "could not read repo signals", i.e.
+      # a caller error indistinguishable from a transient API failure.
+      die_usage "unrecognized flag '$1' — the target repo is a POSITIONAL argument; this script does not accept --repo"
+      ;;
+  esac
+
+  if [ "$#" -ne 1 ]; then
+    die_usage "expected exactly one <owner/repo> argument, got $#"
   fi
+
+  local repo="$1"
+  if [ -z "$repo" ]; then
+    die_usage "the <owner/repo> argument is empty"
+  fi
+  assert_repo_slug "$repo"
 
   local allow_auto_merge viewer_perm default_branch required_checks verdict
 
