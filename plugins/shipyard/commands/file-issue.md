@@ -126,18 +126,21 @@ The default goal is an issue `/shipyard:do-work` can pick up **as-is**. Before f
 
 ### 7.5 Assign a milestone (gated on `milestones.enabled` + `milestones.assign_on_file`, issue [#1242](https://github.com/mattsears18/shipyard/issues/1242))
 
-Read the gate once:
+Read the gate once, through the repo-aware resolver — never a bare `shipyard-config.sh get milestones.*`, which resolves against the cwd's repo rather than `$REPO` ([#1498](https://github.com/mattsears18/shipyard/issues/1498)):
 
 ```bash
 CLAUDE_PLUGIN_ROOT="<resolved per shipyard:worker-preamble's step-0 pattern>"
-MILESTONES_ENABLED=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.enabled 2>/dev/null)
-MILESTONES_ASSIGN=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.assign_on_file 2>/dev/null)
+MILESTONE_GATE=$(bash "$CLAUDE_PLUGIN_ROOT/scripts/resolve-filing-milestone-gate.sh" "$REPO")
+MILESTONES_ENABLED=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^enabled=//p')
+MILESTONES_ASSIGN=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^assign_on_file=//p')
+MILESTONES_FALLBACK=$(printf '%s\n' "$MILESTONE_GATE" | sed -n 's/^fallback=//p')
 ```
+
+Step 1 resolves `$REPO` from the cwd's git remote, so for this command the target and the session repo are the same and the resolver returns `source=session-config` — the session's own 4-layer effective config, exactly as before. Routing through the resolver anyway keeps one spelling of the gate across every filing surface, so the shared skill's cross-repo correctness can't drift away from this command's copy the way duplicated prose has before.
 
 **If `MILESTONES_ENABLED` != `"true"` OR `MILESTONES_ASSIGN` != `"true"`, skip this step entirely** — file exactly as today, no `--milestone` flag. Otherwise, fetch the repo's open milestones once. **`--method GET` is required** — `gh api` defaults to `POST` whenever a `-f` field is present, and a bare `POST` to the milestones endpoint fails with `422 "title" wasn't supplied` instead of listing anything:
 
 ```bash
-MILESTONES_FALLBACK=$("$CLAUDE_PLUGIN_ROOT/scripts/shipyard-config.sh" get milestones.fallback 2>/dev/null)
 MILESTONES_JSON=$(gh api repos/<owner>/<repo>/milestones --method GET --paginate -f state=open \
   --jq '[.[] | {number, title, description}]' 2>/dev/null)
 ```
