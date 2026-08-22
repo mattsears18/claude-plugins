@@ -225,7 +225,17 @@ When filling a slot, walk this decision tree:
 
    This block is **fire-and-forget** (every command suffixes `2>/dev/null` and / or `|| true`) so a filesystem race can't abort the steady-state loop. It runs **once per PR per dispatch**, immediately before the `Workflow` dispatch for that PR (and before the `git worktree add` that pre-provisions its worktree — the reap is what frees the head branch that `worktree add -B <headRefName>` is about to claim). **`peer-alive` is force-reaped, not deferred (issue [#771](https://github.com/mattsears18/shipyard/issues/771)).** Audit entries carry `"phase":"steady-state-pre-dispatch"` and classification `"peer-alive-force"` (for the force-reap path) so an operator can distinguish this reap site from the others in `~/.shipyard/reap-audit.jsonl`. See [RATIONALE → Why peer-alive is force-reaped at steady-state pre-dispatch](../do-work-RATIONALE.md#dispatch-rules--why-peer-alive-is-force-reaped-at-steady-state-pre-dispatch-771) for why this is safe and the pre-#771 gap it closes.
 
-   After 2a, 2b, and 2d clear (or the cost-discipline keys are at their defaults), dispatch a `mode: fix-checks-only` worker (Haiku-pinned per the table above).
+   **2e. DIRTY gate — never compose a fix-checks-only prompt for a DIRTY PR ([#1513](https://github.com/mattsears18/shipyard/issues/1513)).** Not config-gated: unlike 2a/2b (cost knobs, default off) this is a correctness gate and is always on. Immediately before composing the prompt, re-read the PR's merge state as its own plain call:
+
+   ```bash
+   gh pr view <M> --repo <owner/repo> --json mergeStateStatus --jq '.mergeStateStatus'
+   ```
+
+   **If it reports `DIRTY`, do not compose the prompt.** Log `[dirty-gate] PR #<M> is DIRTY — fix-checks-only refused; routing to the resolver/fix-rebase path (#1513)`, drop `<M>` from `failed_prs`, and hand it to the DIRTY path instead: [`scripts/resolve-manifest-only-dirty.sh`](../../scripts/resolve-manifest-only-dirty.sh) first, then a mid-session `fix-rebase` when all three of `dont.md`'s conditions hold. **Writing the rebase into the fix-checks prompt as an extra task is not an alternative to this gate — it is the exact move [`dont.md`'s "documented short-circuit" bullet](./dont.md) forbids**, and it is what #1513 caught.
+
+   **Why this exists when two DIRTY exclusions already do.** [Step 5's failing-PR snapshot](./setup/04j-failing-pr-snapshot.md#5-snapshot-failing-prs) and [`drain.md`'s `R_new`](./drain.md#drain-protocol) both carry `mergeStateStatus != "DIRTY"`, but both constrain **set construction** — they keep a DIRTY PR out of `failed_prs` / `R_new`, and so protect only the automated path into this dispatch site. A dispatch composed on the orchestrator's own judgment (#1513's repro) never passes through either filter, and a PR can also go DIRTY from a sibling merge *between* the snapshot and this dispatch. 2e is the first check on the composition site itself, and it costs one field. It is deliberately not the downstream-suppression shape rejected in [`dont.md`'s #1278 auto-merge bullet](./dont.md): that would have fired only after two upstream rules had both failed; this fires where the misroute is authored. `fix-checks-only`'s own [DIRTY short-circuit](../../agents/issue-worker/fix-checks-only.md#dirty-pr-short-circuit-check-before-treating-an-empty-rollup-as-not-started-yet--1015) remains the worker-side net for the dispatch-to-start race, unchanged.
+
+   After 2a, 2b, 2d, and 2e clear (or the cost-discipline keys are at their defaults), dispatch a `mode: fix-checks-only` worker (Haiku-pinned per the table above).
 
    Prompt template (mirrored by `buildFixChecksOnlyPrompt`):
 
