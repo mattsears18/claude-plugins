@@ -14,6 +14,34 @@ Worktree isolation covers *checkouts* — every worker's `git worktree add`'d di
 
 **This `wip:` commit is transient — it must never be the commit subject that ships ([#1410](https://github.com/mattsears18/shipyard/issues/1410)).** A `wip: <why>` subject is fine as a local convenience that never leaves your own worktree in that exact form, but it is not automatically overridden by a correct PR title at merge time: GitHub's squash-merge default uses the *sole commit's subject*, not the PR title, whenever the PR has exactly one commit — so an un-amended `wip:` subject can land verbatim on the default branch. Before you `git push` / `gh pr create`, amend it to a Conventional-Commits-compliant subject (`git commit --amend -m "<final subject>"`, or squash if there are several commits). See [`commit-hygiene.md`](./commit-hygiene.md) § "Final commit subject — Conventional Commits compliant, even on a single-commit PR" for the mechanism and the concrete repro.
 
+## Mechanical enforcement — the `refuse-unsafe-git-stash.sh` hook ([#1506](https://github.com/mattsears18/shipyard/issues/1506))
+
+Two documentation-only fixes did not stop this recurring — [#1345](https://github.com/mattsears18/shipyard/issues/1345) made the prohibition explicit and named the `refs/stash` mechanism; [#1224](https://github.com/mattsears18/shipyard/issues/1224) paired it with the substitute above, inline in the always-loaded core. It happened a third time anyway ([#1506](https://github.com/mattsears18/shipyard/issues/1506)), and that worker *named the correct substitute, unprompted, in its own return*. So the diagnosis was right and the remedy was insufficient: the problem is not missing knowledge, it is that a reflex fires faster than a recalled rule under pressure. The rule is now enforced by [`hooks/refuse-unsafe-git-stash.sh`](../../hooks/refuse-unsafe-git-stash.sh), a `PreToolUse` hook registered under the `Bash` matcher alongside `refuse-broad-process-kill.sh` and `refuse-credential-mint.sh`.
+
+| Refused | Reason tag | Why |
+|---|---|---|
+| bare `git stash` | `bare-stash` | the reflex itself — the form reported in #1224 and #1506 |
+| `git stash <flags>` with no `-m` | `untagged-implicit-push` | an implicit push, untagged, so unrecoverable by tag |
+| `git stash push` / `save` with no `-m` | `untagged-push` | same, explicit spelling |
+| `git stash pop` (any arguments) | `pop` | never acceptable in a worker dispatch; a bare pop takes `stash@{0}` unconditionally |
+| `git stash clear` (any arguments) | `clear` | destroys **every** worker's entries, not just yours |
+| `git stash apply` / `drop` with no ref, or a positional `stash@{n}` | `positional-apply` / `positional-drop` | position, not identity — positions shift as peers push and drop |
+
+**Still permitted, in full: the sanctioned procedure below** — `git stash push -u -m "<tag>"`, `git stash list`, `git stash show`, and `apply`/`drop` **by SHA**. That carve-out is the whole reason this is a hook rather than the `permissions.deny` pattern #1506 originally proposed. Neither deny mechanism can express it:
+
+- **The Bash rule matcher has no negation.** It compiles a rule to an anchored regex in which `*` becomes `.*` and every other metacharacter is escaped — no `!`, no character class, no alternation. "Match `git stash push` but not `git stash push -m`" is not writable as one pattern, and `deny` short-circuits ahead of `allow`, so an `allow` carve-out cannot rescue the tagged form either. A pattern broad enough to catch the reflex would break the escape hatch, which is worse than the status quo.
+- **`permissions` is not a plugin-manifest field at all.** The block in [`.claude-plugin/plugin.json`](../../.claude-plugin/plugin.json) that #1506 proposed extending is not a rule source: permission rules come from settings files and CLI flags, not from a plugin manifest. See [#1511](https://github.com/mattsears18/shipyard/issues/1511).
+
+A hook has neither limit — it parses the actual argument list — and it is also immune to a **command-rewriting `PreToolUse` hook**. A token-proxying hook (`rtk hook claude` is one real example: it returns `git stash …` rewritten to `rtk git stash …` as `updatedInput`) launders the command past any pattern anchored at `git`; this hook matches the `git` token wherever it sits in the clause, so a wrapper prefix, `sudo`, `env FOO=1`, or a compound's second clause all still trip it.
+
+**What it deliberately does not cover.** It stops a *reflex*, not an adversary, and it does not replace the rule above:
+
+- **An unrecognized `git stash` subcommand is allowed, not guessed at** — as is any command the tokenizer cannot parse (an unbalanced quote), and any malformed hook payload. A hook that blocked every `Bash` call would be far worse than one that occasionally misses a stash.
+- **A quoted mention is not an invocation.** `grep "git stash pop" docs/` resolves to one opaque token and passes; the same phrase *unquoted* in an argument list does not.
+- **It only runs where the plugin is installed and enabled.** A session without shipyard has the prose rule and nothing else.
+
+There is no bypass flag. If you believe you need one of the refused forms, return `blocked:` and let a human decide.
+
 ## If stashing is genuinely unavoidable
 
 (rare enough that you should be able to name why a WIP commit isn't sufficient before reaching for this), use the isolating form and never the bare pop:
