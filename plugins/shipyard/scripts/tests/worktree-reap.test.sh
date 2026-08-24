@@ -2472,16 +2472,47 @@ tob_add_worktree() {
 }
 
 # tob_add_worktree_ahead <issue-n> [--push] — worktree with one commit
-# beyond base, optionally pushed to origin.
+# beyond base carrying REAL content, optionally pushed to origin.
+#
+# The commit must not be `--allow-empty` (issue #1517). A branch whose tree
+# is byte-identical to the default branch's is now classified as
+# already-landed and its PR is suppressed — correctly, since that is exactly
+# the squash-merge leftover shape the guard exists to catch. An empty commit
+# produces precisely that tree, so an `--allow-empty` fixture would no longer
+# exercise the salvage path at all. Writing a distinct file per issue keeps
+# `ahead > 0` AND makes the effective diff genuinely non-empty.
 tob_add_worktree_ahead() {
   local n="$1"
   local push="${2:-}"
   local path="$tob_repo/.claude/worktrees/agent-$n"
   tob_add_worktree "$n"
-  git -C "$path" commit -q --allow-empty -m "wip $n" >/dev/null 2>&1
+  printf 'unlanded work for issue %s\n' "$n" > "$path/work-$n.txt"
+  git -C "$path" add "work-$n.txt" >/dev/null 2>&1
+  git -C "$path" commit -q -m "wip $n" >/dev/null 2>&1
   if [ "$push" = "--push" ]; then
     git -C "$path" push -q -u origin "do-work/issue-$n" >/dev/null 2>&1
   fi
+}
+
+# tob_add_worktree_landed <issue-n> — worktree whose commit is AHEAD by sha
+# but whose CONTENT is already on the default branch: the squash-merge
+# leftover shape from issue #1517. Built by committing content on the
+# branch, then landing byte-identical content on main under a different sha,
+# so `rev-list --count origin/main..HEAD` stays > 0 while
+# `git diff origin/main HEAD` is empty.
+tob_add_worktree_landed() {
+  local n="$1"
+  local path="$tob_repo/.claude/worktrees/agent-$n"
+  tob_add_worktree "$n"
+  printf 'landed content for issue %s\n' "$n" > "$path/landed-$n.txt"
+  git -C "$path" add "landed-$n.txt" >/dev/null 2>&1
+  git -C "$path" commit -q -m "branch-side commit $n" >/dev/null 2>&1
+  # Same content, different sha, on main -> squash-merge equivalence.
+  printf 'landed content for issue %s\n' "$n" > "$tob_repo/landed-$n.txt"
+  git -C "$tob_repo" add "landed-$n.txt" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "squash-landed $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  git -C "$tob_repo" fetch -q origin >/dev/null 2>&1
 }
 
 # Mock `gh` — dispatches on `$1 $2`, reads/writes per-scenario fixtures out
@@ -2530,6 +2561,14 @@ case "$1 $2" in
   "issue list")
     cat "$TOB_STATE/self-assign-list" 2>/dev/null
     ;;
+  "issue view")
+    # Issue #1517's check-2 probe. The real call passes a --jq expression
+    # that collapses the response to `<STATE>|<closing-PR-number>`, so the
+    # fixture stores that already-collapsed string. NO fixture -> empty
+    # stdout, which is the unreadable-signal case the guard must treat as
+    # "not stale".
+    cat "$TOB_STATE/issue-probe-$3" 2>/dev/null
+    ;;
   *) : ;;
 esac
 MOCKEOF
@@ -2545,14 +2584,14 @@ run_tob() {
 # --- (130) no do-work/* worktrees at all -> zeroed summary ---
 reset_tob_layout
 result=$(run_tob)
-assert_equals "$result" "$(printf 'candidates: 0\nsummary: salvaged=0 abandoned=0 stale_assigns=0')" \
+assert_equals "$result" "$(printf 'candidates: 0\nsummary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=0')" \
   "(130) no do-work/* worktrees -> candidates header + zeroed summary line"
 
 # --- (131) no commits beyond base -> removed + branch deleted + assignee cleared ---
 reset_tob_layout
 tob_add_worktree 501
 result=$(run_tob)
-assert_equals "$result" "$(printf 'candidates: 1\n[1/1] abandon do-work/issue-501 — no commits beyond main\nsummary: salvaged=0 abandoned=1 stale_assigns=0')" \
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] abandon do-work/issue-501 — no commits beyond main\nsummary: salvaged=0 abandoned=1 stale_assigns=0 already_landed=0')" \
   "(131) no-commits-beyond-base worktree -> abandoned=1, with a pre-write progress line (#1518)"
 if [ -d "$tob_repo/.claude/worktrees/agent-501" ]; then
   printf '  %sFAIL%s  (131a) abandoned worktree directory still exists\n' "$RED" "$RESET"
@@ -2573,7 +2612,7 @@ reset_tob_layout
 tob_add_worktree_ahead 502
 printf '600' > "$tob_state/next-pr-number"
 result=$(TOB_VERDICT=gated run_tob)
-assert_equals "$result" "$(printf 'candidates: 1\n[1/1] salvage do-work/issue-502 — push + open PR (draft, auto-merge NOT armed)\n[setup-3c] PR #600 opened as a DRAFT, auto-merge NOT armed (#1518) — a human marks it ready after auditing the salvaged branch\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] salvage do-work/issue-502 — push + open PR (draft, auto-merge NOT armed)\n[setup-3c] PR #600 opened as a DRAFT, auto-merge NOT armed (#1518) — a human marks it ready after auditing the salvaged branch\nsummary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=0')" \
   "(132) unpushed commits-ahead worktree, no PR yet -> salvaged=1, draft-posture output shape (#1518)"
 case "$(cat "$tob_gh_log")" in
   *"GH-CALL: pr create --repo o/r --head do-work/issue-502 --draft --fill --label shipyard"*) pr_created=1 ;;
@@ -2659,7 +2698,7 @@ case "$result" in
 esac
 assert_equals "$failed_pr_ok" "1" \
   "(135) already-open PR with a red rollup -> 'failed-pr: 700' line"
-assert_equals "$result" "$(printf 'candidates: 1\n[1/1] existing-pr do-work/issue-505 — PR #700 already open, reading its status rollup\nfailed-pr: 700\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] existing-pr do-work/issue-505 — PR #700 already open, reading its status rollup\nfailed-pr: 700\nsummary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=0')" \
   "(135a) full output shape matches exactly"
 case "$(cat "$tob_gh_log")" in
   *"pr create"*) dup_pr_created=1 ;;
@@ -2674,7 +2713,7 @@ tob_add_worktree_ahead 506 --push
 printf '701' > "$tob_state/pr-for-do-work_issue-506"
 printf '0' > "$tob_state/rollup-701"
 result=$(run_tob)
-assert_equals "$result" "$(printf 'candidates: 1\n[1/1] existing-pr do-work/issue-506 — PR #701 already open, reading its status rollup\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] existing-pr do-work/issue-506 — PR #701 already open, reading its status rollup\nsummary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=0')" \
   "(136) already-open PR with a clean rollup -> no failed-pr line, salvaged=1"
 
 # --- (137) row 5: backlog.self_assign=true, stale @me issue with no worktree/PR/branch -> stale-assign line ---
@@ -2688,7 +2727,7 @@ case "$result" in
 esac
 assert_equals "$stale_assign_ok" "1" \
   "(137) backlog.self_assign=true, orphaned @me issue -> 'stale-assign: 808' line"
-assert_equals "$result" "$(printf 'candidates: 0\n[row5] clear-stale-assign #808\nstale-assign: 808\nsummary: salvaged=0 abandoned=0 stale_assigns=1')" \
+assert_equals "$result" "$(printf 'candidates: 0\n[row5] clear-stale-assign #808\nstale-assign: 808\nsummary: salvaged=0 abandoned=0 stale_assigns=1 already_landed=0')" \
   "(137a) full output shape matches exactly"
 case "$(cat "$tob_gh_log")" in
   *"GH-CALL: issue edit 808 --repo o/r --remove-assignee @me"*) row5_cleared=1 ;;
@@ -2701,7 +2740,7 @@ assert_equals "$row5_cleared" "1" \
 reset_tob_layout
 printf '809\n' > "$tob_state/self-assign-list"
 result=$(run_tob)
-assert_equals "$result" "$(printf 'candidates: 0\nsummary: salvaged=0 abandoned=0 stale_assigns=0')" \
+assert_equals "$result" "$(printf 'candidates: 0\nsummary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=0')" \
   "(138) backlog.self_assign unset (default false) -> stale_assigns=0"
 case "$(cat "$tob_gh_log")" in
   *"issue list"*) row5_queried=1 ;;
@@ -2835,7 +2874,7 @@ assert_equals "$dry_pushed" "no" \
   "(142d) --dry-run never pushes a salvage candidate's branch"
 # The counters still report what WOULD happen — that's the point of the plan.
 assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
-  "summary: salvaged=1 abandoned=1 stale_assigns=0" \
+  "summary: salvaged=1 abandoned=1 stale_assigns=0 already_landed=0" \
   "(142e) --dry-run still reports the counters it would have produced"
 
 # --- (142f) --dry-run suppresses the row-5 stale-assign write but still reports it ---
@@ -2864,6 +2903,192 @@ printf '840' > "$tob_state/next-pr-number"
 result=$(run_tob)
 assert_equals "$(printf '%s\n' "$result" | head -n 1)" "candidates: 2" \
   "(143) the blast radius is announced as the FIRST line, before any write"
+
+# ============================================================================
+# Issue #1517 — already-landed pre-checks. #1518 (above) bounded how many PRs
+# one misfiring pass can open; this block pins the predicate itself. The
+# `ahead` test compares commits by SHA identity, so on a squash-merge repo it
+# is permanently > 0 for every branch ever landed — which made the sweep
+# regenerate a duplicate PR for the same branch once per session, for three
+# consecutive sessions, on a candidate set that could never drain.
+#
+# Coverage goals:
+#   - Check 1 (empty effective diff): ahead > 0 by sha but content identical
+#     to main -> no PR, worktree AND branch removed, already_landed=1.
+#   - Check 2 (issue CLOSED by a merged PR): non-empty diff -> no PR,
+#     worktree removed, branch KEPT (weaker evidence).
+#   - Conservative fall-through: unreadable issue probe, OPEN issue, and
+#     CLOSED-with-no-merged-PR all still salvage exactly as before.
+#   - --dry-run renders the classification without performing any write.
+#   - Suppression happens before the --max-prs cap, so leftovers don't eat
+#     the budget genuinely-stranded work needs.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches already-landed pre-checks (issue #1517)"
+echo
+
+# --- (145) check 1: content already upstream -> no PR, worktree + branch gone ---
+reset_tob_layout
+tob_add_worktree_landed 530
+printf '850' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"[1/1] already-landed do-work/issue-530 — content already upstream (empty diff vs main); no PR opened, removing worktree + branch"*) landed_line_ok=1 ;;
+  *) landed_line_ok=0 ;;
+esac
+assert_equals "$landed_line_ok" "1" \
+  "(145) squash-merge leftover (ahead>0 by sha, empty diff) -> already-landed progress line"
+case "$(cat "$tob_gh_log")" in
+  *"pr create"*) landed_pr_created=1 ;;
+  *) landed_pr_created=0 ;;
+esac
+assert_equals "$landed_pr_created" "0" \
+  "(145a) check 1 fired -> gh pr create is never called"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(145b) check 1 counts as already_landed, not salvaged"
+if [ -d "$tob_repo/.claude/worktrees/agent-530" ]; then
+  printf '  %sFAIL%s  (145c) already-landed worktree still on disk — the candidate set never drains\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (145c) already-landed worktree removed — the candidate set drains\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-530"; then
+  printf '  %sFAIL%s  (145d) empty-diff branch ref still present\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (145d) empty-diff branch ref deleted (nothing unique in it)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+case "$(cat "$tob_gh_log")" in
+  *"GH-CALL: issue view"*) check2_queried=1 ;;
+  *) check2_queried=0 ;;
+esac
+assert_equals "$check2_queried" "0" \
+  "(145e) check 1 short-circuits check 2 — no gh read is made when local git already answered"
+
+# --- (146) check 2: issue CLOSED by a merged PR -> no PR, worktree gone, branch KEPT ---
+reset_tob_layout
+tob_add_worktree_ahead 531
+printf 'CLOSED|1234' > "$tob_state/issue-probe-531"
+printf '851' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"[1/1] already-landed do-work/issue-531 — issue #531 CLOSED, work merged as PR #1234; no PR opened, removing worktree (branch kept)"*) closed_line_ok=1 ;;
+  *) closed_line_ok=0 ;;
+esac
+assert_equals "$closed_line_ok" "1" \
+  "(146) closed issue with a merged PR -> already-landed progress line naming the merged PR"
+case "$(cat "$tob_gh_log")" in
+  *"pr create"*) closed_pr_created=1 ;;
+  *) closed_pr_created=0 ;;
+esac
+assert_equals "$closed_pr_created" "0" \
+  "(146a) check 2 fired -> gh pr create is never called"
+if [ -d "$tob_repo/.claude/worktrees/agent-531" ]; then
+  printf '  %sFAIL%s  (146b) already-landed worktree still on disk\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (146b) already-landed worktree removed\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-531"; then
+  printf '  %sPASS%s  (146c) check-2 branch ref KEPT as a safety net (diff is non-empty)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (146c) check-2 branch ref was deleted — evidence is too weak for that\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+case "$result" in
+  *"already-landed: do-work/issue-531 — issue #531 CLOSED, work merged as PR #1234"*) landed_summary_ok=1 ;;
+  *) landed_summary_ok=0 ;;
+esac
+assert_equals "$landed_summary_ok" "1" \
+  "(146d) a per-branch 'already-landed: <branch> — <why>' summary line is emitted"
+
+# --- (147) conservative fall-through: unreadable / OPEN / closed-without-PR all salvage ---
+reset_tob_layout
+tob_add_worktree_ahead 532
+printf '860' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-532"*) unreadable_salvaged=1 ;;
+  *) unreadable_salvaged=0 ;;
+esac
+assert_equals "$unreadable_salvaged" "1" \
+  "(147) unreadable issue probe -> salvaged as before (conservative in the ambiguous direction)"
+
+reset_tob_layout
+tob_add_worktree_ahead 533
+printf 'OPEN|' > "$tob_state/issue-probe-533"
+printf '861' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-533"*) open_salvaged=1 ;;
+  *) open_salvaged=0 ;;
+esac
+assert_equals "$open_salvaged" "1" \
+  "(147a) OPEN originating issue -> salvaged as before"
+
+reset_tob_layout
+tob_add_worktree_ahead 534
+# CLOSED but with no merged PR linked — e.g. a `not planned` close. The
+# branch's work may genuinely never have landed, so this must NOT suppress.
+printf 'CLOSED|' > "$tob_state/issue-probe-534"
+printf '862' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-534"*) closed_nopr_salvaged=1 ;;
+  *) closed_nopr_salvaged=0 ;;
+esac
+assert_equals "$closed_nopr_salvaged" "1" \
+  "(147b) CLOSED issue with no merged PR linked -> salvaged (both halves of check 2 are required)"
+
+# --- (148) --dry-run renders the classification and performs no write ---
+reset_tob_layout
+tob_add_worktree_landed 535
+result=$(run_tob --dry-run)
+case "$result" in
+  *"already-landed do-work/issue-535 — content already upstream (empty diff vs main)"*) dry_landed_ok=1 ;;
+  *) dry_landed_ok=0 ;;
+esac
+assert_equals "$dry_landed_ok" "1" \
+  "(148) --dry-run plan classifies each candidate, so a human can audit the verdict before the real sweep"
+if [ -d "$tob_repo/.claude/worktrees/agent-535" ]; then
+  printf '  %sPASS%s  (148a) --dry-run left the already-landed worktree on disk\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (148a) --dry-run removed an already-landed worktree\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-535"; then
+  printf '  %sPASS%s  (148b) --dry-run left the already-landed branch ref alone\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (148b) --dry-run deleted a branch ref\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (149) suppression precedes the --max-prs cap, so leftovers don't eat the budget ---
+reset_tob_layout
+tob_add_worktree_landed 540
+tob_add_worktree_ahead 541
+printf '870' > "$tob_state/next-pr-number"
+result=$(run_tob --max-prs 1)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "1" \
+  "(149) an already-landed candidate does not consume the --max-prs budget"
+case "$result" in
+  *"cap-reached"*) cap_hit=1 ;;
+  *) cap_hit=0 ;;
+esac
+assert_equals "$cap_hit" "0" \
+  "(149a) with one leftover suppressed, the genuine salvage still fits under --max-prs 1"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(149b) counters split the leftover from the genuine salvage"
 
 # --- (144) --max-prs must be a non-negative integer ---
 bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
