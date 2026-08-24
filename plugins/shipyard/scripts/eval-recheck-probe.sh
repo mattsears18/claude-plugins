@@ -23,17 +23,33 @@
 # text is allowed to influence what command runs, and it is deliberately
 # narrow:
 #
-#   - ALLOWLIST ONLY. Exactly two verbs are recognized: `npm-view` (a
-#     package-registry field lookup) and `gh-api` (a read-only GET against a
+#   - ALLOWLIST ONLY. Exactly three verbs are recognized: `npm-view` (a
+#     package-registry field lookup), `gh-api` (a read-only GET against a
 #     narrow set of GitHub REST sub-resources, scoped to the CURRENT repo
-#     only). Anything else — a different verb, a malformed argument, an
+#     only), and `url-json` (a read-only HTTPS GET against a host the repo's
+#     own COMMITTED config has explicitly allowlisted — issue #1496).
+#     Anything else — a different verb, a malformed argument, an
 #     extra/missing token — is REJECTED. There is no free-form fallback and
 #     no attempt to sanitize a shell string; a marker that doesn't match one
-#     of the two fixed grammars below is simply never executed.
+#     of the three fixed grammars below is simply never executed.
+#   - `url-json` IS NOT A GENERAL-PURPOSE FETCH PRIMITIVE, and is not a
+#     general-purpose one by accident of configuration either: its host set
+#     is EMPTY by default (`scope.recheck_probe_url_hosts: []`), so on a
+#     repo that has not deliberately opted in, every `url-json` marker
+#     resolves to `unknown` and NOTHING IS EVER REQUESTED. Widening it takes
+#     a reviewed edit to the repo's committed `shipyard.config.json` — a
+#     far higher trust boundary than the issue body the marker itself lives
+#     in. That asymmetry is the entire design: someone who can edit an issue
+#     body still cannot choose which host gets contacted, only which of the
+#     already-approved hosts does. #1496 left "is an arbitrary outbound host
+#     acceptable at all" open as a deliberate design question; this is the
+#     answer — no arbitrary hosts, per-repo opt-in only, and the opt-in
+#     itself is reviewable in a PR.
 #   - NO SHELL EVER SEES THE MARKER TEXT. Every field is validated against an
 #     anchored (`^...$`) character-class regex BEFORE use, then passed as its
-#     own element of a bash array (`"${cmd[@]}"`) to a fixed binary (`npm` or
-#     `gh`) — never through `eval`, never interpolated into a `sh -c` string,
+#     own element of a bash array (`"${cmd[@]}"`) to a fixed binary (`npm`,
+#     `gh`, or `curl`) — never through `eval`, never interpolated into a
+#     `sh -c` string,
 #     never concatenated into a command line. Because bash arrays preserve
 #     argument boundaries regardless of content, even a regex gap could not
 #     smuggle a second command — there is no shell parse step for it to
@@ -45,7 +61,12 @@
 #     (no `secrets`, `hooks`, `keys`, `deploy_keys`, `actions`, `collaborators`,
 #     `teams`). It piggybacks on the orchestrator's own already-authorized
 #     `gh` session exactly the way every other read in this plugin does — it
-#     is not a new credential and cannot write anything.
+#     is not a new credential and cannot write anything. `curl` (url-json)
+#     is invoked with `--request GET`, no `-d`/`--data`, no `-b`/`--cookie`,
+#     no `-u`, no `--netrc`, and no header beyond a fixed
+#     `Accept: application/json` — it carries no ambient credential at all,
+#     and no redirect is ever followed, so it cannot be walked off the
+#     allowlisted host onto something else.
 #   - EVERY FAILURE MODE DEGRADES TO "unknown", NEVER TO "changed" (which
 #     would bypass the blocked-until calendar gate) OR SILENTLY TO "unchanged"
 #     with no signal. A malformed marker, an unrecognized verb, a probe that
@@ -91,11 +112,46 @@
 #                                regex: ^\.[A-Za-z0-9_]+(\.[A-Za-z0-9_]+|\[[0-9]+\])*$
 #     <expected> same as npm-view's.
 #
-#   Both grammars require a literal ` == ` token between <field>/<jq-field>
-#   and <expected> — the token separates the "what to check" tokens from the
-#   "what value it should still equal" token and doubles as a format sanity
-#   check. Anything not matching one of these two full shapes is rejected —
-#   invalid, not "best-effort parsed".
+#   url-json (issue #1496):
+#     <url>      an absolute `https://` URL. HTTPS ONLY (never `http://`,
+#                never any other scheme), no userinfo (`@`), no port (`:`),
+#                no fragment (`#`), no shell metacharacter of any kind, and
+#                a DNS host name whose LAST label is alphabetic — so a bare
+#                IP literal (`127.0.0.1`, or the cloud metadata address
+#                `169.254.169.254`) can never be named at all. Capped at 500
+#                characters. The host must ALSO appear in the repo's
+#                `scope.recheck_probe_url_hosts` config array, which is
+#                empty by default; see the allowlist note above.
+#                                regex: ^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z][a-z]+)(/[A-Za-z0-9._~=+,%-]*)*(\?[A-Za-z0-9._~=+,%&-]*)?$
+#     <jq-filter> the same restricted jq path `gh-api` accepts, plus ONE
+#                optional trailing `|length` written with NO surrounding
+#                spaces (so the marker stays exactly five whitespace-
+#                separated tokens — the shared 5-token shape is what lets
+#                every downstream consumer, including the authorship path's
+#                marker reconstruction, stay verb-agnostic). No other pipe,
+#                filter, or function: `length` is allowed because "how many
+#                entries does this feed have" is the single most common
+#                event-gate shape and is not otherwise expressible.
+#                                regex: ^\.[A-Za-z0-9_]+(\.[A-Za-z0-9_]+|\[[0-9]+\])*(\|length)?$
+#     <expected> same as npm-view's.
+#
+#     Execution: ONE `curl` GET — no request body, no cookies, no
+#     credentials, no custom header beyond a fixed
+#     `Accept: application/json`, `--proto '=https'`, and NO `-L` (a 3xx is
+#     never followed, and only a 2xx status is accepted, so a redirect
+#     resolves to `unknown` instead of quietly landing on a host nobody
+#     allowlisted). Bounded by `--max-time` / the `timeout` binary and by a
+#     response-size cap (`scope.recheck_probe_max_bytes`, default 1 MiB)
+#     enforced BOTH by curl and by an in-script byte count — curl's own
+#     `--max-filesize` only fires when the server declares a Content-Length.
+#     A non-2xx, a body that isn't JSON, a filter that yields nothing, and a
+#     filter that yields `null` all resolve to `unknown`, never `changed`.
+#
+#   All three grammars require a literal ` == ` token between the field /
+#   filter token and <expected> — the token separates the "what to check"
+#   tokens from the "what value it should still equal" token and doubles as
+#   a format sanity check. Anything not matching one of these three full
+#   shapes is rejected — invalid, not "best-effort parsed".
 #
 # Caller contract
 # ----------------
@@ -126,8 +182,12 @@
 #   Hermetic modes (no network, for tests and callers that already hold the
 #   pieces):
 #     bash eval-recheck-probe.sh --validate <owner/repo> <marker-rest>
-#       -> exit 0 (valid, prints "<verb>|<arg1>|<arg2>|<expected>") or exit 1
-#          (invalid, prints "invalid").
+#       -> exit 0 (valid, prints "<verb>\t<arg1>\t<arg2>\t<expected>",
+#          TAB-separated) or exit 1 (invalid, prints "invalid"). The
+#          separator is a TAB rather than the `|` used before #1496 because
+#          `url-json`'s jq filter may itself contain a `|` (its one
+#          permitted operator, `|length`); a tab cannot appear in ANY
+#          validated field, since every field regex excludes whitespace.
 #     bash eval-recheck-probe.sh --decide <actual> <expected>
 #       -> prints `unchanged` / `changed` / `unknown` — the pure comparison,
 #          given an already-fetched actual value.
@@ -167,6 +227,82 @@ set -uo pipefail
 
 RECHECK_PROBE_TIMEOUT_SECONDS="${RECHECK_PROBE_TIMEOUT_SECONDS:-15}"
 
+# url-json policy (issue #1496), resolved lazily and cached — and ONLY when a
+# `url-json` marker is actually encountered, so the two pre-existing verbs
+# keep byte-for-byte their previous behavior with no new config subprocess
+# and no new failure mode on their path.
+_URL_POLICY_LOADED=""
+_URL_ALLOWED_HOSTS=""
+_URL_MAX_BYTES=""
+
+# ---------------------------------------------------------------------------
+# url-json policy — the per-repo host allowlist and the response-size cap.
+# Hermetic: reads only the merged shipyard config (no network), and only on
+# first use. Env vars win over config, so tests stay self-contained and a
+# caller that already resolved the merged config can pass it straight
+# through. EVERY failure to resolve config degrades to "no host is allowed",
+# i.e. toward `unknown` — the same asymmetry the rest of this script keeps.
+# ---------------------------------------------------------------------------
+
+load_url_policy() {
+  if [ -n "$_URL_POLICY_LOADED" ]; then
+    return 0
+  fi
+  _URL_POLICY_LOADED=1
+
+  local scope_json="" cfg
+  cfg="$(dirname "${BASH_SOURCE[0]}")/shipyard-config.sh"
+  if [ -f "$cfg" ] && command -v jq >/dev/null 2>&1; then
+    scope_json="$(bash "$cfg" get scope 2>/dev/null)" || scope_json=""
+  fi
+
+  if [ -n "${RECHECK_PROBE_URL_HOSTS+x}" ]; then
+    _URL_ALLOWED_HOSTS="$RECHECK_PROBE_URL_HOSTS"
+  elif [ -n "$scope_json" ]; then
+    _URL_ALLOWED_HOSTS="$(printf '%s' "$scope_json" | jq -r '
+      if (.recheck_probe_url_hosts | type) == "array"
+      then [.recheck_probe_url_hosts[] | select(type == "string")] | join(" ")
+      else "" end' 2>/dev/null)"
+  fi
+
+  if [ -n "${RECHECK_PROBE_MAX_BYTES:-}" ]; then
+    _URL_MAX_BYTES="$RECHECK_PROBE_MAX_BYTES"
+  elif [ -n "$scope_json" ]; then
+    _URL_MAX_BYTES="$(printf '%s' "$scope_json" | jq -r '
+      if (.recheck_probe_max_bytes | type) == "number"
+      then (.recheck_probe_max_bytes | tostring)
+      else "" end' 2>/dev/null)"
+  fi
+  case "$_URL_MAX_BYTES" in
+    '' | *[!0-9]*) _URL_MAX_BYTES=1048576 ;;
+  esac
+  if [ "$_URL_MAX_BYTES" -le 0 ]; then
+    _URL_MAX_BYTES=1048576
+  fi
+}
+
+url_host_allowed() {
+  # $1 = the lowercase host already extracted from a shape-validated URL.
+  # EXACT match only — no wildcards, no implicit subdomain match. A repo that
+  # wants a subdomain lists that subdomain; "narrow, and widened only
+  # deliberately" is the same philosophy the gh-api sub-resource list keeps.
+  local host="$1" entry
+  load_url_policy
+  if [ -z "$_URL_ALLOWED_HOSTS" ]; then
+    return 1
+  fi
+  # shellcheck disable=SC2086
+  # Word-splitting on whitespace is intended: the allowlist is a
+  # space-separated host list assembled by load_url_policy from a JSON array.
+  for entry in $_URL_ALLOWED_HOSTS; do
+    entry="$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')"
+    if [ "$entry" = "$host" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Pure functions — no I/O, no network. Fully covered by the hermetic test
 # modes above.
@@ -188,7 +324,9 @@ validate_and_extract() {
   # $2 = the "<owner>/<repo>" this evaluation is scoped to (gh-api endpoints
   #      may only reference this exact repo — no cross-repo probing)
   #
-  # On success: prints "<verb>|<arg1>|<arg2>|<expected>" and returns 0.
+  # On success: prints "<verb>\t<arg1>\t<arg2>\t<expected>" (TAB-separated —
+  # see the --validate note in the header: url-json's jq filter can contain a
+  # `|`, and no validated field can ever contain whitespace) and returns 0.
   # On failure: prints nothing and returns 1. Never partial — a rejected
   # marker yields no extracted fields at all.
   local rest="$1" owner_repo="$2"
@@ -207,7 +345,7 @@ validate_and_extract() {
       [[ "$pkg" =~ ^(@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*|[a-z0-9][a-z0-9._-]*)$ ]] || return 1
       [[ "$field" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
       [[ "$expected" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
-      printf 'npm-view|%s|%s|%s\n' "$pkg" "$field" "$expected"
+      printf 'npm-view\t%s\t%s\t%s\n' "$pkg" "$field" "$expected"
       return 0
       ;;
     gh-api)
@@ -219,7 +357,28 @@ validate_and_extract() {
       [ "${ep_owner}/${ep_repo}" = "$owner_repo" ] || return 1
       [[ "$jqfield" =~ ^\.[A-Za-z0-9_]+(\.[A-Za-z0-9_]+|\[[0-9]+\])*$ ]] || return 1
       [[ "$expected" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
-      printf 'gh-api|%s|%s|%s\n' "$endpoint" "$jqfield" "$expected"
+      printf 'gh-api\t%s\t%s\t%s\n' "$endpoint" "$jqfield" "$expected"
+      return 0
+      ;;
+    url-json)
+      # Issue #1496. Deliberately the narrowest of the three grammars: the
+      # shape check below rejects every non-HTTPS scheme, every credential /
+      # port / fragment form, and every IP-literal host, and THEN the host
+      # must still be named in the repo's committed allowlist (empty by
+      # default) before the marker is considered valid at all. A marker
+      # naming a non-allowlisted host is `invalid`, exactly like a malformed
+      # one — so the authorship path never writes it and the read path never
+      # runs it.
+      [ "${#tok[@]}" -eq 5 ] || return 1
+      local url="${tok[1]}" jqfilter="${tok[2]}" eq="${tok[3]}" expected="${tok[4]}"
+      [ "$eq" = "==" ] || return 1
+      [ "${#url}" -le 500 ] || return 1
+      [[ "$url" =~ ^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z][a-z]+)(/[A-Za-z0-9._~=+,%-]*)*(\?[A-Za-z0-9._~=+,%&-]*)?$ ]] || return 1
+      local host="${BASH_REMATCH[1]}"
+      url_host_allowed "$host" || return 1
+      [[ "$jqfilter" =~ ^\.[A-Za-z0-9_]+(\.[A-Za-z0-9_]+|\[[0-9]+\])*(\|length)?$ ]] || return 1
+      [[ "$expected" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+      printf 'url-json\t%s\t%s\t%s\n' "$url" "$jqfilter" "$expected"
       return 0
       ;;
     *)
@@ -270,6 +429,71 @@ run_gh_api() {
   fi
 }
 
+run_url_json() {
+  # $1 = a shape-validated, host-allowlisted https URL; $2 = a validated jq
+  # filter. Prints the probed scalar on stdout, or NOTHING (the caller
+  # resolves an empty result to `unknown`). Issue #1496.
+  local url="$1" jqfilter="$2"
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  load_url_policy
+
+  # No -L: a redirect is never followed. No -d/-b/-u/--netrc: no body, no
+  # cookies, no credentials. One fixed Accept header, nothing marker-derived.
+  local -a cmd=(curl
+    --silent
+    --request GET
+    --proto '=https'
+    --max-redirs 0
+    --max-time "$RECHECK_PROBE_TIMEOUT_SECONDS"
+    --max-filesize "$_URL_MAX_BYTES"
+    --header 'Accept: application/json'
+    --user-agent 'shipyard-eval-recheck-probe'
+    --write-out '\n%{http_code}'
+    --url "$url")
+
+  local raw
+  if command -v timeout >/dev/null 2>&1; then
+    raw="$(timeout "${RECHECK_PROBE_TIMEOUT_SECONDS}s" "${cmd[@]}" 2>/dev/null)" || return 1
+  else
+    raw="$("${cmd[@]}" 2>/dev/null)" || return 1
+  fi
+
+  # curl appends the HTTP status as a final line (--write-out); split it off
+  # before anything else looks at the body.
+  local status body
+  case "$raw" in
+    *$'\n'*) status="${raw##*$'\n'}"; body="${raw%$'\n'*}" ;;
+    *)        status="$raw"; body="" ;;
+  esac
+
+  # 2xx ONLY. A 3xx is not followed and is not accepted either — a redirect
+  # is precisely the shape that could otherwise walk the probe off the
+  # allowlisted host, so it degrades to `unknown` like any other failure.
+  case "$status" in
+    2[0-9][0-9]) ;;
+    *) return 1 ;;
+  esac
+
+  # Second, in-script response-size cap: curl's own --max-filesize only fires
+  # when the server declares a Content-Length, so this is the one that
+  # actually holds for a chunked or streamed response.
+  local bytes
+  bytes="$(printf '%s' "$body" | wc -c | tr -d '[:space:]')"
+  [ "$bytes" -le "$_URL_MAX_BYTES" ] || return 1
+
+  local out
+  out="$(printf '%s' "$body" | jq -r "$jqfilter" 2>/dev/null)" || return 1
+  # Nothing, or JSON `null` (which jq -r renders as the literal string
+  # "null"), is not evidence of anything — resolve to `unknown` rather than
+  # string-comparing a placeholder against <expected> and reporting
+  # `changed` off a field that simply isn't there.
+  if [ -z "$out" ] || [ "$out" = "null" ]; then
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
 # evaluate_body <body> <owner_repo> -- prints exactly one of `absent` /
 # `unchanged` / `changed` / `unknown` on stdout (diagnostics on stderr), the
 # same single-issue logic the CLI entry point below used to run inline.
@@ -291,11 +515,12 @@ evaluate_body() {
     return 0
   fi
 
-  IFS='|' read -r verb arg1 arg2 expected <<<"$parsed"
+  IFS=$'\t' read -r verb arg1 arg2 expected <<<"$parsed"
 
   case "$verb" in
     npm-view) actual="$(run_npm_view "$arg1" "$arg2")" ;;
     gh-api)   actual="$(run_gh_api "$arg1" "$arg2")" ;;
+    url-json) actual="$(run_url_json "$arg1" "$arg2")" ;;
     *)        actual="" ;;
   esac
   # Defensive trim: take the first line only and strip all whitespace, in

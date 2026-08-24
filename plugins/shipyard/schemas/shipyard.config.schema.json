@@ -458,7 +458,19 @@
           "type": "integer",
           "minimum": 1,
           "default": 15,
-          "description": "Bounded timeout, in seconds, for a single `do-work-recheck` probe command (`npm view` / `gh api`) run by scripts/eval-recheck-probe.sh. A probe that exceeds this timeout is treated as `unknown` and falls through to the plain `do-work-blocked-until` calendar check — never treated as evidence the blocking condition changed."
+          "description": "Bounded timeout, in seconds, for a single `do-work-recheck` probe command (`npm view` / `gh api` / `curl`) run by scripts/eval-recheck-probe.sh. A probe that exceeds this timeout is treated as `unknown` and falls through to the plain `do-work-blocked-until` calendar check — never treated as evidence the blocking condition changed."
+        },
+        "recheck_probe_url_hosts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Per-repo allowlist of host names the `url-json` `do-work-recheck` probe verb (issue #1496) may contact. EMPTY BY DEFAULT, which makes the verb inert: on a repo that has not opted in, every `url-json` marker resolves to `unknown` and no outbound request is ever made. This is the security boundary for the verb — the marker itself lives in an issue body (untrusted, editable by any collaborator after the author-trust check ran), whereas this list lives in the repo's COMMITTED `shipyard.config.json` and can only change through a reviewed PR. So an issue-body edit can pick a URL only among hosts a human already approved. Exact host match, case-insensitive, NO wildcards and no implicit subdomain matching — list `reviews.example.com` explicitly rather than expecting `example.com` to cover it. Hosts are matched against a URL that already had to be HTTPS, port-less, credential-less, and named by a DNS name rather than an IP literal (see scripts/eval-recheck-probe.sh's header for the full grammar)."
+        },
+        "recheck_probe_max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1048576,
+          "description": "Response-size cap, in bytes, for the `url-json` `do-work-recheck` probe verb (issue #1496). Enforced twice: passed to curl as `--max-filesize` (which only fires when the server declares a Content-Length) and re-checked in-script against the actually-received body (which holds for a chunked or streamed response too). A response over the cap is treated as `unknown` — never as evidence the blocking condition changed. Does not apply to the `npm-view` / `gh-api` verbs, whose outputs are already single scalars."
         },
         "_comment": { "type": "string" }
       }
