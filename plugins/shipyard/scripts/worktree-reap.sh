@@ -720,17 +720,18 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                               the terminal `summary:` line, by which point
                               every PR already existed.
 
-                          ALREADY-LANDED PRE-CHECKS (issue #1517). #1518
-                          bounded the blast radius; this is the predicate
-                          that was misfiring. `ahead` compares commits by
-                          SHA IDENTITY, so on a squash-merge repo (the
-                          schema default for auto_merge.method) it is
+                          ALREADY-LANDED PRE-CHECKS (issues #1517, #1541).
+                          #1518 bounded the blast radius; this is the
+                          predicate that was misfiring. `ahead` compares
+                          commits by SHA IDENTITY, so on a squash-merge repo
+                          (the schema default for auto_merge.method) it is
                           permanently > 0 for every branch ever landed —
                           `ahead == 0` is unreachable, the worktree
                           candidate set never drains, and each leftover
-                          regenerates a duplicate PR every session. Two
+                          regenerates a duplicate PR every session. Three
                           CONTENT-aware signals now gate PR creation, in
-                          cost order; either one alone suppresses it:
+                          evidence-strength order; any one alone suppresses
+                          it:
                             1. Empty effective diff — `git diff --quiet
                                origin/<default-branch> HEAD` in the
                                candidate worktree. Pure local git, no API
@@ -749,7 +750,29 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                                revert landed work. Weaker evidence, so the
                                worktree is removed but the branch ref is
                                KEPT as a safety net.
-                          Both fail CONSERVATIVE — an unreadable signal is
+                            3. Superseded draft — every path the branch ADDS
+                               relative to its merge-base with the default
+                               branch already exists on the default branch
+                               today (issue #1541). Pure local git, run only
+                               when checks 1 and 2 have both declined.
+                               Catches the class check 2 structurally
+                               cannot: a PR that merged with `refs #N`
+                               instead of `closes #N`, or an issue gated on
+                               needs-human-review after its code landed,
+                               leaves the originating issue OPEN
+                               indefinitely while its work sits upstream —
+                               so check 2's issue-STATE key never fires.
+                               A path absent at the fork point but present
+                               upstream now was created upstream after the
+                               fork; if EVERY path this branch invents was
+                               created upstream independently, the work is
+                               already done. Deliberately ignores MODIFIED
+                               paths (the coordination-managed CHANGELOG.md
+                               / plugin.json rows every PR touches carry no
+                               signal) and compares no line, hunk, or byte
+                               counts. Same weak-evidence action as check 2:
+                               worktree removed, branch ref KEPT.
+                          All three fail CONSERVATIVE — an unreadable signal is
                           never evidence of staleness, so anything that
                           cannot be classified is salvaged exactly as
                           before. Suppression runs BEFORE the --max-prs cap,
@@ -3272,6 +3295,21 @@ reap_stale() {
 # issue already CLOSED by a merged PR (one `gh` read) — either of which
 # suppresses the PR and drains the candidate worktree. See the block above
 # the checks themselves for the mechanism and the conservative-failure rule.
+#
+# Issue #1541 — a THIRD pre-check, for the class the second structurally
+# cannot see. Check 2 keys on the originating issue's STATE, so a PR that
+# merged carrying `refs #N` rather than `closes #N` — or an issue still
+# gated on needs-human-review after its code landed — leaves that issue OPEN
+# indefinitely while its work sits on the default branch, and check 2
+# correctly declines. A real --dry-run of the #1540 guard against this repo
+# at 001415f suppressed 18 of 21 candidates and left exactly that shape as 2
+# of the 3 survivors (do-work/issue-1412, landed as PR #1508; and
+# do-work/issue-1511, landed as PR #1515 — both with OPEN issues). Check 3
+# asks whether every path the branch ADDS relative to its merge-base already
+# exists upstream. Same conservative-failure rule and same weak-evidence
+# action as check 2 (worktree drained, branch ref kept). See the block above
+# the check itself for the full predicate, the measured reason a per-file
+# blob-ancestry test was rejected, and the residual-risk argument.
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
@@ -3428,6 +3466,7 @@ triage_orphan_branches() {
 
   local branch path n canonical_branch ahead pushed open_pr
   local stale_reason stale_action diff_rc issue_probe issue_state closing_pr
+  local merge_base added_path added_total added_on_main added_sample
   local idx=0
   while IFS= read -r branch; do
     [ -z "$branch" ] && continue
@@ -3551,6 +3590,107 @@ triage_orphan_branches() {
           fi
           ;;
       esac
+    fi
+
+    # Check 3 — SUPERSEDED DRAFT: every brand-new path this branch invents
+    # already exists on the default branch. Issue #1541, the third pre-check
+    # proposed on #1517 and deliberately deferred out of #1540.
+    #
+    # Runs ONLY when checks 1 and 2 have both declined, and costs no API call
+    # — it is pure local git, so its position last in the chain is about
+    # evidence strength, not cost.
+    #
+    # WHAT IT CATCHES that neither check above can. Check 2 keys on issue
+    # STATE, and a PR that merges with `refs #N` rather than `closes #N` — or
+    # an issue gated on `needs-human-review` after its code landed — leaves
+    # the originating issue OPEN indefinitely while its work sits on the
+    # default branch. Check 2 correctly declines there; check 1 correctly
+    # declines too, because a superseded EARLIER draft has a non-empty diff.
+    # Measured on this repo at 001415f: of 21 candidates, 18 were suppressed
+    # by checks 1+2 and 2 of the 3 survivors were exactly this shape —
+    # do-work/issue-1412 (landed as PR #1508) and do-work/issue-1511 (landed
+    # as PR #1515), both with OPEN originating issues.
+    #
+    # THE PREDICATE, and why it is defensible. For each path the branch ADDS
+    # relative to its merge-base with the default branch, ask whether that
+    # path exists on the default branch today. A path absent at the fork
+    # point but present upstream now was created upstream AFTER the fork. If
+    # EVERY path this branch invents was independently created upstream, the
+    # work this branch claims has already been done by someone else — the
+    # superseded-draft shape. This is a content-EXISTENCE fact, not a
+    # size comparison, so #1541's explicit objection to a line-count proxy (a
+    # refactor deleting more than it adds is still ahead) does not apply: no
+    # line, hunk, or byte counts are compared anywhere in this check.
+    #
+    # WHY ONLY ADDED PATHS. A MODIFIED path carries no signal: the
+    # coordination-managed rows every PR in this repo touches (CHANGELOG.md,
+    # plugin.json) are modified by definition, so "the default branch also
+    # moved this file" is true of ordinary churn and would fire on nearly
+    # everything. Restricting to additions is what keeps the genuine negative
+    # control clean — do-work/issue-1543 was a real `existing-pr` whose work
+    # had NOT landed, and it adds no new path at all, so this check never
+    # reaches a verdict on it.
+    #
+    # WHY "ALL", NOT "ANY". If even one invented path is still missing
+    # upstream, the branch carries content the default branch has never seen.
+    # Conservative-failure rule: that salvages, exactly as before.
+    #
+    # WHY NOT the per-file blob-ancestry predicate #1541 floats as the most
+    # likely candidate ("main's blob is reachable from the branch's blob
+    # through the file's own history"). Measured against the same two
+    # fixtures, it is too strict to ship: #1511's branch blob for
+    # refuse-hook-bypass-flag.sh IS present in the default branch's history
+    # of that path (the work landed byte-identically), but #1412's branch
+    # blob for commit-subject-scan.sh appears nowhere in that path's history
+    # — PR #1508 landed a textually DIFFERENT implementation of the same
+    # issue. Blob-ancestry therefore catches only 1 of the 2 recorded
+    # repros, while path-existence catches both.
+    #
+    # FAILURE POSTURE, identical to checks 1 and 2: every unreadable or
+    # ambiguous signal resolves to "not stale" and salvages. An unresolvable
+    # merge-base, a diff that errors, or an existence probe that fails for
+    # any reason (including an unresolvable origin/<default-branch>) all
+    # leave the path counted as ABSENT upstream, which forces the "all"
+    # test to fail. A branch with zero added paths is never stale here — the
+    # emptiness is not itself evidence.
+    #
+    # RESIDUAL RISK, and why the action bounds it. Two branches could
+    # independently invent the same new path for unrelated reasons, and the
+    # second's other work would then be suppressed. That branch is an add/add
+    # conflict against the default branch and could not have merged cleanly
+    # anyway; more to the point the action below is check 2's, not check 1's
+    # — drain the worktree, KEEP the branch ref — because the evidence is
+    # circumstantial. Nothing is destroyed, the `already-landed:` report line
+    # names the branch, and clearing the assignee returns the issue to the
+    # backlog for a fresh dispatch.
+    if [ -z "$stale_reason" ]; then
+      merge_base=$(git merge-base "origin/${default_branch}" "$branch" 2>/dev/null)
+      if [ -n "$merge_base" ]; then
+        added_total=0
+        added_on_main=0
+        added_sample=""
+        # -z/NUL-delimited so a path containing whitespace or a quote-worthy
+        # byte is read intact rather than split or returned core.quotePath-
+        # escaped. --no-renames makes "added" mean literally "absent at the
+        # merge-base, present at the tip": with rename detection on, a path
+        # the branch created by moving would score as R and silently drop out
+        # of the denominator, weakening the "all" test.
+        while IFS= read -r -d '' added_path; do
+          [ -z "$added_path" ] && continue
+          added_total=$((added_total + 1))
+          if git cat-file -e "origin/${default_branch}:$added_path" 2>/dev/null; then
+            added_on_main=$((added_on_main + 1))
+            [ -z "$added_sample" ] && added_sample="$added_path"
+          fi
+        done < <(git diff --name-only --no-renames --diff-filter=A -z \
+          "$merge_base" "$branch" 2>/dev/null)
+        if [ "$added_total" -gt 0 ] && [ "$added_on_main" -eq "$added_total" ]; then
+          stale_reason="superseded draft: all $added_total new path(s) this branch adds already exist on $default_branch (e.g. $added_sample)"
+          # Same action as check 2 — the evidence is circumstantial, so the
+          # branch ref survives as a safety net for a human to inspect.
+          stale_action="remove-worktree-only"
+        fi
+      fi
     fi
 
     if [ -n "$stale_reason" ]; then

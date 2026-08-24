@@ -3090,6 +3090,283 @@ assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
   "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=1" \
   "(149b) counters split the leftover from the genuine salvage"
 
+# ============================================================================
+# Issue #1541 — check 3, the SUPERSEDED-DRAFT pre-check.
+#
+# Checks 1 and 2 (#1517, above) suppressed 18 of 21 candidates on a real
+# --dry-run of this repo at 001415f. Two of the three survivors were branches
+# whose work had demonstrably landed — do-work/issue-1412 (as PR #1508) and
+# do-work/issue-1511 (as PR #1515) — but whose ORIGINATING ISSUES were still
+# OPEN, because the landing PR carried `refs #N` rather than `closes #N`.
+# Check 2 keys on issue state, so it correctly declined; check 1 saw a
+# non-empty diff, so it correctly declined too. Check 3 is the only one that
+# reaches that shape.
+#
+# The predicate is path EXISTENCE, never a size comparison: every path the
+# branch ADDS relative to its merge-base already exists on the default
+# branch. Coverage goals:
+#   - Fires on the superseded-draft shape (a different implementation of the
+#     same work landed at the same new path) -> no PR, worktree removed,
+#     branch ref KEPT (weak evidence, same action as check 2).
+#   - DECLINES on the negative control #1541 names explicitly: a branch that
+#     deletes more lines than it adds, touching only files the default branch
+#     has also grown. A line-count proxy for "main is ahead" would suppress
+#     this and silently discard real work.
+#   - DECLINES on a partial collision (some invented paths landed upstream,
+#     some not) — the quantifier is ALL, not ANY.
+#   - DECLINES when the branch invents a path the default branch has never
+#     had, and when it invents no new path at all (emptiness is not evidence).
+#   - Runs only after checks 1 and 2 have both declined.
+#   - Reads NUL-delimited paths, so a path containing a space is probed
+#     intact rather than core.quotePath-escaped into a false decline.
+#   - --dry-run renders the verdict and performs no write.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches superseded-draft pre-check (issue #1541)"
+echo
+
+# tob_add_worktree_superseded <issue-n> [path-basename] — the check-3 shape.
+# The branch invents a brand-new path; the default branch independently lands
+# a DIFFERENT implementation at that same path. Both earlier checks must
+# decline on it by construction: the effective diff is non-empty (check 1),
+# and the caller leaves the originating issue OPEN (check 2).
+tob_add_worktree_superseded() {
+  local n="$1"
+  local base="${2:-feature-$1.sh}"
+  local path="$tob_repo/.claude/worktrees/agent-$n"
+  tob_add_worktree "$n"
+  printf 'draft implementation for issue %s\n' "$n" > "$path/$base"
+  git -C "$path" add "$path/$base" >/dev/null 2>&1
+  git -C "$path" commit -q -m "draft $n" >/dev/null 2>&1
+  # A textually different implementation of the same work lands upstream at
+  # the same path — the do-work/issue-1412 -> PR #1508 shape.
+  printf 'landed implementation for issue %s, rewritten\n' "$n" > "$tob_repo/$base"
+  git -C "$tob_repo" add "$tob_repo/$base" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "landed $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  git -C "$tob_repo" fetch -q origin >/dev/null 2>&1
+}
+
+# tob_add_worktree_shrinking <issue-n> — genuinely UNLANDED work whose diff
+# DELETES more lines than it adds, on a file the default branch has since
+# grown. This is the negative control #1541 calls out by name: under a
+# line-count reading of "main is ahead", main has strictly more of this file
+# than the branch does, so the PR would be suppressed and real work
+# discarded. The branch invents no new path, so check 3 must decline.
+tob_add_worktree_shrinking() {
+  local n="$1"
+  local path="$tob_repo/.claude/worktrees/agent-$n"
+  printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n' > "$tob_repo/shared-$n.txt"
+  git -C "$tob_repo" add "$tob_repo/shared-$n.txt" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "seed shared $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  tob_add_worktree "$n"
+  # The branch refactors it down to two lines — a large net deletion, but
+  # real work that exists nowhere else.
+  printf 'refactored\nkept\n' > "$path/shared-$n.txt"
+  git -C "$path" add "$path/shared-$n.txt" >/dev/null 2>&1
+  git -C "$path" commit -q -m "refactor $n" >/dev/null 2>&1
+  # Meanwhile the default branch grows the same file further.
+  printf 'l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\n' > "$tob_repo/shared-$n.txt"
+  git -C "$tob_repo" add "$tob_repo/shared-$n.txt" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "extend shared $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  git -C "$tob_repo" fetch -q origin >/dev/null 2>&1
+}
+
+# tob_add_worktree_partial <issue-n> — the branch invents TWO new paths and
+# the default branch independently landed only ONE of them.
+tob_add_worktree_partial() {
+  local n="$1"
+  local path="$tob_repo/.claude/worktrees/agent-$n"
+  tob_add_worktree "$n"
+  printf 'draft a %s\n' "$n" > "$path/feature-a-$n.sh"
+  printf 'draft b %s\n' "$n" > "$path/feature-b-$n.sh"
+  git -C "$path" add "$path/feature-a-$n.sh" "$path/feature-b-$n.sh" >/dev/null 2>&1
+  git -C "$path" commit -q -m "draft $n" >/dev/null 2>&1
+  printf 'landed a %s\n' "$n" > "$tob_repo/feature-a-$n.sh"
+  git -C "$tob_repo" add "$tob_repo/feature-a-$n.sh" >/dev/null 2>&1
+  git -C "$tob_repo" commit -q -m "landed a $n" >/dev/null 2>&1
+  git -C "$tob_repo" push -q origin main >/dev/null 2>&1
+  git -C "$tob_repo" fetch -q origin >/dev/null 2>&1
+}
+
+# --- (150) check 3 fires: superseded draft, OPEN issue -> no PR, branch KEPT ---
+reset_tob_layout
+tob_add_worktree_superseded 560
+# OPEN issue: exactly the do-work/issue-1412 / do-work/issue-1511 shape, and
+# the reason check 2 cannot see this class.
+printf 'OPEN|' > "$tob_state/issue-probe-560"
+printf '880' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"[1/1] already-landed do-work/issue-560 — superseded draft: all 1 new path(s) this branch adds already exist on main (e.g. feature-560.sh); no PR opened, removing worktree (branch kept)"*) superseded_line_ok=1 ;;
+  *) superseded_line_ok=0 ;;
+esac
+assert_equals "$superseded_line_ok" "1" \
+  "(150) superseded draft with an OPEN originating issue -> already-landed progress line naming the collided path"
+case "$(cat "$tob_gh_log")" in
+  *"pr create"*) superseded_pr_created=1 ;;
+  *) superseded_pr_created=0 ;;
+esac
+assert_equals "$superseded_pr_created" "0" \
+  "(150a) check 3 fired -> gh pr create is never called (no duplicate of the landed work)"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=0 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(150b) check 3 counts as already_landed, not salvaged"
+if [ -d "$tob_repo/.claude/worktrees/agent-560" ]; then
+  printf '  %sFAIL%s  (150c) superseded worktree still on disk — the candidate set never drains\n' "$RED" "$RESET"
+  fail=$((fail+1))
+else
+  printf '  %sPASS%s  (150c) superseded worktree removed — the candidate set drains\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+fi
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-560"; then
+  printf '  %sPASS%s  (150d) check-3 branch ref KEPT as a safety net (evidence is circumstantial)\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (150e) check-3 branch ref was deleted — evidence is too weak for that\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+case "$result" in
+  *"already-landed: do-work/issue-560 — superseded draft:"*) superseded_summary_ok=1 ;;
+  *) superseded_summary_ok=0 ;;
+esac
+assert_equals "$superseded_summary_ok" "1" \
+  "(150f) a per-branch 'already-landed: <branch> — <why>' summary line names the superseded-draft verdict"
+
+# --- (151) THE negative control: deletes more than it adds, still unlanded ---
+reset_tob_layout
+tob_add_worktree_shrinking 561
+printf 'OPEN|' > "$tob_state/issue-probe-561"
+printf '881' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-561"*) shrinking_salvaged=1 ;;
+  *) shrinking_salvaged=0 ;;
+esac
+assert_equals "$shrinking_salvaged" "1" \
+  "(151) a branch that DELETES more than it adds, on a file main has grown, still salvages — check 3 compares no line counts"
+case "$result" in
+  *"already-landed do-work/issue-561"*) shrinking_suppressed=1 ;;
+  *) shrinking_suppressed=0 ;;
+esac
+assert_equals "$shrinking_suppressed" "0" \
+  "(151a) the shrinking branch is never classified already-landed"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=0" \
+  "(151b) counters record the shrinking branch as a genuine salvage"
+if git -C "$tob_repo" show-ref --verify --quiet "refs/heads/do-work/issue-561"; then
+  printf '  %sPASS%s  (151c) the shrinking branch ref survives untouched\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (151c) the shrinking branch ref was deleted\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (152) partial collision -> declines; the quantifier is ALL, not ANY ---
+reset_tob_layout
+tob_add_worktree_partial 562
+printf 'OPEN|' > "$tob_state/issue-probe-562"
+printf '882' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-562"*) partial_salvaged=1 ;;
+  *) partial_salvaged=0 ;;
+esac
+assert_equals "$partial_salvaged" "1" \
+  "(152) one invented path still missing upstream -> salvaged (check 3 requires ALL of them, not ANY)"
+
+# --- (153) a wholly new path the default branch has never had -> declines ---
+reset_tob_layout
+tob_add_worktree_ahead 563
+printf 'OPEN|' > "$tob_state/issue-probe-563"
+printf '883' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"salvage do-work/issue-563"*) novel_salvaged=1 ;;
+  *) novel_salvaged=0 ;;
+esac
+assert_equals "$novel_salvaged" "1" \
+  "(153) a branch inventing a path main has never had -> salvaged (the ordinary unlanded case)"
+
+# --- (154) check 3 runs only after checks 1 and 2 have both declined ---
+reset_tob_layout
+tob_add_worktree_superseded 564
+# Same superseded shape, but the originating issue IS closed by a merged PR,
+# so check 2 answers first and its (stronger, differently-worded) reason wins.
+printf 'CLOSED|1234' > "$tob_state/issue-probe-564"
+printf '884' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"already-landed do-work/issue-564 — issue #564 CLOSED, work merged as PR #1234"*) order_ok=1 ;;
+  *) order_ok=0 ;;
+esac
+assert_equals "$order_ok" "1" \
+  "(154) check 2 answers before check 3 — the stronger evidence is the reported reason"
+
+reset_tob_layout
+# A landed (empty-diff) branch that ALSO invents nothing: check 1 answers
+# first, and its stronger action (branch ref deleted too) must not be
+# downgraded to check 3's keep-the-branch action.
+tob_add_worktree_landed 565
+printf '885' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"already-landed do-work/issue-565 — content already upstream (empty diff vs main); no PR opened, removing worktree + branch"*) order1_ok=1 ;;
+  *) order1_ok=0 ;;
+esac
+assert_equals "$order1_ok" "1" \
+  "(154a) check 1 answers before check 3 — the empty-diff branch ref is still deleted"
+
+# --- (155) NUL-delimited path reading: an invented path containing a space ---
+reset_tob_layout
+tob_add_worktree_superseded 566 "feature with space.sh"
+printf 'OPEN|' > "$tob_state/issue-probe-566"
+printf '886' > "$tob_state/next-pr-number"
+result=$(run_tob)
+case "$result" in
+  *"already-landed do-work/issue-566 — superseded draft: all 1 new path(s) this branch adds already exist on main (e.g. feature with space.sh)"*) spaced_ok=1 ;;
+  *) spaced_ok=0 ;;
+esac
+assert_equals "$spaced_ok" "1" \
+  "(155) an invented path containing a space is probed intact (NUL-delimited diff, not core.quotePath-escaped)"
+
+# --- (156) --dry-run renders the check-3 verdict and performs no write ---
+reset_tob_layout
+tob_add_worktree_superseded 567
+printf 'OPEN|' > "$tob_state/issue-probe-567"
+result=$(run_tob --dry-run)
+case "$result" in
+  *"already-landed do-work/issue-567 — superseded draft:"*) dry_superseded_ok=1 ;;
+  *) dry_superseded_ok=0 ;;
+esac
+assert_equals "$dry_superseded_ok" "1" \
+  "(156) --dry-run renders the superseded-draft verdict so a human can audit it before the real sweep"
+if [ -d "$tob_repo/.claude/worktrees/agent-567" ]; then
+  printf '  %sPASS%s  (156a) --dry-run left the superseded worktree on disk\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (156a) --dry-run removed a superseded worktree\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+
+# --- (157) suppression precedes the --max-prs cap for check 3 too ---
+reset_tob_layout
+tob_add_worktree_superseded 568
+printf 'OPEN|' > "$tob_state/issue-probe-568"
+tob_add_worktree_ahead 569
+printf 'OPEN|' > "$tob_state/issue-probe-569"
+printf '887' > "$tob_state/next-pr-number"
+result=$(run_tob --max-prs 1)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "1" \
+  "(157) a superseded-draft candidate does not consume the --max-prs budget"
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=1 abandoned=0 stale_assigns=0 already_landed=1" \
+  "(157a) counters split the superseded draft from the genuine salvage"
+
 # --- (144) --max-prs must be a non-negative integer ---
 bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
   --default-branch "main" --max-prs "lots" >/dev/null 2>&1
