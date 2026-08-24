@@ -224,8 +224,11 @@
 #     time-gate/event-gate taxonomy: an event gate's eligibility is decided
 #     by a live probe verdict against a `do-work-recheck` marker, and a
 #     "Someday" milestone issue is explicitly the case where no such probe
-#     is expressible (`eval-recheck-probe.sh`'s allowlist covers `npm-view`
-#     and `gh-api` only) — bolting a third "always unknown, never probed"
+#     is expressible (`eval-recheck-probe.sh`'s allowlist covers `npm-view`,
+#     `gh-api`, and -- issue #1496 -- `url-json`, the last of which is
+#     additionally inert until the repo allowlists a host in its committed
+#     `scope.recheck_probe_url_hosts`) -- bolting a third "always unknown,
+#     never probed"
 #     state onto `is_event_gated`/`probe_verdict` would only obscure that
 #     these are two structurally different admission questions ("has the
 #     watched value changed" vs. "has a human moved this out of Someday").

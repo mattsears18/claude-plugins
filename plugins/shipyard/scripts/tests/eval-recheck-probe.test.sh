@@ -7,15 +7,25 @@
 # body text is allowed to influence what command runs. This suite pins:
 #
 #   (A) --decide — pure comparison truth table (unchanged/changed/unknown).
-#   (B) --validate — the allowlist grammar for both verbs, including the
-#       NEGATIVE cases that matter most: unrecognized verbs, wrong token
+#   (B) --validate — the allowlist grammar for all three verbs, including
+#       the NEGATIVE cases that matter most: unrecognized verbs, wrong token
 #       counts, shell-metacharacter / injection-shaped values, and
 #       cross-repo gh-api endpoints.
+#   (B2) --validate — the `url-json` verb (issue #1496) specifically: the
+#       per-repo host allowlist (EMPTY by default, so the verb is inert
+#       until a repo opts in), HTTPS-only, no credentials / port / fragment
+#       / IP-literal host, and the restricted jq filter (one optional
+#       `|length`, nothing else).
 #   (C) extract_marker behavior via the full stdin flow — absent marker,
 #       multiple markers (first wins), malformed marker.
 #   (D) live execution against PATH-stubbed `npm`/`gh` binaries — unchanged,
 #       changed, error (nonzero exit), empty output, and a real bounded
 #       timeout enforcing the `unknown` fallback rather than hanging.
+#   (D2) live execution of `url-json` against a PATH-stubbed `curl` — the
+#       happy path plus EVERY rejected response shape the verb must degrade
+#       to `unknown` on: a 3xx (never followed), a 404, a body that isn't
+#       JSON, a filter that yields `null`, an over-cap response, and a
+#       timeout.
 #   (E) the script is referenced from the operator-sweep doc and the
 #       RATIONALE, and the `scope.recheck_probe_timeout_seconds` /
 #       `scope.recheck_probe_enabled` config knobs exist in both the schema
@@ -100,18 +110,18 @@ OWNER_REPO="mattsears18/shipyard"
 out="$(bash "$SCRIPT" --validate "$OWNER_REPO" "npm-view metro dependencies.image-size == 1.0.0")"
 rc=$?
 assert_equals "valid npm-view: exit 0" "0" "$rc"
-assert_equals "valid npm-view: parsed fields" \
-  "npm-view|metro|dependencies.image-size|1.0.0" "$out"
+assert_equals "valid npm-view: parsed fields (TAB-separated since #1496)" \
+  "npm-view"$'\t'"metro"$'\t'"dependencies.image-size"$'\t'"1.0.0" "$out"
 
 # Positive: valid scoped npm-view package.
 out="$(bash "$SCRIPT" --validate "$OWNER_REPO" "npm-view @babel/core version == 7.20.0")"
 assert_equals "valid scoped npm-view: parsed fields" \
-  "npm-view|@babel/core|version|7.20.0" "$out"
+  "npm-view"$'\t'"@babel/core"$'\t'"version"$'\t'"7.20.0" "$out"
 
 # Positive: valid gh-api scoped to the CURRENT repo.
 out="$(bash "$SCRIPT" --validate "$OWNER_REPO" "gh-api repos/mattsears18/shipyard/issues/42 .state == open")"
 assert_equals "valid gh-api (current repo): parsed fields" \
-  "gh-api|repos/mattsears18/shipyard/issues/42|.state|open" "$out"
+  "gh-api"$'\t'"repos/mattsears18/shipyard/issues/42"$'\t'".state"$'\t'"open" "$out"
 
 # Positive: every allowed gh-api sub-resource shape.
 for sub in "releases/latest" "tags" "commits/abc123" "issues/1" "pulls/1"; do
@@ -159,6 +169,125 @@ assert_equals "gh-api jq-filter-shaped field rejected (no pipes/filters allowed)
 
 bash "$SCRIPT" --validate "$OWNER_REPO" "gh-api repos/mattsears18/shipyard/issues/1 .state == open extra" >/dev/null 2>&1
 assert_equals "gh-api extra trailing token rejected" "1" "$?"
+
+# ---------------------------------------------------------------------------
+echo
+echo "(B2) --validate — the url-json verb (issue #1496)"
+# ---------------------------------------------------------------------------
+# The motivating real-world marker: an App Store customer-reviews RSS count,
+# the case #1496 was filed for. `|length` is the ONE permitted jq operator and
+# is written without spaces so the marker stays exactly five tokens.
+ITUNES_URL="https://itunes.apple.com/us/rss/customerreviews/id=6444444444/sortBy=mostRecent/json"
+
+# The host allowlist is EMPTY by default. That is the security posture, not an
+# oversight: until a repo opts in via its COMMITTED shipyard.config.json, the
+# verb resolves every marker to `unknown` and never makes a request. Pin it
+# here rather than relying on this repo's own config, so the suite stays
+# hermetic either way.
+bash "$SCRIPT" --validate "$OWNER_REPO" "url-json $ITUNES_URL .feed.entry|length == 0" >/dev/null 2>&1
+assert_equals "url-json with an EMPTY host allowlist is rejected (opt-in only)" "1" "$?"
+
+out="$(RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json $ITUNES_URL .feed.entry|length == 0")"
+assert_equals "url-json on an allowlisted host: parsed fields" \
+  "url-json"$'\t'"$ITUNES_URL"$'\t'".feed.entry|length"$'\t'"0" "$out"
+
+out="$(RECHECK_PROBE_URL_HOSTS="ITUNES.APPLE.COM" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json $ITUNES_URL .feed.entry|length == 0" >/dev/null 2>&1; echo $?)"
+assert_equals "url-json host match is case-insensitive" "0" "$out"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json https://probe.example.com/x .a == 1" >/dev/null 2>&1
+assert_equals "url-json on a host NOT in the allowlist is rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="example.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json https://probe.example.com/x .a == 1" >/dev/null 2>&1
+assert_equals "url-json allowlist does NOT imply subdomains (exact match only)" "1" "$?"
+
+# --- Scheme / transport negatives: HTTPS only, always ---
+for bad_url in \
+  "http://itunes.apple.com/x" \
+  "ftp://itunes.apple.com/x" \
+  "file:///etc/passwd" \
+  "//itunes.apple.com/x" \
+  "itunes.apple.com/x" \
+  "HTTPS://itunes.apple.com/x"; do
+  RECHECK_PROBE_URL_HOSTS="itunes.apple.com /etc/passwd" bash "$SCRIPT" --validate "$OWNER_REPO" \
+    "url-json $bad_url .a == 1" >/dev/null 2>&1
+  assert_equals "url-json non-HTTPS URL rejected: $bad_url" "1" "$?"
+done
+
+# --- Host-shape negatives: no credentials, no port, no IP literals ---
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json https://user:pw@itunes.apple.com/x .a == 1" >/dev/null 2>&1
+assert_equals "url-json URL carrying userinfo credentials rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json https://itunes.apple.com:8443/x .a == 1" >/dev/null 2>&1
+assert_equals "url-json URL naming an explicit port rejected" "1" "$?"
+
+for ip in "127.0.0.1" "169.254.169.254" "10.0.0.1" "192.168.1.1"; do
+  RECHECK_PROBE_URL_HOSTS="$ip" bash "$SCRIPT" --validate "$OWNER_REPO" \
+    "url-json https://$ip/latest .a == 1" >/dev/null 2>&1
+  assert_equals "url-json IP-literal host rejected even if allowlisted: $ip" "1" "$?"
+done
+
+RECHECK_PROBE_URL_HOSTS="localhost" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json https://localhost/x .a == 1" >/dev/null 2>&1
+assert_equals "url-json single-label host (localhost) rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json https://itunes.apple.com/x#frag .a == 1" >/dev/null 2>&1
+assert_equals "url-json URL carrying a fragment rejected" "1" "$?"
+
+# --- Injection-shaped negatives ---
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/$(whoami) .a == 1' >/dev/null 2>&1
+assert_equals "url-json command-substitution in the URL rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x;rm -rf /tmp/pwned .a == 1' >/dev/null 2>&1
+assert_equals "url-json shell-metacharacter injection in the URL rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/`id` .a == 1' >/dev/null 2>&1
+assert_equals "url-json backtick command substitution in the URL rejected" "1" "$?"
+
+# A 600-character URL, well past the 500-char cap.
+long_path="$(printf 'a%.0s' $(seq 1 600))"
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  "url-json https://itunes.apple.com/$long_path .a == 1" >/dev/null 2>&1
+assert_equals "url-json over-length URL rejected (500-char cap)" "1" "$?"
+
+# --- jq-filter negatives: one optional `|length`, nothing else ---
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x .a|halt_error == 1' >/dev/null 2>&1
+assert_equals "url-json arbitrary jq pipe (halt_error) rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x .a|length|length == 1' >/dev/null 2>&1
+assert_equals "url-json repeated |length rejected (at most one)" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x env.PATH == x' >/dev/null 2>&1
+assert_equals "url-json jq env access rejected (filter must start with a dot)" "1" "$?"
+
+# --- token-count negatives ---
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x .feed.entry | length == 0' >/dev/null 2>&1
+assert_equals "url-json spaced '| length' rejected (breaks the 5-token shape)" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x .a != 1' >/dev/null 2>&1
+assert_equals "url-json non-'==' comparator rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x .a == 1 extra' >/dev/null 2>&1
+assert_equals "url-json extra trailing token rejected" "1" "$?"
+
+RECHECK_PROBE_URL_HOSTS="itunes.apple.com" bash "$SCRIPT" --validate "$OWNER_REPO" \
+  'url-json https://itunes.apple.com/x .a ==' >/dev/null 2>&1
+assert_equals "url-json missing expected token rejected" "1" "$?"
 
 # ---------------------------------------------------------------------------
 echo
@@ -286,6 +415,92 @@ else
   echo "  (skipping timeout-enforcement test — no timeout/gtimeout binary on PATH)"
 fi
 
+
+# ---------------------------------------------------------------------------
+echo
+echo "(D2) live url-json execution — PATH-stubbed curl (issue #1496)"
+# ---------------------------------------------------------------------------
+# The stub speaks curl's `--write-out '\n%{http_code}'` contract: body, then a
+# final line carrying the HTTP status. Every branch below is a shape the verb
+# must degrade to `unknown` on rather than treating as evidence of change.
+cat > "$tmp_bin/curl" <<'STUB'
+#!/usr/bin/env bash
+url=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--url" ]; then url="$a"; fi
+  prev="$a"
+done
+case "$url" in
+  */ok)       printf '{"feed":{"entry":[1,2,3]}}\n200\n' ;;
+  */zero)     printf '{"feed":{}}\n200\n' ;;
+  */redirect) printf '<html>moved</html>\n302\n' ;;
+  */notfound) printf '\n404\n' ;;
+  */servererr) printf '\n500\n' ;;
+  */badjson)  printf 'not json at all\n200\n' ;;
+  */big)      printf '{"pad":"'; head -c 5000 /dev/zero | tr '\0' 'x'; printf '","n":42}\n200\n' ;;
+  */slow)     sleep 5; printf '{"feed":{"entry":[1]}}\n200\n' ;;
+  *)          printf '\n404\n' ;;
+esac
+STUB
+chmod +x "$tmp_bin/curl"
+
+url_probe() {
+  # $1 = path, $2 = jq filter, $3 = expected value
+  printf '<!-- do-work-recheck: url-json https://probe.example.com%s %s == %s -->\n' "$1" "$2" "$3" \
+    | RECHECK_PROBE_URL_HOSTS="probe.example.com" PATH="$tmp_bin:$PATH" \
+      bash "$SCRIPT" "$OWNER_REPO" 2>/dev/null
+}
+
+assert_equals "url-json 200 + matching value -> unchanged" \
+  "unchanged" "$(url_probe /ok '.feed.entry|length' 3)"
+assert_equals "url-json 200 + differing value -> changed" \
+  "changed" "$(url_probe /ok '.feed.entry|length' 0)"
+assert_equals "url-json 200 with the gated field absent -> length 0 (the real event-gate shape)" \
+  "unchanged" "$(url_probe /zero '.feed.entry|length' 0)"
+assert_equals "url-json 3xx is NOT followed and is NOT accepted -> unknown" \
+  "unknown" "$(url_probe /redirect '.feed.entry|length' 3)"
+assert_equals "url-json 404 -> unknown, never changed" \
+  "unknown" "$(url_probe /notfound '.feed.entry|length' 3)"
+assert_equals "url-json 5xx -> unknown, never changed" \
+  "unknown" "$(url_probe /servererr '.feed.entry|length' 3)"
+assert_equals "url-json body that isn't JSON -> unknown" \
+  "unknown" "$(url_probe /badjson '.feed.entry|length' 3)"
+assert_equals "url-json filter yielding JSON null -> unknown, never a 'null' string compare" \
+  "unknown" "$(url_probe /zero '.missing' 3)"
+
+# Response-size cap: the same ~5 KiB body is fine under the default cap and
+# rejected under a 1 KiB one, so this pins the cap itself rather than the
+# stub's shape.
+assert_equals "url-json under-cap response is read normally" \
+  "unchanged" "$(url_probe /big '.n' 42)"
+out="$(printf '<!-- do-work-recheck: url-json https://probe.example.com/big .n == 42 -->\n' \
+  | RECHECK_PROBE_MAX_BYTES=1000 RECHECK_PROBE_URL_HOSTS="probe.example.com" \
+    PATH="$tmp_bin:$PATH" bash "$SCRIPT" "$OWNER_REPO" 2>/dev/null)"
+assert_equals "url-json over-cap response -> unknown (response-size cap enforced)" "unknown" "$out"
+
+# A host that is not allowlisted must never reach curl at all.
+out="$(printf '<!-- do-work-recheck: url-json https://probe.example.com/ok .feed.entry|length == 3 -->\n' \
+  | PATH="$tmp_bin:$PATH" bash "$SCRIPT" "$OWNER_REPO" 2>/dev/null)"
+assert_equals "url-json non-allowlisted host never runs the probe -> unknown" "unknown" "$out"
+
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  start_ts=$(date +%s)
+  out="$(printf '<!-- do-work-recheck: url-json https://probe.example.com/slow .feed.entry|length == 1 -->\n' \
+    | RECHECK_PROBE_TIMEOUT_SECONDS=1 RECHECK_PROBE_URL_HOSTS="probe.example.com" \
+      PATH="$tmp_bin:$PATH" bash "$SCRIPT" "$OWNER_REPO" 2>/dev/null)"
+  end_ts=$(date +%s)
+  elapsed=$((end_ts - start_ts))
+  assert_equals "url-json timed-out probe -> unknown, never changed/unchanged" "unknown" "$out"
+  if [[ "$elapsed" -le 3 ]]; then
+    assert_pass "url-json timeout enforced — returned in ${elapsed}s, not the stub's full 5s sleep"
+  else
+    assert_fail "url-json timeout enforced — took ${elapsed}s, expected <=3s"
+  fi
+else
+  echo "  (skipping url-json timeout-enforcement test — no timeout/gtimeout binary on PATH)"
+fi
+
 cleanup_tmp_bin
 trap - EXIT
 
@@ -314,6 +529,10 @@ if [[ -f "$CONFIG_SCHEMA" ]]; then
     "schema declares scope.recheck_probe_timeout_seconds"
   assert_contains "$CONFIG_SCHEMA" "recheck_probe_enabled" \
     "schema declares scope.recheck_probe_enabled"
+  assert_contains "$CONFIG_SCHEMA" "recheck_probe_url_hosts" \
+    "schema declares scope.recheck_probe_url_hosts (issue #1496)"
+  assert_contains "$CONFIG_SCHEMA" "recheck_probe_max_bytes" \
+    "schema declares scope.recheck_probe_max_bytes (issue #1496)"
   if command -v jq >/dev/null 2>&1; then
     if jq empty "$CONFIG_SCHEMA" >/dev/null 2>&1; then
       assert_pass "shipyard.config.schema.json is valid JSON after the addition"
@@ -338,6 +557,17 @@ if [[ -f "$CONFIG_SH" ]]; then
   got="$(bash "$CONFIG_SH" get scope.recheck_probe_enabled 2>/dev/null)"
   assert_equals "shipyard-config.sh get scope.recheck_probe_enabled resolves to the built-in default" \
     "true" "$got"
+
+  # The url-json host allowlist defaults to EMPTY on purpose — the verb is
+  # opt-in per repo, and a non-empty default here would silently turn it into
+  # the general-purpose fetch primitive #1496 was explicit about not shipping.
+  got="$(bash "$CONFIG_SH" get scope.recheck_probe_url_hosts 2>/dev/null)"
+  assert_equals "scope.recheck_probe_url_hosts defaults to an EMPTY allowlist (url-json is opt-in)" \
+    "[]" "$got"
+
+  got="$(bash "$CONFIG_SH" get scope.recheck_probe_max_bytes 2>/dev/null)"
+  assert_equals "scope.recheck_probe_max_bytes resolves to the built-in default" \
+    "1048576" "$got"
 else
   assert_fail "shipyard-config.sh exists (missing at $CONFIG_SH)"
 fi

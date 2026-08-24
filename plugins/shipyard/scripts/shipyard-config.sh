@@ -241,7 +241,9 @@ DEFAULTS_JQ='{
     "orchestrator_only_skills": ["shipyard:update-roadmap", "update-roadmap"],
     "external_dependency_recheck_days": 14,
     "recheck_probe_enabled": true,
-    "recheck_probe_timeout_seconds": 15
+    "recheck_probe_timeout_seconds": 15,
+    "recheck_probe_url_hosts": [],
+    "recheck_probe_max_bytes": 1048576
   },
   "decompose": {
     "auto": true,
