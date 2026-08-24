@@ -720,6 +720,48 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                               the terminal `summary:` line, by which point
                               every PR already existed.
 
+                          ALREADY-LANDED PRE-CHECKS (issue #1517). #1518
+                          bounded the blast radius; this is the predicate
+                          that was misfiring. `ahead` compares commits by
+                          SHA IDENTITY, so on a squash-merge repo (the
+                          schema default for auto_merge.method) it is
+                          permanently > 0 for every branch ever landed —
+                          `ahead == 0` is unreachable, the worktree
+                          candidate set never drains, and each leftover
+                          regenerates a duplicate PR every session. Two
+                          CONTENT-aware signals now gate PR creation, in
+                          cost order; either one alone suppresses it:
+                            1. Empty effective diff — `git diff --quiet
+                               origin/<default-branch> HEAD` in the
+                               candidate worktree. Pure local git, no API
+                               call, and on the recorded repros it alone
+                               would have suppressed the large majority.
+                               Provably nothing unique here, so the
+                               worktree AND the local branch are removed.
+                            2. Originating issue (parsed from the
+                               `do-work/issue-<N>` branch name) already
+                               CLOSED **and** linked to a merged PR via
+                               GitHub's own closedByPullRequestsReferences.
+                               One `gh` read, made only when check 1 did
+                               not fire. Catches the class check 1 cannot:
+                               a superseded EARLIER DRAFT, whose diff is
+                               non-empty and whose merge would silently
+                               revert landed work. Weaker evidence, so the
+                               worktree is removed but the branch ref is
+                               KEPT as a safety net.
+                          Both fail CONSERVATIVE — an unreadable signal is
+                          never evidence of staleness, so anything that
+                          cannot be classified is salvaged exactly as
+                          before. Suppression runs BEFORE the --max-prs cap,
+                          so a leftover backlog no longer eats the budget
+                          genuinely-stranded work needs. Worktree removal
+                          here is non-force only (#712): "content already
+                          upstream" describes HEAD, not the working tree.
+                          Emits `[k/N] already-landed <branch> — <why>; ...`
+                          per candidate, one `already-landed: <branch> —
+                          <why>` summary line each, and an
+                          `already_landed=<L>` field on the summary line.
+
 report-unreaped         — Issue #712. Post-sweep verification. Emits one
                           absolute path per line for every agent-* /
                           orchestrator-* worktree still on disk under
@@ -3220,6 +3262,16 @@ reap_stale() {
 # remedy. See usage()'s BLAST-RADIUS BOUNDS block above for the four
 # properties that bound it now (draft-by-default, --max-prs, --dry-run,
 # pre-write progress output).
+#
+# Issue #1517 — already-landed pre-checks. #1518 bounded how much damage a
+# misfiring predicate can do; this is the predicate itself. Every one of
+# those 7 / 13 / 14 salvaged PRs was a duplicate of work already on the
+# default branch, because the `ahead` test compares commits by SHA identity
+# and a squash merge rewrites the sha. Two content-aware signals now gate
+# PR creation — an empty effective diff (pure local git), and an originating
+# issue already CLOSED by a merged PR (one `gh` read) — either of which
+# suppresses the PR and drains the candidate worktree. See the block above
+# the checks themselves for the mechanism and the conservative-failure rule.
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
@@ -3341,9 +3393,21 @@ triage_orphan_branches() {
   local stale_assigns_count=0
   local prs_created=0
   local deferred_count=0
+  local landed_count=0
   local -a failed_pr_lines=()
   local -a stale_assign_lines=()
   local -a deferred_lines=()
+  local -a landed_lines=()
+
+  # Issue #1517 — refresh the remote-tracking ref the already-landed
+  # pre-checks (and the pre-existing `ahead` computation) are measured
+  # against. A stale `origin/<default-branch>` can only make those checks
+  # UNDER-fire — a branch looks diverged from an old base — which is the
+  # conservative direction, so this is an accuracy improvement rather than a
+  # correctness requirement. Deliberately non-fatal and run in --dry-run too,
+  # so the plan a human reads is classified against the same refs the real
+  # sweep would use.
+  git fetch --quiet origin "$default_branch" >/dev/null 2>&1 || true
 
   # Issue #1518 — enumerate the candidate set BEFORE the first write, so the
   # blast radius is knowable up front instead of being reconstructed from the
@@ -3363,6 +3427,7 @@ triage_orphan_branches() {
   fi
 
   local branch path n canonical_branch ahead pushed open_pr
+  local stale_reason stale_action diff_rc issue_probe issue_state closing_pr
   local idx=0
   while IFS= read -r branch; do
     [ -z "$branch" ] && continue
@@ -3393,6 +3458,131 @@ triage_orphan_branches() {
         "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
       fi
       abandoned_count=$((abandoned_count + 1))
+      continue
+    fi
+
+    # ---- Issue #1517 — already-landed pre-checks ------------------------
+    #
+    # `ahead` above cannot see an already-landed branch. `rev-list --count`
+    # compares commits by SHA IDENTITY, and a squash merge — shipyard's own
+    # schema default for `auto_merge.method` — replays the branch's content
+    # under a brand-new sha, so the branch's original commits are never
+    # ancestors of the default branch. `ahead > 0` is therefore permanently
+    # true for every branch a squash-merge repo ever landed, `ahead == 0` is
+    # unreachable, and the candidate set (which is `git worktree list`, not
+    # remote refs) never drains: it grows by one per shipped issue and was
+    # only ever emptied by an arm that cannot fire. One branch regenerated a
+    # duplicate PR once per session for three consecutive sessions this way,
+    # and each session did the locally-correct thing — close the stale PR —
+    # which leaves the generator fully intact. The loop is stable under
+    # attention, which is why it ran for days.
+    #
+    # Two CONTENT-aware signals replace that commit-identity test, checked in
+    # cost order. Either one alone suppresses the PR. Both fail
+    # CONSERVATIVE: an unreadable signal is never treated as evidence of
+    # staleness, so anything this cannot classify is salvaged exactly as
+    # before. The failure mode being fixed is confidently opening a
+    # definitely-stale PR — not possibly missing one.
+    #
+    # Suppression happens BEFORE the `--max-prs` cap is consulted, so a
+    # backlog of already-landed leftovers no longer consumes the cap budget
+    # that genuinely-stranded work needs.
+    stale_reason=""
+    stale_action=""
+
+    # Check 1 — empty effective diff. Pure local git, no API call, and on
+    # the recorded repros it alone would have suppressed the large majority,
+    # which is why it is ordered first. A tree identical to the default
+    # branch's means this branch's content is already upstream however it got
+    # there (squash, rebase, cherry-pick, or a sibling PR that landed the
+    # same change). `git diff --quiet` exits 0 for "no difference", 1 for
+    # "differs", and >1 for an error — only the literal 0 is treated as
+    # evidence.
+    git -C "$path" diff --quiet "origin/${default_branch}" HEAD >/dev/null 2>&1
+    diff_rc=$?
+    if [ "$diff_rc" -eq 0 ]; then
+      stale_reason="content already upstream (empty diff vs $default_branch)"
+      # Provably nothing unique in the history here: the branch's tree IS the
+      # default branch's tree. Same evidence standard the `ahead == 0` arm
+      # relies on, so it earns the same cleanup — and that cleanup is the
+      # half that makes the candidate set actually drain. Suppressing the PR
+      # alone would only convert an unbounded PR generator into an unbounded
+      # no-op loop that still re-scans every leftover worktree every session.
+      stale_action="remove-worktree-and-branch"
+    fi
+
+    # Check 2 — originating issue already CLOSED by a merged PR. One `gh`
+    # read, made only when check 1 did not already fire, and candidates are
+    # rare by construction. `closedByPullRequestsReferences` is GitHub's own
+    # canonical "these PRs closed this issue" link, so this needs no body
+    # substring search. Requires BOTH halves: a closed issue on its own can
+    # be a `not planned` close with the branch's work still unlanded, whereas
+    # closed-BY-a-merged-PR is near-conclusive that this branch is a
+    # leftover.
+    #
+    # This catches the class check 1 structurally cannot: a branch that is a
+    # SUPERSEDED EARLIER DRAFT of work that landed in a better form. Those
+    # have a NON-empty diff, and merging one is a silent revert of landed
+    # work — which is why this guard is not merely a dispatch-budget
+    # optimization.
+    if [ -z "$stale_reason" ]; then
+      case "$n" in
+        ''|*[!0-9]*)
+          # The branch name did not yield an issue number (sed passes the
+          # input through unchanged on no-match), so there is nothing to
+          # look up. Unreadable signal -> not stale.
+          ;;
+        *)
+          issue_probe=$("$GH" issue view "$n" --repo "$repo" \
+            --json state,closedByPullRequestsReferences \
+            --jq '(.state // "") + "|" + ((.closedByPullRequestsReferences // []) | map(.number|tostring) | first // "")' 2>/dev/null)
+          issue_state="${issue_probe%%|*}"
+          closing_pr="${issue_probe#*|}"
+          if [ "$issue_state" = "CLOSED" ] && [ -n "$closing_pr" ] && [ "$closing_pr" != "$issue_probe" ]; then
+            stale_reason="issue #$n CLOSED, work merged as PR #$closing_pr"
+            # WEAKER evidence than check 1: the diff is non-empty, so these
+            # commits are NOT provably reachable from the default branch.
+            # Drain the candidate set — which is `git worktree list`, so
+            # removing the worktree is what makes the loop terminate — but
+            # KEEP the branch ref as a safety net. That is exactly the
+            # remediation a maintainer applied by hand across 28 leftover
+            # worktrees: the refs are inert once no worktree points at them.
+            stale_action="remove-worktree-only"
+          fi
+          ;;
+      esac
+    fi
+
+    if [ -n "$stale_reason" ]; then
+      # #1518's pre-write progress contract: the classification is printed
+      # before any write, and unconditionally — so `--dry-run` renders the
+      # full per-candidate verdict a human can audit, rather than the
+      # classification only becoming visible once the real sweep has acted.
+      if [ "$stale_action" = "remove-worktree-and-branch" ]; then
+        printf '[%s/%s] already-landed %s — %s; no PR opened, removing worktree + branch\n' \
+          "$idx" "$total" "$canonical_branch" "$stale_reason"
+      else
+        printf '[%s/%s] already-landed %s — %s; no PR opened, removing worktree (branch kept)\n' \
+          "$idx" "$total" "$canonical_branch" "$stale_reason"
+      fi
+      if [ "$dry_run" -eq 0 ]; then
+        # Non-force ONLY — issue #712's "force only behind evidence" rule.
+        # Unlike the `ahead == 0` arm above, "content already upstream" is a
+        # statement about HEAD, not about the working tree: a dirty worktree
+        # here may hold edits that exist nowhere else. A refusal is therefore
+        # respected and reported rather than escalated to --force.
+        if git worktree remove "$path" >/dev/null 2>&1; then
+          if [ "$stale_action" = "remove-worktree-and-branch" ]; then
+            git branch -D "$branch" >/dev/null 2>&1
+          fi
+          "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+        else
+          printf '[%s/%s] already-landed %s — worktree NOT removed (dirty or locked); left in place for a human\n' \
+            "$idx" "$total" "$canonical_branch"
+        fi
+      fi
+      landed_lines+=("$canonical_branch — $stale_reason")
+      landed_count=$((landed_count + 1))
       continue
     fi
 
@@ -3544,6 +3734,9 @@ triage_orphan_branches() {
   for x in "${stale_assign_lines[@]+"${stale_assign_lines[@]}"}"; do
     printf 'stale-assign: %s\n' "$x"
   done
+  for x in "${landed_lines[@]+"${landed_lines[@]}"}"; do
+    printf 'already-landed: %s\n' "$x"
+  done
   for x in "${deferred_lines[@]+"${deferred_lines[@]}"}"; do
     printf 'deferred: %s\n' "$x"
   done
@@ -3552,8 +3745,8 @@ triage_orphan_branches() {
       "$deferred_count" "$max_prs"
   fi
 
-  printf 'summary: salvaged=%s abandoned=%s stale_assigns=%s\n' \
-    "$salvaged_count" "$abandoned_count" "$stale_assigns_count"
+  printf 'summary: salvaged=%s abandoned=%s stale_assigns=%s already_landed=%s\n' \
+    "$salvaged_count" "$abandoned_count" "$stale_assigns_count" "$landed_count"
   return 0
 }
 
