@@ -40,7 +40,10 @@
 #     Runs, in order: (1) the dependency-wait discriminator (extracts every
 #     `Blocked by #N` reference from --reason and the issue's current body,
 #     checks each referenced issue/PR's state, first OPEN one wins); (2)
-#     the operator check (`external provisioning required` substring); (3)
+#     the operator check (`external provisioning required` OR `irreversible
+#     external action` substring — the latter is #1519's worker-side
+#     irreversible-external-action gate handing back a delete / access-
+#     widening it refused to execute); (3)
 #     refuse-vs-soft classification per the fragment table, with (3a) the
 #     #1279 decision-freshness check suppressing a redundant re-gate when a
 #     decision was already recorded after the LAST refuse-escalation
@@ -141,14 +144,27 @@ ${issue_body}" 2>/dev/null || true
       exit 0
     fi
 
+    # --- Operator subset → agent-console (#628 provisioning, #1519 gate). ---
+    # Both substrings name a concrete browser/console action a worker
+    # deliberately did NOT perform, not a human judgment call: #628 is "the
+    # external service isn't provisioned yet"; #1519 is "this would
+    # irreversibly mutate live external state, so I handed back the exact
+    # command instead of running it". Same destination — the orchestrator's
+    # operator phase drains it, `/my-turn` surfaces it — so they share a
+    # branch rather than duplicating the label/comment machinery.
+    operator_note=""
     if grep -qi "external provisioning required" <<< "$reason"; then
-      # --- Operator subset → agent-console (#628). ---
+      operator_note="provisioning an external service is a browser/console operator action"
+    elif grep -qi "irreversible external action" <<< "$reason"; then
+      operator_note="the worker refused to irreversibly mutate live external state and handed back the exact command (#1519) — an operator action, not a human decision"
+    fi
+    if [ -n "$operator_note" ]; then
       "$GH" label create agent-console --repo "$repo" \
         --description "Blocked on a browser/console action an agent can drive outside the build — not a human decision. See CLAUDE.md's decision rule." \
         --color 1D76DB 2>/dev/null || true
       "$GH" issue edit "$issue" --repo "$repo" --add-label "agent-console" 2>/dev/null || true
       "$GH" issue comment "$issue" --repo "$repo" \
-        --body "Worker returned blocked: ${reason}. Classified as \`agent-console\` — provisioning an external service is a browser/console operator action. Surfaced by \`/my-turn\`; drainable by \`/do-work\`." 2>/dev/null || true
+        --body "Worker returned blocked: ${reason}. Classified as \`agent-console\` — ${operator_note}. Surfaced by \`/my-turn\`; drainable by \`/do-work\`." 2>/dev/null || true
       echo "class=operator label=agent-console"
       exit 0
     fi

@@ -177,6 +177,29 @@ assert_contains "$ghlog" "agent-console" "agent-console label applied"
 
 # --------------------------------------------------------------------------
 echo
+echo "operator: irreversible external action -> agent-console (#1519)"
+# --------------------------------------------------------------------------
+# The worker-side irreversible-external-action gate hands back the exact
+# command instead of running it. That is a queued operator action, NOT a
+# human decision — routing it to needs-human-review (the table's conservative
+# refuse default) would park a perfectly drainable item in the human-only
+# queue, which /my-turn deliberately filters agent-console out of.
+echo "" > "${WORK}/issue.121.body"
+: > "$GH_LOG"
+out="$(GH="$GH_MOCK" bash "$script" classify \
+  --repo o/r --issue 121 --reason "irreversible external action — delete the EXPO_PUBLIC_FCM_WEB_VAPID_KEY production row on vercel; handed back rather than executed. exact command: \`vercel env rm EXPO_PUBLIC_FCM_WEB_VAPID_KEY production\`" 2>&1)"
+assert_contains "$out" "class=operator label=agent-console" "irreversible-external-action bail routes to agent-console (#1519)"
+ghlog="$(cat "$GH_LOG")"
+assert_contains "$ghlog" "agent-console" "agent-console label applied for the #1519 gate bail"
+
+# The comment must explain WHY it is an operator item, not reuse the
+# provisioning wording — a maintainer reading the issue needs to know a
+# worker deliberately declined the action, not that a service is unprovisioned.
+assert_contains "$ghlog" "irreversibly mutate live external state" \
+  "comment explains the #1519 hand-back rather than the #628 provisioning case"
+
+# --------------------------------------------------------------------------
+echo
 echo "soft: cannot reproduce -> blocked:agent-soft"
 # --------------------------------------------------------------------------
 echo "" > "${WORK}/issue.13.body"

@@ -262,6 +262,28 @@
 # four existing items before the raise; the file had 0 bytes of headroom
 # after #1334's raise, so even the trimmed bullet needed the bump.
 #
+# skills/worker-preamble/SKILL.md's ceiling was raised 67000 -> 68000 by
+# #1519 (2026-08-24): a new always-loaded "Never irreversibly mutate live
+# external state — hand it back" section, plus its on-demand fragment's row
+# in the fragment index. A worker deleted a Vercel Production env var while
+# its own fix PR was still open — contradicting an explicit sequencing rule
+# in that repo's CLAUDE.md — and justified the deviation only afterwards, in
+# its return string. The rule cannot live behind a fragment stub alone: it
+# has to be in context at the moment the worker forms the intent to run the
+# command, and there is no trigger condition a stub could gate on (the whole
+# failure mode is that the action feels justified). The section is trimmed
+# to the terseness of the neighbouring "Never create a credential" rule and
+# defers the taxonomy, carve-outs, and worked hand-back string to
+# irreversible-external-action.md; the file had ~1073 bytes of headroom left
+# after #1240's raise, and the section plus the index row needed the bump.
+#
+# issue-work.md was NOT raised for #1519 (2026-08-24) — its one-line Don't-
+# section mirror (the same shape #1166 added for "Never create a credential",
+# repeated across all seven per-mode files) landed it at EXACTLY 130000
+# bytes, i.e. zero headroom against the current ceiling. Noted here so the
+# next editor of that file knows a red from this suite is expected on any
+# addition, not a mystery: trim first, and raise only with a reason.
+#
 # This file became the SOLE owner of these ceiling assertions by #1177
 # (2026-08-09): commit-before-yield-1054.test.sh and
 # detect-ci-gate-narrowing.test.sh had each grown their own mirrored copy of
@@ -326,7 +348,7 @@ assert_under_budget \
 
 assert_under_budget \
   "$plugin_root/skills/worker-preamble/SKILL.md" \
-  67000 \
+  68000 \
   "skills/worker-preamble/SKILL.md"
 
 assert_under_budget \
