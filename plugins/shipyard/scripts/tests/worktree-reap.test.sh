@@ -2539,21 +2539,21 @@ run_tob() {
   TOB_GH_LOG="$tob_gh_log" TOB_STATE="$tob_state" \
     GH="$tob_gh" WORKTREE_REAP_VERDICT_OVERRIDE="${TOB_VERDICT:-gated}" \
     bash "$helper" triage-orphan-branches \
-    --repo-root "$tob_repo" --repo "o/r" --default-branch "main" 2>/dev/null
+    --repo-root "$tob_repo" --repo "o/r" --default-branch "main" "$@" 2>/dev/null
 }
 
 # --- (130) no do-work/* worktrees at all -> zeroed summary ---
 reset_tob_layout
 result=$(run_tob)
-assert_equals "$result" "summary: salvaged=0 abandoned=0 stale_assigns=0" \
-  "(130) no do-work/* worktrees -> zeroed summary line"
+assert_equals "$result" "$(printf 'candidates: 0\nsummary: salvaged=0 abandoned=0 stale_assigns=0')" \
+  "(130) no do-work/* worktrees -> candidates header + zeroed summary line"
 
 # --- (131) no commits beyond base -> removed + branch deleted + assignee cleared ---
 reset_tob_layout
 tob_add_worktree 501
 result=$(run_tob)
-assert_equals "$result" "summary: salvaged=0 abandoned=1 stale_assigns=0" \
-  "(131) no-commits-beyond-base worktree -> abandoned=1"
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] abandon do-work/issue-501 — no commits beyond main\nsummary: salvaged=0 abandoned=1 stale_assigns=0')" \
+  "(131) no-commits-beyond-base worktree -> abandoned=1, with a pre-write progress line (#1518)"
 if [ -d "$tob_repo/.claude/worktrees/agent-501" ]; then
   printf '  %sFAIL%s  (131a) abandoned worktree directory still exists\n' "$RED" "$RESET"
   fail=$((fail+1))
@@ -2568,46 +2568,64 @@ esac
 assert_equals "$assignee_cleared" "1" \
   "(131b) abandoned worktree's issue @me assignment was cleared"
 
-# --- (132) commits ahead, unpushed, no PR yet, gated repo -> pushed + PR created + auto-merge armed ---
+# --- (132) commits ahead, unpushed, no PR yet -> pushed + DRAFT PR created, NOT armed (#1518 default) ---
 reset_tob_layout
 tob_add_worktree_ahead 502
 printf '600' > "$tob_state/next-pr-number"
 result=$(TOB_VERDICT=gated run_tob)
-assert_equals "$result" "summary: salvaged=1 abandoned=0 stale_assigns=0" \
-  "(132) unpushed commits-ahead worktree, no PR yet -> salvaged=1"
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] salvage do-work/issue-502 — push + open PR (draft, auto-merge NOT armed)\n[setup-3c] PR #600 opened as a DRAFT, auto-merge NOT armed (#1518) — a human marks it ready after auditing the salvaged branch\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
+  "(132) unpushed commits-ahead worktree, no PR yet -> salvaged=1, draft-posture output shape (#1518)"
 case "$(cat "$tob_gh_log")" in
-  *"GH-CALL: pr create --repo o/r --head do-work/issue-502 --fill --label shipyard"*) pr_created=1 ;;
+  *"GH-CALL: pr create --repo o/r --head do-work/issue-502 --draft --fill --label shipyard"*) pr_created=1 ;;
   *) pr_created=0 ;;
 esac
 assert_equals "$pr_created" "1" \
-  "(132a) PR was created via gh pr create --fill --label shipyard"
-case "$(cat "$tob_gh_log")" in
-  *"GH-CALL: pr merge 600 --repo o/r --auto --squash --delete-branch"*) merge_armed=1 ;;
-  *) merge_armed=0 ;;
-esac
-assert_equals "$merge_armed" "1" \
-  "(132b) gated repo -> auto-merge armed via gh pr merge --auto"
-pushed_ref=$(git -C "$tob_origin" show-ref --verify --quiet refs/heads/do-work/issue-502 && echo yes || echo no)
-assert_equals "$pushed_ref" "yes" \
-  "(132c) unpushed branch was pushed to origin under its canonical name"
-
-# --- (133) same, but ungated repo -> PR created, NOT armed, literal [setup-3c] line survives ---
-reset_tob_layout
-tob_add_worktree_ahead 503
-printf '601' > "$tob_state/next-pr-number"
-result=$(TOB_VERDICT=ungated run_tob)
-case "$result" in
-  *"[setup-3c] PR #601 left unarmed (ungated repo) — deferred to drain's merge lander (#720)"*) ungated_line_ok=1 ;;
-  *) ungated_line_ok=0 ;;
-esac
-assert_equals "$ungated_line_ok" "1" \
-  "(133) ungated repo -> the literal setup-3c unarmed-PR line survives byte-for-byte"
+  "(132a) #1518 default -> PR created via gh pr create --draft --fill --label shipyard"
 case "$(cat "$tob_gh_log")" in
   *"pr merge"*) merge_called=1 ;;
   *) merge_called=0 ;;
 esac
 assert_equals "$merge_called" "0" \
-  "(133a) ungated repo -> gh pr merge is never called"
+  "(132b) #1518 default -> gh pr merge is never called; a draft PR cannot auto-merge"
+pushed_ref=$(git -C "$tob_origin" show-ref --verify --quiet refs/heads/do-work/issue-502 && echo yes || echo no)
+assert_equals "$pushed_ref" "yes" \
+  "(132c) unpushed branch was pushed to origin under its canonical name"
+
+# --- (132d) --arm-auto-merge opt-in restores the pre-#1518 posture: ready PR + armed ---
+reset_tob_layout
+tob_add_worktree_ahead 512
+printf '610' > "$tob_state/next-pr-number"
+result=$(TOB_VERDICT=gated run_tob --arm-auto-merge)
+case "$(cat "$tob_gh_log")" in
+  *"GH-CALL: pr create --repo o/r --head do-work/issue-512 --fill --label shipyard"*) pr_created=1 ;;
+  *) pr_created=0 ;;
+esac
+assert_equals "$pr_created" "1" \
+  "(132d) --arm-auto-merge -> PR created WITHOUT --draft"
+case "$(cat "$tob_gh_log")" in
+  *"GH-CALL: pr merge 610 --repo o/r --auto --squash --delete-branch"*) merge_armed=1 ;;
+  *) merge_armed=0 ;;
+esac
+assert_equals "$merge_armed" "1" \
+  "(132e) --arm-auto-merge on a gated repo -> auto-merge armed via gh pr merge --auto"
+
+# --- (133) --arm-auto-merge on an ungated repo -> PR created, NOT armed, literal [setup-3c] line survives ---
+reset_tob_layout
+tob_add_worktree_ahead 503
+printf '601' > "$tob_state/next-pr-number"
+result=$(TOB_VERDICT=ungated run_tob --arm-auto-merge)
+case "$result" in
+  *"[setup-3c] PR #601 left unarmed (ungated repo) — deferred to drain's merge lander (#720)"*) ungated_line_ok=1 ;;
+  *) ungated_line_ok=0 ;;
+esac
+assert_equals "$ungated_line_ok" "1" \
+  "(133) --arm-auto-merge + ungated repo -> the literal setup-3c unarmed-PR line survives byte-for-byte"
+case "$(cat "$tob_gh_log")" in
+  *"pr merge"*) merge_called=1 ;;
+  *) merge_called=0 ;;
+esac
+assert_equals "$merge_called" "0" \
+  "(133a) --arm-auto-merge + ungated repo -> gh pr merge is never called"
 
 # --- (134) merge-arm call hits the missing-workflow-scope signature -> literal blocked line survives ---
 reset_tob_layout
@@ -2621,7 +2639,7 @@ printf '602' > "$tob_state/next-pr-number"
 # scope"` check matches against.
 printf 'GraphQL: refusing to allow an OAuth App to update .github/workflows/ci.yml without `workflow` scope (enablePullRequestAutoMerge)' \
   > "$tob_state/merge-stderr-602"
-result=$(TOB_VERDICT=gated run_tob)
+result=$(TOB_VERDICT=gated run_tob --arm-auto-merge)
 case "$result" in
   *"[setup-3c] PR #602 auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"*) blocked_line_ok=1 ;;
   *) blocked_line_ok=0 ;;
@@ -2641,7 +2659,7 @@ case "$result" in
 esac
 assert_equals "$failed_pr_ok" "1" \
   "(135) already-open PR with a red rollup -> 'failed-pr: 700' line"
-assert_equals "$result" "$(printf 'failed-pr: 700\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] existing-pr do-work/issue-505 — PR #700 already open, reading its status rollup\nfailed-pr: 700\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
   "(135a) full output shape matches exactly"
 case "$(cat "$tob_gh_log")" in
   *"pr create"*) dup_pr_created=1 ;;
@@ -2656,7 +2674,7 @@ tob_add_worktree_ahead 506 --push
 printf '701' > "$tob_state/pr-for-do-work_issue-506"
 printf '0' > "$tob_state/rollup-701"
 result=$(run_tob)
-assert_equals "$result" "summary: salvaged=1 abandoned=0 stale_assigns=0" \
+assert_equals "$result" "$(printf 'candidates: 1\n[1/1] existing-pr do-work/issue-506 — PR #701 already open, reading its status rollup\nsummary: salvaged=1 abandoned=0 stale_assigns=0')" \
   "(136) already-open PR with a clean rollup -> no failed-pr line, salvaged=1"
 
 # --- (137) row 5: backlog.self_assign=true, stale @me issue with no worktree/PR/branch -> stale-assign line ---
@@ -2670,7 +2688,7 @@ case "$result" in
 esac
 assert_equals "$stale_assign_ok" "1" \
   "(137) backlog.self_assign=true, orphaned @me issue -> 'stale-assign: 808' line"
-assert_equals "$result" "$(printf 'stale-assign: 808\nsummary: salvaged=0 abandoned=0 stale_assigns=1')" \
+assert_equals "$result" "$(printf 'candidates: 0\n[row5] clear-stale-assign #808\nstale-assign: 808\nsummary: salvaged=0 abandoned=0 stale_assigns=1')" \
   "(137a) full output shape matches exactly"
 case "$(cat "$tob_gh_log")" in
   *"GH-CALL: issue edit 808 --repo o/r --remove-assignee @me"*) row5_cleared=1 ;;
@@ -2683,7 +2701,7 @@ assert_equals "$row5_cleared" "1" \
 reset_tob_layout
 printf '809\n' > "$tob_state/self-assign-list"
 result=$(run_tob)
-assert_equals "$result" "summary: salvaged=0 abandoned=0 stale_assigns=0" \
+assert_equals "$result" "$(printf 'candidates: 0\nsummary: salvaged=0 abandoned=0 stale_assigns=0')" \
   "(138) backlog.self_assign unset (default false) -> stale_assigns=0"
 case "$(cat "$tob_gh_log")" in
   *"issue list"*) row5_queried=1 ;;
@@ -2702,6 +2720,160 @@ assert_exit_code "$?" "64" \
 bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" >/dev/null 2>&1
 assert_exit_code "$?" "64" \
   "(139b) triage-orphan-branches missing --default-branch -> exit 64"
+
+# ============================================================================
+# Issue #1518 — blast-radius bounds: the --max-prs cap, --dry-run, and the
+# pre-write progress output. Three sessions in three days had this sweep open
+# 7 / 13 / 14 auto-merge-armed PRs in one uninterrupted unattended pass, one
+# of which auto-merged into `main` before setup had finished. The tests below
+# pin each of the four properties that bound it.
+# ============================================================================
+
+echo
+echo "worktree-reap.sh triage-orphan-branches blast-radius bounds (issue #1518)"
+echo
+
+# --- (140) --max-prs caps PR creation and reports the un-actioned remainder ---
+reset_tob_layout
+tob_add_worktree_ahead 520
+tob_add_worktree_ahead 521
+tob_add_worktree_ahead 522
+printf '800' > "$tob_state/next-pr-number"
+result=$(run_tob --max-prs 1)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "1" \
+  "(140) --max-prs 1 with 3 salvage candidates -> exactly 1 PR created"
+case "$result" in
+  *"cap-reached: 2 candidate(s) remaining, not actioned; re-run or raise --max-prs (current: 1)"*) cap_line_ok=1 ;;
+  *) cap_line_ok=0 ;;
+esac
+assert_equals "$cap_line_ok" "1" \
+  "(140a) cap reached -> the cap-reached remediation line is emitted"
+deferred_lines=$(printf '%s\n' "$result" | grep -c '^deferred: ' || true)
+assert_equals "$deferred_lines" "2" \
+  "(140b) cap reached -> one 'deferred: <branch>' line per un-actioned candidate"
+case "$result" in
+  *"--max-prs cap (1) reached, no writes"*) deferred_progress_ok=1 ;;
+  *) deferred_progress_ok=0 ;;
+esac
+assert_equals "$deferred_progress_ok" "1" \
+  "(140c) a deferred candidate gets a progress line naming the cap as the reason"
+# The deferred candidates must be left completely untouched — no branch on
+# origin, so a later re-run picks them up from exactly where they were.
+pushed_count=0
+for tob_n in 520 521 522; do
+  git -C "$tob_origin" show-ref --verify --quiet "refs/heads/do-work/issue-$tob_n" \
+    && pushed_count=$((pushed_count + 1))
+done
+assert_equals "$pushed_count" "1" \
+  "(140d) cap reached -> only the actioned candidate's branch was pushed"
+
+# --- (141) --max-prs 0 means unlimited (explicit opt-in) ---
+reset_tob_layout
+tob_add_worktree_ahead 530
+tob_add_worktree_ahead 531
+tob_add_worktree_ahead 532
+tob_add_worktree_ahead 533
+printf '810' > "$tob_state/next-pr-number"
+result=$(run_tob --max-prs 0)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "4" \
+  "(141) --max-prs 0 -> unlimited; all 4 candidates actioned"
+case "$result" in
+  *"cap-reached:"*) cap_line_present=1 ;;
+  *) cap_line_present=0 ;;
+esac
+assert_equals "$cap_line_present" "0" \
+  "(141a) --max-prs 0 -> no cap-reached line"
+
+# --- (141b) the default cap is 3, not unlimited ---
+reset_tob_layout
+tob_add_worktree_ahead 540
+tob_add_worktree_ahead 541
+tob_add_worktree_ahead 542
+tob_add_worktree_ahead 543
+tob_add_worktree_ahead 544
+printf '820' > "$tob_state/next-pr-number"
+result=$(run_tob)
+created=$(grep -c "GH-CALL: pr create" "$tob_gh_log" || true)
+assert_equals "$created" "3" \
+  "(141b) no --max-prs flag -> the default cap of 3 applies"
+
+# --- (142) --dry-run performs no writes at all ---
+reset_tob_layout
+tob_add_worktree 550           # abandon candidate
+tob_add_worktree_ahead 551     # salvage candidate
+printf '830' > "$tob_state/next-pr-number"
+result=$(run_tob --dry-run)
+case "$result" in
+  *"dry-run: no writes will be performed"*) dry_marker_ok=1 ;;
+  *) dry_marker_ok=0 ;;
+esac
+assert_equals "$dry_marker_ok" "1" \
+  "(142) --dry-run announces itself before the per-candidate plan"
+if [ -d "$tob_repo/.claude/worktrees/agent-550" ]; then
+  printf '  %sPASS%s  (142a) --dry-run left the abandon candidate'"'"'s worktree on disk\n' "$GREEN" "$RESET"
+  pass=$((pass+1))
+else
+  printf '  %sFAIL%s  (142a) --dry-run removed a worktree\n' "$RED" "$RESET"
+  fail=$((fail+1))
+fi
+case "$(cat "$tob_gh_log")" in
+  *"pr create"*) dry_pr_created=1 ;;
+  *) dry_pr_created=0 ;;
+esac
+assert_equals "$dry_pr_created" "0" \
+  "(142b) --dry-run never calls gh pr create"
+case "$(cat "$tob_gh_log")" in
+  *"issue edit"*) dry_issue_edited=1 ;;
+  *) dry_issue_edited=0 ;;
+esac
+assert_equals "$dry_issue_edited" "0" \
+  "(142c) --dry-run never clears an @me assignment"
+dry_pushed=$(git -C "$tob_origin" show-ref --verify --quiet refs/heads/do-work/issue-551 && echo yes || echo no)
+assert_equals "$dry_pushed" "no" \
+  "(142d) --dry-run never pushes a salvage candidate's branch"
+# The counters still report what WOULD happen — that's the point of the plan.
+assert_equals "$(printf '%s\n' "$result" | tail -n 1)" \
+  "summary: salvaged=1 abandoned=1 stale_assigns=0" \
+  "(142e) --dry-run still reports the counters it would have produced"
+
+# --- (142f) --dry-run suppresses the row-5 stale-assign write but still reports it ---
+reset_tob_layout
+printf '{"version":1,"backlog":{"self_assign":true}}' > "$tob_repo/shipyard.config.json"
+printf '888\n' > "$tob_state/self-assign-list"
+result=$(run_tob --dry-run)
+case "$result" in
+  *"stale-assign: 888"*) dry_row5_reported=1 ;;
+  *) dry_row5_reported=0 ;;
+esac
+assert_equals "$dry_row5_reported" "1" \
+  "(142f) --dry-run still reports the row-5 stale assignment it would clear"
+case "$(cat "$tob_gh_log")" in
+  *"issue edit"*) dry_row5_wrote=1 ;;
+  *) dry_row5_wrote=0 ;;
+esac
+assert_equals "$dry_row5_wrote" "0" \
+  "(142g) --dry-run does not actually clear the row-5 stale assignment"
+
+# --- (143) the candidates: header precedes every write ---
+reset_tob_layout
+tob_add_worktree_ahead 560
+tob_add_worktree_ahead 561
+printf '840' > "$tob_state/next-pr-number"
+result=$(run_tob)
+assert_equals "$(printf '%s\n' "$result" | head -n 1)" "candidates: 2" \
+  "(143) the blast radius is announced as the FIRST line, before any write"
+
+# --- (144) --max-prs must be a non-negative integer ---
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
+  --default-branch "main" --max-prs "lots" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(144) triage-orphan-branches --max-prs <non-integer> -> exit 64"
+bash "$helper" triage-orphan-branches --repo-root "$tob_repo" --repo "o/r" \
+  --default-branch "main" --max-prs "-1" >/dev/null 2>&1
+assert_exit_code "$?" "64" \
+  "(144a) triage-orphan-branches --max-prs -1 -> exit 64"
 
 echo
 if (( fail > 0 )); then

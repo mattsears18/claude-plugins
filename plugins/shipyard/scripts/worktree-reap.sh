@@ -564,7 +564,9 @@ Usage:
                                         --session-id <id> [--dry-run]
   worktree-reap.sh triage-orphan-branches --repo-root <path> \
                                           --repo <owner/repo> \
-                                          --default-branch <name>
+                                          --default-branch <name> \
+                                          [--max-prs <N>] [--dry-run] \
+                                          [--arm-auto-merge]
   worktree-reap.sh report-unreaped --repo-root <path> \
                                    [--current-session-id <id>]
   worktree-reap.sh reap --action <reaped|deferred|reaped-orphan-orchestrator|reaped-failed> \
@@ -687,6 +689,36 @@ triage-orphan-branches  — Issue #1365, follow-up to #1355. Single-call
                           required. See triage_orphan_branches()'s own
                           docstring immediately above its definition for the
                           full per-row state table and output contract.
+
+                          BLAST-RADIUS BOUNDS (issue #1518). This subcommand
+                          is the only setup-phase sweep that makes unbounded
+                          outward-facing writes, and it runs before the first
+                          worker is dispatched. Four properties bound it:
+                            * A salvaged PR is opened as a DRAFT with
+                              auto-merge NOT armed. A draft PR cannot
+                              auto-merge at all, so an unreviewed prior-
+                              session branch can never reach the default
+                              branch on its own. `--arm-auto-merge` restores
+                              the pre-#1518 posture (ready PR, detector-gated
+                              arm) and must be typed explicitly.
+                            * `--max-prs <N>` (default 3) caps how many PRs
+                              ONE invocation may open. On hitting the cap the
+                              sweep stops writing, emits one `deferred: <br>`
+                              line per un-actioned candidate plus a single
+                              `cap-reached: ...` line, and leaves those
+                              worktrees untouched for a later re-run.
+                              `--max-prs 0` means unlimited (explicit opt-in).
+                            * `--dry-run` prints the candidate list and the
+                              intended action per branch and performs NO
+                              writes at all — no worktree remove, no branch
+                              delete, no push, no PR create, no assignee
+                              edit. Counters still report what WOULD happen.
+                            * Progress is emitted BEFORE each write, not
+                              after: a `candidates: <N>` header up front, then
+                              one `[k/N] <action> <branch> — <why>` line per
+                              candidate. The former output was silent until
+                              the terminal `summary:` line, by which point
+                              every PR already existed.
 
 report-unreaped         — Issue #712. Post-sweep verification. Emits one
                           absolute path per line for every agent-* /
@@ -3177,10 +3209,28 @@ reap_stale() {
 # subcommand. That stale text is the most likely reason issue #1482's
 # reporter invoked `sweep-stale-agents` against a version that no longer
 # has it. Fixed in #1482.)
+#
+# Issue #1518 — blast radius. Three sessions in three days had this sweep
+# open 7, 13, and 14 auto-merge-armed PRs in a single uninterrupted pass,
+# before a single worker had been dispatched; on 2026-08-24 one of them
+# (#1533) auto-merged into `main` while setup was still running. The sweep
+# also reliably exceeds the caller's 120s foreground timeout and gets moved
+# to the background, so it keeps writing after its tool call has returned —
+# which means "interrupt it when it looks wrong" is not an available
+# remedy. See usage()'s BLAST-RADIUS BOUNDS block above for the four
+# properties that bound it now (draft-by-default, --max-prs, --dry-run,
+# pre-write progress output).
 triage_orphan_branches() {
   local repo_root=""
   local repo=""
   local default_branch=""
+  # Issue #1518 — blast-radius bounds. Defaults are deliberately conservative:
+  # a genuinely stranded-work backlog is small by construction, so a LARGE
+  # candidate set is itself evidence something is wrong and is exactly when
+  # NOT to act on all of it unattended.
+  local max_prs=3
+  local dry_run=0
+  local arm_auto_merge=0
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -3222,6 +3272,22 @@ triage_orphan_branches() {
       --session-id=*)
         shift
         ;;
+      --max-prs)
+        max_prs="${2:-}"
+        shift 2
+        ;;
+      --max-prs=*)
+        max_prs="${1#--max-prs=}"
+        shift
+        ;;
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --arm-auto-merge)
+        arm_auto_merge=1
+        shift
+        ;;
       -h|--help)
         usage
         return 0
@@ -3252,6 +3318,12 @@ triage_orphan_branches() {
     echo "triage-orphan-branches: --default-branch is required" >&2
     return 64
   fi
+  case "$max_prs" in
+    ''|*[!0-9]*)
+      echo "triage-orphan-branches: --max-prs must be a non-negative integer (got: '$max_prs')" >&2
+      return 64
+      ;;
+  esac
 
   if ! cd "$repo_root" 2>/dev/null; then
     echo "triage-orphan-branches: cannot cd to --repo-root: $repo_root" >&2
@@ -3267,80 +3339,154 @@ triage_orphan_branches() {
   local salvaged_count=0
   local abandoned_count=0
   local stale_assigns_count=0
+  local prs_created=0
+  local deferred_count=0
   local -a failed_pr_lines=()
   local -a stale_assign_lines=()
+  local -a deferred_lines=()
+
+  # Issue #1518 — enumerate the candidate set BEFORE the first write, so the
+  # blast radius is knowable up front instead of being reconstructed from the
+  # terminal `summary:` line after every PR already exists and is already
+  # armed. The list is captured into a variable (rather than streamed from a
+  # process substitution the way it used to be) precisely so it can be counted
+  # and announced first.
+  local candidates total
+  candidates=$(git worktree list --porcelain \
+    | awk '/^branch refs\/heads\/do-work\//{print $2}' \
+    | sed 's|refs/heads/||')
+  total=$(printf '%s\n' "$candidates" | awk 'NF{c++} END{print c+0}')
+
+  printf 'candidates: %s\n' "$total"
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'dry-run: no writes will be performed\n'
+  fi
 
   local branch path n canonical_branch ahead pushed open_pr
+  local idx=0
   while IFS= read -r branch; do
     [ -z "$branch" ] && continue
     path=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
     [ -z "$path" ] && continue
+    idx=$((idx + 1))
 
     n=$(echo "$branch" | sed -E 's|^do-work/issue-([0-9]+).*|\1|')
     canonical_branch="do-work/issue-$n"
     ahead=$(git -C "$path" rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)
 
     if [ "$ahead" -eq 0 ] 2>/dev/null; then
-      # Issue #712 — non-force FIRST, force only behind evidence. `git
-      # worktree remove` (no --force) refuses on a dirty tree, which is the
-      # exact safety property a force-only escalation needs preceding
-      # evidence for. The `ahead -eq 0` test above IS that evidence: this
-      # worktree carries no commits beyond the base branch, so nothing
-      # being force-removed exists only here.
-      git worktree remove "$path" >/dev/null 2>&1 \
-        || git worktree remove --force "$path" >/dev/null 2>&1
-      git branch -D "$branch" >/dev/null 2>&1
-      "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+      # #1518 — the progress line is emitted BEFORE the write, not after, so
+      # a sweep that is backgrounded partway through still leaves a record of
+      # exactly which candidate it was acting on when it went out of view.
+      printf '[%s/%s] abandon %s — no commits beyond %s\n' \
+        "$idx" "$total" "$canonical_branch" "$default_branch"
+      if [ "$dry_run" -eq 0 ]; then
+        # Issue #712 — non-force FIRST, force only behind evidence. `git
+        # worktree remove` (no --force) refuses on a dirty tree, which is the
+        # exact safety property a force-only escalation needs preceding
+        # evidence for. The `ahead -eq 0` test above IS that evidence: this
+        # worktree carries no commits beyond the base branch, so nothing
+        # being force-removed exists only here.
+        git worktree remove "$path" >/dev/null 2>&1 \
+          || git worktree remove --force "$path" >/dev/null 2>&1
+        git branch -D "$branch" >/dev/null 2>&1
+        "$GH" issue edit "$n" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+      fi
       abandoned_count=$((abandoned_count + 1))
       continue
     fi
 
-    pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)
-    if [ -z "$pushed" ]; then
-      git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch" >/dev/null 2>&1 || true
-    fi
-
+    # Read-only classification BEFORE any write for this candidate (#1518).
+    # The cap has to be applied against what this invocation would CREATE, so
+    # the "is a PR already open?" query must precede the push rather than
+    # follow it. A branch with no PR also has nothing on origin for `gh pr
+    # list --head` to have found, so moving the query ahead of the push is
+    # behaviour-preserving.
     open_pr=$("$GH" pr list --repo "$repo" --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
+
     if [ -z "$open_pr" ]; then
-      (cd "$path" && "$GH" pr create --repo "$repo" --head "$canonical_branch" --fill --label shipyard 2>/dev/null) || true
-      local pr_num
-      pr_num=$("$GH" pr list --repo "$repo" --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
-      # #720: gate the arm behind the ungated-merge detector. This PR is a
-      # PRIOR session's orphaned branch, opened with --fill — nothing in
-      # this session ever reviewed its diff. On an ungated repo --auto is
-      # not a queue; it direct-merges that unreviewed work immediately.
-      # Fail-safe: an unreadable verdict resolves to `ungated` (defer),
-      # never to an immediate merge.
-      if [ -n "$pr_num" ]; then
-        local verdict
-        if [ -n "${WORKTREE_REAP_VERDICT_OVERRIDE:-}" ]; then
-          verdict="$WORKTREE_REAP_VERDICT_OVERRIDE"
-        else
-          verdict=$(bash "$detector_script" "$repo" 2>/dev/null || echo ungated)
+      # #1518 — hard bound on outward-facing writes per invocation. `--max-prs
+      # 0` opts out (unlimited), and must be typed explicitly.
+      if [ "$max_prs" -ne 0 ] && [ "$prs_created" -ge "$max_prs" ]; then
+        printf '[%s/%s] deferred %s — --max-prs cap (%s) reached, no writes\n' \
+          "$idx" "$total" "$canonical_branch" "$max_prs"
+        deferred_lines+=("$canonical_branch")
+        deferred_count=$((deferred_count + 1))
+        continue
+      fi
+
+      if [ "$arm_auto_merge" -eq 1 ]; then
+        printf '[%s/%s] salvage %s — push + open PR (ready, auto-merge armed when gated)\n' \
+          "$idx" "$total" "$canonical_branch"
+      else
+        printf '[%s/%s] salvage %s — push + open PR (draft, auto-merge NOT armed)\n' \
+          "$idx" "$total" "$canonical_branch"
+      fi
+
+      if [ "$dry_run" -eq 0 ]; then
+        pushed=$(git ls-remote --heads origin "$canonical_branch" 2>/dev/null)
+        if [ -z "$pushed" ]; then
+          git -C "$path" push -u origin "HEAD:refs/heads/$canonical_branch" >/dev/null 2>&1 || true
         fi
-        local auto_merge_method
-        auto_merge_method=$("$config_script" get auto_merge.method 2>/dev/null)
-        case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
-        if [ "$verdict" = "gated" ]; then
-          # Capture stderr instead of discarding it (#850) — the same
-          # missing-`workflow`-OAuth-scope block a worker's own arm can hit
-          # can hit this orphan-recovery arm too.
-          local merge_arm_err
-          merge_arm_err=$("$GH" pr merge "$pr_num" --repo "$repo" --auto --"$auto_merge_method" --delete-branch 2>&1 1>/dev/null) || true
-          if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
-            echo "[setup-3c] PR #$pr_num auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
-          fi
+
+        # #1518 — DRAFT by default. This PR is a PRIOR session's orphaned
+        # branch, opened with --fill; nothing in this session ever reviewed
+        # its diff. A draft PR cannot auto-merge at all, which is the cheapest
+        # and strongest single guard available here: it fully preserves the
+        # branch's work for a human to look at (the sweep's actual purpose)
+        # while making it structurally impossible for an unreviewed salvage to
+        # reach the default branch on its own. Drain's own open-PR query
+        # already filters `-is:draft`, so a draft salvage neither stalls the
+        # drain loop nor gets landed by its deferred-merge lander.
+        if [ "$arm_auto_merge" -eq 1 ]; then
+          (cd "$path" && "$GH" pr create --repo "$repo" --head "$canonical_branch" --fill --label shipyard 2>/dev/null) || true
         else
-          # Leave OPEN + unarmed. The PR carries --label shipyard (above),
-          # which is exactly the label drain's deferred-merge lander keys
-          # on — so it gets merged on the first poll its checks are green,
-          # with no session_prs plumbing needed. Do NOT block on
-          # `gh pr checks --watch` here — this would stall session start,
-          # once per orphan.
-          echo "[setup-3c] PR #$pr_num left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
+          (cd "$path" && "$GH" pr create --repo "$repo" --head "$canonical_branch" --draft --fill --label shipyard 2>/dev/null) || true
+        fi
+        local pr_num
+        pr_num=$("$GH" pr list --repo "$repo" --head "$canonical_branch" --json number --jq '.[0].number' 2>/dev/null)
+        if [ -n "$pr_num" ] && [ "$arm_auto_merge" -eq 0 ]; then
+          echo "[setup-3c] PR #$pr_num opened as a DRAFT, auto-merge NOT armed (#1518) — a human marks it ready after auditing the salvaged branch"
+        fi
+        # #720: gate the arm behind the ungated-merge detector. On an ungated
+        # repo --auto is not a queue; it direct-merges that unreviewed work
+        # immediately. Fail-safe: an unreadable verdict resolves to `ungated`
+        # (defer), never to an immediate merge. Reachable only under the
+        # explicit `--arm-auto-merge` opt-in (#1518).
+        if [ -n "$pr_num" ] && [ "$arm_auto_merge" -eq 1 ]; then
+          local verdict
+          if [ -n "${WORKTREE_REAP_VERDICT_OVERRIDE:-}" ]; then
+            verdict="$WORKTREE_REAP_VERDICT_OVERRIDE"
+          else
+            verdict=$(bash "$detector_script" "$repo" 2>/dev/null || echo ungated)
+          fi
+          local auto_merge_method
+          auto_merge_method=$("$config_script" get auto_merge.method 2>/dev/null)
+          case "$auto_merge_method" in squash|merge|rebase) ;; *) auto_merge_method=squash ;; esac
+          if [ "$verdict" = "gated" ]; then
+            # Capture stderr instead of discarding it (#850) — the same
+            # missing-`workflow`-OAuth-scope block a worker's own arm can hit
+            # can hit this orphan-recovery arm too.
+            local merge_arm_err
+            merge_arm_err=$("$GH" pr merge "$pr_num" --repo "$repo" --auto --"$auto_merge_method" --delete-branch 2>&1 1>/dev/null) || true
+            if printf '%s' "$merge_arm_err" | grep -qi "without .workflow. scope"; then
+              echo "[setup-3c] PR #$pr_num auto-merge arm blocked — gh token lacks workflow scope (#850); left OPEN unarmed"
+            fi
+          else
+            # Leave OPEN + unarmed. The PR carries --label shipyard (above),
+            # which is exactly the label drain's deferred-merge lander keys
+            # on — so it gets merged on the first poll its checks are green,
+            # with no session_prs plumbing needed. Do NOT block on
+            # `gh pr checks --watch` here — this would stall session start,
+            # once per orphan.
+            echo "[setup-3c] PR #$pr_num left unarmed (ungated repo) — deferred to drain's merge lander (#720)"
+          fi
         fi
       fi
+      prs_created=$((prs_created + 1))
     else
+      printf '[%s/%s] existing-pr %s — PR #%s already open, reading its status rollup\n' \
+        "$idx" "$total" "$canonical_branch" "$open_pr"
       # Commits ahead, pushed, PR already open — check its latest-per-name
       # status rollup (#333) and surface a FAILURE-shaped PR for the
       # caller's own failed_prs list. A clean/pending rollup is left alone;
@@ -3353,7 +3499,7 @@ triage_orphan_branches() {
       fi
     fi
     salvaged_count=$((salvaged_count + 1))
-  done < <(git worktree list --porcelain | awk '/^branch refs\/heads\/do-work\//{print $2}' | sed 's|refs/heads/||')
+  done <<< "$candidates"
 
   # Row 5 — stale @me self-assigns with no worktree, no PR, no branch on
   # origin (issue #303). Catches the state the worktree loop above CAN'T
@@ -3382,7 +3528,10 @@ triage_orphan_branches() {
       if [ -n "$remote_head" ]; then
         continue
       fi
-      "$GH" issue edit "$n2" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+      printf '[row5] clear-stale-assign #%s\n' "$n2"
+      if [ "$dry_run" -eq 0 ]; then
+        "$GH" issue edit "$n2" --repo "$repo" --remove-assignee @me 2>/dev/null || true
+      fi
       stale_assign_lines+=("$n2")
       stale_assigns_count=$((stale_assigns_count + 1))
     done
@@ -3395,6 +3544,13 @@ triage_orphan_branches() {
   for x in "${stale_assign_lines[@]+"${stale_assign_lines[@]}"}"; do
     printf 'stale-assign: %s\n' "$x"
   done
+  for x in "${deferred_lines[@]+"${deferred_lines[@]}"}"; do
+    printf 'deferred: %s\n' "$x"
+  done
+  if [ "$deferred_count" -gt 0 ]; then
+    printf 'cap-reached: %s candidate(s) remaining, not actioned; re-run or raise --max-prs (current: %s)\n' \
+      "$deferred_count" "$max_prs"
+  fi
 
   printf 'summary: salvaged=%s abandoned=%s stale_assigns=%s\n' \
     "$salvaged_count" "$abandoned_count" "$stale_assigns_count"
