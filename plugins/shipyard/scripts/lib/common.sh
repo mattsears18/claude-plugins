@@ -193,3 +193,51 @@ iso_to_epoch() {
     printf '%s\n' "$epoch"
   fi
 }
+
+# --------------------------------------------------------------------------
+# version_max <a> <b> — version-sort max of two (possibly empty) semver
+# strings. `sort -V` handles 1.5.9 vs 1.5.10 correctly; plain lexicographic
+# max would wrongly pick 1.5.9 over 1.5.10.
+#
+# Extracted byte-for-byte from next-available-version.sh (issue #1539), which
+# now sources it from here instead of defining its own copy. The point of the
+# extraction is anti-drift: resolve-manifest-only-dirty.sh needs the same
+# comparison, and reimplementing it there is exactly how the "not lower" vs
+# "strictly higher" divergence #1539 reports came about.
+# scripts/tests/release-bump-required.test.sh's `rbr_version_gt` is a third
+# copy and is deliberately NOT migrated — that file is a self-contained CI
+# guard that must run without sourcing anything from this directory — but its
+# header documents the same `sort -V`, strictly-greater contract.
+# --------------------------------------------------------------------------
+version_max() {
+  local a="$1" b="$2"
+  if [ -z "$a" ]; then echo "$b"; return; fi
+  if [ -z "$b" ]; then echo "$a"; return; fi
+  sort -V <<< "$(printf '%s\n%s' "$a" "$b")" | tail -1
+}
+
+# --------------------------------------------------------------------------
+# version_gt <a> <b> — exit 0 when semver <a> is STRICTLY greater than <b>.
+# Equal strings are NOT "greater" — that boundary is the whole point of issue
+# #1539. Both operands must be non-empty; an empty operand returns non-zero
+# so a caller that could not establish a floor never treats "unknown" as
+# "lower".
+#
+# Extracted byte-for-byte from next-available-version.sh — see version_max.
+# --------------------------------------------------------------------------
+version_gt() {
+  local a="$1" b="$2"
+  [ -z "$a" ] && return 1
+  [ -z "$b" ] && return 1
+  [ "$a" = "$b" ] && return 1
+  [ "$(version_max "$a" "$b")" = "$a" ]
+}
+
+# --------------------------------------------------------------------------
+# is_semver <s> — exit 0 for a bare MAJOR.MINOR.PATCH string.
+#
+# Extracted byte-for-byte from next-available-version.sh — see version_max.
+# --------------------------------------------------------------------------
+is_semver() {
+  grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$1"
+}

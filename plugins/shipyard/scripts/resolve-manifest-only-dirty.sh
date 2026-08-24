@@ -42,7 +42,7 @@
 #   resolve-manifest-only-dirty.sh resolve --repo <owner/repo> --pr <M>
 #       --head-ref <headRefName> --default-branch <branch>
 #       [--manifest <path>] [--version-jq <jq-expr>] [--changelog <path>]
-#       [--scratch-root <path>]
+#       [--scratch-root <path>] [--cursor-file <path>]
 #
 # --manifest / --version-jq / --changelog are optional — omit them (or pass
 # empty strings) when `version_coordination` isn't enabled on this repo. A
@@ -50,6 +50,41 @@
 # manifest/CHANGELOG rows requires them to be set, and their absence in that
 # case is treated as "can't resolve this conflict" (deferred), not a script
 # error.
+#
+# Version-floor enforcement (issue #1539)
+# ---------------------------------------
+# The release-bump guard (scripts/tests/release-bump-required.test.sh)
+# requires the head manifest version to be STRICTLY GREATER than the
+# merge-base's — "not lower" is not enough. After rebasing onto
+# origin/<default-branch>, that merge-base IS origin/<default-branch>, so
+# its manifest version is the floor the resolved head must clear.
+#
+# Only ONE of this script's three paths used to compute that floor: the
+# manifest-conflict path (floor bumped at the PR's release level). The other
+# two left the head at whatever it already was — the clean-rebase path did no
+# version work at all, and the CHANGELOG-only-conflict path reused whatever
+# git's own 3-way merge left on disk. When a sibling PR had already merged
+# the SAME version this PR carried, both sides' identical `.version` edit
+# auto-merged and the head landed EQUAL to the new floor: the script reported
+# `resolved`, the PR flipped DIRTY -> MERGEABLE, and the guard failed it one
+# CI cycle later (`base=4.51.7, head=4.51.7`).
+#
+# That state is also OUTSIDE this script's own entry condition — a PR that is
+# merely failing a check is BLOCKED, not DIRTY — so a re-run deferred
+# `not-dirty` and the script could not clean up after itself. The entry
+# condition is deliberately NOT widened (see the `not-dirty` defer below);
+# instead the post-rebase enforcement block makes the bad state unreachable.
+#
+# Version-cursor participation (issue #1539, secondary finding)
+# -------------------------------------------------------------
+# Whenever this script ALLOCATES a version it folds in, and then advances,
+# next-available-version.sh's `--cursor-file` (default `.shipyard-version-
+# cursor`, the same literal the orchestrator passes to `compute`). Without
+# it, resolving two DIRTY PRs in one pass handed both the same floor+1 slot —
+# costing a guaranteed extra DIRTY -> resolve round for every PR after the
+# first, since whichever merged first immediately re-dirtied the rest at the
+# same version. Reading a cursor can only ever raise the slot handed out, so
+# it cannot reintroduce a collision.
 #
 # Exit status / stdout (exactly one line):
 #   0  resolved pr=<M> version=<next-free-or-empty> head=<new-sha>
@@ -89,7 +124,7 @@ Usage:
   resolve-manifest-only-dirty.sh resolve --repo <owner/repo> --pr <M>
       --head-ref <headRefName> --default-branch <branch>
       [--manifest <path>] [--version-jq <jq-expr>] [--changelog <path>]
-      [--scratch-root <path>]
+      [--scratch-root <path>] [--cursor-file <path>]
 EOF
 }
 
@@ -122,9 +157,11 @@ MANIFEST=""
 VERSION_JQ=".version"
 CHANGELOG=""
 SCRATCH_ROOT=".shipyard-scratch"
+CURSOR_FILE=".shipyard-version-cursor"
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --cursor-file) CURSOR_FILE="${2:-}"; shift 2 ;;
     --repo) REPO="${2:-}"; shift 2 ;;
     --pr) PR="${2:-}"; shift 2 ;;
     --head-ref) HEAD_REF="${2:-}"; shift 2 ;;
@@ -144,6 +181,82 @@ fi
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || script_error "not inside a git working tree"
 
+# Absolutize the cursor path up front — several blocks below run inside
+# `( cd "$WT_DIR" && ... )` subshells, and a relative path would resolve
+# somewhere else entirely from in there.
+case "$CURSOR_FILE" in
+  ""|/*) : ;;
+  *) CURSOR_FILE="$PWD/$CURSOR_FILE" ;;
+esac
+
+# --- Version helpers (issue #1539) ------------------------------------------
+# `version_gt` / `version_max` / `is_semver` come from lib/common.sh, sourced
+# above — the SAME strictly-greater `sort -V` comparison next-available-
+# version.sh uses and release-bump-required.test.sh's guard asserts with. This
+# script must never reimplement a semver compare of its own: this bug WAS a
+# drift between "not lower" and "strictly higher".
+
+# compute_next_free <base_version> <pr_version> <floor> — infer the PR's own
+# release LEVEL from its (base -> pr) delta, then bump <floor> at that level.
+# Mirrors fix-rebase.md §4.6 step 1 and next-available-version.sh's `compute`.
+# Prints the next free slot, or nothing when the inputs aren't usable semver.
+compute_next_free() {
+  local base="$1" pr="$2" floor="$3" level
+  is_semver "$floor" || { printf '' ; return; }
+  local b_maj b_min p_maj p_min f_maj f_min f_pat
+  IFS='.' read -r b_maj b_min _ <<< "$base"
+  IFS='.' read -r p_maj p_min _ <<< "$pr"
+  if [ "${p_maj:-0}" -gt "${b_maj:-0}" ] 2>/dev/null; then
+    level="major"
+  elif [ "${p_min:-0}" -gt "${b_min:-0}" ] 2>/dev/null; then
+    level="minor"
+  else
+    level="patch"
+  fi
+  IFS='.' read -r f_maj f_min f_pat <<< "$floor"
+  case "$level" in
+    major) printf '%s.0.0' "$((f_maj + 1))" ;;
+    minor) printf '%s.%s.0' "$f_maj" "$((f_min + 1))" ;;
+    *)     printf '%s.%s.%s' "$f_maj" "$f_min" "$((f_pat + 1))" ;;
+  esac
+}
+
+# cursor_read — the persisted next-available-version cursor's value, or empty
+# when there's no usable one. Never fatal; a missing cursor just means "no
+# same-pass sibling has claimed anything above the floor yet".
+cursor_read() {
+  [ -n "$CURSOR_FILE" ] || return 0
+  [ -f "$CURSOR_FILE" ] || return 0
+  local v
+  v=$(cat "$CURSOR_FILE" 2>/dev/null || echo "")
+  is_semver "$v" || return 0
+  printf '%s' "$v"
+}
+
+# cursor_advance <version> — record a slot this script just handed out, so the
+# NEXT resolve (or the orchestrator's next `compute`) floors above it. Uses
+# version_max so a lower value can never lower the cursor.
+cursor_advance() {
+  [ -n "$CURSOR_FILE" ] || return 0
+  is_semver "$1" || return 0
+  local prev
+  prev=$(cursor_read)
+  printf '%s' "$(version_max "$prev" "$1")" > "$CURSOR_FILE" 2>/dev/null || true
+}
+
+# allocate_slot <base_version> <pr_version> <floor> — the ONE place this
+# script picks a new version. Folds the persisted cursor into the floor first
+# (#1539 secondary finding) so two resolves in one pass can't hand out the
+# same slot, then bumps at the PR's own release level. The result is always
+# strictly greater than <floor>, which is exactly what the release-bump guard
+# requires.
+allocate_slot() {
+  local base="$1" pr="$2" floor="$3" cursor effective
+  cursor=$(cursor_read)
+  effective=$(version_max "$floor" "$cursor")
+  compute_next_free "$base" "$pr" "$effective"
+}
+
 # --- Pre-flight: confirm DIRTY is still the state (state drifts between
 # the caller's snapshot and this script running) ---------------------------
 preflight=$("$GH" pr view "$PR" --repo "$REPO" --json mergeStateStatus,state 2>/dev/null)
@@ -151,6 +264,14 @@ preflight=$("$GH" pr view "$PR" --repo "$REPO" --json mergeStateStatus,state 2>/
 pr_state=$(printf '%s' "$preflight" | jq -r '.state')
 merge_state=$(printf '%s' "$preflight" | jq -r '.mergeStateStatus')
 [ "$pr_state" = "OPEN" ] || defer "not-open" "PR #$PR is $pr_state, not OPEN"
+# The DIRTY-only entry condition is deliberate and stays narrow (#1539's
+# tertiary finding). A PR that is merely FAILING a check reports BLOCKED, not
+# DIRTY — repairing that is fix-checks-only's job, and this script has no
+# branch-name lock (it checks out detached on purpose), so force-pushing a
+# rebase at a merely-red PR could race a live fix-checks worker holding that
+# same head branch. The reason a red-not-dirty PR used to be UNRECOVERABLE
+# here is that this script created that state itself; the post-rebase
+# version-floor enforcement below makes it unreachable instead.
 [ "$merge_state" = "DIRTY" ] || defer "not-dirty" "PR #$PR mergeStateStatus=$merge_state, not DIRTY"
 
 # --- Scratch worktree setup -------------------------------------------------
@@ -178,6 +299,34 @@ PRE_HEAD_OID=$(git rev-parse "origin/$HEAD_REF" 2>/dev/null)
 
 git worktree add --detach "$WT_DIR" "origin/$HEAD_REF" --quiet 2>/dev/null \
   || defer "worktree-add-failed" "could not create ephemeral worktree at $WT_DIR"
+
+# --- Ref-derived facts, resolved ONCE for every path below --------------------
+# All four read from refs only, so nothing the ephemeral worktree does can
+# change them. They were previously computed inside the conflict branch alone;
+# the post-rebase version-floor enforcement (#1539) needs them on the
+# clean-rebase path too.
+BASE_SHA=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH" 2>/dev/null)
+FLOOR=""
+PR_VERSION=""
+BASE_VERSION=""
+if [ -n "$MANIFEST" ]; then
+  FLOOR=$(git show "origin/$DEFAULT_BRANCH:$MANIFEST" 2>/dev/null | jq -r "$VERSION_JQ" 2>/dev/null)
+  PR_VERSION=$(git show "origin/$HEAD_REF:$MANIFEST" 2>/dev/null | jq -r "$VERSION_JQ" 2>/dev/null)
+  [ -n "$BASE_SHA" ] && BASE_VERSION=$(git show "$BASE_SHA:$MANIFEST" 2>/dev/null | jq -r "$VERSION_JQ" 2>/dev/null)
+  [ "$FLOOR" = "null" ] && FLOOR=""
+  [ "$PR_VERSION" = "null" ] && PR_VERSION=""
+  [ "$BASE_VERSION" = "null" ] && BASE_VERSION=""
+fi
+
+# Set to 1 by whichever step actually rewrites the coordinated row, so the
+# known-rewrites record below is keyed on "did we rewrite it", not on "did it
+# conflict" — the version-floor enforcement rewrites both rows on paths where
+# neither ever conflicted.
+MANIFEST_REWRITTEN=0
+CHANGELOG_REWRITTEN=0
+# Non-empty only when this run HANDED OUT a version slot (so the cursor is
+# advanced exactly once, after the push actually lands).
+ALLOCATED=""
 
 # --- Attempt the rebase ------------------------------------------------------
 if git -C "$WT_DIR" rebase "origin/$DEFAULT_BRANCH" >/dev/null 2>&1; then
@@ -213,11 +362,10 @@ EOF
     defer "vc-disabled" "rebase conflicted but no coordinated manifest/CHANGELOG configured"
   fi
 
-  # Computed once, unconditionally, whenever there IS a recognized conflict
-  # — both the manifest resolution and the known-rewrites extraction below
-  # need it, and either can run without the other (e.g. CHANGELOG-only
+  # Resolved above, unconditionally; required whenever there IS a recognized
+  # conflict — both the manifest resolution and the known-rewrites extraction
+  # below need it, and either can run without the other (e.g. CHANGELOG-only
   # conflicted, MANIFEST auto-merged clean).
-  BASE_SHA=$(git merge-base "origin/$HEAD_REF" "origin/$DEFAULT_BRANCH" 2>/dev/null)
   [ -n "$BASE_SHA" ] || defer "merge-base-failed" "could not resolve the merge-base of origin/$HEAD_REF and origin/$DEFAULT_BRANCH"
 
   # --- Hunk-shape gates, via git's diff3 conflict markers -------------------
@@ -316,40 +464,14 @@ EOF
 
   # --- Resolve the manifest --------------------------------------------------
   if [ "$MANIFEST_CONFLICTED" -eq 1 ]; then
-    FLOOR=$(git show "origin/$DEFAULT_BRANCH:$MANIFEST" 2>/dev/null | jq -r "$VERSION_JQ" 2>/dev/null)
-    PR_VERSION=$(git show "origin/$HEAD_REF:$MANIFEST" 2>/dev/null | jq -r "$VERSION_JQ" 2>/dev/null)
-    BASE_VERSION=$(git show "$BASE_SHA:$MANIFEST" 2>/dev/null | jq -r "$VERSION_JQ" 2>/dev/null)
     if [ -z "$FLOOR" ] || [ -z "$PR_VERSION" ] || [ -z "$BASE_VERSION" ]; then
       defer "version-read-failed" "could not read $MANIFEST version at one of floor/pr/base refs"
     fi
 
-    # shellcheck disable=SC2034  # B_PAT/P_PAT: patch component isn't
-    # consulted by the major/minor bump-level check below, only major/minor
-    # are — kept for symmetry with the FLOOR split below, which does use
-    # its own patch component.
-    IFS='.' read -r B_MAJ B_MIN B_PAT <<EOF
-$BASE_VERSION
-EOF
-    # shellcheck disable=SC2034
-    IFS='.' read -r P_MAJ P_MIN P_PAT <<EOF
-$PR_VERSION
-EOF
-    if [ "${P_MAJ:-0}" -gt "${B_MAJ:-0}" ] 2>/dev/null; then
-      BUMP_LEVEL="major"
-    elif [ "${P_MIN:-0}" -gt "${B_MIN:-0}" ] 2>/dev/null; then
-      BUMP_LEVEL="minor"
-    else
-      BUMP_LEVEL="patch"
-    fi
-
-    IFS='.' read -r F_MAJ F_MIN F_PAT <<EOF
-$FLOOR
-EOF
-    case "$BUMP_LEVEL" in
-      major) NEXT_FREE="$((F_MAJ + 1)).0.0" ;;
-      minor) NEXT_FREE="$F_MAJ.$((F_MIN + 1)).0" ;;
-      *)     NEXT_FREE="$F_MAJ.$F_MIN.$((F_PAT + 1))" ;;
-    esac
+    NEXT_FREE=$(allocate_slot "$BASE_VERSION" "$PR_VERSION" "$FLOOR")
+    is_semver "$NEXT_FREE" \
+      || defer "version-compute-failed" "could not compute a next-free slot above $FLOOR for $MANIFEST"
+    ALLOCATED="$NEXT_FREE"
 
     git -C "$WT_DIR" checkout --ours -- "$MANIFEST" 2>/dev/null \
       || defer "manifest-checkout-failed" "git checkout --ours $MANIFEST failed"
@@ -360,11 +482,39 @@ EOF
     fi
     mv "$TMP_MANIFEST" "$WT_DIR/$MANIFEST"
     git -C "$WT_DIR" add "$MANIFEST"
+    MANIFEST_REWRITTEN=1
   else
     # Manifest wasn't in conflict — either untouched, or git's own 3-way
     # merge already resolved it. Either way its post-merge value on disk IS
-    # the version any changelog resolution below should reuse.
+    # the version any changelog resolution below should reuse...
     NEXT_FREE=$(jq -r "$VERSION_JQ" "$WT_DIR/$MANIFEST" 2>/dev/null || echo "")
+    [ "$NEXT_FREE" = "null" ] && NEXT_FREE=""
+
+    # ...unless it fails the release-bump guard's STRICTLY-GREATER floor
+    # (issue #1539). A sibling PR that already merged this PR's exact version
+    # makes both sides' `.version` edit identical, so git auto-merges it
+    # silently and the head lands EQUAL to the new merge-base — which the
+    # guard rejects. Re-allocate HERE, before the CHANGELOG renumber below,
+    # rather than after the rebase finishes: the conflict hunk's PR side is an
+    # unambiguous handle on this PR's own heading, whereas rewriting the
+    # finished file would have to guess which of two identically-numbered
+    # `### <version>` headings (ours and the sibling's) is ours.
+    if [ -n "$FLOOR" ] && [ -n "$PR_VERSION" ] && [ -n "$BASE_VERSION" ] \
+       && [ "$PR_VERSION" != "$BASE_VERSION" ] \
+       && ! version_gt "$NEXT_FREE" "$FLOOR"; then
+      NEXT_FREE=$(allocate_slot "$BASE_VERSION" "$PR_VERSION" "$FLOOR")
+      is_semver "$NEXT_FREE" \
+        || defer "version-compute-failed" "could not compute a next-free slot above $FLOOR for $MANIFEST"
+      ALLOCATED="$NEXT_FREE"
+      REALLOC_MANIFEST="$SCRATCH_ROOT/.vc-manifest-realloc-$$"
+      if ! jq --arg newver "$NEXT_FREE" "$VERSION_JQ = \$newver" "$WT_DIR/$MANIFEST" > "$REALLOC_MANIFEST" 2>/dev/null; then
+        rm -f "$REALLOC_MANIFEST"
+        defer "manifest-jq-set-failed" "jq could not set $VERSION_JQ to $NEXT_FREE"
+      fi
+      mv "$REALLOC_MANIFEST" "$WT_DIR/$MANIFEST"
+      git -C "$WT_DIR" add "$MANIFEST"
+      MANIFEST_REWRITTEN=1
+    fi
   fi
 
   # --- Resolve the CHANGELOG (renumber PR's own entry, hoist above main's) --
@@ -393,34 +543,106 @@ EOF
     cat "$C_PRE" "$RENUMBERED" "$C_OURS" "$C_TRAIL" > "$WT_DIR/$CHANGELOG"
     rm -f "$C_PRE" "$C_OURS" "$C_BASE" "$C_THEIRS" "$C_TRAIL" "$RENUMBERED"
     git -C "$WT_DIR" add "$CHANGELOG"
-  fi
-
-  # --- Known-rewrites record for the added-lines-survived guard below -------
-  KNOWN_REWRITES="$SCRATCH_ROOT/.vc-known-rewrites-$$"
-  : > "$KNOWN_REWRITES"
-  if [ "$MANIFEST_CONFLICTED" -eq 1 ]; then
-    M_DIFF=$(git diff "$BASE_SHA" "origin/$HEAD_REF" -- "$MANIFEST" 2>/dev/null)
-    case "$M_DIFF" in
-      "" | "diff --git "*)
-        M_LINE=$(printf '%s\n' "$M_DIFF" | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' | grep -F -- "$PR_VERSION" | head -1 || true)
-        [ -n "$M_LINE" ] && printf '%s\t%s\n' "$MANIFEST" "$M_LINE" >> "$KNOWN_REWRITES"
-        ;;
-      *) : ;; # unexpected diff shape — leave unexempted, verify step below is stricter, never looser
-    esac
-  fi
-  if [ "$CHANGELOG_CONFLICTED" -eq 1 ] && [ -n "$CHANGELOG" ]; then
-    CL_DIFF=$(git diff "$BASE_SHA" "origin/$HEAD_REF" -- "$CHANGELOG" 2>/dev/null)
-    case "$CL_DIFF" in
-      "" | "diff --git "*)
-        CL_LINE=$(printf '%s\n' "$CL_DIFF" | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' | grep -E '^### ' | head -1 || true)
-        [ -n "$CL_LINE" ] && printf '%s\t%s\n' "$CHANGELOG" "$CL_LINE" >> "$KNOWN_REWRITES"
-        ;;
-      *) : ;;
-    esac
+    CHANGELOG_REWRITTEN=1
   fi
 
   git -C "$WT_DIR" rebase --continue >/dev/null 2>&1 \
     || defer "rebase-continue-failed" "git rebase --continue failed after resolution (possible second conflict stop)"
+fi
+
+# --- Post-rebase version-floor enforcement (issue #1539) --------------------
+# The rebase is finished on every path above. The head manifest version must
+# now be STRICTLY GREATER than the version at origin/$DEFAULT_BRANCH — which
+# IS the rebased head's merge-base, and therefore exactly the `base=` the
+# release-bump guard compares against. Only the manifest-conflict path
+# guaranteed that; the clean-rebase and CHANGELOG-only-conflict paths could
+# leave the head EQUAL to the floor (a sibling PR having already merged the
+# same version makes both sides' `.version` edit identical, so git auto-merges
+# it silently) and this script would still report `resolved`.
+#
+# Scoped to a PR that ALREADY claims a version of its own (PR_VERSION !=
+# BASE_VERSION). A PR that never touched the manifest must not have one
+# invented for it here: bumping it would newly touch the watched prefix and
+# demand a CHANGELOG entry the PR was never required to have.
+if [ -n "$MANIFEST" ] && [ -n "$FLOOR" ] && [ -n "$PR_VERSION" ] \
+   && [ -n "$BASE_VERSION" ] && [ "$PR_VERSION" != "$BASE_VERSION" ]; then
+  HEAD_VERSION=$(jq -r "$VERSION_JQ" "$WT_DIR/$MANIFEST" 2>/dev/null)
+  [ "$HEAD_VERSION" = "null" ] && HEAD_VERSION=""
+  [ -n "$HEAD_VERSION" ] \
+    || defer "version-read-failed" "could not read $VERSION_JQ from the resolved $MANIFEST"
+
+  if ! version_gt "$HEAD_VERSION" "$FLOOR"; then
+    CORRECTED=$(allocate_slot "$BASE_VERSION" "$PR_VERSION" "$FLOOR")
+    is_semver "$CORRECTED" \
+      || defer "version-floor-uncorrectable" "resolved $MANIFEST version $HEAD_VERSION is not strictly above the floor $FLOOR and no corrected slot could be computed"
+
+    # The guard also requires a matching `### <version> — <date>` heading, so
+    # the CHANGELOG entry has to move in lockstep. Exactly one heading may
+    # carry the stale version: zero means this repo doesn't use that heading
+    # shape (bump the manifest alone), more than one means the entry can't be
+    # told from a released sibling's and this is not ours to guess at.
+    if [ -n "$CHANGELOG" ] && [ -f "$WT_DIR/$CHANGELOG" ]; then
+      HEAD_VERSION_RE="${HEAD_VERSION//./\\.}"
+      HEADING_HITS=$(grep -cE "^### ${HEAD_VERSION_RE} " "$WT_DIR/$CHANGELOG" 2>/dev/null)
+      if [ "${HEADING_HITS:-0}" -gt 1 ]; then
+        defer "changelog-heading-ambiguous" "$CHANGELOG carries $HEADING_HITS '### $HEAD_VERSION' headings — cannot tell this PR's entry from a released one"
+      fi
+      if [ "${HEADING_HITS:-0}" -eq 1 ]; then
+        REFLOOR_CL="$SCRATCH_ROOT/.vc-c-refloor-$$"
+        if ! sed -E "s/^### ${HEAD_VERSION_RE} /### $CORRECTED /" "$WT_DIR/$CHANGELOG" > "$REFLOOR_CL" 2>/dev/null; then
+          rm -f "$REFLOOR_CL"
+          defer "changelog-refloor-failed" "could not renumber the $CHANGELOG heading from $HEAD_VERSION to $CORRECTED"
+        fi
+        mv "$REFLOOR_CL" "$WT_DIR/$CHANGELOG"
+        git -C "$WT_DIR" add "$CHANGELOG"
+        CHANGELOG_REWRITTEN=1
+      fi
+    fi
+
+    REFLOOR_MANIFEST="$SCRATCH_ROOT/.vc-manifest-refloor-$$"
+    if ! jq --arg newver "$CORRECTED" "$VERSION_JQ = \$newver" "$WT_DIR/$MANIFEST" > "$REFLOOR_MANIFEST" 2>/dev/null; then
+      rm -f "$REFLOOR_MANIFEST"
+      defer "manifest-jq-set-failed" "jq could not set $VERSION_JQ to $CORRECTED during version-floor enforcement"
+    fi
+    mv "$REFLOOR_MANIFEST" "$WT_DIR/$MANIFEST"
+    git -C "$WT_DIR" add "$MANIFEST"
+    MANIFEST_REWRITTEN=1
+    NEXT_FREE="$CORRECTED"
+    ALLOCATED="$CORRECTED"
+
+    # Fold the correction into the commit the rebase just produced rather than
+    # adding one of its own — an extra commit would need a Conventional
+    # Commits subject of its own on every repo that scans them.
+    git -C "$WT_DIR" commit --amend --no-edit --quiet >/dev/null 2>&1 \
+      || defer "version-floor-commit-failed" "could not fold the corrected version $CORRECTED into the rebased commit"
+  fi
+fi
+
+# --- Known-rewrites record for the added-lines-survived guard below ---------
+# Keyed on what was actually REWRITTEN, not on what conflicted — the
+# version-floor enforcement above rewrites both coordinated rows on paths
+# where neither ever conflicted (#1539).
+KNOWN_REWRITES="$SCRATCH_ROOT/.vc-known-rewrites-$$"
+: > "$KNOWN_REWRITES"
+if [ "$MANIFEST_REWRITTEN" -eq 1 ] && [ -n "$MANIFEST" ] && [ -n "$BASE_SHA" ]; then
+  M_DIFF=$(git diff "$BASE_SHA" "origin/$HEAD_REF" -- "$MANIFEST" 2>/dev/null)
+  case "$M_DIFF" in
+    "" | "diff --git "*)
+      M_LINE=$(printf '%s\n' "$M_DIFF" | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' | grep -F -- "$PR_VERSION" | head -1 || true)
+      [ -n "$M_LINE" ] && printf '%s\t%s\n' "$MANIFEST" "$M_LINE" >> "$KNOWN_REWRITES"
+      ;;
+    *) : ;; # unexpected diff shape — leave unexempted, verify step below is stricter, never looser
+  esac
+fi
+if [ "$CHANGELOG_REWRITTEN" -eq 1 ] && [ -n "$CHANGELOG" ] && [ -n "$BASE_SHA" ]; then
+  CL_DIFF=$(git diff "$BASE_SHA" "origin/$HEAD_REF" -- "$CHANGELOG" 2>/dev/null)
+  case "$CL_DIFF" in
+    "" | "diff --git "*)
+      CL_LINE=$(printf '%s\n' "$CL_DIFF" | awk '/^\+\+\+/{next} /^\+/{line=substr($0,2); if (line ~ /[^ \t]/) print line}' | grep -E '^### ' | head -1 || true)
+      [ -n "$CL_LINE" ] && printf '%s\t%s\n' "$CHANGELOG" "$CL_LINE" >> "$KNOWN_REWRITES"
+      ;;
+    *) : ;;
+  esac
 fi
 
 # --- Safety nets (mirrors fix-rebase.md steps 5.5-5.8) ----------------------
@@ -484,6 +706,11 @@ LEASE="refs/heads/$HEAD_REF:$PRE_HEAD_OID"
 if ! git -C "$WT_DIR" push --force-with-lease="$LEASE" origin "HEAD:refs/heads/$HEAD_REF" >/dev/null 2>&1; then
   defer "push-lease-rejected" "head branch $HEAD_REF moved since fetch — someone else pushed"
 fi
+
+# Only now — after the slot is actually claimed on the remote — record it, so
+# the next resolve in this same pass (and the orchestrator's next `compute`)
+# floors above it instead of handing out the identical value (#1539).
+[ -n "$ALLOCATED" ] && cursor_advance "$ALLOCATED"
 
 printf 'resolved pr=%s version=%s head=%s\n' "$PR" "${NEXT_FREE:-}" "$NEW_HEAD"
 exit 0

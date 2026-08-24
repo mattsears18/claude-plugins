@@ -214,31 +214,11 @@ manifest_version_at_ref() {
   jq -r "$version_jq" 2>/dev/null <(base64 -d 2>/dev/null <<< "$content") || echo ""
 }
 
-# version_max <a> <b> — version-sort max of two (possibly empty) semver
-# strings. `sort -V` handles 1.5.9 vs 1.5.10 correctly; plain lexicographic
-# max would wrongly pick 1.5.9 over 1.5.10.
-version_max() {
-  local a="$1" b="$2"
-  if [ -z "$a" ]; then echo "$b"; return; fi
-  if [ -z "$b" ]; then echo "$a"; return; fi
-  sort -V <<< "$(printf '%s\n%s' "$a" "$b")" | tail -1
-}
-
-# version_gt <a> <b> — exit 0 when semver <a> is strictly greater than <b>.
-# Both operands must be non-empty; an empty operand returns non-zero so a
-# caller that could not establish a floor never treats "unknown" as "lower".
-version_gt() {
-  local a="$1" b="$2"
-  [ -z "$a" ] && return 1
-  [ -z "$b" ] && return 1
-  [ "$a" = "$b" ] && return 1
-  [ "$(version_max "$a" "$b")" = "$a" ]
-}
-
-# is_semver <s> — exit 0 for a bare MAJOR.MINOR.PATCH string.
-is_semver() {
-  grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' <<< "$1"
-}
+# `version_max`, `version_gt`, and `is_semver` now live in lib/common.sh
+# (sourced above) so resolve-manifest-only-dirty.sh shares the SAME
+# strictly-greater `sort -V` comparison rather than reimplementing it —
+# issue #1539, where a second implementation drifted from "strictly higher"
+# to "not lower" and left a PR at a version equal to its merge-base.
 
 sub="${1:-}"
 [ $# -gt 0 ] && shift
