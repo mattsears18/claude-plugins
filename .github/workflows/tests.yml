@@ -25,7 +25,13 @@ name: Tests
 # action repo cannot compromise this workflow. No event-supplied values
 # (issue titles, PR bodies, commit messages, branch names) are
 # interpolated into `run:` scripts — the workflow only invokes pinned
-# actions with static inputs and runs static bash. See
+# actions with static inputs and runs static bash. The one pair of
+# event-supplied values it does consume — the PR's base and head commit
+# SHAs, for the Conventional Commits scan below — are GitHub-generated
+# 40-hex object names, not attacker-authored text, and they are passed
+# through `env:` rather than interpolated into the `run:` body so the
+# "no event-supplied values in `run:` scripts" invariant holds
+# literally. See
 # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
 
 on:
@@ -46,6 +52,52 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history (issue #1534). `actions/checkout` defaults to
+          # `fetch-depth: 1`, which leaves the PR's base commit — and every
+          # commit the PR adds beyond the tip — unfetched, so any range of
+          # the form `<base>..<head>` is unresolvable. The Conventional
+          # Commits scan below needs exactly that range. Depth 0 is what
+          # makes it a real gate instead of an unresolvable no-op.
+          fetch-depth: 0
+
+      # The actual Conventional Commits gate (issues #1412 / #1534).
+      #
+      # Scans the commits THIS PR adds — `base.sha..head.sha`, the exact set
+      # a squash-merge collapses — so a non-conforming subject is caught
+      # before it can reach `main`. Runs first because it is ~1s and a
+      # violation forces an amend (a new head SHA) that would invalidate a
+      # full suite run anyway.
+      #
+      # Why a step in this job rather than a separate workflow: `bash test
+      # suites` is one of the five contexts the `main` ruleset already
+      # requires. A new job would publish a new, NON-required context — i.e.
+      # an advisory check, not a gate — and per CLAUDE.md extending the
+      # required-contexts list is a deliberate, separately-verified ruleset
+      # change. Riding an already-required context makes this blocking on
+      # day one with no ruleset edit.
+      #
+      # `pull_request`-only by design. On a `push` to `main` the merge has
+      # already happened, so there is nothing left to gate — flagging it
+      # then would only red `main` for a subject no longer fixable without
+      # a history rewrite the branch ruleset forbids. It also means this
+      # step never scans a commit that is already merged: the range is
+      # exclusive of `base.sha`, so `main`'s existing history (including
+      # the known-non-conforming `c667873`) is out of range by construction
+      # and needs no allowlist.
+      - name: Conventional Commits subject scan
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          # GitHub-generated 40-hex object names, not attacker-authored
+          # text — but passed via `env:` regardless, per the security note
+          # at the top of this file.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          bash plugins/shipyard/scripts/commit-subject-scan.sh \
+            "$PR_BASE_SHA" "$PR_HEAD_SHA"
 
       # Discover every `*.test.sh` under plugins/ and run them. Using
       # `find` (rather than hardcoding paths) means new test files added

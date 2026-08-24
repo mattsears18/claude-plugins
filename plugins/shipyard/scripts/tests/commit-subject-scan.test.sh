@@ -22,14 +22,28 @@
 # `conflict-marker-scan.sh` / `compound-block-scan.sh` — a check that catches
 # the defect regardless of whether the worker read or internalized the prose.
 #
-# SCOPE NOTE — this suite deliberately does NOT assert on a
-# `.github/workflows/` file, unlike `conflict-marker-scan.test.sh` which pins
-# `conflict-markers.yml`. Per the maintainer's recorded decision on #1412, the
-# workflow wiring (and the later advisory-to-required promotion) is a
-# hand-done follow-up that stays with the maintainer; the script + this suite
-# are the shipped slice. Asserting a workflow that does not exist yet would
-# red this suite on a correct tree. When the workflow does land, add the
-# `assert_contains "$workflow" ... "pull_request"` block here to pin it.
+# SCOPE NOTE (superseded by #1534) — this suite originally did NOT assert on
+# any `.github/workflows/` file: per the maintainer's recorded decision on
+# #1412 the workflow wiring was a hand-done follow-up, and asserting a
+# workflow that did not exist yet would have redded this suite on a correct
+# tree. #1534 landed that wiring (a `pull_request`-gated Conventional Commits
+# step inside `tests.yml`'s already-required `bash test suites` job), so the
+# deferred `assert_contains "$workflow" ...` block the note asked for now
+# lives in section (12) below.
+#
+# VACUOUS-ASSERTION NOTE (#1534) — this suite used to end with a self-check
+# that scanned `HEAD~5..HEAD` of the real repo, guarded on `HEAD~5`
+# resolving. `actions/checkout` fetched at depth 1, so the guard was false on
+# every CI run and the assertion silently did not execute — a skip
+# indistinguishable from a pass, the exact vacuous shape #1312 exists to
+# catch. It has been replaced (section 13) by a deterministic corpus of real,
+# already-merged shipyard subjects replayed into the fixture repo. That
+# keeps the original intent — the grammar must not false-positive on the
+# subject shapes this repo actually writes — while removing both defects:
+# it does not depend on ambient clone depth, and it does not slide over
+# whatever five commits happen to be at `HEAD` (a window that today contains
+# the genuinely non-conforming `c667873`, and would therefore have redded
+# `main` for the next few merges and then gone quietly green again).
 #
 # Pure bash + git. Run with:
 #
@@ -53,6 +67,7 @@ fi
 
 script="$repo_root/plugins/shipyard/scripts/commit-subject-scan.sh"
 hygiene="$repo_root/plugins/shipyard/skills/worker-preamble/commit-hygiene.md"
+workflow="$repo_root/.github/workflows/tests.yml"
 
 pass=0
 fail=0
@@ -320,19 +335,96 @@ else
   bad "empty type list should exit 2, got $empty_types_rc: ${empty_types_out//$'\n'/ | }"
 fi
 
-# ── (12) Self-check against this repo's own recent history ─────────────────
-# The scanner must not false-positive on real, already-merged shipyard
-# subjects. Scans the last few commits on the current checkout; skipped when
-# the range can't be resolved (a shallow clone, a fresh worktree).
-if git -C "$repo_root" rev-parse --verify --quiet 'HEAD~5^{commit}' >/dev/null 2>&1; then
-  self_out="$( cd "$repo_root" && bash "$script" 'HEAD~5' HEAD 2>&1 )"
-  self_rc=$?
-  if [[ "$self_rc" -eq 0 ]]; then
-    ok "scanner does not false-positive on this repo's own recent commit subjects"
-  else
-    bad "scanner flagged real shipyard history (regex too strict?): ${self_out//$'\n'/ | }"
-  fi
+# ── (12) The CI wiring that makes this a real gate (#1534) ─────────────────
+# The scanner is only a gate if something runs it against a PR's own commit
+# range with enough clone depth for that range to resolve. These assertions
+# pin that wiring — the block the #1412 SCOPE NOTE deferred until the
+# workflow landed.
+if [[ -f "$workflow" ]]; then
+  ok ".github/workflows/tests.yml exists"
+
+  assert_contains "$workflow" "plugins/shipyard/scripts/commit-subject-scan.sh" \
+    "tests.yml invokes the scanner script"
+
+  # Depth 1 (the `actions/checkout` default) leaves `<base>..<head>`
+  # unresolvable. This line is what turns the scan from a no-op into a gate,
+  # and is the specific defect #1534 reported.
+  assert_contains "$workflow" "fetch-depth: 0" \
+    "tests.yml checks out full history so the PR's commit range resolves"
+
+  # The PR's real commit range — not an ambient `HEAD~N` window, and not the
+  # `refs/pull/N/merge` tip (whose subject is git-generated and whose use as
+  # <head-ref> would misidentify which commit is final for the `wip:` rule).
+  assert_contains "$workflow" 'github.event.pull_request.base.sha' \
+    "tests.yml scans from the PR's base SHA"
+  assert_contains "$workflow" 'github.event.pull_request.head.sha' \
+    "tests.yml scans to the PR's head SHA (not the test-merge tip)"
+
+  # Event-supplied values reach the scan through `env:`, never interpolated
+  # into the `run:` body — the workflow's own stated security posture.
+  # shellcheck disable=SC2016  # literal needles — the ${{ }} and $PR_* forms
+  # are the workflow's own text, matched verbatim by grep -F, not expanded here.
+  assert_contains "$workflow" 'PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}' \
+    "tests.yml passes the base SHA via env:, not run: interpolation"
+  # shellcheck disable=SC2016
+  assert_contains "$workflow" '"$PR_BASE_SHA" "$PR_HEAD_SHA"' \
+    "tests.yml's scan step reads the SHAs from the environment"
+
+  # `pull_request`-only: on a push to `main` the merge already happened, so
+  # flagging then would red `main` over unfixable history.
+  assert_contains "$workflow" "if: github.event_name == 'pull_request'" \
+    "tests.yml runs the subject scan on pull_request only"
+
+  assert_contains "$workflow" "contents: read" \
+    "tests.yml is read-only (least privilege)"
+else
+  bad ".github/workflows/tests.yml exists (missing: $workflow)"
 fi
+
+# ── (13) The grammar accepts the subject shapes this repo really writes ────
+# Replaces the former `HEAD~5..HEAD` self-check, which was guarded on an
+# ambient range that never resolved under CI's depth-1 checkout and so
+# silently asserted nothing (#1534 — see the VACUOUS-ASSERTION NOTE above).
+#
+# Same intent, deterministic mechanism: a frozen corpus of subjects taken
+# verbatim from already-merged `mattsears18/shipyard` history, replayed into
+# the fixture repo. It exercises the shapes a sliding window over real
+# history would have — hyphenated and dotted scopes, `!` breaking-change
+# markers, `<...>` / quotes / backticks / brackets in the description, the
+# trailing `(closes #N) (#M)` parenthesis pair, and the bare no-scope form —
+# without depending on clone depth or on which commits happen to be at HEAD.
+#
+# When adding to this corpus, copy a subject verbatim from `git log
+# --format=%s origin/main`. A subject that fails here means the grammar
+# rejects something this repo actually ships, i.e. the regex is too strict.
+real_subjects=(
+  "fix(do-work): forbid instructing a worker past a documented spec short-circuit (closes #1513) (#1516)"
+  "fix(scripts): reject an unrecognized flag in the positional <owner/repo> detectors instead of forwarding it to gh (closes #1502) (#1514)"
+  "feat(scope-preflight): re-validate an issue's self-declared \"out of scope for an agent\" claim (closes #1491) (#1507)"
+  "fix(detect-ungated-admin-direct-merge): report a real required-checks count on the ruleset path (closes #1488) (#1489)"
+  "fix(main-ci): treat a path-filtered vacuous CI success as unproven, not green (closes #1495) (#1497)"
+  "chore(do-work)!: retire the legacy Agent-tool dispatch path"
+  "feat(do-work)!: make autonomous operation the default; add --no-operate/--hands-off opt-out [phase a of #659] (#666)"
+  "docs: record main's required status checks and the two that must never be added"
+  "chore: release 4.2.6"
+  "refactor(harness-convergence): fold the duplicated preamble into one skill"
+  "perf(worker): drop the redundant per-dispatch config re-read"
+  "test(worktree-reap): cover the stray-tombstone bounded pass"
+)
+mk_branch real-history "${real_subjects[@]}"
+expect_rc 0 "the grammar accepts a frozen corpus of real merged shipyard subjects" \
+  real-history main
+
+# The negative half of the same corpus: the two real subjects that motivated
+# this gate must still be rejected, so the assertion above can never pass by
+# the grammar having gone permissive.
+mk_branch real-history-wip "wip: fix false-success reaped=true in shipped-immediate-branch-reap.sh (#1404) (#1408)"
+expect_rc 1 "the real #1408 subject (wip: on the final commit) is still rejected" \
+  real-history-wip main
+
+mk_branch real-history-c667873 "do work/issue 1513 (#1533)"
+expect_rc 1 "the real c667873 subject on main is still rejected" \
+  real-history-c667873 main
 
 echo
 echo "  ${pass} passed, ${fail} failed"
