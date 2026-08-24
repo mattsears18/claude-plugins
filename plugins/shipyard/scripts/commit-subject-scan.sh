@@ -40,11 +40,19 @@
 # The scanned range is `<base-ref>..<head-ref>` — the commits this branch adds
 # on top of the base, i.e. exactly what a squash-merge would collapse.
 #
-# CI note (for whoever wires this as a `pull_request` check): `actions/checkout`
-# defaults to `fetch-depth: 1`, which leaves the base branch unavailable and
-# makes the range unresolvable (exit 2, not a silent pass). Use
-# `fetch-depth: 0` and pass the PR's base explicitly, e.g.
-# `bash plugins/shipyard/scripts/commit-subject-scan.sh origin/${{ github.base_ref }}`.
+# CI note: this IS wired as a `pull_request` check — the "Conventional Commits
+# subject scan" step in `.github/workflows/tests.yml`, inside the already-
+# required `bash test suites` job (issue #1534). Two properties of that wiring
+# are load-bearing and must survive any edit:
+#   * `fetch-depth: 0` on the checkout. `actions/checkout` defaults to depth 1,
+#     which leaves the base commit unavailable and the range unresolvable
+#     (exit 2 — loud, but it means nothing is being scanned).
+#   * The head bound is the PR's `head.sha`, NOT the ambient `HEAD`. Under a
+#     `pull_request` checkout `HEAD` is `refs/pull/<N>/merge`, a git-generated
+#     test-merge commit; using it as <head-ref> would make THAT the "final"
+#     commit and silently tolerate a `wip:` subject on the PR's real last one.
+# `plugins/shipyard/scripts/tests/commit-subject-scan.test.sh` section (12)
+# pins both.
 #
 # Recognized types default to the Conventional Commits v1.0.0 conventional
 # set. Override with COMMIT_SUBJECT_SCAN_TYPES (space- or comma-separated) for
