@@ -231,24 +231,38 @@ decide_resume() {
     'BEGIN { print (q > p * m) ? "held" : "resume" }'
 }
 
-# usage — print the full usage block to stderr and exit with the standard
-# EX_USAGE code (64, per sysexits.h and this script family's own convention
-# — see e.g. classify-backlog.sh, audit-schedule.sh). Every invocation-shape
-# error in the live-detection positional path below routes through here
-# (issue #1454) — previously only the empty-repo case printed usage, and
-# nothing rejected an unexpected leading token or extra positional, so a
-# mis-invocation like `detect-ci-runner-capacity.sh run --repo owner/name`
-# silently took "run" as the repo instead of erroring.
+# usage — print the full usage block to stderr. Print-only: callers decide
+# the exit code (0 for -h/--help, 64/EX_USAGE for every invocation-shape
+# error — per sysexits.h and this script family's own convention, see e.g.
+# classify-backlog.sh, audit-schedule.sh, and the -h/--help handling in
+# detect-ungated-admin-direct-merge.sh / detect-missing-workflow-scope.sh /
+# verify-config-labels.sh). Every invocation-shape error in the live-detection
+# positional path below routes through here (issue #1454) — previously only
+# the empty-repo case printed usage, and nothing rejected an unexpected
+# leading token or extra positional, so a mis-invocation like
+# `detect-ci-runner-capacity.sh run --repo owner/name` silently took "run" as
+# the repo instead of erroring. (issue #1550: -h/--help used to fall into the
+# unrecognized-flag branch below and exit 64, breaking the "usage() is the
+# normative source of a script's call shape" fallback its three siblings
+# honor — usage() no longer force-exits so -h/--help can print the same
+# block and exit 0 instead.)
 usage() {
   echo "usage: $0 <owner/repo>" >&2
   echo "       $0 --repo <owner/repo>" >&2
   echo "       $0 --decide <RUNNER_COUNT> <ONLINE_COUNT> <BUSY_COUNT>" >&2
   echo "       $0 --decide-backpressure <POOL_TOTAL> <QUEUED> <IN_FLIGHT> <MULTIPLIER> <MIN_IN_FLIGHT>" >&2
   echo "       $0 --decide-resume <POOL_TOTAL> <QUEUED> <MULTIPLIER>" >&2
-  exit 64
+  echo "       $0 --help" >&2
 }
 
 main() {
+  case "${1:-}" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+  esac
+
   if [ "${1:-}" = "--decide" ]; then
     if [ "$#" -ne 4 ]; then
       echo "usage: $0 --decide <RUNNER_COUNT> <ONLINE_COUNT> <BUSY_COUNT>" >&2
@@ -286,22 +300,26 @@ main() {
   case "${1:-}" in
     "")
       usage
+      exit 64
       ;;
     --repo)
       if [ "$#" -ne 2 ] || [ -z "${2:-}" ]; then
         echo "detect-ci-runner-capacity: --repo requires exactly one <owner/repo> value" >&2
         usage
+        exit 64
       fi
       repo="$2"
       ;;
     -*)
       echo "detect-ci-runner-capacity: unrecognized flag '$1'" >&2
       usage
+      exit 64
       ;;
     *)
       if [ "$#" -ne 1 ]; then
         echo "detect-ci-runner-capacity: unexpected extra argument(s) after '$1' -- did you mean --repo $1 ...?" >&2
         usage
+        exit 64
       fi
       repo="$1"
       ;;
@@ -315,10 +333,12 @@ main() {
     */*/*|*/|/*)
       echo "detect-ci-runner-capacity: '$repo' does not look like <owner/repo>" >&2
       usage
+      exit 64
       ;;
     *[!A-Za-z0-9._/-]*)
       echo "detect-ci-runner-capacity: '$repo' contains characters not valid in a GitHub owner/repo" >&2
       usage
+      exit 64
       ;;
     */*)
       : # exactly one slash, both sides non-empty, allowed charset -- OK
@@ -326,6 +346,7 @@ main() {
     *)
       echo "detect-ci-runner-capacity: '$repo' does not look like <owner/repo> (missing '/')" >&2
       usage
+      exit 64
       ;;
   esac
 

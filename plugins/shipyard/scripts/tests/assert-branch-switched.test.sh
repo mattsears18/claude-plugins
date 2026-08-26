@@ -168,13 +168,23 @@ else
   bad "missing EXPECTED_BRANCH: got exit=$code stderr='$out_stderr' (expected exit 2 + usage text)"
 fi
 
-# --- (8) -h / --help prints usage on stderr and exits 2 --------------------
+# --- (8) -h / --help prints usage on stderr and exits 0 (issue #1550: --help
+# is a correct, intentional invocation — distinct from the `error` exit 2
+# every OTHER usage failure above uses) ---------------------------------
 out_stderr="$(bash "$script" --help 2>&1 1>/dev/null)"
 code=$?
-if [[ "$code" -eq 2 ]] && grep -qF "usage: assert-branch-switched.sh" <<<"$out_stderr"; then
-  ok "--help prints usage on stderr and exits 2"
+if [[ "$code" -eq 0 ]] && grep -qF "usage: assert-branch-switched.sh" <<<"$out_stderr"; then
+  ok "--help prints usage on stderr and exits 0"
 else
-  bad "--help: got exit=$code stderr='$out_stderr' (expected exit 2 + usage text)"
+  bad "--help: got exit=$code stderr='$out_stderr' (expected exit 0 + usage text)"
+fi
+
+out_stderr="$(bash "$script" -h 2>&1 1>/dev/null)"
+code=$?
+if [[ "$code" -eq 0 ]] && grep -qF "usage: assert-branch-switched.sh" <<<"$out_stderr"; then
+  ok "-h prints usage on stderr and exits 0"
+else
+  bad "-h: got exit=$code stderr='$out_stderr' (expected exit 0 + usage text)"
 fi
 
 # --- (9) shellcheck-clean (belt-and-suspenders; shellcheck.test.sh also

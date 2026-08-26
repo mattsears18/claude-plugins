@@ -46,12 +46,13 @@ usage: fence-balance-scan.sh [path ...]
   With no args, scans every tracked *.md file in the current git repo.
   With paths, scans the given files, or every *.md file under a given
   directory (recursively).
+  --help itself always exits 0, distinct from the usage/environment-error
+  exit 2 (#1550).
 EOF
-  exit 2
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
+  -h|--help) usage; exit 0 ;;
 esac
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

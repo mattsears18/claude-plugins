@@ -77,13 +77,19 @@ assert_matches() {
 }
 
 # ---------------------------------------------------------------------------
-# (A) --help — prints usage, exit 4, no gh required.
+# (A) --help — prints usage, exit 0 (issue #1550: --help is a correct,
+# intentional invocation, distinct from the `error` exit 4 every other usage
+# failure below uses), no gh required.
 # ---------------------------------------------------------------------------
 echo "(A) --help"
 help_out="$(PATH="/usr/bin:/bin" bash "$script" --help 2>&1)"
 help_exit=$?
-assert_equals "--help exit code" "4" "$help_exit"
+assert_equals "--help exit code" "0" "$help_exit"
 assert_contains_line "--help documents --repo/--pool-total as required" "$help_out" "--pool-total <N>"
+
+PATH="/usr/bin:/bin" bash "$script" -h >/dev/null 2>&1
+h_exit=$?
+assert_equals "-h exit code" "0" "$h_exit"
 echo
 
 # ---------------------------------------------------------------------------

@@ -134,8 +134,10 @@ usage: watch-resume-probe.sh --repo <owner/repo> --pool-total <N> [--multiplier 
   Per-poll heartbeats and `gh` error text go to stderr only. See the header
   comment in this file for the #1402 background and how this composes with
   steady-state.md's session-wide pause and the `Monitor` tool.
+
+  --help itself always exits 0, distinct from every other usage error above
+  (issue #1550) — print-only usage() lets callers pick the exit code.
 EOF
-  exit 4
 }
 
 repo=""
@@ -168,10 +170,12 @@ while [ $# -gt 0 ]; do
       ;;
     -h|--help)
       usage
+      exit 0
       ;;
     *)
       echo "watch-resume-probe: unknown argument: $1" >&2
       usage
+      exit 4
       ;;
   esac
 done
@@ -179,23 +183,27 @@ done
 if [ -z "$repo" ] || [ -z "$pool_total" ]; then
   echo "watch-resume-probe: --repo and --pool-total are both required" >&2
   usage
+  exit 4
 fi
 
 case "$pool_total" in
   ''|*[!0-9]*)
     echo "watch-resume-probe: --pool-total must be a positive integer, got '$pool_total'" >&2
     usage
+    exit 4
     ;;
 esac
 if [ "$pool_total" -eq 0 ]; then
   echo "watch-resume-probe: --pool-total must be > 0 (a 0 pool has nothing to pause for)" >&2
   usage
+  exit 4
 fi
 
 case "$multiplier" in
   ''|*[!0-9.]*)
     echo "watch-resume-probe: --multiplier must be numeric, got '$multiplier'" >&2
     usage
+    exit 4
     ;;
 esac
 
@@ -203,6 +211,7 @@ case "$interval" in
   ''|*[!0-9]*)
     echo "watch-resume-probe: --interval must be a non-negative integer, got '$interval'" >&2
     usage
+    exit 4
     ;;
 esac
 
@@ -210,6 +219,7 @@ case "$max_wait" in
   ''|*[!0-9]*)
     echo "watch-resume-probe: --max-wait must be a non-negative integer, got '$max_wait'" >&2
     usage
+    exit 4
     ;;
 esac
 

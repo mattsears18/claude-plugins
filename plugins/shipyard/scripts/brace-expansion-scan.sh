@@ -95,12 +95,18 @@ set -u
 usage() {
   cat >&2 <<'EOF'
 usage: brace-expansion-scan.sh [--list] [path ...]
+       brace-expansion-scan.sh --help
   With no args, scans every git-tracked *.md under plugins/ (see script
   header for scope rationale). With paths, scans exactly those files.
   --list prints the discovered paths (one per line) and exits 0.
+  --help itself always exits 0, distinct from the usage/environment-error
+  exit 2 below (#1550).
 EOF
-  exit 2
 }
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "brace-expansion-scan: not inside a git work tree" >&2
@@ -120,7 +126,6 @@ discover() {
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
   --list)
     discover | tr '\0' '\n'
     exit 0

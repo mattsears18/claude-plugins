@@ -125,8 +125,21 @@ Usage:
       --head-ref <headRefName> --default-branch <branch>
       [--manifest <path>] [--version-jq <jq-expr>] [--changelog <path>]
       [--scratch-root <path>] [--cursor-file <path>]
+  resolve-manifest-only-dirty.sh --help
 EOF
 }
+
+# -h/--help exits 0 before any tool-availability check or subcommand
+# validation (issue #1550's sweep) — the usage() block is the normative
+# source of this script's call shape when spec prose drifts, and that
+# fallback only works if --help itself doesn't require a working `gh`/`jq`
+# just to print it.
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
 
 defer() {
   # $1: short reason code, $2: human detail

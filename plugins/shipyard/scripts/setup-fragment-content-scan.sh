@@ -100,12 +100,13 @@ usage: setup-fragment-content-scan.sh [--list] [path ...]
   plugins/shipyard/scripts/tests/ (see script header for scope rationale).
   With paths, scans exactly those files. --list prints the discovered paths
   (one per line) and exits 0.
+  --help itself always exits 0, distinct from the usage/environment/
+  discovery-error exit 2 (#1550).
 EOF
-  exit 2
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
+  -h|--help) usage; exit 0 ;;
 esac
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

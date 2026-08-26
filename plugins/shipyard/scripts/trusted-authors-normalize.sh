@@ -74,7 +74,6 @@ Usage: trusted-authors-normalize.sh [--report-aliases] [<file>]
                     alias that was added. Empty output means no aliasing
                     was needed.
 EOF
-  exit 64
 }
 
 report_aliases=0
@@ -87,7 +86,11 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h|--help)
+      # print-only usage() + exit 0 (issue #1550) — was exit 64 (a bare
+      # `usage` call fell through to the same force-exit every error path
+      # used), breaking the usage()-is-normative --help fallback.
       usage
+      exit 0
       ;;
     --*)
       printf 'trusted-authors-normalize.sh: unknown flag %s\n' "$1" >&2

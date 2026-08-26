@@ -83,13 +83,13 @@ usage: assert-branch-switched.sh <DIR> <EXPECTED_BRANCH>
   doesn't resolve to a git working tree at all. Full diagnostics always go to
   stderr.
 
-  See the header comment in this file for the #1258 background.
+  See the header comment in this file for the #1258 background. --help
+  itself always exits 0, distinct from the `error` exit 2 above (#1550).
 EOF
-  exit 2
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
+  -h|--help) usage; exit 0 ;;
 esac
 
 dir="${1:-}"
@@ -97,6 +97,7 @@ expected="${2:-}"
 
 if [ -z "$dir" ] || [ -z "$expected" ]; then
   usage
+  exit 2
 fi
 
 toplevel="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"

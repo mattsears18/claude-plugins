@@ -288,12 +288,23 @@ expect_rc 2 "an unresolvable head ref exits 2" clean main no-such-ref-xyz
 expect_rc 1 "base auto-detection finds main when no base is passed" wip-final
 
 # ── (10) Usage / environment errors ────────────────────────────────────────
+# --help itself always exits 0 (issue #1550) — a correct, intentional
+# invocation, distinct from the `usage/environment error` exit 2 every other
+# case in this section uses.
 help_out="$( ( cd "$repo" && bash "$script" --help ) 2>&1 )"
 help_rc=$?
-if [[ "$help_rc" -eq 2 && "$help_out" == *"usage: commit-subject-scan.sh"* ]]; then
-  ok "--help prints usage and exits 2"
+if [[ "$help_rc" -eq 0 && "$help_out" == *"usage: commit-subject-scan.sh"* ]]; then
+  ok "--help prints usage and exits 0"
 else
-  bad "--help should print usage and exit 2, got $help_rc: ${help_out//$'\n'/ | }"
+  bad "--help should print usage and exit 0, got $help_rc: ${help_out//$'\n'/ | }"
+fi
+
+h_out="$( ( cd "$repo" && bash "$script" -h ) 2>&1 )"
+h_rc=$?
+if [[ "$h_rc" -eq 0 && "$h_out" == *"usage: commit-subject-scan.sh"* ]]; then
+  ok "-h prints usage and exits 0"
+else
+  bad "-h should print usage and exit 0, got $h_rc: ${h_out//$'\n'/ | }"
 fi
 
 extra_out="$( ( cd "$repo" && bash "$script" a b c ) 2>&1 )"
