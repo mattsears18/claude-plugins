@@ -254,6 +254,8 @@ Every poll loop this file describes — the drain protocol's own "every 60s, sna
 
 **The canonical shape is `dont.md`'s "extract to a script" branch, applied to polling specifically: `Write` the loop body to a script, then invoke the script as one plain command — never re-run the compound loop form.**
 
+**This is the supported way to arm a watcher via `Monitor` too, not only a backgrounded `Bash` call ([#1547](https://github.com/mattsears18/shipyard/issues/1547)).** `Monitor`'s `command` parameter is scanned by the identical worktree-isolation guard `dont.md`'s scope note above describes — a `Monitor({command: 'while true; do ...; done'})` call is refused on sight, the same as an inline `Bash` loop, with the same "too complex to verify it stays inside the worktree" message. Never hand `Monitor` the loop body directly. Instead, `Write` the loop to a script (per the numbered pattern below), then pass `Monitor({command: 'bash <path-to-script>'})` — a plain, single-purpose command referencing an already-written file, which the guard passes cleanly.
+
 1. **Prefer the shipped helper — [`scripts/watch-pr-terminal.sh`](../../scripts/watch-pr-terminal.sh) — over hand-authoring a new loop.** It implements exactly this pattern for the single-PR case: poll `gh pr view <N> --repo <owner/repo>` on a bounded interval (default 60s, matching this file's own per-poll cadence) up to a bounded max-wait ceiling (default 7200s = 2h), and emit exactly one stdout line when the PR reaches a terminal state — `merged`, `closed`, or a `failing` check — or a `timeout` line if it never does within the ceiling. Invoke it as one plain command:
 
    ```bash
