@@ -83,9 +83,8 @@ usage: verify-new-dep-versions.sh <base-ref> [--pr-body-file <path>]
   --pr-body-file <path>   path to the drafted PR body (offline check input)
 
   Exit status: 0 = clean/explained, 1 = unexplained major-version gap,
-  2 = usage/environment error.
+  2 = usage/environment error. --help itself always exits 0 (#1550).
 EOF
-  exit 2
 }
 
 base_ref=""
@@ -96,25 +95,28 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
       usage
+      exit 0
       ;;
     --diff-file)
-      [[ $# -ge 2 ]] || usage
+      [[ $# -ge 2 ]] || { usage; exit 2; }
       diff_file="$2"
       shift 2
       ;;
     --pr-body-file)
-      [[ $# -ge 2 ]] || usage
+      [[ $# -ge 2 ]] || { usage; exit 2; }
       pr_body_file="$2"
       shift 2
       ;;
     --*)
       echo "verify-new-dep-versions: unknown flag: $1" >&2
       usage
+      exit 2
       ;;
     *)
       if [[ -n "$base_ref" ]]; then
         echo "verify-new-dep-versions: unexpected extra argument: $1" >&2
         usage
+        exit 2
       fi
       base_ref="$1"
       shift
@@ -124,6 +126,7 @@ done
 
 if [[ -z "$diff_file" && -z "$base_ref" ]]; then
   usage
+  exit 2
 fi
 
 # --- Load the diff text -----------------------------------------------

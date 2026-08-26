@@ -105,8 +105,10 @@ usage: watch-pr-terminal.sh --pr <N> --repo <owner/repo> [--interval <secs>] [--
   Per-poll heartbeats and `gh` error text go to stderr only. See the header
   comment in this file for the #1326 background and how this composes with
   drain.md's own multi-PR batched bookkeeping and the `Monitor` tool.
+
+  --help itself always exits 0, distinct from every other usage error above
+  (issue #1550) — print-only usage() lets callers pick the exit code.
 EOF
-  exit 4
 }
 
 pr=""
@@ -134,10 +136,12 @@ while [ $# -gt 0 ]; do
       ;;
     -h|--help)
       usage
+      exit 0
       ;;
     *)
       echo "watch-pr-terminal: unknown argument: $1" >&2
       usage
+      exit 4
       ;;
   esac
 done
@@ -145,12 +149,14 @@ done
 if [ -z "$pr" ] || [ -z "$repo" ]; then
   echo "watch-pr-terminal: --pr and --repo are both required" >&2
   usage
+  exit 4
 fi
 
 case "$pr" in
   ''|*[!0-9]*)
     echo "watch-pr-terminal: --pr must be a positive integer, got '$pr'" >&2
     usage
+    exit 4
     ;;
 esac
 
@@ -158,6 +164,7 @@ case "$interval" in
   ''|*[!0-9]*)
     echo "watch-pr-terminal: --interval must be a non-negative integer, got '$interval'" >&2
     usage
+    exit 4
     ;;
 esac
 
@@ -165,6 +172,7 @@ case "$max_wait" in
   ''|*[!0-9]*)
     echo "watch-pr-terminal: --max-wait must be a non-negative integer, got '$max_wait'" >&2
     usage
+    exit 4
     ;;
 esac
 

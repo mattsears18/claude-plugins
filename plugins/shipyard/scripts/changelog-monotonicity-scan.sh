@@ -74,12 +74,12 @@ usage: changelog-monotonicity-scan.sh [<merge-base-ref>]
   Set CHANGELOG_PATH env var to scan a different file (default: CHANGELOG.md).
 
   Exit status: 0 = clean, 1 = deleted heading(s) found, 2 = env/usage error.
+  --help itself always exits 0 (#1550).
 EOF
-  exit 2
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
+  -h|--help) usage; exit 0 ;;
 esac
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

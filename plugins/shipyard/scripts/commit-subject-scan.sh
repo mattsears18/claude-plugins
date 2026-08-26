@@ -104,17 +104,18 @@ usage: commit-subject-scan.sh [<base-ref> [<head-ref>]]
   (space- or comma-separated).
 
   Exit: 0 clean, 1 violation(s) found, 2 usage/environment error.
+  --help itself always exits 0 (#1550).
 EOF
-  exit 2
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
+  -h|--help) usage; exit 0 ;;
 esac
 
 if [[ $# -gt 2 ]]; then
   echo "commit-subject-scan: too many arguments" >&2
   usage
+  exit 2
 fi
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

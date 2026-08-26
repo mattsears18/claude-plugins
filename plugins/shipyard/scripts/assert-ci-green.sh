@@ -490,12 +490,21 @@ usage: assert-ci-green.sh <owner/repo> --commit <ref>  [--limit N] [--max-lookba
        assert-ci-green.sh <owner/repo> --branch <name> [--limit N] [--max-lookback N] [--no-step-check]
        assert-ci-green.sh --classify <json-array|->
        assert-ci-green.sh --classify-steps <jobs-json-array|->
+       assert-ci-green.sh --help
 
 exit: 0 green | 1 red | 2 unknown (NOT VERIFIED) | 3 pending | 4 unproven (NOT VERIFIED)
+       (--help is the sole exception: it always exits 0, regardless of the
+       green/red/pending vocabulary above, matching the -h/--help exit-0
+       convention every other scripts/*.sh usage() block honors — #1550.)
 EOF
 }
 
 main() {
+  if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    usage
+    exit 0
+  fi
+
   if [ "${1:-}" = "--classify" ]; then
     local payload="${2:-}"
     if [ -z "$payload" ]; then usage; exit "$EXIT_UNKNOWN"; fi

@@ -59,23 +59,25 @@ MAX_LEN=300
 usage() {
   cat >&2 <<'EOF'
 usage: validate-awaiting-external-probe.sh <PROBE_COMMAND>
+       validate-awaiting-external-probe.sh --help
 
   Validates the probe command an `awaiting-external` worker return proposes to
   hand to the orchestrator for repeated execution. Prints `ok` (exit 0) when
   the probe is a single read-only status read from the allowlist, or
-  `rejected: <reason>` (exit 1) otherwise. Exit 64 on bad usage.
+  `rejected: <reason>` (exit 1) otherwise. Exit 64 on bad usage; --help itself
+  always exits 0 (issue #1550).
 
   See the header comment in this file for the #1390 background.
 EOF
-  exit 64
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
+  -h|--help) usage; exit 0 ;;
 esac
 
 if [ "$#" -ne 1 ]; then
   usage
+  exit 64
 fi
 
 probe="$1"

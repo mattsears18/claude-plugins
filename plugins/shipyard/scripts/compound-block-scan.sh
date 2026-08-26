@@ -121,12 +121,13 @@ usage() {
 usage: compound-block-scan.sh [path ...]
   With no args, scans the built-in FILES list (see script header for scope
   rationale). With paths, scans exactly the given files instead.
+  --help itself always exits 0, distinct from the usage/environment-error
+  exit 2 (#1550).
 EOF
-  exit 2
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
+  -h|--help) usage; exit 0 ;;
 esac
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

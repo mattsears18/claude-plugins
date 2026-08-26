@@ -140,8 +140,8 @@ usage: spike-shape-detect.sh --title <title> [--labels <csv>] [--why]
   --why     Print `<verdict>\t<signal>` instead of just `<verdict>`.
 
 Prints `spike` or `issue-work` on stdout. Exit 0 = classified, 2 = usage error.
+--help itself always exits 0 (#1550).
 EOF
-  exit 2
 }
 
 # The two title-prefix families. Kept as named constants so the test suite and
@@ -162,13 +162,13 @@ have_title="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title)
-      [[ $# -ge 2 ]] || usage
+      [[ $# -ge 2 ]] || { usage; exit 2; }
       title="$2"
       have_title="true"
       shift 2
       ;;
     --labels)
-      [[ $# -ge 2 ]] || usage
+      [[ $# -ge 2 ]] || { usage; exit 2; }
       labels="$2"
       shift 2
       ;;
@@ -178,10 +178,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       usage
+      exit 0
       ;;
     *)
       echo "spike-shape-detect: unrecognized argument: $1" >&2
       usage
+      exit 2
       ;;
   esac
 done
@@ -189,6 +191,7 @@ done
 if [[ "$have_title" != "true" ]]; then
   echo "spike-shape-detect: --title is required" >&2
   usage
+  exit 2
 fi
 
 verdict="issue-work"

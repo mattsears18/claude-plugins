@@ -115,13 +115,19 @@ REGISTRY_FLOOR=20
 usage() {
   cat >&2 <<'EOF'
 usage: spec-skill-reference-scan.sh [--registry] [path ...]
+       spec-skill-reference-scan.sh --help
   With no args, scans every git-tracked *.md under plugins/shipyard/ (see
   script header for scope rationale). With paths, scans exactly those files.
   --registry prints the resolved asset registry (one "<kind> <name>" per line)
   and exits 0.
+  --help itself always exits 0, distinct from the usage/environment-error
+  exit 2 below (#1550).
 EOF
-  exit 2
 }
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "spec-skill-reference-scan: not inside a git work tree" >&2
@@ -157,7 +163,6 @@ build_registry() {
 }
 
 case "${1:-}" in
-  -h|--help) usage ;;
   --registry)
     build_registry
     exit 0
