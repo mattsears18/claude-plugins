@@ -4,6 +4,14 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.55.1 — 2026-08-26
+
+Fixes `04-backlog-divert.md` step 4.5a's invocation guidance for `assert-ci-green.sh` (closes #1546). The step's only invocation guidance was a flag-only parenthetical — `(--branch <default-branch>; exit ...)` — that named the `--branch` flag but never showed the script's required **positional** `<owner/repo>` argument. An orchestrator deriving the call from that prose alone produces `assert-ci-green.sh --repo <owner/repo> --branch <default-branch>`, which the script rejects with a `usage:` block and exit `64` — the same class of drift #1455 fixed for `worktree-reap.sh` and #1502 fixed for the step-1.3/step-1.35 detector call sites, but assert-ci-green.sh's own step-4.5a call site never got the same treatment. Step 4.5a is on the setup hot path (runs every session, and again on every step-D refresh), so the cost recurred per session rather than once.
+
+The fix replaces the parenthetical with a literal invocation block — `<plugin-root>/scripts/assert-ci-green.sh <owner/repo> --branch <default-branch>` — plus the `# The repo is POSITIONAL — there is no --repo flag (#1502)` comment the step-1.3/1.35 call sites already carry. A sweep of every other spec call site that names `assert-ci-green.sh` (`fix-main-ci.md`, `ci-pitfalls.md`) found both already using the correct positional form — only step 4.5a's prose-only parenthetical needed the fix.
+
+- `plugins/shipyard/commands/do-work/setup/04-backlog-divert.md` — step 4.5a's `assert-ci-green.sh` guidance replaced with a literal invocation block and the positional-repo comment.
+
 ### 4.55.0 — 2026-08-24
 
 Adds a **third** already-landed pre-check to `triage-orphan-branches`, for the class the first two structurally cannot see (closes #1541). Checks 1 and 2 (#1517) suppressed 18 of 21 candidates on a real `--dry-run` of this repo at `001415f` — but two of the three survivors were branches whose work had demonstrably landed: `do-work/issue-1412` (as PR #1508) and `do-work/issue-1511` (as PR #1515). Both had **non-empty** diffs, so check 1 correctly declined; both had originating issues still **`OPEN`**, so check 2 — which keys on issue *state* — correctly declined too. The mechanism is systematic rather than coincidental: a PR that merges carrying `refs #N` instead of `closes #N`, or an issue gated on `needs-human-review` after its code landed, leaves that issue open indefinitely while its work sits on the default branch. This falsifies the "check 2 empirically subsumes check 3 on every recorded repro" argument the issue used to defer the work; the remaining argument — that the per-file predicate is genuinely hard to get right — is the one this change had to answer.
