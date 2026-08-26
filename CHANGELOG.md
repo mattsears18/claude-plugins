@@ -4,6 +4,13 @@ All notable changes to the plugins in this repository will be documented here.
 
 ## shipyard
 
+### 4.55.2 — 2026-08-26
+
+Generalizes the worktree-isolation command-shape guard's documented scope from "Bash blocks" to any tool that takes a shell command string, and notes the write-a-script-then-invoke-it remedy at the drain phase's point of use (closes #1547). `dont.md`'s post-relocation section stated the rule in terms of Bash, but the harness scans the same command-shape check against the `Monitor` tool's `command` parameter — a fact that isn't obvious from the rule as written, and bites hardest in the drain phase, where a poll-until-terminal-state watcher is inherently a loop shape the guard refuses. A live repro (orchestrating `mattsears18/lightwork`, drain phase) hit this on both a `Monitor({command: '<loop>'})` call and an equivalent backgrounded `Bash` `until` loop; the fix in both cases was the documented decompose-or-extract remedy, just not connected to `Monitor` anywhere in the spec.
+
+- `plugins/shipyard/commands/do-work/dont.md`: added a scope note to the post-relocation compound-block section stating the guard scans any tool's command string, not `Bash` alone, and generalized the "the rule, stated once" paragraph's wording to match.
+- `plugins/shipyard/commands/do-work/drain.md`: added a note to the "Worktree-safe polling pattern" section stating explicitly that arming a watcher via `Monitor` requires the same `Write`-a-script-then-invoke-it shape as a backgrounded `Bash` poll loop, with the concrete `Monitor({command: 'bash <path-to-script>'})` form.
+
 ### 4.55.1 — 2026-08-26
 
 Fixes `04-backlog-divert.md` step 4.5a's invocation guidance for `assert-ci-green.sh` (closes #1546). The step's only invocation guidance was a flag-only parenthetical — `(--branch <default-branch>; exit ...)` — that named the `--branch` flag but never showed the script's required **positional** `<owner/repo>` argument. An orchestrator deriving the call from that prose alone produces `assert-ci-green.sh --repo <owner/repo> --branch <default-branch>`, which the script rejects with a `usage:` block and exit `64` — the same class of drift #1455 fixed for `worktree-reap.sh` and #1502 fixed for the step-1.3/step-1.35 detector call sites, but assert-ci-green.sh's own step-4.5a call site never got the same treatment. Step 4.5a is on the setup hot path (runs every session, and again on every step-D refresh), so the cost recurred per session rather than once.
